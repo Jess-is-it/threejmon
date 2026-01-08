@@ -1,0 +1,106 @@
+OPTICAL_DEFAULTS = {
+    "enabled": False,
+    "genieacs": {
+        "base_url": "http://genieacs:7557",
+        "username": "",
+        "password": "",
+        "page_size": 100,
+    },
+    "telegram": {
+        "bot_token": "",
+        "chat_id": "",
+    },
+    "optical": {
+        "rx_threshold_dbm": -26.0,
+        "tx_low_threshold_dbm": -1.0,
+        "priority_rx_threshold_dbm": -29.0,
+        "rx_paths": [
+            "InternetGatewayDevice.WANDevice.1.X_CMCC_EponInterfaceConfig.RXPower",
+            "InternetGatewayDevice.WANDevice.1.X_CMCC_GponInterfaceConfig.RXPower",
+            "InternetGatewayDevice.WANDevice.1.X_FH_GponInterfaceConfig.RXPower",
+            "InternetGatewayDevice.WANDevice.1.X_GponInterafceConfig.RXPower",
+            "InternetGatewayDevice.WANDevice.1.X_GponInterfaceConfig.RXPower",
+            "InternetGatewayDevice.WANDevice.1.X_CT-COM_EponInterfaceConfig.RXPower",
+            "VirtualParameters.RXPower",
+        ],
+        "tx_paths": [
+            "InternetGatewayDevice.WANDevice.1.X_CMCC_EponInterfaceConfig.TXPower",
+            "InternetGatewayDevice.WANDevice.1.X_FH_GponInterfaceConfig.TXPower",
+            "InternetGatewayDevice.WANDevice.1.X_GponInterafceConfig.TXPower",
+            "InternetGatewayDevice.WANDevice.1.X_GponInterfaceConfig.TXPower",
+            "InternetGatewayDevice.WANDevice.1.X_CT-COM_EponInterfaceConfig.TXPower",
+            "VirtualParameters.TXPower",
+        ],
+        "pppoe_paths": [
+            "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.Username",
+            "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.X_BROADCOM_COM_Username",
+            "VirtualParameters.pppoeUsername",
+        ],
+        "ip_paths": [
+            "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.ExternalIPAddress",
+            "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANIPConnection.1.ExternalIPAddress",
+            "VirtualParameters.pppoeIP",
+        ],
+    },
+    "general": {
+        "message_title": "Optical Power Alert",
+        "include_header": True,
+        "max_chars": 3800,
+        "schedule_time_ph": "07:00",
+        "timezone": "Asia/Manila",
+    },
+}
+
+RTO_DEFAULTS = {
+    "enabled": False,
+    "ssh": {
+        "host": "",
+        "port": 22,
+        "user": "",
+        "password": "",
+        "use_key": False,
+        "key_path": "",
+        "remote_csv_path": "/opt/libreqos/src/ShapedDevices.csv",
+    },
+    "telegram": {
+        "bot_token": "",
+        "chat_id": "",
+    },
+    "ping": {
+        "count": 5,
+        "per_ping_timeout_sec": 1,
+        "max_workers": 64,
+    },
+    "general": {
+        "message_title": "RTO Customers",
+        "include_header": True,
+        "output_mode": "split",
+        "max_chars": 3800,
+        "max_lines": 200,
+        "top_n": 20,
+        "schedule_time_ph": "07:00",
+        "timezone": "Asia/Manila",
+    },
+    "history": {
+        "window_size": 30,
+    },
+}
+
+ISP_PING_DEFAULTS = {
+    "enabled": False,
+    "telegram": {
+        "bot_token": "",
+        "chat_id": "",
+    },
+    "general": {
+        "ping_timeout_seconds": 1,
+        "ping_count": 5,
+        "max_parallel_pings": 8,
+        "daemon_interval_seconds": 15,
+    },
+    "report": {
+        "daily_time": "07:00",
+        "timezone": "Asia/Manila",
+    },
+    "targets": [],
+}

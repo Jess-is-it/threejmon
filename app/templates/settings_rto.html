@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>RTO Settings</h2>
+  {% if message %}
+    <div class="alert">{{ message }}</div>
+  {% endif %}
+  <form method="post">
+    <div class="toggle">
+      <input type="checkbox" name="enabled" id="enabled" {% if settings.enabled %}checked{% endif %} />
+      <label for="enabled">Enable RTO notifier</label>
+    </div>
+
+    <h3>SSH</h3>
+    <div class="form-grid">
+      <div>
+        <label>Host <span class="info" data-tip="SSH host that contains the ShapedDevices CSV.">i</span></label>
+        <input type="text" name="ssh_host" value="{{ settings.ssh.host }}" />
+      </div>
+      <div>
+        <label>Port <span class="info" data-tip="SSH port, usually 22.">i</span></label>
+        <input type="number" name="ssh_port" value="{{ settings.ssh.port }}" />
+      </div>
+      <div>
+        <label>User <span class="info" data-tip="SSH username for the remote host.">i</span></label>
+        <input type="text" name="ssh_user" value="{{ settings.ssh.user }}" />
+      </div>
+      <div>
+        <label>Password <span class="info" data-tip="SSH password (leave blank if using a key).">i</span></label>
+        <input type="password" name="ssh_password" value="{{ settings.ssh.password }}" />
+      </div>
+      <div>
+        <label>Use SSH Key <span class="info" data-tip="Enable when authenticating with a private key file.">i</span></label>
+        <input type="checkbox" name="ssh_use_key" {% if settings.ssh.use_key %}checked{% endif %} />
+      </div>
+      <div>
+        <label>Key Path <span class="info" data-tip="Path to the private key inside the container.">i</span></label>
+        <input type="text" name="ssh_key_path" value="{{ settings.ssh.key_path }}" />
+      </div>
+      <div>
+        <label>Remote CSV Path <span class="info" data-tip="Absolute path to ShapedDevices.csv on the remote host.">i</span></label>
+        <input type="text" name="ssh_remote_csv_path" value="{{ settings.ssh.remote_csv_path }}" />
+      </div>
+    </div>
+
+    <h3>Telegram</h3>
+    <div class="form-grid">
+      <div>
+        <label>Bot Token <span class="info" data-tip="Telegram bot token from BotFather.">i</span></label>
+        <input type="text" name="telegram_bot_token" value="{{ settings.telegram.bot_token }}" />
+      </div>
+      <div>
+        <label>Chat ID <span class="info" data-tip="Target Telegram chat ID where alerts should be sent.">i</span></label>
+        <input type="text" name="telegram_chat_id" value="{{ settings.telegram.chat_id }}" />
+      </div>
+    </div>
+
+    <h3>Ping</h3>
+    <div class="form-grid">
+      <div>
+        <label>Count <span class="info" data-tip="How many ping attempts per device.">i</span></label>
+        <input type="number" name="ping_count" value="{{ settings.ping.count }}" />
+      </div>
+      <div>
+        <label>Timeout (seconds) <span class="info" data-tip="Timeout per ping attempt.">i</span></label>
+        <input type="number" name="per_ping_timeout_sec" value="{{ settings.ping.per_ping_timeout_sec }}" />
+      </div>
+      <div>
+        <label>Max Workers <span class="info" data-tip="Parallel pings during each run.">i</span></label>
+        <input type="number" name="max_workers" value="{{ settings.ping.max_workers }}" />
+      </div>
+    </div>
+
+    <h3>Schedule</h3>
+    <div class="form-grid">
+      <div>
+        <label>Message Title <span class="info" data-tip="Title shown at the top of each Telegram message.">i</span></label>
+        <input type="text" name="message_title" value="{{ settings.general.message_title }}" />
+      </div>
+      <div>
+        <label>Include Header <span class="info" data-tip="Adds a column header row to the message.">i</span></label>
+        <input type="checkbox" name="include_header" {% if settings.general.include_header %}checked{% endif %} />
+      </div>
+      <div>
+        <label>Output Mode <span class="info" data-tip="split sends multiple messages; truncate limits lines; summary_top shows worst offenders.">i</span></label>
+        <select name="output_mode">
+          {% for option in ['split', 'truncate', 'summary_top'] %}
+            <option value="{{ option }}" {% if settings.general.output_mode == option %}selected{% endif %}>{{ option }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Max Characters <span class="info" data-tip="Split or truncate messages beyond this size.">i</span></label>
+        <input type="number" name="max_chars" value="{{ settings.general.max_chars }}" />
+      </div>
+      <div>
+        <label>Max Lines <span class="info" data-tip="Maximum lines in truncate mode.">i</span></label>
+        <input type="number" name="max_lines" value="{{ settings.general.max_lines }}" />
+      </div>
+      <div>
+        <label>Top N <span class="info" data-tip="Number of devices shown in summary_top mode.">i</span></label>
+        <input type="number" name="top_n" value="{{ settings.general.top_n }}" />
+      </div>
+      <div>
+        <label>Schedule Time (HH:MM) <span class="info" data-tip="Daily time to run the RTO check.">i</span></label>
+        <input type="text" name="schedule_time_ph" value="{{ settings.general.schedule_time_ph }}" />
+      </div>
+      <div>
+        <label>Timezone <span class="info" data-tip="Timezone for the schedule (example: Asia/Manila).">i</span></label>
+        <input type="text" name="timezone" value="{{ settings.general.timezone }}" />
+      </div>
+    </div>
+
+    <h3>History</h3>
+    <div class="form-grid">
+      <div>
+        <label>Window Size <span class="info" data-tip="Number of recent ping cycles used for RTO calculation.">i</span></label>
+        <input type="number" name="window_size" value="{{ settings.history.window_size }}" />
+      </div>
+    </div>
+
+    <div style="margin-top: 16px;">
+      <button type="submit">Save RTO Settings</button>
+    </div>
+  </form>
+  <form method="post" action="/settings/rto/test" style="margin-top: 12px;">
+    <button type="submit">Send Test Telegram</button>
+  </form>
+</div>
+{% endblock %}

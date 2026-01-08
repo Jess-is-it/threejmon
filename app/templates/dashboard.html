@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block content %}
+{% if message %}
+  <div class="alert">{{ message }}</div>
+{% endif %}
+<div class="grid">
+  <div class="card">
+    <h2>Optical Monitor</h2>
+    {% set status = job_status.get('optical') %}
+    <div class="status">
+      <div><span class="badge {{ 'warn' if status and status.last_error else 'ok' }}">{{ 'attention' if status and status.last_error else 'ok' }}</span></div>
+      <div>Last run: {{ status.last_run_at if status else 'never' }}</div>
+      <div>Last success: {{ status.last_success_at if status else 'never' }}</div>
+      <div>Last error: {{ status.last_error if status and status.last_error else 'none' }}</div>
+    </div>
+  </div>
+  <div class="card">
+    <h2>RTO Monitor</h2>
+    {% set status = job_status.get('rto') %}
+    <div class="status">
+      <div><span class="badge {{ 'warn' if status and status.last_error else 'ok' }}">{{ 'attention' if status and status.last_error else 'ok' }}</span></div>
+      <div>Last run: {{ status.last_run_at if status else 'never' }}</div>
+      <div>Last success: {{ status.last_success_at if status else 'never' }}</div>
+      <div>Last error: {{ status.last_error if status and status.last_error else 'none' }}</div>
+    </div>
+  </div>
+  <div class="card">
+    <h2>ISP Ping Monitor</h2>
+    {% set status = job_status.get('isp_ping') %}
+    <div class="status">
+      <div><span class="badge {{ 'warn' if status and status.last_error else 'ok' }}">{{ 'attention' if status and status.last_error else 'ok' }}</span></div>
+      <div>Last run: {{ status.last_run_at if status else 'never' }}</div>
+      <div>Last success: {{ status.last_success_at if status else 'never' }}</div>
+      <div>Last error: {{ status.last_error if status and status.last_error else 'none' }}</div>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Backup & Restore</h2>
+    <div class="status">
+      <div><a href="/settings/export">Download settings backup</a></div>
+    </div>
+    <form method="post" action="/settings/import" enctype="multipart/form-data" style="margin-top: 12px;">
+      <label>Restore from JSON file</label>
+      <input type="file" name="settings_file" accept="application/json" />
+      <div style="margin-top: 10px;">
+        <button type="submit">Import Settings</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

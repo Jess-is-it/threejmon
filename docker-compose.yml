@@ -1,0 +1,9 @@
+services:
+  threejnotif:
+    build: .
+    container_name: threejnotif
+    ports:
+      - "${THREEJ_PORT:-8000}:8000"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
