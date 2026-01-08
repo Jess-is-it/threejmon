@@ -108,6 +108,7 @@ run_compose() {
   cd "$INSTALL_DIR"
   mkdir -p data
   chown -R "$APP_USER:$APP_USER" data
+  export BUILDX_NO_DEFAULT_ATTESTATIONS=1
   docker compose up -d --build
 }
 
