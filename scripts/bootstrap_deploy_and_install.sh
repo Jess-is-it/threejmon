@@ -4,6 +4,12 @@ set -euo pipefail
 REPO="Jess-is-it/threejmon"
 EMAIL="threejmon-deploy"
 KEY_PATH="$HOME/.ssh/threejmon_deploy"
+PUBLIC_REPO=${PUBLIC_REPO:-0}
+
+if [ "$PUBLIC_REPO" = "1" ]; then
+  curl -fsSL https://raw.githubusercontent.com/${REPO}/master/install.sh | sudo THREEJ_REPO_URL=https://github.com/${REPO}.git bash
+  exit 0
+fi
 
 if [ ! -f "${KEY_PATH}" ]; then
   ssh-keygen -t ed25519 -C "${EMAIL}" -f "${KEY_PATH}" -N ""

@@ -11,12 +11,10 @@ docker compose up -d --build
 
 Open `http://localhost:8000` and configure settings in the portal.
 
-## One-line install (remote server)
-
-Host this repository in Git, then run:
+## One-line install (public GitHub repo)
 
 ```bash
-curl -fsSL https://your-host/install.sh | sudo THREEJ_REPO_URL=https://your-host/threejnotif-portal.git bash
+curl -fsSL https://raw.githubusercontent.com/Jess-is-it/threejmon/master/install.sh | sudo THREEJ_REPO_URL=https://github.com/Jess-is-it/threejmon.git bash
 ```
 
 Options:
@@ -25,7 +23,7 @@ Options:
 - `THREEJ_APP_USER`: service user (default `threejnotif`)
 - `THREEJ_PORT`: host port (default `8000`)
 
-## One-line install (GitHub private repo + deploy key)
+## One-line install (private GitHub repo + deploy key)
 
 Use this on a fresh server. It generates a deploy key, pauses for you to add it in GitHub, then installs:
 
@@ -35,6 +33,12 @@ curl -fsSL https://raw.githubusercontent.com/Jess-is-it/threejmon/master/scripts
 
 When the script pauses, add the printed public key to:
 GitHub -> Repo Settings -> Deploy keys (read-only).
+
+If your repo is public, you can also skip deploy keys:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Jess-is-it/threejmon/master/scripts/bootstrap_deploy_and_install.sh | PUBLIC_REPO=1 bash
+```
 
 ## Notes
 - Settings and runtime state are stored in `./data/threejnotif.db` on the host.
