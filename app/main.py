@@ -53,7 +53,10 @@ def trigger_ota_update():
         raise RuntimeError("OTA repository not mounted. Ensure /repo is a git checkout.")
     command = os.environ.get(
         "THREEJ_OTA_COMMAND",
-        "git pull --rebase && docker compose up -d --build",
+        "git pull --rebase && "
+        "THREEJ_VERSION=$(git rev-parse --short HEAD) "
+        "THREEJ_VERSION_DATE=$(git log -1 --format=%cs) "
+        "docker compose up -d --build",
     )
     shell_command = f"cd {shlex.quote(repo_path)} && {command}"
     subprocess.Popen(
@@ -67,7 +70,9 @@ def trigger_ota_update():
 def get_repo_version():
     repo_path = os.environ.get("THREEJ_OTA_REPO", "/repo")
     if not os.path.exists(os.path.join(repo_path, ".git")):
-        return {"version": "unknown", "date": "unknown"}
+        env_version = os.environ.get("THREEJ_VERSION", "unknown")
+        env_date = os.environ.get("THREEJ_VERSION_DATE", "unknown")
+        return {"version": env_version or "unknown", "date": env_date or "unknown"}
     try:
         version_proc = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
@@ -89,7 +94,9 @@ def get_repo_version():
         date_value = (date_proc.stdout or "").strip() or "unknown"
         return {"version": version, "date": date_value}
     except Exception:
-        return {"version": "unknown", "date": "unknown"}
+        env_version = os.environ.get("THREEJ_VERSION", "unknown")
+        env_date = os.environ.get("THREEJ_VERSION_DATE", "unknown")
+        return {"version": env_version or "unknown", "date": env_date or "unknown"}
 
 
 @app.get("/", response_class=HTMLResponse)

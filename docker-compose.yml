@@ -1,7 +1,10 @@
 services:
   threejnotif:
-    build: .
-    container_name: threejnotif
+    build:
+      context: .
+      args:
+        THREEJ_VERSION: ${THREEJ_VERSION:-unknown}
+        THREEJ_VERSION_DATE: ${THREEJ_VERSION_DATE:-unknown}
     ports:
       - "${THREEJ_PORT:-8000}:8000"
     volumes:
