@@ -344,7 +344,7 @@ async def isp_settings_run(request: Request):
                 "last_report_timezone": None,
             },
         )
-        state = isp_ping_notifier.run_check(settings, state)
+        state = isp_ping_notifier.run_check(settings, state, force_report=True)
         save_state("isp_ping_state", state)
         message = "Actual ISP ping check sent."
     except TelegramError as exc:

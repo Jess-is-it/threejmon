@@ -94,7 +94,7 @@ def build_report_message(now, results):
     return "\n".join(lines)
 
 
-def run_check(cfg, state):
+def run_check(cfg, state, force_report=False):
     timeout_seconds = int(cfg["general"].get("ping_timeout_seconds", 1))
     ping_count = int(cfg["general"].get("ping_count", 5))
     timezone = cfg["report"].get("timezone", "Asia/Manila")
@@ -153,7 +153,7 @@ def run_check(cfg, state):
                 )
             state.setdefault("last_status", {})[target["ip"]] = "up" if up else "down"
 
-    if should_send_report(cfg, state, now):
+    if force_report or should_send_report(cfg, state, now):
         send_telegram(cfg["telegram"].get("bot_token", ""), cfg["telegram"].get("chat_id", ""), build_report_message(now, results))
         state["last_report_date"] = now.date().isoformat()
 
