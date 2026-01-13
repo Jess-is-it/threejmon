@@ -54,32 +54,36 @@ def trigger_ota_update(log_path, status_path):
     current_status = read_ota_status(status_path)
     if current_status == "running":
         raise RuntimeError("OTA update already running.")
+
     host_repo = os.environ.get("THREEJ_HOST_REPO", "/opt/threejnotif")
-    command = os.environ.get(
-        "THREEJ_OTA_COMMAND",
-        "git config --global --add safe.directory /repo && "
+    log_line = "\n--- OTA update started ---\n"
+    with open(log_path, "a", encoding="utf-8") as log_handle:
+        log_handle.write(log_line)
+    with open(status_path, "w", encoding="utf-8") as status_handle:
+        status_handle.write("running")
+
+    command = (
+        f"cd {shlex.quote(host_repo)} && "
+        f"git config --global --add safe.directory {shlex.quote(host_repo)} && "
         "git pull --rebase && "
         "THREEJ_VERSION=$(git rev-parse --short HEAD) "
         "THREEJ_VERSION_DATE=$(git log -1 --format=%cs) "
         "printf \"%s %s\" \"$THREEJ_VERSION\" \"$THREEJ_VERSION_DATE\" > .threej_version && "
-        f"chroot /host /usr/bin/docker compose -f {shlex.quote(host_repo)}/docker-compose.yml up -d --build",
+        "/usr/bin/docker compose -f docker-compose.yml up -d --build"
     )
-    shell_command = (
-        f"cd {shlex.quote(repo_path)} && "
-        f"({command}); code=$?; "
-        f"if [ $code -eq 0 ]; then echo done > {shlex.quote(status_path)}; "
-        f"else echo failed > {shlex.quote(status_path)}; fi; "
-        f"exit $code"
+    helper_command = (
+        "docker run --rm -d --name threejnotif-ota "
+        "--privileged -v /:/host "
+        "ubuntu bash -c "
+        "\"chroot /host /bin/bash -c "
+        f"'{command} >> {shlex.quote(host_repo)}/.ota.log 2>&1; "
+        f"code=$?; if [ $code -eq 0 ]; then echo done > {shlex.quote(host_repo)}/.ota.status; "
+        f"else echo failed > {shlex.quote(host_repo)}/.ota.status; fi; exit $code'\""
     )
-    log_handle = open(log_path, "a", encoding="utf-8")
-    log_handle.write(f"\n--- OTA update started ---\n")
-    log_handle.flush()
-    with open(status_path, "w", encoding="utf-8") as status_handle:
-        status_handle.write("running")
     subprocess.Popen(
-        ["/bin/sh", "-c", shell_command],
-        stdout=log_handle,
-        stderr=log_handle,
+        ["/bin/sh", "-c", helper_command],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
 
