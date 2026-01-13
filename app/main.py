@@ -66,7 +66,7 @@ def trigger_ota_update():
 
 def get_repo_version():
     repo_path = os.environ.get("THREEJ_OTA_REPO", "/repo")
-    if not os.path.isdir(os.path.join(repo_path, ".git")):
+    if not os.path.exists(os.path.join(repo_path, ".git")):
         return {"version": "unknown", "date": "unknown"}
     try:
         version_proc = subprocess.run(
