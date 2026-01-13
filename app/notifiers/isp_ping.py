@@ -146,9 +146,9 @@ def run_check(cfg, state):
                     cfg["telegram"].get("bot_token", ""),
                     cfg["telegram"].get("chat_id", ""),
                     (
-                        f\"{base_message} | {stamp}\\n({ping_count} pings) {ping_details}\"
+                        f"{base_message} | {stamp}\n({ping_count} pings) {ping_details}"
                         if include_up_icmp and up_icmp_lines > 0
-                        else f\"{base_message} | {stamp}\"
+                        else f"{base_message} | {stamp}"
                     ),
                 )
             state.setdefault("last_status", {})[target["ip"]] = "up" if up else "down"
