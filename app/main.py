@@ -62,30 +62,34 @@ def trigger_ota_update(log_path, status_path):
     with open(status_path, "w", encoding="utf-8") as status_handle:
         status_handle.write("running")
 
+    host_repo_root = os.path.join("/host", host_repo.lstrip("/"))
+    host_git = "/host/usr/bin/git"
+    host_docker = "/host/usr/bin/docker"
     command = (
-        f"cd {shlex.quote(host_repo)} && "
-        f"git config --global --add safe.directory {shlex.quote(host_repo)} && "
-        "git pull --rebase && "
-        "THREEJ_VERSION=$(git rev-parse --short HEAD) "
-        "THREEJ_VERSION_DATE=$(git log -1 --format=%cs) "
-        "printf \"%s %s\" \"$THREEJ_VERSION\" \"$THREEJ_VERSION_DATE\" > .threej_version && "
-        "/usr/bin/docker compose -f docker-compose.yml up -d --build"
+        f"test -x {shlex.quote(host_git)} && test -x {shlex.quote(host_docker)} || "
+        f"(echo \"host git/docker not found\"; exit 1); "
+        f"{shlex.quote(host_git)} -C {shlex.quote(host_repo_root)} config --global --add safe.directory {shlex.quote(host_repo_root)}; "
+        f"{shlex.quote(host_git)} -C {shlex.quote(host_repo_root)} pull --rebase; "
+        f"THREEJ_VERSION=$({shlex.quote(host_git)} -C {shlex.quote(host_repo_root)} rev-parse --short HEAD); "
+        f"THREEJ_VERSION_DATE=$({shlex.quote(host_git)} -C {shlex.quote(host_repo_root)} log -1 --format=%cs); "
+        f"printf \"%s %s\" \"$THREEJ_VERSION\" \"$THREEJ_VERSION_DATE\" > {shlex.quote(host_repo_root)}/.threej_version; "
+        f"{shlex.quote(host_docker)} compose -f {shlex.quote(host_repo_root)}/docker-compose.yml up -d --build; "
+        f"echo done > {shlex.quote(host_repo_root)}/.ota.status"
     )
-    helper_command = (
-        "docker run --rm -d --name threejnotif-ota "
-        "--privileged -v /:/host "
-        "ubuntu bash -c "
-        "\"chroot /host /bin/bash -c "
-        f"'{command} >> {shlex.quote(host_repo)}/.ota.log 2>&1; "
-        f"code=$?; if [ $code -eq 0 ]; then echo done > {shlex.quote(host_repo)}/.ota.status; "
-        f"else echo failed > {shlex.quote(host_repo)}/.ota.status; fi; exit $code'\""
-    )
-    subprocess.Popen(
+    helper_command = f"{command} >> {shlex.quote(host_repo_root)}/.ota.log 2>&1"
+    result = subprocess.run(
         ["/bin/sh", "-c", helper_command],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
     )
+    if result.returncode != 0:
+        with open(log_path, "a", encoding="utf-8") as log_handle:
+            log_handle.write("\n--- OTA update failed to start ---\n")
+            log_handle.write((result.stderr or result.stdout or "").strip() + "\n")
+        with open(status_path, "w", encoding="utf-8") as status_handle:
+            status_handle.write("failed")
 
 
 def get_repo_version():
