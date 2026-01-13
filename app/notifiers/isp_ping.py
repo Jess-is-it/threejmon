@@ -104,6 +104,7 @@ def run_check(cfg, state):
         now = datetime.now(ZoneInfo(timezone))
     else:
         now = datetime.now()
+    stamp = now.strftime("%Y-%m-%d %H:%M:%S")
 
     normalize_report_state(cfg, state)
 
@@ -128,9 +129,19 @@ def run_check(cfg, state):
             )
             last_status = state.get("last_status", {}).get(target["ip"])
             if not up and last_status != "down":
-                send_telegram(cfg["telegram"].get("bot_token", ""), cfg["telegram"].get("chat_id", ""), target.get("down_message") or f"{target['ip']} is DOWN")
+                base_message = target.get("down_message") or f"{target['ip']} is DOWN"
+                send_telegram(
+                    cfg["telegram"].get("bot_token", ""),
+                    cfg["telegram"].get("chat_id", ""),
+                    f"{base_message} | {stamp}",
+                )
             if up and last_status == "down":
-                send_telegram(cfg["telegram"].get("bot_token", ""), cfg["telegram"].get("chat_id", ""), target.get("up_message") or f"{target['ip']} is UP")
+                base_message = target.get("up_message") or f"{target['ip']} is UP"
+                send_telegram(
+                    cfg["telegram"].get("bot_token", ""),
+                    cfg["telegram"].get("chat_id", ""),
+                    f"{base_message} | {stamp}",
+                )
             state.setdefault("last_status", {})[target["ip"]] = "up" if up else "down"
 
     if should_send_report(cfg, state, now):
