@@ -53,6 +53,7 @@ def trigger_ota_update(log_path, status_path):
         raise RuntimeError("OTA repository not mounted. Ensure /repo is a git checkout.")
     command = os.environ.get(
         "THREEJ_OTA_COMMAND",
+        "git config --global --add safe.directory /repo && "
         "git pull --rebase && "
         "THREEJ_VERSION=$(git rev-parse --short HEAD) "
         "THREEJ_VERSION_DATE=$(git log -1 --format=%cs) "
@@ -465,9 +466,8 @@ async def isp_settings_run(request: Request):
 async def settings_root():
     return RedirectResponse(url="/settings/optical", status_code=302)
 
-
-@app.get("/settings/update", response_class=HTMLResponse)
-async def update_settings(request: Request):
+@app.get("/settings/system", response_class=HTMLResponse)
+async def system_settings(request: Request):
     paths = get_ota_paths()
     repo_version = get_repo_version()
     log_text = ""
@@ -479,16 +479,15 @@ async def update_settings(request: Request):
             log_text = ""
     status = read_ota_status(paths["status_path"])
     return templates.TemplateResponse(
-        "settings_update.html",
+        "settings_system.html",
         make_context(
             request,
             {"message": "", "repo_version": repo_version, "log_text": log_text, "ota_status": status},
         ),
     )
 
-
-@app.post("/settings/update", response_class=HTMLResponse)
-async def update_settings_run(request: Request):
+@app.post("/settings/system/update", response_class=HTMLResponse)
+async def system_update_run(request: Request):
     paths = get_ota_paths()
     message = ""
     try:
@@ -506,7 +505,7 @@ async def update_settings_run(request: Request):
             log_text = ""
     status = read_ota_status(paths["status_path"])
     return templates.TemplateResponse(
-        "settings_update.html",
+        "settings_system.html",
         make_context(
             request,
             {"message": message, "repo_version": repo_version, "log_text": log_text, "ota_status": status},
@@ -514,14 +513,14 @@ async def update_settings_run(request: Request):
     )
 
 
-@app.get("/settings/update/status")
+@app.get("/settings/system/status")
 async def update_status():
     paths = get_ota_paths()
     status = read_ota_status(paths["status_path"])
     return {"status": status}
 
 
-@app.get("/settings/update/log")
+@app.get("/settings/system/log")
 async def update_log():
     paths = get_ota_paths()
     log_text = ""
@@ -532,3 +531,52 @@ async def update_log():
         except OSError:
             log_text = ""
     return Response(content=log_text, media_type="text/plain")
+
+
+@app.post("/settings/system/uninstall", response_class=HTMLResponse)
+async def system_uninstall(request: Request):
+    form = await request.form()
+    confirm_text = (form.get("confirm_text") or "").strip().upper()
+    message = ""
+    if confirm_text != "UNINSTALL":
+        message = "Confirmation text does not match. Type UNINSTALL to proceed."
+        return await system_settings(request)
+
+    host_repo = os.environ.get("THREEJ_HOST_REPO", "/opt/threejnotif")
+    command = (
+        "docker run --rm --privileged "
+        "-v /:/host "
+        f"-v {shlex.quote(host_repo)}:/repo "
+        "ubuntu bash -c "
+        "\"cp /repo/scripts/uninstall_all.sh /host/tmp/threej_uninstall.sh && "
+        "chroot /host /bin/bash /tmp/threej_uninstall.sh "
+        f"{shlex.quote(host_repo)}\""
+    )
+    try:
+        subprocess.Popen(
+            ["/bin/sh", "-c", command],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        message = "Uninstall started. This will remove Docker and all app data."
+    except Exception as exc:
+        message = f"Uninstall failed: {exc}"
+
+    paths = get_ota_paths()
+    repo_version = get_repo_version()
+    log_text = ""
+    if os.path.exists(paths["log_path"]):
+        try:
+            with open(paths["log_path"], "r", encoding="utf-8") as handle:
+                log_text = handle.read()
+        except OSError:
+            log_text = ""
+    status = read_ota_status(paths["status_path"])
+    return templates.TemplateResponse(
+        "settings_system.html",
+        make_context(
+            request,
+            {"message": message, "repo_version": repo_version, "log_text": log_text, "ota_status": status},
+        ),
+    )
