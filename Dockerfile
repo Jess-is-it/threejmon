@@ -1,5 +1,8 @@
 FROM python:3.11-slim
 
+ARG THREEJ_VERSION=unknown
+ARG THREEJ_VERSION_DATE=unknown
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -23,6 +26,8 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY app /app/app
 
 ENV THREEJ_DB_PATH=/data/threejnotif.db
+ENV THREEJ_VERSION=${THREEJ_VERSION}
+ENV THREEJ_VERSION_DATE=${THREEJ_VERSION_DATE}
 
 VOLUME ["/data"]
 EXPOSE 8000

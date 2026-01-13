@@ -53,7 +53,11 @@ def trigger_ota_update():
         raise RuntimeError("OTA repository not mounted. Ensure /repo is a git checkout.")
     command = os.environ.get(
         "THREEJ_OTA_COMMAND",
-        "git pull --rebase && docker compose up -d --build",
+        "git pull --rebase && "
+        "THREEJ_VERSION=$(git rev-parse --short HEAD) "
+        "THREEJ_VERSION_DATE=$(git log -1 --format=%cs) "
+        "printf \"%s %s\" \"$THREEJ_VERSION\" \"$THREEJ_VERSION_DATE\" > .threej_version && "
+        "docker compose up -d --build",
     )
     shell_command = f"cd {shlex.quote(repo_path)} && {command}"
     subprocess.Popen(
@@ -66,8 +70,22 @@ def trigger_ota_update():
 
 def get_repo_version():
     repo_path = os.environ.get("THREEJ_OTA_REPO", "/repo")
+    version_file = os.path.join(repo_path, ".threej_version")
     if not os.path.exists(os.path.join(repo_path, ".git")):
-        return {"version": "unknown", "date": "unknown"}
+        if os.path.exists(version_file):
+            try:
+                with open(version_file, "r", encoding="utf-8") as handle:
+                    content = (handle.read() or "").strip()
+                if content:
+                    parts = content.split(" ", 1)
+                    version = parts[0]
+                    date_value = parts[1] if len(parts) > 1 else "unknown"
+                    return {"version": version, "date": date_value}
+            except OSError:
+                pass
+        env_version = os.environ.get("THREEJ_VERSION", "unknown")
+        env_date = os.environ.get("THREEJ_VERSION_DATE", "unknown")
+        return {"version": env_version or "unknown", "date": env_date or "unknown"}
     try:
         version_proc = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
@@ -87,9 +105,16 @@ def get_repo_version():
         )
         version = (version_proc.stdout or "").strip() or "unknown"
         date_value = (date_proc.stdout or "").strip() or "unknown"
+        try:
+            with open(version_file, "w", encoding="utf-8") as handle:
+                handle.write(f"{version} {date_value}".strip())
+        except OSError:
+            pass
         return {"version": version, "date": date_value}
     except Exception:
-        return {"version": "unknown", "date": "unknown"}
+        env_version = os.environ.get("THREEJ_VERSION", "unknown")
+        env_date = os.environ.get("THREEJ_VERSION_DATE", "unknown")
+        return {"version": env_version or "unknown", "date": env_date or "unknown"}
 
 
 @app.get("/", response_class=HTMLResponse)
