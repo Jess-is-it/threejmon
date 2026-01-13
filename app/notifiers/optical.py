@@ -164,7 +164,7 @@ def build_messages(cfg, rows, total_devices):
     for row in rows:
         rx = f"{row['rx']:.2f}" if row["rx"] is not None else "N/A"
         tx = f"{row['tx']:.2f}" if row["tx"] is not None else "N/A"
-        prefix = "PRIORITY " if row.get("priority") else ""
+        prefix = "🔴 " if row.get("priority") else ""
         pppoe = f"{prefix}{row.get('pppoe') or 'Unknown'}"
         ip_address = row.get("ip") or "N/A"
         lines.append(f"{pppoe} | {ip_address} | {rx} | {tx}")
