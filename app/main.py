@@ -62,26 +62,30 @@ def trigger_ota_update(log_path, status_path):
     with open(status_path, "w", encoding="utf-8") as status_handle:
         status_handle.write("running")
 
-    command = (
-        f"cd {shlex.quote(host_repo)} && "
-        f"git config --global --add safe.directory {shlex.quote(host_repo)} && "
-        "git pull --rebase && "
-        "THREEJ_VERSION=$(git rev-parse --short HEAD) "
-        "THREEJ_VERSION_DATE=$(git log -1 --format=%cs) "
-        "printf \"%s %s\" \"$THREEJ_VERSION\" \"$THREEJ_VERSION_DATE\" > .threej_version && "
-        "/usr/bin/docker compose -f docker-compose.yml up -d --build"
+    script_path = os.path.join(host_repo, "scripts", "ota_host.sh")
+    script_content = (
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "trap 'echo failed > .ota.status' ERR\n"
+        f"cd {host_repo}\n"
+        f"git config --global --add safe.directory {host_repo}\n"
+        "git pull --rebase\n"
+        "THREEJ_VERSION=$(git rev-parse --short HEAD)\n"
+        "THREEJ_VERSION_DATE=$(git log -1 --format=%cs)\n"
+        "printf \"%s %s\" \"$THREEJ_VERSION\" \"$THREEJ_VERSION_DATE\" > .threej_version\n"
+        "/usr/bin/docker compose -f docker-compose.yml up -d --build\n"
+        "echo done > .ota.status\n"
     )
-    helper_command = (
-        "docker run --rm -d --name threejnotif-ota "
-        "--privileged -v /:/host "
-        "ubuntu bash -c "
-        "\"chroot /host /bin/bash -c "
-        f"'{command} >> {shlex.quote(host_repo)}/.ota.log 2>&1; "
-        f"code=$?; if [ $code -eq 0 ]; then echo done > {shlex.quote(host_repo)}/.ota.status; "
-        f"else echo failed > {shlex.quote(host_repo)}/.ota.status; fi; exit $code'\""
+    with open(os.path.join(repo_path, "scripts", "ota_host.sh"), "w", encoding="utf-8") as handle:
+        handle.write(script_content)
+    os.chmod(os.path.join(repo_path, "scripts", "ota_host.sh"), 0o755)
+
+    command = (
+        f"chroot /host /bin/bash -c "
+        f"\"nohup {shlex.quote(script_path)} > {shlex.quote(host_repo)}/.ota.log 2>&1 &\""
     )
     result = subprocess.run(
-        ["/bin/sh", "-c", helper_command],
+        ["/bin/sh", "-c", command],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
