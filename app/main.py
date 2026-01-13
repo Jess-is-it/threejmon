@@ -4,6 +4,7 @@ import json
 import os
 import shlex
 import subprocess
+import threading
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -47,6 +48,29 @@ def make_context(request, extra=None):
     return ctx
 
 
+def _run_ota_command(command, log_path, status_path):
+    try:
+        with open(log_path, "a", encoding="utf-8") as log_handle:
+            log_handle.write("\n--- OTA update running ---\n")
+        result = subprocess.run(
+            ["/bin/sh", "-c", command],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        with open(log_path, "a", encoding="utf-8") as log_handle:
+            log_handle.write((result.stdout or "").strip() + "\n")
+            log_handle.write((result.stderr or "").strip() + "\n")
+        with open(status_path, "w", encoding="utf-8") as status_handle:
+            status_handle.write("done" if result.returncode == 0 else "failed")
+    except Exception as exc:
+        with open(log_path, "a", encoding="utf-8") as log_handle:
+            log_handle.write(f"\n--- OTA update failed ---\n{exc}\n")
+        with open(status_path, "w", encoding="utf-8") as status_handle:
+            status_handle.write("failed")
+
+
 def trigger_ota_update(log_path, status_path):
     repo_path = os.environ.get("THREEJ_OTA_REPO", "/repo")
     if not os.path.isdir(os.path.join(repo_path, ".git")):
@@ -56,9 +80,8 @@ def trigger_ota_update(log_path, status_path):
         raise RuntimeError("OTA update already running.")
 
     host_repo = os.environ.get("THREEJ_HOST_REPO", "/opt/threejnotif")
-    log_line = "\n--- OTA update started ---\n"
     with open(log_path, "a", encoding="utf-8") as log_handle:
-        log_handle.write(log_line)
+        log_handle.write("\n--- OTA update started ---\n")
     with open(status_path, "w", encoding="utf-8") as status_handle:
         status_handle.write("running")
 
@@ -73,23 +96,15 @@ def trigger_ota_update(log_path, status_path):
         f"THREEJ_VERSION=$({shlex.quote(host_git)} -C {shlex.quote(host_repo_root)} rev-parse --short HEAD); "
         f"THREEJ_VERSION_DATE=$({shlex.quote(host_git)} -C {shlex.quote(host_repo_root)} log -1 --format=%cs); "
         f"printf \"%s %s\" \"$THREEJ_VERSION\" \"$THREEJ_VERSION_DATE\" > {shlex.quote(host_repo_root)}/.threej_version; "
-        f"{shlex.quote(host_docker)} compose -f {shlex.quote(host_repo_root)}/docker-compose.yml up -d --build; "
-        f"echo done > {shlex.quote(host_repo_root)}/.ota.status"
+        f"{shlex.quote(host_docker)} compose -f {shlex.quote(host_repo_root)}/docker-compose.yml up -d --build"
     )
     helper_command = f"{command} >> {shlex.quote(host_repo_root)}/.ota.log 2>&1"
-    result = subprocess.run(
-        ["/bin/sh", "-c", helper_command],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
+    thread = threading.Thread(
+        target=_run_ota_command,
+        args=(helper_command, log_path, status_path),
+        daemon=True,
     )
-    if result.returncode != 0:
-        with open(log_path, "a", encoding="utf-8") as log_handle:
-            log_handle.write("\n--- OTA update failed to start ---\n")
-            log_handle.write((result.stderr or result.stdout or "").strip() + "\n")
-        with open(status_path, "w", encoding="utf-8") as status_handle:
-            status_handle.write("failed")
+    thread.start()
 
 
 def get_repo_version():
@@ -523,6 +538,16 @@ async def system_update_run(request: Request):
             {"message": message, "repo_version": repo_version, "log_text": log_text, "ota_status": status},
         ),
     )
+
+
+@app.post("/settings/system/update/start")
+async def system_update_start():
+    paths = get_ota_paths()
+    try:
+        trigger_ota_update(paths["log_path"], paths["status_path"])
+        return {"status": "running"}
+    except Exception as exc:
+        return {"status": "failed", "error": str(exc)}
 
 
 @app.get("/settings/system/status")
