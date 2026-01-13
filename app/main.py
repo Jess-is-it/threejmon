@@ -53,6 +53,7 @@ def trigger_ota_update(log_path, status_path):
         raise RuntimeError("OTA repository not mounted. Ensure /repo is a git checkout.")
     command = os.environ.get(
         "THREEJ_OTA_COMMAND",
+        "git config --global --add safe.directory /repo && "
         "git pull --rebase && "
         "THREEJ_VERSION=$(git rev-parse --short HEAD) "
         "THREEJ_VERSION_DATE=$(git log -1 --format=%cs) "
