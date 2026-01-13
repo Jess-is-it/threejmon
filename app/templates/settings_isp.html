@@ -71,11 +71,14 @@
     <div class="help">One target per line. Only IP is required; other fields are optional.</div>
 
     <div style="margin-top: 16px;">
-      <button type="submit">Save ISP Ping Settings</button>
+      <button type="submit" class="button-green">Save ISP Ping Settings</button>
     </div>
   </form>
   <form method="post" action="/settings/isp/test" style="margin-top: 12px;">
     <button type="submit">Send Test Telegram</button>
+  </form>
+  <form method="post" action="/settings/isp/run" style="margin-top: 12px;">
+    <button type="submit" class="button-blue">Send Actual Test</button>
   </form>
 </div>
 <script>

@@ -10,9 +10,12 @@ from fastapi.templating import Jinja2Templates
 from .db import get_job_status, init_db
 from .forms import parse_bool, parse_float, parse_int, parse_lines, parse_targets
 from .jobs import JobsManager
+from .notifiers import isp_ping as isp_ping_notifier
+from .notifiers import optical as optical_notifier
+from .notifiers import rto as rto_notifier
 from .notifiers.telegram import TelegramError, send_telegram
 from .settings_defaults import ISP_PING_DEFAULTS, OPTICAL_DEFAULTS, RTO_DEFAULTS
-from .settings_store import export_settings, get_settings, import_settings, save_settings
+from .settings_store import export_settings, get_settings, get_state, import_settings, save_settings, save_state
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -159,6 +162,23 @@ async def optical_settings_test(request: Request):
     )
 
 
+@app.post("/settings/optical/run", response_class=HTMLResponse)
+async def optical_settings_run(request: Request):
+    settings = get_settings("optical", OPTICAL_DEFAULTS)
+    message = ""
+    try:
+        optical_notifier.run(settings)
+        message = "Actual optical check sent."
+    except TelegramError as exc:
+        message = str(exc)
+    except Exception as exc:
+        message = f"Run failed: {exc}"
+    return templates.TemplateResponse(
+        "settings_optical.html",
+        make_context(request, {"settings": settings, "message": message}),
+    )
+
+
 @app.get("/settings/rto", response_class=HTMLResponse)
 async def rto_settings(request: Request):
     settings = get_settings("rto", RTO_DEFAULTS)
@@ -229,6 +249,25 @@ async def rto_settings_test(request: Request):
     )
 
 
+@app.post("/settings/rto/run", response_class=HTMLResponse)
+async def rto_settings_run(request: Request):
+    settings = get_settings("rto", RTO_DEFAULTS)
+    message = ""
+    try:
+        history = get_state("rto_history", {})
+        history = rto_notifier.run(settings, history)
+        save_state("rto_history", history)
+        message = "Actual RTO check sent."
+    except TelegramError as exc:
+        message = str(exc)
+    except Exception as exc:
+        message = f"Run failed: {exc}"
+    return templates.TemplateResponse(
+        "settings_rto.html",
+        make_context(request, {"settings": settings, "message": message}),
+    )
+
+
 @app.get("/settings/isp", response_class=HTMLResponse)
 async def isp_settings(request: Request):
     settings = get_settings("isp_ping", ISP_PING_DEFAULTS)
@@ -285,6 +324,33 @@ async def isp_settings_test(request: Request):
         message = "Test message sent."
     except TelegramError as exc:
         message = str(exc)
+    return templates.TemplateResponse(
+        "settings_isp.html",
+        make_context(request, {"settings": settings, "message": message}),
+    )
+
+
+@app.post("/settings/isp/run", response_class=HTMLResponse)
+async def isp_settings_run(request: Request):
+    settings = get_settings("isp_ping", ISP_PING_DEFAULTS)
+    message = ""
+    try:
+        state = get_state(
+            "isp_ping_state",
+            {
+                "last_status": {},
+                "last_report_date": None,
+                "last_report_time": None,
+                "last_report_timezone": None,
+            },
+        )
+        state = isp_ping_notifier.run_check(settings, state)
+        save_state("isp_ping_state", state)
+        message = "Actual ISP ping check sent."
+    except TelegramError as exc:
+        message = str(exc)
+    except Exception as exc:
+        message = f"Run failed: {exc}"
     return templates.TemplateResponse(
         "settings_isp.html",
         make_context(request, {"settings": settings, "message": message}),
