@@ -84,54 +84,44 @@ def trigger_ota_update(log_path, status_path):
     if not os.path.isdir(os.path.join(host_repo_root, ".git")):
         raise RuntimeError(f"Host repo not found at {host_repo}. Ensure /host is mounted.")
 
-    docker_bin = "/usr/bin/docker"
-    if not os.path.exists(docker_bin):
-        docker_bin = "/host/usr/bin/docker"
-    if not os.path.exists(docker_bin):
-        raise RuntimeError("Docker binary not found. Ensure Docker is installed on the host.")
-
     with open(log_path, "w", encoding="utf-8") as log_handle:
         log_handle.write("--- OTA update started ---\n")
     with open(status_path, "w", encoding="utf-8") as status_handle:
         status_handle.write("running")
 
-    try:
-        with open(log_path, "a", encoding="utf-8") as log_handle:
-            pid_path = os.path.join(repo_path, ".ota.pid")
-            status_file = shlex.quote(status_path)
-            version_file = shlex.quote(os.path.join(host_repo_root, ".threej_version"))
-            repo_root = shlex.quote(host_repo_root)
-            compose_file = shlex.quote(os.path.join(host_repo_root, "docker-compose.yml"))
-            docker_path = shlex.quote(docker_bin)
-            inner_command = (
-                f"status_file={status_file}; "
-                f"pid_file={shlex.quote(pid_path)}; "
-                "trap 'echo failed > \"$status_file\"; rm -f \"$pid_file\"' EXIT; "
-                "fail() { echo failed > \"$status_file\"; exit 1; }; "
-                f"git config --global --add safe.directory {repo_root} || fail; "
-                f"git -C {repo_root} pull --rebase || fail; "
-                f"THREEJ_VERSION=$(git -C {repo_root} rev-parse --short HEAD) || fail; "
-                f"THREEJ_VERSION_DATE=$(git -C {repo_root} log -1 --format=%cs) || fail; "
-                f"printf \"%s %s\" \"$THREEJ_VERSION\" \"$THREEJ_VERSION_DATE\" > {version_file} || fail; "
-                f"{docker_path} compose -f {compose_file} --project-directory {repo_root} "
-                "up -d --build || fail; "
-                "echo done > \"$status_file\"; rm -f \"$pid_file\"; trap - EXIT"
-            )
-            process = subprocess.Popen(
-                ["/bin/sh", "-c", inner_command],
-                stdout=log_handle,
-                stderr=log_handle,
-                start_new_session=True,
-            )
-            try:
-                with open(pid_path, "w", encoding="utf-8") as pid_handle:
-                    pid_handle.write(str(process.pid))
-            except OSError:
-                pass
-    except Exception as exc:
+    inner_command = (
+        f"cd {shlex.quote(host_repo)} && "
+        "if [ ! -d .git ]; then "
+        "echo 'OTA failed: repo missing .git'; echo failed > .ota.status; exit 1; fi; "
+        f"git config --global --add safe.directory {shlex.quote(host_repo)} || "
+        "{ echo failed > .ota.status; exit 1; }; "
+        "git pull --rebase || { echo failed > .ota.status; exit 1; }; "
+        "THREEJ_VERSION=$(git rev-parse --short HEAD) || { echo failed > .ota.status; exit 1; }; "
+        "THREEJ_VERSION_DATE=$(git log -1 --format=%cs) || { echo failed > .ota.status; exit 1; }; "
+        "printf \"%s %s\" \"$THREEJ_VERSION\" \"$THREEJ_VERSION_DATE\" > .threej_version || "
+        "{ echo failed > .ota.status; exit 1; }; "
+        "docker compose -f docker-compose.yml up -d --build; "
+        "code=$?; if [ $code -eq 0 ]; then echo done > .ota.status; "
+        "else echo failed > .ota.status; fi; exit $code"
+    )
+    helper_command = (
+        "docker rm -f threejnotif-ota >/dev/null 2>&1 || true; "
+        "docker run --rm -d --name threejnotif-ota --privileged "
+        "-v /:/host ubuntu bash -c "
+        f"\"chroot /host /bin/bash -c {shlex.quote(inner_command)} "
+        f">> {shlex.quote(host_repo_root)}/.ota.log 2>&1\""
+    )
+    result = subprocess.run(
+        ["/bin/sh", "-c", helper_command],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
         with open(log_path, "a", encoding="utf-8") as log_handle:
             log_handle.write("\n--- OTA update failed to start ---\n")
-            log_handle.write(f"{exc}\n")
+            log_handle.write((result.stderr or result.stdout or "").strip() + "\n")
         with open(status_path, "w", encoding="utf-8") as status_handle:
             status_handle.write("failed")
 
@@ -584,19 +574,20 @@ async def system_update_start():
 async def update_status():
     paths = get_ota_paths()
     status = read_ota_status(paths["status_path"])
-    if status == "running" and os.path.exists(paths["pid_path"]):
+    if status == "running":
         try:
-            with open(paths["pid_path"], "r", encoding="utf-8") as handle:
-                pid_value = int((handle.read() or "").strip())
-            if not os.path.exists(f"/proc/{pid_value}"):
+            result = subprocess.run(
+                ["docker", "ps", "-q", "-f", "name=threejnotif-ota"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+            )
+            if not (result.stdout or "").strip():
                 with open(paths["status_path"], "w", encoding="utf-8") as status_handle:
                     status_handle.write("failed")
-                try:
-                    os.remove(paths["pid_path"])
-                except OSError:
-                    pass
                 status = "failed"
-        except (OSError, ValueError):
+        except Exception:
             status = "failed"
     return {"status": status}
 
