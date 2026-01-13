@@ -1,6 +1,9 @@
 from pathlib import Path
 
 import json
+import os
+import shlex
+import subprocess
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -42,6 +45,51 @@ def make_context(request, extra=None):
     if extra:
         ctx.update(extra)
     return ctx
+
+
+def trigger_ota_update():
+    repo_path = os.environ.get("THREEJ_OTA_REPO", "/repo")
+    if not os.path.isdir(os.path.join(repo_path, ".git")):
+        raise RuntimeError("OTA repository not mounted. Ensure /repo is a git checkout.")
+    command = os.environ.get(
+        "THREEJ_OTA_COMMAND",
+        "git pull --rebase && docker compose up -d --build",
+    )
+    shell_command = f"cd {shlex.quote(repo_path)} && {command}"
+    subprocess.Popen(
+        ["/bin/sh", "-c", shell_command],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def get_repo_version():
+    repo_path = os.environ.get("THREEJ_OTA_REPO", "/repo")
+    if not os.path.isdir(os.path.join(repo_path, ".git")):
+        return {"version": "unknown", "date": "unknown"}
+    try:
+        version_proc = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=repo_path,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+        date_proc = subprocess.run(
+            ["git", "log", "-1", "--format=%cs"],
+            cwd=repo_path,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+        version = (version_proc.stdout or "").strip() or "unknown"
+        date_value = (date_proc.stdout or "").strip() or "unknown"
+        return {"version": version, "date": date_value}
+    except Exception:
+        return {"version": "unknown", "date": "unknown"}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -360,3 +408,27 @@ async def isp_settings_run(request: Request):
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_root():
     return RedirectResponse(url="/settings/optical", status_code=302)
+
+
+@app.get("/settings/update", response_class=HTMLResponse)
+async def update_settings(request: Request):
+    repo_version = get_repo_version()
+    return templates.TemplateResponse(
+        "settings_update.html",
+        make_context(request, {"message": "", "repo_version": repo_version}),
+    )
+
+
+@app.post("/settings/update", response_class=HTMLResponse)
+async def update_settings_run(request: Request):
+    message = ""
+    try:
+        trigger_ota_update()
+        message = "Update triggered. The service may restart in a moment."
+    except Exception as exc:
+        message = f"Update failed: {exc}"
+    repo_version = get_repo_version()
+    return templates.TemplateResponse(
+        "settings_update.html",
+        make_context(request, {"message": message, "repo_version": repo_version}),
+    )
