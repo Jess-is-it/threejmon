@@ -1,6 +1,9 @@
 from pathlib import Path
 
 import json
+import os
+import shlex
+import subprocess
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -42,6 +45,23 @@ def make_context(request, extra=None):
     if extra:
         ctx.update(extra)
     return ctx
+
+
+def trigger_ota_update():
+    repo_path = os.environ.get("THREEJ_OTA_REPO", "/repo")
+    if not os.path.isdir(os.path.join(repo_path, ".git")):
+        raise RuntimeError("OTA repository not mounted. Ensure /repo is a git checkout.")
+    command = os.environ.get(
+        "THREEJ_OTA_COMMAND",
+        "git pull --rebase && docker compose up -d --build",
+    )
+    shell_command = f"cd {shlex.quote(repo_path)} && {command}"
+    subprocess.Popen(
+        ["/bin/sh", "-c", shell_command],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -360,3 +380,25 @@ async def isp_settings_run(request: Request):
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_root():
     return RedirectResponse(url="/settings/optical", status_code=302)
+
+
+@app.get("/settings/update", response_class=HTMLResponse)
+async def update_settings(request: Request):
+    return templates.TemplateResponse(
+        "settings_update.html",
+        make_context(request, {"message": ""}),
+    )
+
+
+@app.post("/settings/update", response_class=HTMLResponse)
+async def update_settings_run(request: Request):
+    message = ""
+    try:
+        trigger_ota_update()
+        message = "Update triggered. The service may restart in a moment."
+    except Exception as exc:
+        message = f"Update failed: {exc}"
+    return templates.TemplateResponse(
+        "settings_update.html",
+        make_context(request, {"message": message}),
+    )
