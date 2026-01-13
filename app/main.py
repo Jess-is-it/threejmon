@@ -62,30 +62,23 @@ def trigger_ota_update(log_path, status_path):
     with open(status_path, "w", encoding="utf-8") as status_handle:
         status_handle.write("running")
 
-    script_path = os.path.join(host_repo, "scripts", "ota_host.sh")
-    script_content = (
-        "#!/usr/bin/env bash\n"
-        "set -euo pipefail\n"
-        "trap 'echo failed > .ota.status' ERR\n"
-        f"cd {host_repo}\n"
-        f"git config --global --add safe.directory {host_repo}\n"
-        "git pull --rebase\n"
-        "THREEJ_VERSION=$(git rev-parse --short HEAD)\n"
-        "THREEJ_VERSION_DATE=$(git log -1 --format=%cs)\n"
-        "printf \"%s %s\" \"$THREEJ_VERSION\" \"$THREEJ_VERSION_DATE\" > .threej_version\n"
-        "/usr/bin/docker compose -f docker-compose.yml up -d --build\n"
-        "echo done > .ota.status\n"
-    )
-    with open(os.path.join(repo_path, "scripts", "ota_host.sh"), "w", encoding="utf-8") as handle:
-        handle.write(script_content)
-    os.chmod(os.path.join(repo_path, "scripts", "ota_host.sh"), 0o755)
-
+    host_repo_root = os.path.join("/host", host_repo.lstrip("/"))
+    host_git = "/host/usr/bin/git"
+    host_docker = "/host/usr/bin/docker"
     command = (
-        f"chroot /host /bin/bash -c "
-        f"\"nohup {shlex.quote(script_path)} > {shlex.quote(host_repo)}/.ota.log 2>&1 &\""
+        f"test -x {shlex.quote(host_git)} && test -x {shlex.quote(host_docker)} || "
+        f"(echo \"host git/docker not found\"; exit 1); "
+        f"{shlex.quote(host_git)} -C {shlex.quote(host_repo_root)} config --global --add safe.directory {shlex.quote(host_repo_root)}; "
+        f"{shlex.quote(host_git)} -C {shlex.quote(host_repo_root)} pull --rebase; "
+        f"THREEJ_VERSION=$({shlex.quote(host_git)} -C {shlex.quote(host_repo_root)} rev-parse --short HEAD); "
+        f"THREEJ_VERSION_DATE=$({shlex.quote(host_git)} -C {shlex.quote(host_repo_root)} log -1 --format=%cs); "
+        f"printf \"%s %s\" \"$THREEJ_VERSION\" \"$THREEJ_VERSION_DATE\" > {shlex.quote(host_repo_root)}/.threej_version; "
+        f"{shlex.quote(host_docker)} compose -f {shlex.quote(host_repo_root)}/docker-compose.yml up -d --build; "
+        f"echo done > {shlex.quote(host_repo_root)}/.ota.status"
     )
+    helper_command = f"{command} >> {shlex.quote(host_repo_root)}/.ota.log 2>&1"
     result = subprocess.run(
-        ["/bin/sh", "-c", command],
+        ["/bin/sh", "-c", helper_command],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
