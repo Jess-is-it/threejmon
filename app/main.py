@@ -47,7 +47,7 @@ def make_context(request, extra=None):
     return ctx
 
 
-def trigger_ota_update(log_path):
+def trigger_ota_update(log_path, status_path):
     repo_path = os.environ.get("THREEJ_OTA_REPO", "/repo")
     if not os.path.isdir(os.path.join(repo_path, ".git")):
         raise RuntimeError("OTA repository not mounted. Ensure /repo is a git checkout.")
@@ -59,10 +59,18 @@ def trigger_ota_update(log_path):
         "printf \"%s %s\" \"$THREEJ_VERSION\" \"$THREEJ_VERSION_DATE\" > .threej_version && "
         "docker compose up -d --build",
     )
-    shell_command = f"cd {shlex.quote(repo_path)} && {command}"
+    shell_command = (
+        f"cd {shlex.quote(repo_path)} && "
+        f"({command}); code=$?; "
+        f"if [ $code -eq 0 ]; then echo done > {shlex.quote(status_path)}; "
+        f"else echo failed > {shlex.quote(status_path)}; fi; "
+        f"exit $code"
+    )
     log_handle = open(log_path, "a", encoding="utf-8")
     log_handle.write(f"\n--- OTA update started ---\n")
     log_handle.flush()
+    with open(status_path, "w", encoding="utf-8") as status_handle:
+        status_handle.write("running")
     subprocess.Popen(
         ["/bin/sh", "-c", shell_command],
         stdout=log_handle,
@@ -118,6 +126,26 @@ def get_repo_version():
         env_version = os.environ.get("THREEJ_VERSION", "unknown")
         env_date = os.environ.get("THREEJ_VERSION_DATE", "unknown")
         return {"version": env_version or "unknown", "date": env_date or "unknown"}
+
+
+def get_ota_paths():
+    repo_path = os.environ.get("THREEJ_OTA_REPO", "/repo")
+    return {
+        "repo_path": repo_path,
+        "log_path": os.path.join(repo_path, ".ota.log"),
+        "status_path": os.path.join(repo_path, ".ota.status"),
+    }
+
+
+def read_ota_status(status_path):
+    if not os.path.exists(status_path):
+        return "idle"
+    try:
+        with open(status_path, "r", encoding="utf-8") as handle:
+            status = (handle.read() or "").strip()
+        return status or "idle"
+    except OSError:
+        return "idle"
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -440,41 +468,67 @@ async def settings_root():
 
 @app.get("/settings/update", response_class=HTMLResponse)
 async def update_settings(request: Request):
-    repo_path = os.environ.get("THREEJ_OTA_REPO", "/repo")
-    log_path = os.path.join(repo_path, ".ota.log")
+    paths = get_ota_paths()
     repo_version = get_repo_version()
     log_text = ""
-    if os.path.exists(log_path):
+    if os.path.exists(paths["log_path"]):
         try:
-            with open(log_path, "r", encoding="utf-8") as handle:
+            with open(paths["log_path"], "r", encoding="utf-8") as handle:
                 log_text = handle.read()
         except OSError:
             log_text = ""
+    status = read_ota_status(paths["status_path"])
     return templates.TemplateResponse(
         "settings_update.html",
-        make_context(request, {"message": "", "repo_version": repo_version, "log_text": log_text}),
+        make_context(
+            request,
+            {"message": "", "repo_version": repo_version, "log_text": log_text, "ota_status": status},
+        ),
     )
 
 
 @app.post("/settings/update", response_class=HTMLResponse)
 async def update_settings_run(request: Request):
-    repo_path = os.environ.get("THREEJ_OTA_REPO", "/repo")
-    log_path = os.path.join(repo_path, ".ota.log")
+    paths = get_ota_paths()
     message = ""
     try:
-        trigger_ota_update(log_path)
+        trigger_ota_update(paths["log_path"], paths["status_path"])
         message = "Update triggered. The service may restart in a moment."
     except Exception as exc:
         message = f"Update failed: {exc}"
     repo_version = get_repo_version()
     log_text = ""
-    if os.path.exists(log_path):
+    if os.path.exists(paths["log_path"]):
         try:
-            with open(log_path, "r", encoding="utf-8") as handle:
+            with open(paths["log_path"], "r", encoding="utf-8") as handle:
                 log_text = handle.read()
         except OSError:
             log_text = ""
+    status = read_ota_status(paths["status_path"])
     return templates.TemplateResponse(
         "settings_update.html",
-        make_context(request, {"message": message, "repo_version": repo_version, "log_text": log_text}),
+        make_context(
+            request,
+            {"message": message, "repo_version": repo_version, "log_text": log_text, "ota_status": status},
+        ),
     )
+
+
+@app.get("/settings/update/status")
+async def update_status():
+    paths = get_ota_paths()
+    status = read_ota_status(paths["status_path"])
+    return {"status": status}
+
+
+@app.get("/settings/update/log")
+async def update_log():
+    paths = get_ota_paths()
+    log_text = ""
+    if os.path.exists(paths["log_path"]):
+        try:
+            with open(paths["log_path"], "r", encoding="utf-8") as handle:
+                log_text = handle.read()
+        except OSError:
+            log_text = ""
+    return Response(content=log_text, media_type="text/plain")

@@ -4,17 +4,73 @@
   <h2>OTA Update</h2>
   <div class="status">
     <div>Current version: {{ repo_version.version }} ({{ repo_version.date }})</div>
+    <div id="ota-status-line">Status: {{ ota_status }}</div>
   </div>
   {% if message %}
     <div class="alert">{{ message }}</div>
   {% endif %}
   <p class="help">This will pull the latest code and rebuild the container. Your settings stay in the database.</p>
   <form method="post" action="/settings/update" style="margin-top: 12px;">
-    <button type="submit" class="button-blue">Run OTA Update</button>
+    <button type="submit" class="button-blue" id="ota-button">Run OTA Update</button>
   </form>
+  <div id="ota-progress" style="margin-top: 12px; display: none;">
+    <div style="height: 8px; background: #d7dde0; border-radius: 999px; overflow: hidden;">
+      <div id="ota-bar" style="height: 8px; width: 100%; background: #2f6fd6; animation: otaPulse 1.2s infinite;"></div>
+    </div>
+    <div class="help" style="margin-top: 6px;">Updating... this may take a few minutes.</div>
+  </div>
   <div style="margin-top: 16px;">
     <label>OTA Output</label>
-    <textarea readonly style="min-height: 180px;">{{ log_text }}</textarea>
+    <textarea readonly id="ota-log" style="min-height: 180px;">{{ log_text }}</textarea>
   </div>
 </div>
+<style>
+  @keyframes otaPulse {
+    0% { opacity: 0.3; }
+    50% { opacity: 1; }
+    100% { opacity: 0.3; }
+  }
+</style>
+<script>
+  const statusLine = document.getElementById("ota-status-line");
+  const logBox = document.getElementById("ota-log");
+  const progress = document.getElementById("ota-progress");
+  const button = document.getElementById("ota-button");
+  let lastStatus = "{{ ota_status }}";
+
+  function updateUi(status) {
+    statusLine.textContent = `Status: ${status}`;
+    const running = status === "running";
+    progress.style.display = running ? "block" : "none";
+    button.disabled = running;
+    button.style.opacity = running ? "0.7" : "1";
+  }
+
+  async function pollOta() {
+    try {
+      const statusResp = await fetch("/settings/update/status");
+      const statusData = await statusResp.json();
+      const status = statusData.status || "idle";
+      updateUi(status);
+
+      const logResp = await fetch("/settings/update/log");
+      if (logResp.ok) {
+        logBox.value = await logResp.text();
+        logBox.scrollTop = logBox.scrollHeight;
+      }
+
+      if (lastStatus === "running" && status !== "running") {
+        window.location.reload();
+        return;
+      }
+      lastStatus = status;
+    } catch (err) {
+      // ignore transient errors during restart
+    }
+    setTimeout(pollOta, 3000);
+  }
+
+  updateUi(lastStatus);
+  pollOta();
+</script>
 {% endblock %}
