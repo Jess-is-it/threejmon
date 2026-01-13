@@ -121,7 +121,12 @@ main() {
   check_port
   clone_repo
   run_compose
-  log "ThreeJ Notifier Suite is starting on port ${PORT}."
+  host_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+  if [ -n "$host_ip" ]; then
+    log "ThreeJ Notifier Suite is starting on http://${host_ip}:${PORT}"
+  else
+    log "ThreeJ Notifier Suite is starting on port ${PORT}."
+  fi
 }
 
 main "$@"
