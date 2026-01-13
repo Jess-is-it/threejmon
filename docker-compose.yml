@@ -11,7 +11,5 @@ services:
       - "${THREEJ_PORT:-8000}:8000"
     volumes:
       - ./data:/data
-      - ./:/repo
-      - /:/host
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped

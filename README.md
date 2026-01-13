@@ -43,13 +43,3 @@ curl -fsSL https://raw.githubusercontent.com/Jess-is-it/threejmon/master/scripts
 ## Notes
 - Settings and runtime state are stored in `./data/threejnotif.db` on the host.
 - Ensure the server can reach GenieACS, the SSH host, and Telegram.
-
-## OTA update (simple)
-
-The Update page will work only if the container has access to the repo and Docker socket.
-This is enabled by default in `docker-compose.yml` using:
-
-- `./:/repo`
-- `/var/run/docker.sock:/var/run/docker.sock`
-
-Click Update in the web UI to pull latest `master` and rebuild. Settings remain in `data/`.

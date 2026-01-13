@@ -113,8 +113,6 @@ run_compose() {
   export THREEJ_VERSION
   export THREEJ_VERSION_DATE
   printf "%s %s" "$THREEJ_VERSION" "$THREEJ_VERSION_DATE" > "${INSTALL_DIR}/.threej_version"
-  printf "idle" > "${INSTALL_DIR}/.ota.status"
-  : > "${INSTALL_DIR}/.ota.log"
   export BUILDX_NO_DEFAULT_ATTESTATIONS=1
   docker compose up -d --build
 }
