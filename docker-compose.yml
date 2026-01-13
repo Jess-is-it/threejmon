@@ -5,10 +5,13 @@ services:
       args:
         THREEJ_VERSION: ${THREEJ_VERSION:-unknown}
         THREEJ_VERSION_DATE: ${THREEJ_VERSION_DATE:-unknown}
+    environment:
+      THREEJ_HOST_REPO: ${THREEJ_HOST_REPO:-/opt/threejnotif}
     ports:
       - "${THREEJ_PORT:-8000}:8000"
     volumes:
       - ./data:/data
       - ./:/repo
+      - /:/host
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
