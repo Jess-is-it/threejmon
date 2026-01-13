@@ -90,13 +90,14 @@ def trigger_ota_update(log_path, status_path):
     if not os.path.exists(docker_bin):
         raise RuntimeError("Docker binary not found. Ensure Docker is installed on the host.")
 
-    with open(log_path, "a", encoding="utf-8") as log_handle:
-        log_handle.write("\n--- OTA update started ---\n")
+    with open(log_path, "w", encoding="utf-8") as log_handle:
+        log_handle.write("--- OTA update started ---\n")
     with open(status_path, "w", encoding="utf-8") as status_handle:
         status_handle.write("running")
 
     try:
         with open(log_path, "a", encoding="utf-8") as log_handle:
+            pid_path = os.path.join(repo_path, ".ota.pid")
             status_file = shlex.quote(status_path)
             version_file = shlex.quote(os.path.join(host_repo_root, ".threej_version"))
             repo_root = shlex.quote(host_repo_root)
@@ -104,6 +105,8 @@ def trigger_ota_update(log_path, status_path):
             docker_path = shlex.quote(docker_bin)
             inner_command = (
                 f"status_file={status_file}; "
+                f"pid_file={shlex.quote(pid_path)}; "
+                "trap 'echo failed > \"$status_file\"; rm -f \"$pid_file\"' EXIT; "
                 "fail() { echo failed > \"$status_file\"; exit 1; }; "
                 f"git config --global --add safe.directory {repo_root} || fail; "
                 f"git -C {repo_root} pull --rebase || fail; "
@@ -112,14 +115,19 @@ def trigger_ota_update(log_path, status_path):
                 f"printf \"%s %s\" \"$THREEJ_VERSION\" \"$THREEJ_VERSION_DATE\" > {version_file} || fail; "
                 f"{docker_path} compose -f {compose_file} --project-directory {repo_root} "
                 "up -d --build || fail; "
-                "echo done > \"$status_file\""
+                "echo done > \"$status_file\"; rm -f \"$pid_file\"; trap - EXIT"
             )
-            subprocess.Popen(
+            process = subprocess.Popen(
                 ["/bin/sh", "-c", inner_command],
                 stdout=log_handle,
                 stderr=log_handle,
                 start_new_session=True,
             )
+            try:
+                with open(pid_path, "w", encoding="utf-8") as pid_handle:
+                    pid_handle.write(str(process.pid))
+            except OSError:
+                pass
     except Exception as exc:
         with open(log_path, "a", encoding="utf-8") as log_handle:
             log_handle.write("\n--- OTA update failed to start ---\n")
@@ -183,6 +191,7 @@ def get_ota_paths():
         "repo_path": repo_path,
         "log_path": os.path.join(repo_path, ".ota.log"),
         "status_path": os.path.join(repo_path, ".ota.status"),
+        "pid_path": os.path.join(repo_path, ".ota.pid"),
     }
 
 
@@ -575,6 +584,20 @@ async def system_update_start():
 async def update_status():
     paths = get_ota_paths()
     status = read_ota_status(paths["status_path"])
+    if status == "running" and os.path.exists(paths["pid_path"]):
+        try:
+            with open(paths["pid_path"], "r", encoding="utf-8") as handle:
+                pid_value = int((handle.read() or "").strip())
+            if not os.path.exists(f"/proc/{pid_value}"):
+                with open(paths["status_path"], "w", encoding="utf-8") as status_handle:
+                    status_handle.write("failed")
+                try:
+                    os.remove(paths["pid_path"])
+                except OSError:
+                    pass
+                status = "failed"
+        except (OSError, ValueError):
+            status = "failed"
     return {"status": status}
 
 
