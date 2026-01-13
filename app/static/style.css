@@ -204,6 +204,16 @@ button:hover {
   box-shadow: 0 6px 12px rgba(0, 0, 0, 0.2);
 }
 
+.button-green {
+  background: #1e7d53;
+  color: #f7f4ef;
+}
+
+.button-blue {
+  background: #2f6fd6;
+  color: #f7f4ef;
+}
+
 .alert {
   padding: 10px 14px;
   background: rgba(94, 164, 165, 0.2);

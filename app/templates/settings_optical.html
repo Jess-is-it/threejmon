@@ -104,11 +104,14 @@
     </div>
 
     <div style="margin-top: 16px;">
-      <button type="submit">Save Optical Settings</button>
+      <button type="submit" class="button-green">Save Optical Settings</button>
     </div>
   </form>
   <form method="post" action="/settings/optical/test" style="margin-top: 12px;">
     <button type="submit">Send Test Telegram</button>
+  </form>
+  <form method="post" action="/settings/optical/run" style="margin-top: 12px;">
+    <button type="submit" class="button-blue">Send Actual Test</button>
   </form>
 </div>
 {% endblock %}

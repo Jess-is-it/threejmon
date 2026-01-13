@@ -97,6 +97,8 @@ ISP_PING_DEFAULTS = {
         "ping_count": 5,
         "max_parallel_pings": 8,
         "daemon_interval_seconds": 15,
+        "include_up_icmp": False,
+        "up_icmp_lines": 5,
     },
     "report": {
         "daily_time": "07:00",
