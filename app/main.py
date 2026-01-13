@@ -97,19 +97,22 @@ def trigger_ota_update(log_path, status_path):
 
     try:
         with open(log_path, "a", encoding="utf-8") as log_handle:
+            status_file = shlex.quote(status_path)
+            version_file = shlex.quote(os.path.join(host_repo_root, ".threej_version"))
+            repo_root = shlex.quote(host_repo_root)
+            compose_file = shlex.quote(os.path.join(host_repo_root, "docker-compose.yml"))
+            docker_path = shlex.quote(docker_bin)
             inner_command = (
-                f"git config --global --add safe.directory {shlex.quote(host_repo_root)} && "
-                f"git -C {shlex.quote(host_repo_root)} pull --rebase && "
-                f"THREEJ_VERSION=$(git -C {shlex.quote(host_repo_root)} rev-parse --short HEAD) && "
-                f"THREEJ_VERSION_DATE=$(git -C {shlex.quote(host_repo_root)} log -1 --format=%cs) && "
-                f"printf \"%s %s\" \"$THREEJ_VERSION\" \"$THREEJ_VERSION_DATE\" "
-                f"> {shlex.quote(os.path.join(host_repo_root, '.threej_version'))} && "
-                f"{shlex.quote(docker_bin)} compose "
-                f"-f {shlex.quote(os.path.join(host_repo_root, 'docker-compose.yml'))} "
-                f"--project-directory {shlex.quote(host_repo_root)} "
-                "up -d --build; "
-                f"code=$?; if [ $code -eq 0 ]; then echo done > {shlex.quote(status_path)}; "
-                f"else echo failed > {shlex.quote(status_path)}; fi; exit $code"
+                f"status_file={status_file}; "
+                "fail() { echo failed > \"$status_file\"; exit 1; }; "
+                f"git config --global --add safe.directory {repo_root} || fail; "
+                f"git -C {repo_root} pull --rebase || fail; "
+                f"THREEJ_VERSION=$(git -C {repo_root} rev-parse --short HEAD) || fail; "
+                f"THREEJ_VERSION_DATE=$(git -C {repo_root} log -1 --format=%cs) || fail; "
+                f"printf \"%s %s\" \"$THREEJ_VERSION\" \"$THREEJ_VERSION_DATE\" > {version_file} || fail; "
+                f"{docker_path} compose -f {compose_file} --project-directory {repo_root} "
+                "up -d --build || fail; "
+                "echo done > \"$status_file\""
             )
             subprocess.Popen(
                 ["/bin/sh", "-c", inner_command],
