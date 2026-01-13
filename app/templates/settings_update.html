@@ -12,5 +12,9 @@
   <form method="post" action="/settings/update" style="margin-top: 12px;">
     <button type="submit" class="button-blue">Run OTA Update</button>
   </form>
+  <div style="margin-top: 16px;">
+    <label>OTA Output</label>
+    <textarea readonly style="min-height: 180px;">{{ log_text }}</textarea>
+  </div>
 </div>
 {% endblock %}

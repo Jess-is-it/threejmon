@@ -47,7 +47,7 @@ def make_context(request, extra=None):
     return ctx
 
 
-def trigger_ota_update():
+def trigger_ota_update(log_path):
     repo_path = os.environ.get("THREEJ_OTA_REPO", "/repo")
     if not os.path.isdir(os.path.join(repo_path, ".git")):
         raise RuntimeError("OTA repository not mounted. Ensure /repo is a git checkout.")
@@ -60,10 +60,13 @@ def trigger_ota_update():
         "docker compose up -d --build",
     )
     shell_command = f"cd {shlex.quote(repo_path)} && {command}"
+    log_handle = open(log_path, "a", encoding="utf-8")
+    log_handle.write(f"\n--- OTA update started ---\n")
+    log_handle.flush()
     subprocess.Popen(
         ["/bin/sh", "-c", shell_command],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=log_handle,
+        stderr=log_handle,
         start_new_session=True,
     )
 
@@ -437,23 +440,41 @@ async def settings_root():
 
 @app.get("/settings/update", response_class=HTMLResponse)
 async def update_settings(request: Request):
+    repo_path = os.environ.get("THREEJ_OTA_REPO", "/repo")
+    log_path = os.path.join(repo_path, ".ota.log")
     repo_version = get_repo_version()
+    log_text = ""
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, "r", encoding="utf-8") as handle:
+                log_text = handle.read()
+        except OSError:
+            log_text = ""
     return templates.TemplateResponse(
         "settings_update.html",
-        make_context(request, {"message": "", "repo_version": repo_version}),
+        make_context(request, {"message": "", "repo_version": repo_version, "log_text": log_text}),
     )
 
 
 @app.post("/settings/update", response_class=HTMLResponse)
 async def update_settings_run(request: Request):
+    repo_path = os.environ.get("THREEJ_OTA_REPO", "/repo")
+    log_path = os.path.join(repo_path, ".ota.log")
     message = ""
     try:
-        trigger_ota_update()
+        trigger_ota_update(log_path)
         message = "Update triggered. The service may restart in a moment."
     except Exception as exc:
         message = f"Update failed: {exc}"
     repo_version = get_repo_version()
+    log_text = ""
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, "r", encoding="utf-8") as handle:
+                log_text = handle.read()
+        except OSError:
+            log_text = ""
     return templates.TemplateResponse(
         "settings_update.html",
-        make_context(request, {"message": message, "repo_version": repo_version}),
+        make_context(request, {"message": message, "repo_version": repo_version, "log_text": log_text}),
     )
