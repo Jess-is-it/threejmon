@@ -64,6 +64,34 @@ def trigger_ota_update():
     )
 
 
+def get_repo_version():
+    repo_path = os.environ.get("THREEJ_OTA_REPO", "/repo")
+    if not os.path.isdir(os.path.join(repo_path, ".git")):
+        return {"version": "unknown", "date": "unknown"}
+    try:
+        version_proc = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=repo_path,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+        date_proc = subprocess.run(
+            ["git", "log", "-1", "--format=%cs"],
+            cwd=repo_path,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+        version = (version_proc.stdout or "").strip() or "unknown"
+        date_value = (date_proc.stdout or "").strip() or "unknown"
+        return {"version": version, "date": date_value}
+    except Exception:
+        return {"version": "unknown", "date": "unknown"}
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     job_status = {item["job_name"]: item for item in get_job_status()}
@@ -384,9 +412,10 @@ async def settings_root():
 
 @app.get("/settings/update", response_class=HTMLResponse)
 async def update_settings(request: Request):
+    repo_version = get_repo_version()
     return templates.TemplateResponse(
         "settings_update.html",
-        make_context(request, {"message": ""}),
+        make_context(request, {"message": "", "repo_version": repo_version}),
     )
 
 
@@ -398,7 +427,8 @@ async def update_settings_run(request: Request):
         message = "Update triggered. The service may restart in a moment."
     except Exception as exc:
         message = f"Update failed: {exc}"
+    repo_version = get_repo_version()
     return templates.TemplateResponse(
         "settings_update.html",
-        make_context(request, {"message": message}),
+        make_context(request, {"message": message, "repo_version": repo_version}),
     )

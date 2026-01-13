@@ -2,6 +2,9 @@
 {% block content %}
 <div class="card">
   <h2>OTA Update</h2>
+  <div class="status">
+    <div>Current version: {{ repo_version.version }} ({{ repo_version.date }})</div>
+  </div>
   {% if message %}
     <div class="alert">{{ message }}</div>
   {% endif %}
