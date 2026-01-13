@@ -10,10 +10,10 @@
     <div class="alert">{{ message }}</div>
   {% endif %}
 
-  <h3>OTA Update</h3>
+  <h3>System Update</h3>
   <p class="help">This will pull the latest code and rebuild the container. Your settings stay in the database.</p>
-  <form method="post" action="/settings/system/update" style="margin-top: 12px;">
-    <button type="submit" class="button-blue" id="ota-button">Run OTA Update</button>
+  <form method="post" action="/settings/system/update" style="margin-top: 12px;" id="ota-form">
+    <button type="submit" class="button-blue" id="ota-button">Update System</button>
   </form>
   <div id="ota-progress" style="margin-top: 12px; display: none;">
     <div style="height: 8px; background: #d7dde0; border-radius: 999px; overflow: hidden;">
@@ -87,5 +87,20 @@
 
   updateUi(lastStatus);
   pollOta();
+
+  const otaForm = document.getElementById("ota-form");
+  otaForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    updateUi("running");
+    try {
+      const resp = await fetch("/settings/system/update/start", { method: "POST" });
+      const data = await resp.json();
+      if (data.status === "failed") {
+        statusLine.textContent = `Status: failed (${data.error || "error"})`;
+      }
+    } catch (err) {
+      statusLine.textContent = "Status: failed (network error)";
+    }
+  });
 </script>
 {% endblock %}
