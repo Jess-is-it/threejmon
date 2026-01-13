@@ -80,12 +80,19 @@ def trigger_ota_update(log_path, status_path):
         f"code=$?; if [ $code -eq 0 ]; then echo done > {shlex.quote(host_repo)}/.ota.status; "
         f"else echo failed > {shlex.quote(host_repo)}/.ota.status; fi; exit $code'\""
     )
-    subprocess.Popen(
+    result = subprocess.run(
         ["/bin/sh", "-c", helper_command],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
     )
+    if result.returncode != 0:
+        with open(log_path, "a", encoding="utf-8") as log_handle:
+            log_handle.write("\n--- OTA update failed to start ---\n")
+            log_handle.write((result.stderr or result.stdout or "").strip() + "\n")
+        with open(status_path, "w", encoding="utf-8") as status_handle:
+            status_handle.write("failed")
 
 
 def get_repo_version():
