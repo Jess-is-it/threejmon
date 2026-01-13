@@ -41,6 +41,15 @@
         <label>Interval (seconds) <span class="info" data-tip="Delay between repeated checks in daemon mode.">i</span></label>
         <input type="number" name="daemon_interval_seconds" value="{{ settings.general.daemon_interval_seconds }}" />
       </div>
+      <div>
+        <label>Include ICMP ping when ISP is UP <span class="info" data-tip="Include ICMP reply lines when a link goes UP.">i</span></label>
+        <input type="checkbox" name="include_up_icmp" id="include_up_icmp" {% if settings.general.include_up_icmp %}checked{% endif %} />
+      </div>
+      <div>
+        <label>UP ICMP Lines <span class="info" data-tip="Number of ICMP lines to include (max 20). Higher values delay notifications.">i</span></label>
+        <input type="number" name="up_icmp_lines" id="up_icmp_lines" min="1" max="20" value="{{ settings.general.up_icmp_lines }}" />
+        <div class="help">Higher values take longer to send.</div>
+      </div>
     </div>
 
     <h3>Daily Report</h3>
@@ -69,4 +78,15 @@
     <button type="submit">Send Test Telegram</button>
   </form>
 </div>
+<script>
+  const includeUpIcmp = document.getElementById("include_up_icmp");
+  const upIcmpLines = document.getElementById("up_icmp_lines");
+  const toggleUpIcmp = () => {
+    const enabled = includeUpIcmp.checked;
+    upIcmpLines.disabled = !enabled;
+    upIcmpLines.style.opacity = enabled ? "1" : "0.6";
+  };
+  includeUpIcmp.addEventListener("change", toggleUpIcmp);
+  toggleUpIcmp();
+</script>
 {% endblock %}

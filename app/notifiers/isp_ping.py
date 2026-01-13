@@ -138,11 +138,18 @@ def run_check(cfg, state):
             if up and last_status == "down":
                 base_message = target.get("up_message") or f"{target['ip']} is UP"
                 ping_count = int(cfg["general"].get("ping_count", 5))
-                ping_details = "\n".join(icmp_lines)
+                include_up_icmp = bool(cfg["general"].get("include_up_icmp", False))
+                up_icmp_lines = int(cfg["general"].get("up_icmp_lines", ping_count))
+                up_icmp_lines = max(0, min(up_icmp_lines, 20))
+                ping_details = "\n".join(icmp_lines[:up_icmp_lines])
                 send_telegram(
                     cfg["telegram"].get("bot_token", ""),
                     cfg["telegram"].get("chat_id", ""),
-                    f"{base_message} | {stamp}\n({ping_count} pings) {ping_details}",
+                    (
+                        f\"{base_message} | {stamp}\\n({ping_count} pings) {ping_details}\"
+                        if include_up_icmp and up_icmp_lines > 0
+                        else f\"{base_message} | {stamp}\"
+                    ),
                 )
             state.setdefault("last_status", {})[target["ip"]] = "up" if up else "down"
 

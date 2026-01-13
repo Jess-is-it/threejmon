@@ -242,6 +242,11 @@ async def isp_settings(request: Request):
 async def isp_settings_save(request: Request):
     form = await request.form()
     targets = parse_targets(form.get("targets", ""))
+    up_icmp_lines = parse_int(form, "up_icmp_lines", 5)
+    if up_icmp_lines < 0:
+        up_icmp_lines = 0
+    if up_icmp_lines > 20:
+        up_icmp_lines = 20
     settings = {
         "enabled": parse_bool(form, "enabled"),
         "telegram": {
@@ -253,6 +258,8 @@ async def isp_settings_save(request: Request):
             "ping_count": parse_int(form, "ping_count", 5),
             "max_parallel_pings": parse_int(form, "max_parallel_pings", 8),
             "daemon_interval_seconds": parse_int(form, "daemon_interval_seconds", 15),
+            "include_up_icmp": parse_bool(form, "include_up_icmp"),
+            "up_icmp_lines": up_icmp_lines,
         },
         "report": {
             "daily_time": form.get("daily_time", "07:00"),
