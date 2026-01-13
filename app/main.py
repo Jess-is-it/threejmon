@@ -51,6 +51,10 @@ def trigger_ota_update(log_path, status_path):
     repo_path = os.environ.get("THREEJ_OTA_REPO", "/repo")
     if not os.path.isdir(os.path.join(repo_path, ".git")):
         raise RuntimeError("OTA repository not mounted. Ensure /repo is a git checkout.")
+    current_status = read_ota_status(status_path)
+    if current_status == "running":
+        raise RuntimeError("OTA update already running.")
+    host_repo = os.environ.get("THREEJ_HOST_REPO", "/opt/threejnotif")
     command = os.environ.get(
         "THREEJ_OTA_COMMAND",
         "git config --global --add safe.directory /repo && "
@@ -58,7 +62,7 @@ def trigger_ota_update(log_path, status_path):
         "THREEJ_VERSION=$(git rev-parse --short HEAD) "
         "THREEJ_VERSION_DATE=$(git log -1 --format=%cs) "
         "printf \"%s %s\" \"$THREEJ_VERSION\" \"$THREEJ_VERSION_DATE\" > .threej_version && "
-        "docker compose up -d --build",
+        f"chroot /host /usr/bin/docker compose -f {shlex.quote(host_repo)}/docker-compose.yml up -d --build",
     )
     shell_command = (
         f"cd {shlex.quote(repo_path)} && "
