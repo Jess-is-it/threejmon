@@ -112,6 +112,7 @@ run_compose() {
   THREEJ_VERSION_DATE=$(git log -1 --format=%cs 2>/dev/null || echo "unknown")
   export THREEJ_VERSION
   export THREEJ_VERSION_DATE
+  printf "%s %s" "$THREEJ_VERSION" "$THREEJ_VERSION_DATE" > "${INSTALL_DIR}/.threej_version"
   export BUILDX_NO_DEFAULT_ATTESTATIONS=1
   docker compose up -d --build
 }
