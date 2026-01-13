@@ -86,25 +86,37 @@ def trigger_ota_update(log_path, status_path):
         status_handle.write("running")
 
     host_repo_root = os.path.join("/host", host_repo.lstrip("/"))
-    host_git = "/host/usr/bin/git"
-    host_docker = "/host/usr/bin/docker"
-    command = (
-        f"test -x {shlex.quote(host_git)} && test -x {shlex.quote(host_docker)} || "
-        f"(echo \"host git/docker not found\"; exit 1); "
-        f"{shlex.quote(host_git)} -C {shlex.quote(host_repo_root)} config --global --add safe.directory {shlex.quote(host_repo_root)}; "
-        f"{shlex.quote(host_git)} -C {shlex.quote(host_repo_root)} pull --rebase; "
-        f"THREEJ_VERSION=$({shlex.quote(host_git)} -C {shlex.quote(host_repo_root)} rev-parse --short HEAD); "
-        f"THREEJ_VERSION_DATE=$({shlex.quote(host_git)} -C {shlex.quote(host_repo_root)} log -1 --format=%cs); "
-        f"printf \"%s %s\" \"$THREEJ_VERSION\" \"$THREEJ_VERSION_DATE\" > {shlex.quote(host_repo_root)}/.threej_version; "
-        f"{shlex.quote(host_docker)} compose -f {shlex.quote(host_repo_root)}/docker-compose.yml up -d --build"
+    inner_command = (
+        f"cd {shlex.quote(host_repo)} && "
+        f"git config --global --add safe.directory {shlex.quote(host_repo)} && "
+        "git pull --rebase && "
+        "THREEJ_VERSION=$(git rev-parse --short HEAD) && "
+        "THREEJ_VERSION_DATE=$(git log -1 --format=%cs) && "
+        "printf \"%s %s\" \"$THREEJ_VERSION\" \"$THREEJ_VERSION_DATE\" > .threej_version && "
+        "docker compose -f docker-compose.yml up -d --build; "
+        "code=$?; if [ $code -eq 0 ]; then echo done > .ota.status; "
+        "else echo failed > .ota.status; fi; exit $code"
     )
-    helper_command = f"{command} >> {shlex.quote(host_repo_root)}/.ota.log 2>&1"
-    thread = threading.Thread(
-        target=_run_ota_command,
-        args=(helper_command, log_path, status_path),
-        daemon=True,
+    helper_command = (
+        "/usr/bin/docker rm -f threejnotif-ota >/dev/null 2>&1 || true; "
+        "/usr/bin/docker run --rm -d --name threejnotif-ota "
+        "--privileged -v /:/host ubuntu bash -c "
+        f"\"chroot /host /bin/bash -c '{inner_command}' "
+        f">> {shlex.quote(host_repo_root)}/.ota.log 2>&1\""
     )
-    thread.start()
+    result = subprocess.run(
+        ["/bin/sh", "-c", helper_command],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        with open(log_path, "a", encoding="utf-8") as log_handle:
+            log_handle.write("\n--- OTA update failed to start ---\n")
+            log_handle.write((result.stderr or result.stdout or "").strip() + "\n")
+        with open(status_path, "w", encoding="utf-8") as status_handle:
+            status_handle.write("failed")
 
 
 def get_repo_version():
