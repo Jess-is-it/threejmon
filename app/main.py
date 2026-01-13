@@ -80,41 +80,43 @@ def trigger_ota_update(log_path, status_path):
         raise RuntimeError("OTA update already running.")
 
     host_repo = os.environ.get("THREEJ_HOST_REPO", "/opt/threejnotif")
+    host_repo_root = os.path.join("/host", host_repo.lstrip("/"))
+    if not os.path.isdir(os.path.join(host_repo_root, ".git")):
+        raise RuntimeError(f"Host repo not found at {host_repo}. Ensure /host is mounted.")
+
     with open(log_path, "a", encoding="utf-8") as log_handle:
         log_handle.write("\n--- OTA update started ---\n")
     with open(status_path, "w", encoding="utf-8") as status_handle:
         status_handle.write("running")
 
-    host_repo_root = os.path.join("/host", host_repo.lstrip("/"))
     inner_command = (
         f"cd {shlex.quote(host_repo)} && "
+        "if [ ! -d .git ]; then "
+        "echo 'OTA failed: repo missing .git'; echo failed > .ota.status; exit 1; fi; "
         f"git config --global --add safe.directory {shlex.quote(host_repo)} && "
         "git pull --rebase && "
         "THREEJ_VERSION=$(git rev-parse --short HEAD) && "
         "THREEJ_VERSION_DATE=$(git log -1 --format=%cs) && "
         "printf \"%s %s\" \"$THREEJ_VERSION\" \"$THREEJ_VERSION_DATE\" > .threej_version && "
+        "if ! command -v docker >/dev/null 2>&1; then "
+        "echo 'OTA failed: docker not found on host'; echo failed > .ota.status; exit 1; fi; "
         "docker compose -f docker-compose.yml up -d --build; "
         "code=$?; if [ $code -eq 0 ]; then echo done > .ota.status; "
         "else echo failed > .ota.status; fi; exit $code"
     )
-    helper_command = (
-        "/usr/bin/docker rm -f threejnotif-ota >/dev/null 2>&1 || true; "
-        "/usr/bin/docker run --rm -d --name threejnotif-ota "
-        "--privileged -v /:/host ubuntu bash -c "
-        f"\"chroot /host /bin/bash -c '{inner_command}' "
-        f">> {shlex.quote(host_repo_root)}/.ota.log 2>&1\""
-    )
-    result = subprocess.run(
-        ["/bin/sh", "-c", helper_command],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
+    chroot_command = f"chroot /host /bin/bash -c {shlex.quote(inner_command)}"
+    try:
+        with open(log_path, "a", encoding="utf-8") as log_handle:
+            subprocess.Popen(
+                ["/bin/sh", "-c", chroot_command],
+                stdout=log_handle,
+                stderr=log_handle,
+                start_new_session=True,
+            )
+    except Exception as exc:
         with open(log_path, "a", encoding="utf-8") as log_handle:
             log_handle.write("\n--- OTA update failed to start ---\n")
-            log_handle.write((result.stderr or result.stdout or "").strip() + "\n")
+            log_handle.write(f"{exc}\n")
         with open(status_path, "w", encoding="utf-8") as status_handle:
             status_handle.write("failed")
 
