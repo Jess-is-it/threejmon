@@ -84,8 +84,8 @@ def trigger_ota_update(log_path, status_path):
     if not os.path.isdir(os.path.join(host_repo_root, ".git")):
         raise RuntimeError(f"Host repo not found at {host_repo}. Ensure /host is mounted.")
 
-    with open(log_path, "a", encoding="utf-8") as log_handle:
-        log_handle.write("\n--- OTA update started ---\n")
+    with open(log_path, "w", encoding="utf-8") as log_handle:
+        log_handle.write("--- OTA update started ---\n")
     with open(status_path, "w", encoding="utf-8") as status_handle:
         status_handle.write("running")
 
@@ -93,30 +93,35 @@ def trigger_ota_update(log_path, status_path):
         f"cd {shlex.quote(host_repo)} && "
         "if [ ! -d .git ]; then "
         "echo 'OTA failed: repo missing .git'; echo failed > .ota.status; exit 1; fi; "
-        f"git config --global --add safe.directory {shlex.quote(host_repo)} && "
-        "git pull --rebase && "
-        "THREEJ_VERSION=$(git rev-parse --short HEAD) && "
-        "THREEJ_VERSION_DATE=$(git log -1 --format=%cs) && "
-        "printf \"%s %s\" \"$THREEJ_VERSION\" \"$THREEJ_VERSION_DATE\" > .threej_version && "
-        "if ! command -v docker >/dev/null 2>&1; then "
-        "echo 'OTA failed: docker not found on host'; echo failed > .ota.status; exit 1; fi; "
+        f"git config --global --add safe.directory {shlex.quote(host_repo)} || "
+        "{ echo failed > .ota.status; exit 1; }; "
+        "git pull --rebase || { echo failed > .ota.status; exit 1; }; "
+        "THREEJ_VERSION=$(git rev-parse --short HEAD) || { echo failed > .ota.status; exit 1; }; "
+        "THREEJ_VERSION_DATE=$(git log -1 --format=%cs) || { echo failed > .ota.status; exit 1; }; "
+        "printf \"%s %s\" \"$THREEJ_VERSION\" \"$THREEJ_VERSION_DATE\" > .threej_version || "
+        "{ echo failed > .ota.status; exit 1; }; "
         "docker compose -f docker-compose.yml up -d --build; "
         "code=$?; if [ $code -eq 0 ]; then echo done > .ota.status; "
         "else echo failed > .ota.status; fi; exit $code"
     )
-    chroot_command = f"chroot /host /bin/bash -c {shlex.quote(inner_command)}"
-    try:
-        with open(log_path, "a", encoding="utf-8") as log_handle:
-            subprocess.Popen(
-                ["/bin/sh", "-c", chroot_command],
-                stdout=log_handle,
-                stderr=log_handle,
-                start_new_session=True,
-            )
-    except Exception as exc:
+    helper_command = (
+        "docker rm -f threejnotif-ota >/dev/null 2>&1 || true; "
+        "docker run --rm -d --name threejnotif-ota --privileged "
+        "-v /:/host ubuntu bash -c "
+        f"\"chroot /host /bin/bash -c {shlex.quote(inner_command)} "
+        f">> {shlex.quote(host_repo_root)}/.ota.log 2>&1\""
+    )
+    result = subprocess.run(
+        ["/bin/sh", "-c", helper_command],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
         with open(log_path, "a", encoding="utf-8") as log_handle:
             log_handle.write("\n--- OTA update failed to start ---\n")
-            log_handle.write(f"{exc}\n")
+            log_handle.write((result.stderr or result.stdout or "").strip() + "\n")
         with open(status_path, "w", encoding="utf-8") as status_handle:
             status_handle.write("failed")
 
@@ -568,6 +573,21 @@ async def system_update_start():
 async def update_status():
     paths = get_ota_paths()
     status = read_ota_status(paths["status_path"])
+    if status == "running":
+        try:
+            result = subprocess.run(
+                ["docker", "ps", "-q", "-f", "name=threejnotif-ota"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+            )
+            if not (result.stdout or "").strip():
+                with open(paths["status_path"], "w", encoding="utf-8") as status_handle:
+                    status_handle.write("failed")
+                status = "failed"
+        except Exception:
+            status = "failed"
     return {"status": status}
 
 
