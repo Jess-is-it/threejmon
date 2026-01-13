@@ -84,31 +84,35 @@ def trigger_ota_update(log_path, status_path):
     if not os.path.isdir(os.path.join(host_repo_root, ".git")):
         raise RuntimeError(f"Host repo not found at {host_repo}. Ensure /host is mounted.")
 
+    docker_bin = "/usr/bin/docker"
+    if not os.path.exists(docker_bin):
+        docker_bin = "/host/usr/bin/docker"
+    if not os.path.exists(docker_bin):
+        raise RuntimeError("Docker binary not found. Ensure Docker is installed on the host.")
+
     with open(log_path, "a", encoding="utf-8") as log_handle:
         log_handle.write("\n--- OTA update started ---\n")
     with open(status_path, "w", encoding="utf-8") as status_handle:
         status_handle.write("running")
 
-    inner_command = (
-        f"cd {shlex.quote(host_repo)} && "
-        "if [ ! -d .git ]; then "
-        "echo 'OTA failed: repo missing .git'; echo failed > .ota.status; exit 1; fi; "
-        f"git config --global --add safe.directory {shlex.quote(host_repo)} && "
-        "git pull --rebase && "
-        "THREEJ_VERSION=$(git rev-parse --short HEAD) && "
-        "THREEJ_VERSION_DATE=$(git log -1 --format=%cs) && "
-        "printf \"%s %s\" \"$THREEJ_VERSION\" \"$THREEJ_VERSION_DATE\" > .threej_version && "
-        "if ! command -v docker >/dev/null 2>&1; then "
-        "echo 'OTA failed: docker not found on host'; echo failed > .ota.status; exit 1; fi; "
-        "docker compose -f docker-compose.yml up -d --build; "
-        "code=$?; if [ $code -eq 0 ]; then echo done > .ota.status; "
-        "else echo failed > .ota.status; fi; exit $code"
-    )
-    chroot_command = f"chroot /host /bin/bash -c {shlex.quote(inner_command)}"
     try:
         with open(log_path, "a", encoding="utf-8") as log_handle:
+            inner_command = (
+                f"git config --global --add safe.directory {shlex.quote(host_repo_root)} && "
+                f"git -C {shlex.quote(host_repo_root)} pull --rebase && "
+                f"THREEJ_VERSION=$(git -C {shlex.quote(host_repo_root)} rev-parse --short HEAD) && "
+                f"THREEJ_VERSION_DATE=$(git -C {shlex.quote(host_repo_root)} log -1 --format=%cs) && "
+                f"printf \"%s %s\" \"$THREEJ_VERSION\" \"$THREEJ_VERSION_DATE\" "
+                f"> {shlex.quote(os.path.join(host_repo_root, '.threej_version'))} && "
+                f"{shlex.quote(docker_bin)} compose "
+                f"-f {shlex.quote(os.path.join(host_repo_root, 'docker-compose.yml'))} "
+                f"--project-directory {shlex.quote(host_repo_root)} "
+                "up -d --build; "
+                f"code=$?; if [ $code -eq 0 ]; then echo done > {shlex.quote(status_path)}; "
+                f"else echo failed > {shlex.quote(status_path)}; fi; exit $code"
+            )
             subprocess.Popen(
-                ["/bin/sh", "-c", chroot_command],
+                ["/bin/sh", "-c", inner_command],
                 stdout=log_handle,
                 stderr=log_handle,
                 start_new_session=True,
