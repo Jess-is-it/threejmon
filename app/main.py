@@ -167,7 +167,7 @@ def apply_netplan():
         "POST",
         "http://localhost/images/create?fromImage=ubuntu&tag=latest",
     ]
-    pulled = subprocess.run(pull_cmd, capture_output=True, text=True)
+    pulled = subprocess.run(pull_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if pulled.returncode != 0:
         return False, f"Netplan apply failed: {pulled.stderr.strip() or pulled.stdout.strip()}"
 
@@ -189,7 +189,7 @@ def apply_netplan():
         json.dumps(payload),
         "http://localhost/containers/create",
     ]
-    created = subprocess.run(create_cmd, capture_output=True, text=True)
+    created = subprocess.run(create_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if created.returncode != 0:
         return False, f"Netplan apply failed: {created.stderr.strip() or created.stdout.strip()}"
     try:
@@ -208,7 +208,7 @@ def apply_netplan():
         "POST",
         f"http://localhost/containers/{container_id}/start",
     ]
-    started = subprocess.run(start_cmd, capture_output=True, text=True)
+    started = subprocess.run(start_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if started.returncode != 0:
         return False, f"Netplan apply failed: {started.stderr.strip() or started.stdout.strip()}"
 
@@ -221,7 +221,7 @@ def apply_netplan():
         "POST",
         f"http://localhost/containers/{container_id}/wait",
     ]
-    waited = subprocess.run(wait_cmd, capture_output=True, text=True)
+    waited = subprocess.run(wait_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if waited.returncode != 0:
         return False, f"Netplan apply failed: {waited.stderr.strip() or waited.stdout.strip()}"
     try:
@@ -237,7 +237,7 @@ def apply_netplan():
         "GET",
         f"http://localhost/containers/{container_id}/logs?stdout=1&stderr=1",
     ]
-    logs = subprocess.run(logs_cmd, capture_output=True, text=True)
+    logs = subprocess.run(logs_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     output = (logs.stdout or logs.stderr or "").strip()
     delete_cmd = [
         "curl",
@@ -248,7 +248,7 @@ def apply_netplan():
         "DELETE",
         f"http://localhost/containers/{container_id}?force=1",
     ]
-    subprocess.run(delete_cmd, capture_output=True, text=True)
+    subprocess.run(delete_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if status != 0:
         detail = output or f"container exit {status}"
         return False, f"Netplan apply failed: {detail}"
