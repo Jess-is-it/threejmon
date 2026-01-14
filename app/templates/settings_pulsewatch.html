@@ -178,13 +178,14 @@
 </div>
 
   <div id="pulsewatch_stream_modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55); align-items: center; justify-content: center; z-index: 1000;">
-  <div style="background: #0f172a; color: #e2e8f0; border: 1px solid #1f2937; padding: 16px; border-radius: 10px; width: 80vw; max-width: 1100px; max-height: 80vh; display: flex; flex-direction: column;">
+  <div style="background: #0f172a; color: #e2e8f0; border: 1px solid #1f2937; padding: 16px; border-radius: 10px; width: 95vw; max-width: 1400px; max-height: 90vh; display: flex; flex-direction: column;">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
       <strong id="pulsewatch_stream_title">Live Ping</strong>
       <button type="button" id="pulsewatch_stream_close" style="border: none; background: transparent; font-size: 18px; color: #e2e8f0; cursor: pointer;">&times;</button>
     </div>
     <div id="pulsewatch_stream_targets" style="display: none; gap: 6px; flex-wrap: wrap; margin-bottom: 10px;"></div>
     <div style="font-size: 12px; color: #94a3b8; margin-bottom: 8px;">Live ping output. Closing the modal stops this manual ping.</div>
+    <div id="pulsewatch_stream_grid" style="display: none; gap: 12px; overflow: auto; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); flex: 1;"></div>
     <pre id="pulsewatch_stream_output" style="flex: 1; overflow: auto; margin: 0; padding: 10px; background: #0b1020; border: 1px solid #1f2937; border-radius: 8px; white-space: pre-wrap;"></pre>
     <div style="margin-top: 12px; text-align: right;">
       <button type="button" class="button-blue" id="pulsewatch_stream_stop">Stop</button>
@@ -223,9 +224,77 @@
   const streamClose = document.getElementById("pulsewatch_stream_close");
   const streamStop = document.getElementById("pulsewatch_stream_stop");
   const streamTargets = document.getElementById("pulsewatch_stream_targets");
+  const streamGrid = document.getElementById("pulsewatch_stream_grid");
   let streamSource = null;
   let streamBase = "";
   let streamParams = {};
+  let streamMode = "single";
+  const streamPanels = new Map();
+
+  const extractLabel = (line) => {
+    const markers = [" PING ", " missing ", " stopped"];
+    for (const marker of markers) {
+      const idx = line.indexOf(marker);
+      if (idx > 0) {
+        return line.slice(0, idx);
+      }
+    }
+    return null;
+  };
+
+  const ensurePanel = (label) => {
+    if (!streamGrid) {
+      return null;
+    }
+    if (streamPanels.has(label)) {
+      return streamPanels.get(label);
+    }
+    const wrapper = document.createElement("div");
+    wrapper.style.border = "1px solid #1f2937";
+    wrapper.style.borderRadius = "8px";
+    wrapper.style.padding = "8px";
+    wrapper.style.background = "#0b1020";
+    wrapper.style.display = "flex";
+    wrapper.style.flexDirection = "column";
+
+    const header = document.createElement("div");
+    header.style.display = "flex";
+    header.style.justifyContent = "space-between";
+    header.style.alignItems = "center";
+    header.style.marginBottom = "6px";
+    const title = document.createElement("strong");
+    title.textContent = label;
+    const freezeBtn = document.createElement("button");
+    freezeBtn.type = "button";
+    freezeBtn.textContent = "Freeze";
+    freezeBtn.className = "button-blue";
+    freezeBtn.style.fontSize = "12px";
+    freezeBtn.dataset.frozen = "false";
+    freezeBtn.addEventListener("click", () => {
+      const frozen = freezeBtn.dataset.frozen === "true";
+      freezeBtn.dataset.frozen = frozen ? "false" : "true";
+      freezeBtn.textContent = frozen ? "Freeze" : "Unfreeze";
+    });
+    header.appendChild(title);
+    header.appendChild(freezeBtn);
+
+    const pre = document.createElement("pre");
+    pre.style.margin = "0";
+    pre.style.padding = "8px";
+    pre.style.background = "#0f172a";
+    pre.style.border = "1px solid #1f2937";
+    pre.style.borderRadius = "6px";
+    pre.style.whiteSpace = "pre-wrap";
+    pre.style.overflow = "auto";
+    pre.style.maxHeight = "220px";
+
+    wrapper.appendChild(header);
+    wrapper.appendChild(pre);
+    streamGrid.appendChild(wrapper);
+    const panel = { wrapper, pre, freezeBtn };
+    streamPanels.set(label, panel);
+    return panel;
+  };
 
   const buildStreamUrl = (baseUrl, params) => {
     const search = new URLSearchParams();
@@ -276,11 +345,40 @@
     }
     streamTitle.textContent = title;
     streamOutput.textContent = "";
+    streamPanels.clear();
+    if (streamGrid) {
+      streamGrid.innerHTML = "";
+    }
     streamModal.style.display = "flex";
+    if (streamMode === "all") {
+      if (streamGrid) {
+        streamGrid.style.display = "grid";
+      }
+      streamOutput.style.display = "none";
+    } else {
+      if (streamGrid) {
+        streamGrid.style.display = "none";
+      }
+      streamOutput.style.display = "block";
+    }
     streamSource = new EventSource(url);
     streamSource.onmessage = (event) => {
-      streamOutput.textContent += `${event.data}\n`;
-      streamOutput.scrollTop = streamOutput.scrollHeight;
+      if (streamMode === "all") {
+        const line = event.data || "";
+        const label = extractLabel(line) || "General";
+        const panel = ensurePanel(label);
+        if (!panel) {
+          return;
+        }
+        const message = line.startsWith(label + " ") ? line.slice(label.length + 1) : line;
+        panel.pre.textContent += `${message}\n`;
+        if (panel.freezeBtn.dataset.frozen !== "true") {
+          panel.pre.scrollTop = panel.pre.scrollHeight;
+        }
+      } else {
+        streamOutput.textContent += `${event.data}\n`;
+        streamOutput.scrollTop = streamOutput.scrollHeight;
+      }
     };
     streamSource.addEventListener("done", () => {
       streamSource.close();
@@ -296,6 +394,7 @@
   };
 
   const openStreamWithTargets = (title, baseUrl, params, targets) => {
+    streamMode = "single";
     streamBase = baseUrl;
     streamParams = params || {};
     const targetList = (targets || []).filter((value) => value && value.trim().length);
@@ -317,6 +416,10 @@
     if (streamTargets) {
       streamTargets.innerHTML = "";
       streamTargets.style.display = "none";
+    }
+    if (streamGrid) {
+      streamGrid.innerHTML = "";
+      streamGrid.style.display = "none";
     }
   };
 
@@ -363,6 +466,7 @@
   const pingAllButton = document.getElementById("pulsewatch_ping_all");
   if (pingAllButton) {
     pingAllButton.addEventListener("click", () => {
+      streamMode = "all";
       openStream("Live Ping (All ISPs)", "/isp/pulsewatch/ping/stream");
     });
   }
