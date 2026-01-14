@@ -1161,14 +1161,18 @@ async def _stream_ping_process(request, label, source_ip, target):
 async def isp_pulsewatch_ping_stream_one(request: Request, row_id: str):
     settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
     row = find_pulsewatch_row(settings, row_id)
+    qp = request.query_params
+    override_source = (qp.get("source_ip") or "").strip()
+    override_target = (qp.get("target") or "").strip()
+    override_label = (qp.get("label") or "").strip()
     if not row:
         async def _missing():
             yield "data: Unknown preset\n\n"
             yield "event: done\ndata: complete\n\n"
         return StreamingResponse(_missing(), media_type="text/event-stream")
-    label = f"{row.get('core_label')} {row.get('list_name')}".strip()
-    source_ip = (row.get("address") or "").strip()
-    target = _get_first_target(row.get("ping_targets"))
+    label = override_label or f"{row.get('core_label')} {row.get('list_name')}".strip()
+    source_ip = override_source or (row.get("address") or "").strip()
+    target = override_target or _get_first_target(row.get("ping_targets"))
 
     async def _stream():
         yield f"data: Starting ping for {label} -> {target}\n\n"

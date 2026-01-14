@@ -271,7 +271,27 @@
       if (!rowId) {
         return;
       }
-      openStream("Live Ping (Single ISP)", `/isp/pulsewatch/ping/stream/${rowId}`);
+      const row = button.closest("tr");
+      const addressInput = row ? row.querySelector("input[name$='_address']") : null;
+      const targetInput = row ? row.querySelector("textarea[name$='_ping_targets']") : null;
+      const labelCore = row ? row.querySelector("td:nth-child(1)") : null;
+      const labelList = row ? row.querySelector("td:nth-child(2)") : null;
+      const sourceIp = addressInput ? (addressInput.value || "").trim() : "";
+      const targets = targetInput ? (targetInput.value || "").trim().split("\n") : [];
+      const target = targets.find((value) => value.trim().length) || "";
+      const label = `${labelCore ? labelCore.textContent.trim() : ""} ${labelList ? labelList.textContent.trim() : ""}`.trim();
+      const params = new URLSearchParams();
+      if (sourceIp) {
+        params.set("source_ip", sourceIp);
+      }
+      if (target) {
+        params.set("target", target);
+      }
+      if (label) {
+        params.set("label", label);
+      }
+      const url = `/isp/pulsewatch/ping/stream/${rowId}?${params.toString()}`;
+      openStream("Live Ping (Single ISP)", url);
     });
   });
 
