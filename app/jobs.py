@@ -147,14 +147,23 @@ class JobsManager:
                     sender_id = sender.get("id")
                     if allowed_user_ids and sender_id not in allowed_user_ids:
                         continue
-                    reply = handle_telegram_command(cfg, message.get("text", ""))
+                    text = message.get("text", "")
+                    reply = handle_telegram_command(cfg, text)
+                    state["last_command"] = text
+                    state["last_command_from"] = sender_id
                     if reply:
                         send_telegram(token, chat_id, reply)
+                        state["last_reply"] = reply[:500]
+                        state["last_error"] = ""
                 save_state("telegram_state", state)
-            except TelegramError:
-                pass
-            except Exception:
-                pass
+            except TelegramError as exc:
+                state = get_state("telegram_state", {"last_update_id": 0})
+                state["last_error"] = str(exc)
+                save_state("telegram_state", state)
+            except Exception as exc:
+                state = get_state("telegram_state", {"last_update_id": 0})
+                state["last_error"] = f"{type(exc).__name__}: {exc}"
+                save_state("telegram_state", state)
 
             time_module.sleep(2)
 

@@ -1382,9 +1382,10 @@ async def settings_root():
 async def system_settings(request: Request):
     settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
     interfaces = get_interface_options()
+    telegram_state = get_state("telegram_state", {})
     return templates.TemplateResponse(
         "settings_system.html",
-        make_context(request, {"message": "", "settings": settings, "interfaces": interfaces}),
+        make_context(request, {"message": "", "settings": settings, "interfaces": interfaces, "telegram_state": telegram_state}),
     )
 
 
@@ -1430,7 +1431,10 @@ async def system_mikrotik_save(request: Request):
         message = f"{message} {apply_msg}"
     return templates.TemplateResponse(
         "settings_system.html",
-        make_context(request, {"message": message, "settings": settings, "interfaces": interfaces}),
+        make_context(
+            request,
+            {"message": message, "settings": settings, "interfaces": interfaces, "telegram_state": get_state("telegram_state", {})},
+        ),
     )
 
 
@@ -1448,7 +1452,10 @@ async def system_telegram_save(request: Request):
     message = "Telegram command settings saved."
     return templates.TemplateResponse(
         "settings_system.html",
-        make_context(request, {"message": message, "settings": settings, "interfaces": interfaces}),
+        make_context(
+            request,
+            {"message": message, "settings": settings, "interfaces": interfaces, "telegram_state": get_state("telegram_state", {})},
+        ),
     )
 
 

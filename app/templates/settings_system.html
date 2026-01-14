@@ -102,6 +102,15 @@
       <button type="submit" class="button-green">Save Telegram Command Settings</button>
     </div>
   </form>
+  {% if telegram_state %}
+    <div class="help" style="margin-top: 10px;">
+      Last command: {{ telegram_state.last_command or "n/a" }} | From: {{ telegram_state.last_command_from or "n/a" }}
+    </div>
+    <div class="help">Last reply: {{ telegram_state.last_reply or "n/a" }}</div>
+    {% if telegram_state.last_error %}
+      <div class="alert" style="margin-top: 10px;">Telegram command error: {{ telegram_state.last_error }}</div>
+    {% endif %}
+  {% endif %}
 </div>
 
 <div class="card" style="margin-top: 20px;">
