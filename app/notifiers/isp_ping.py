@@ -1,3 +1,4 @@
+import base64
 import json
 import logging
 import re
@@ -25,8 +26,8 @@ RE_TIME = re.compile(r"time=([0-9.]+)\s*ms")
 COMMENT_TAG = "threejnotif:pulsewatch"
 
 def _preset_id(core_id, list_name):
-    safe = f"{core_id}|{list_name}"
-    return safe
+    raw = f"{core_id}|{list_name}".encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 def _get_router_source_ip(isp, core_id):
     core_id = (core_id or "").lower()
@@ -82,8 +83,6 @@ def _isps_from_presets(pulse_cfg):
                 "id": isp_id,
                 "label": list_name,
                 "sources": {core_id: preset.get("address")},
-                "ping_core_id": preset.get("ping_core_id", "auto"),
-                "ping_router": preset.get("ping_core_id", "auto"),
                 "ping_targets": preset.get("ping_targets", []),
                 "thresholds": {
                     "latency_ms": preset.get("latency_ms", 120),

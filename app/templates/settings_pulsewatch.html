@@ -83,7 +83,7 @@
     {% set cores = settings.pulsewatch.mikrotik.cores %}
     <div style="display: flex; justify-content: space-between; align-items: center; margin: 12px 0;">
       <div>
-        <input type="text" id="pulsewatch_search" placeholder="Search ISP..." style="min-width: 220px;" />
+        <input type="text" id="pulsewatch_search" placeholder="Search list..." style="min-width: 220px;" />
       </div>
       <div>
         <button type="submit" formaction="/settings/pulsewatch/test" formmethod="post" style="margin-left: 6px;">Send Test Telegram</button>
@@ -99,7 +99,6 @@
             <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">MikroTik</th>
             <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">List</th>
             <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">IP Address</th>
-            <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">Ping Core</th>
             <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">Latency</th>
             <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">Loss</th>
             <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">Breaches</th>
@@ -122,14 +121,6 @@
               </td>
               <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
                 <input type="text" name="preset_{{ loop.index0 }}_address" value="{{ row.address }}" />
-              </td>
-              <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
-                <select name="preset_{{ loop.index0 }}_ping_core_id">
-                  <option value="auto" {% if row.ping_core_id == 'auto' %}selected{% endif %}>auto</option>
-                  {% for core in cores %}
-                    <option value="{{ core.id }}" {% if row.ping_core_id == core.id %}selected{% endif %}>{{ core.label }}</option>
-                  {% endfor %}
-                </select>
               </td>
               <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
                 <input type="number" name="preset_{{ loop.index0 }}_latency_ms" value="{{ row.latency_ms }}" style="max-width: 90px;" />

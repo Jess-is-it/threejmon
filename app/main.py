@@ -562,7 +562,6 @@ async def pulsewatch_settings(request: Request):
                     "core_label": core.get("label") or core_id,
                     "list_name": list_name,
                     "address": preset.get("address", ""),
-                    "ping_core_id": preset.get("ping_core_id", "auto"),
                     "latency_ms": preset.get("latency_ms", 120),
                     "loss_pct": preset.get("loss_pct", 20),
                     "breach_count": preset.get("breach_count", 3),
@@ -625,7 +624,6 @@ async def pulsewatch_settings_save(request: Request):
                     "core_id": core_id,
                     "list": list_name,
                     "address": address,
-                    "ping_core_id": (form.get(f"preset_{idx}_ping_core_id") or "auto").strip(),
                     "latency_ms": parse_float(form, f"preset_{idx}_latency_ms", 120.0),
                     "loss_pct": parse_float(form, f"preset_{idx}_loss_pct", 20.0),
                     "breach_count": parse_int(form, f"preset_{idx}_breach_count", 3),
@@ -697,7 +695,6 @@ async def pulsewatch_settings_save(request: Request):
                     "core_label": core.get("label") or core_id,
                     "list_name": list_name,
                     "address": preset.get("address", ""),
-                    "ping_core_id": preset.get("ping_core_id", "auto"),
                     "latency_ms": preset.get("latency_ms", 120),
                     "loss_pct": preset.get("loss_pct", 20),
                     "breach_count": preset.get("breach_count", 3),
@@ -711,225 +708,6 @@ async def pulsewatch_settings_save(request: Request):
     )
 
 
-@app.post("/settings/pulsewatch/isp/add", response_class=HTMLResponse)
-async def pulsewatch_add_isp(request: Request):
-    settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
-    pulsewatch = settings.get("pulsewatch", {})
-    isps = pulsewatch.get("isps", [])
-    existing_ids = {isp.get("id") for isp in isps if isp.get("id")}
-    next_idx = 1
-    while f"isp{next_idx}" in existing_ids:
-        next_idx += 1
-    new_id = f"isp{next_idx}"
-    isps.append(
-        {
-            "id": new_id,
-            "label": f"ISP {next_idx}",
-            "source_ip": "",
-            "core2_source_ip": "",
-            "core3_source_ip": "",
-            "sources": {},
-            "router_scope": "both",
-            "ping_router": "auto",
-            "ping_core_id": "auto",
-            "ping_targets": ["1.1.1.1", "8.8.8.8"],
-            "thresholds": {"latency_ms": 120, "loss_pct": 20},
-            "consecutive_breach_count": 3,
-            "cooldown_minutes": 10,
-        }
-    )
-    pulsewatch["isps"] = isps
-    settings["pulsewatch"] = pulsewatch
-    save_settings("isp_ping", settings)
-    message = "ISP added."
-    netplan_msg = None
-    apply_msg = None
-    try:
-        netplan_path, netplan_msg = build_pulsewatch_netplan(settings)
-        if netplan_path:
-            _, apply_msg = apply_netplan()
-    except Exception as exc:
-        apply_msg = f"Netplan update failed: {exc}"
-    if netplan_msg:
-        message = f"{message} {netplan_msg}"
-    if apply_msg:
-        message = f"{message} {apply_msg}"
-    cores = settings.get("pulsewatch", {}).get("mikrotik", {}).get("cores", [])
-    list_map = fetch_mikrotik_lists(cores)
-    preset_rows = []
-    preset_lookup = {
-        (item.get("core_id"), item.get("list")): item
-        for item in settings.get("pulsewatch", {}).get("list_presets", [])
-    }
-    for core in cores:
-        core_id = core.get("id")
-        for list_name in list_map.get(core_id, []):
-            preset = preset_lookup.get((core_id, list_name), {}) or {}
-            preset_rows.append(
-                {
-                    "row_id": preset_row_id(core_id, list_name),
-                    "core_id": core_id,
-                    "core_label": core.get("label") or core_id,
-                    "list_name": list_name,
-                    "address": preset.get("address", ""),
-                    "ping_core_id": preset.get("ping_core_id", "auto"),
-                    "latency_ms": preset.get("latency_ms", 120),
-                    "loss_pct": preset.get("loss_pct", 20),
-                    "breach_count": preset.get("breach_count", 3),
-                    "cooldown_minutes": preset.get("cooldown_minutes", 10),
-                    "ping_targets": preset.get("ping_targets", ["1.1.1.1", "8.8.8.8"]),
-                }
-            )
-    return templates.TemplateResponse(
-        "settings_pulsewatch.html",
-        make_context(request, {"settings": settings, "message": message, "preset_rows": preset_rows}),
-    )
-
-
-@app.post("/settings/pulsewatch/isp/create", response_class=HTMLResponse)
-async def pulsewatch_create_isp(request: Request):
-    form = await request.form()
-    settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
-    pulsewatch = settings.get("pulsewatch", {})
-    isps = pulsewatch.get("isps", [])
-    cores = pulsewatch.get("mikrotik", {}).get("cores", [])
-
-    desired_id = (form.get("new_id") or "").strip()
-    existing_ids = {isp.get("id") for isp in isps if isp.get("id")}
-    if not desired_id or desired_id in existing_ids:
-        next_idx = 1
-        while f"isp{next_idx}" in existing_ids:
-            next_idx += 1
-        desired_id = f"isp{next_idx}"
-    label = (form.get("new_label") or "").strip() or desired_id.upper()
-
-    sources = {}
-    for core in cores:
-        core_id = core.get("id")
-        if not core_id:
-            continue
-        value = (form.get(f"new_source_{core_id}") or "").strip()
-        if value:
-            sources[core_id] = value
-
-    new_isp = {
-        "id": desired_id,
-        "label": label,
-        "source_ip": "",
-        "core2_source_ip": sources.get("core2", ""),
-        "core3_source_ip": sources.get("core3", ""),
-        "sources": sources,
-        "router_scope": "both",
-        "ping_router": (form.get("new_ping_core_id") or "auto").strip(),
-        "ping_core_id": (form.get("new_ping_core_id") or "auto").strip(),
-        "ping_targets": parse_lines(form.get("new_ping_targets", "")),
-        "thresholds": {
-            "latency_ms": parse_float(form, "new_latency_ms", 120.0),
-            "loss_pct": parse_float(form, "new_loss_pct", 20.0),
-        },
-        "consecutive_breach_count": parse_int(form, "new_breach_count", 3),
-        "cooldown_minutes": parse_int(form, "new_cooldown_minutes", 10),
-    }
-    isps.append(new_isp)
-    pulsewatch["isps"] = isps
-    settings["pulsewatch"] = pulsewatch
-    save_settings("isp_ping", settings)
-    message = "ISP created."
-    netplan_msg = None
-    apply_msg = None
-    try:
-        netplan_path, netplan_msg = build_pulsewatch_netplan(settings)
-        if netplan_path:
-            _, apply_msg = apply_netplan()
-    except Exception as exc:
-        apply_msg = f"Netplan update failed: {exc}"
-    if netplan_msg:
-        message = f"{message} {netplan_msg}"
-    if apply_msg:
-        message = f"{message} {apply_msg}"
-    cores = settings.get("pulsewatch", {}).get("mikrotik", {}).get("cores", [])
-    list_map = fetch_mikrotik_lists(cores)
-    preset_rows = []
-    preset_lookup = {
-        (item.get("core_id"), item.get("list")): item
-        for item in settings.get("pulsewatch", {}).get("list_presets", [])
-    }
-    for core in cores:
-        core_id = core.get("id")
-        for list_name in list_map.get(core_id, []):
-            preset = preset_lookup.get((core_id, list_name), {}) or {}
-            preset_rows.append(
-                {
-                    "row_id": preset_row_id(core_id, list_name),
-                    "core_id": core_id,
-                    "core_label": core.get("label") or core_id,
-                    "list_name": list_name,
-                    "address": preset.get("address", ""),
-                    "ping_core_id": preset.get("ping_core_id", "auto"),
-                    "latency_ms": preset.get("latency_ms", 120),
-                    "loss_pct": preset.get("loss_pct", 20),
-                    "breach_count": preset.get("breach_count", 3),
-                    "cooldown_minutes": preset.get("cooldown_minutes", 10),
-                    "ping_targets": preset.get("ping_targets", ["1.1.1.1", "8.8.8.8"]),
-                }
-            )
-    return templates.TemplateResponse(
-        "settings_pulsewatch.html",
-        make_context(request, {"settings": settings, "message": message, "preset_rows": preset_rows}),
-    )
-
-
-@app.post("/settings/pulsewatch/isp/remove/{isp_id}", response_class=HTMLResponse)
-async def pulsewatch_remove_isp(request: Request, isp_id: str):
-    settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
-    pulsewatch = settings.get("pulsewatch", {})
-    isps = [isp for isp in pulsewatch.get("isps", []) if isp.get("id") != isp_id]
-    pulsewatch["isps"] = isps
-    settings["pulsewatch"] = pulsewatch
-    save_settings("isp_ping", settings)
-    message = f"{isp_id} removed."
-    netplan_msg = None
-    apply_msg = None
-    try:
-        netplan_path, netplan_msg = build_pulsewatch_netplan(settings)
-        if netplan_path:
-            _, apply_msg = apply_netplan()
-    except Exception as exc:
-        apply_msg = f"Netplan update failed: {exc}"
-    if netplan_msg:
-        message = f"{message} {netplan_msg}"
-    if apply_msg:
-        message = f"{message} {apply_msg}"
-    cores = settings.get("pulsewatch", {}).get("mikrotik", {}).get("cores", [])
-    list_map = fetch_mikrotik_lists(cores)
-    preset_rows = []
-    preset_lookup = {
-        (item.get("core_id"), item.get("list")): item
-        for item in settings.get("pulsewatch", {}).get("list_presets", [])
-    }
-    for core in cores:
-        core_id = core.get("id")
-        for list_name in list_map.get(core_id, []):
-            preset = preset_lookup.get((core_id, list_name), {}) or {}
-            preset_rows.append(
-                {
-                    "row_id": preset_row_id(core_id, list_name),
-                    "core_id": core_id,
-                    "core_label": core.get("label") or core_id,
-                    "list_name": list_name,
-                    "address": preset.get("address", ""),
-                    "ping_core_id": preset.get("ping_core_id", "auto"),
-                    "latency_ms": preset.get("latency_ms", 120),
-                    "loss_pct": preset.get("loss_pct", 20),
-                    "breach_count": preset.get("breach_count", 3),
-                    "cooldown_minutes": preset.get("cooldown_minutes", 10),
-                    "ping_targets": preset.get("ping_targets", ["1.1.1.1", "8.8.8.8"]),
-                }
-            )
-    return templates.TemplateResponse(
-        "settings_pulsewatch.html",
-        make_context(request, {"settings": settings, "message": message, "preset_rows": preset_rows}),
-    )
 
 
 @app.post("/settings/isp/test", response_class=HTMLResponse)
