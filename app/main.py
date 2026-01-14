@@ -133,6 +133,19 @@ def build_pulsewatch_netplan(settings):
 
 
 def apply_netplan():
+    def run_cmd(cmd, timeout_seconds=30):
+        try:
+            return subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            return None
+
     docker_path = None
     for candidate in ("/usr/bin/docker", "/usr/local/bin/docker"):
         if os.path.exists(candidate):
@@ -147,7 +160,9 @@ def apply_netplan():
             "ubuntu bash -c "
             "\"chroot /host bash -c 'chmod 600 /etc/netplan/90-threejnotif-pulsewatch.yaml && netplan apply'\""
         )
-        result = subprocess.run(["/bin/sh", "-c", command], capture_output=True, text=True)
+        result = run_cmd(["/bin/sh", "-c", command], timeout_seconds=60)
+        if result is None:
+            return False, "Netplan apply failed: docker CLI timed out."
         if result.returncode != 0:
             stderr = (result.stderr or result.stdout or "").strip()
             return False, f"Netplan apply failed: {stderr}"
@@ -168,7 +183,9 @@ def apply_netplan():
         "POST",
         "http://localhost/images/create?fromImage=ubuntu&tag=latest",
     ]
-    pulled = subprocess.run(pull_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    pulled = run_cmd(pull_cmd, timeout_seconds=60)
+    if pulled is None:
+        return False, "Netplan apply failed: image pull timed out."
     if pulled.returncode != 0:
         return False, f"Netplan apply failed: {pulled.stderr.strip() or pulled.stdout.strip()}"
 
@@ -199,7 +216,9 @@ def apply_netplan():
         json.dumps(payload),
         "http://localhost/containers/create",
     ]
-    created = subprocess.run(create_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    created = run_cmd(create_cmd)
+    if created is None:
+        return False, "Netplan apply failed: container create timed out."
     if created.returncode != 0:
         return False, f"Netplan apply failed: {created.stderr.strip() or created.stdout.strip()}"
     try:
@@ -218,7 +237,9 @@ def apply_netplan():
         "POST",
         f"http://localhost/containers/{container_id}/start",
     ]
-    started = subprocess.run(start_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    started = run_cmd(start_cmd)
+    if started is None:
+        return False, "Netplan apply failed: container start timed out."
     if started.returncode != 0:
         return False, f"Netplan apply failed: {started.stderr.strip() or started.stdout.strip()}"
 
@@ -231,7 +252,9 @@ def apply_netplan():
         "POST",
         f"http://localhost/containers/{container_id}/wait",
     ]
-    waited = subprocess.run(wait_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    waited = run_cmd(wait_cmd, timeout_seconds=60)
+    if waited is None:
+        return False, "Netplan apply failed: container wait timed out."
     if waited.returncode != 0:
         return False, f"Netplan apply failed: {waited.stderr.strip() or waited.stdout.strip()}"
     try:
@@ -247,7 +270,9 @@ def apply_netplan():
         "GET",
         f"http://localhost/containers/{container_id}/logs?stdout=1&stderr=1",
     ]
-    logs = subprocess.run(logs_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    logs = run_cmd(logs_cmd)
+    if logs is None:
+        logs = subprocess.CompletedProcess(args=logs_cmd, returncode=1, stdout="", stderr="")
     output = (logs.stdout or logs.stderr or "").strip()
     delete_cmd = [
         "curl",
@@ -258,7 +283,7 @@ def apply_netplan():
         "DELETE",
         f"http://localhost/containers/{container_id}?force=1",
     ]
-    subprocess.run(delete_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    run_cmd(delete_cmd)
     if status != 0:
         detail = output or f"container exit {status}"
         return False, f"Netplan apply failed: {detail}"
