@@ -166,12 +166,13 @@
   </form>
 </div>
 
-<div id="pulsewatch_stream_modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55); align-items: center; justify-content: center; z-index: 1000;">
+  <div id="pulsewatch_stream_modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55); align-items: center; justify-content: center; z-index: 1000;">
   <div style="background: #0f172a; color: #e2e8f0; border: 1px solid #1f2937; padding: 16px; border-radius: 10px; width: 80vw; max-width: 1100px; max-height: 80vh; display: flex; flex-direction: column;">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
       <strong id="pulsewatch_stream_title">Live Ping</strong>
       <button type="button" id="pulsewatch_stream_close" style="border: none; background: transparent; font-size: 18px; color: #e2e8f0; cursor: pointer;">&times;</button>
     </div>
+    <div id="pulsewatch_stream_targets" style="display: none; gap: 6px; flex-wrap: wrap; margin-bottom: 10px;"></div>
     <div style="font-size: 12px; color: #94a3b8; margin-bottom: 8px;">Live ping output. Closing the modal stops this manual ping.</div>
     <pre id="pulsewatch_stream_output" style="flex: 1; overflow: auto; margin: 0; padding: 10px; background: #0b1020; border: 1px solid #1f2937; border-radius: 8px; white-space: pre-wrap;"></pre>
     <div style="margin-top: 12px; text-align: right;">
@@ -210,7 +211,50 @@
   const streamTitle = document.getElementById("pulsewatch_stream_title");
   const streamClose = document.getElementById("pulsewatch_stream_close");
   const streamStop = document.getElementById("pulsewatch_stream_stop");
+  const streamTargets = document.getElementById("pulsewatch_stream_targets");
   let streamSource = null;
+  let streamBase = "";
+  let streamParams = {};
+
+  const buildStreamUrl = (baseUrl, params) => {
+    const search = new URLSearchParams();
+    Object.entries(params || {}).forEach(([key, value]) => {
+      if (value) {
+        search.set(key, value);
+      }
+    });
+    const query = search.toString();
+    return query ? `${baseUrl}?${query}` : baseUrl;
+  };
+
+  const renderTargets = (targets, baseUrl, params) => {
+    if (!streamTargets) {
+      return;
+    }
+    streamTargets.innerHTML = "";
+    if (!targets || targets.length === 0) {
+      streamTargets.style.display = "none";
+      return;
+    }
+    streamTargets.style.display = "flex";
+    targets.forEach((target, index) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = target;
+      btn.className = "button-blue";
+      if (index !== 0) {
+        btn.style.opacity = "0.75";
+      }
+      btn.addEventListener("click", () => {
+        streamParams = { ...params, target };
+        openStream(streamTitle.textContent, buildStreamUrl(baseUrl, streamParams));
+        Array.from(streamTargets.children).forEach((child) => {
+          child.style.opacity = child === btn ? "1" : "0.75";
+        });
+      });
+      streamTargets.appendChild(btn);
+    });
+  };
 
   const openStream = (title, url) => {
     if (!streamModal || !streamOutput) {
@@ -240,6 +284,17 @@
     };
   };
 
+  const openStreamWithTargets = (title, baseUrl, params, targets) => {
+    streamBase = baseUrl;
+    streamParams = params || {};
+    const targetList = (targets || []).filter((value) => value && value.trim().length);
+    if (targetList.length > 0) {
+      streamParams = { ...streamParams, target: targetList[0] };
+    }
+    renderTargets(targetList, baseUrl, params);
+    openStream(title, buildStreamUrl(baseUrl, streamParams));
+  };
+
   const closeStream = () => {
     if (streamSource) {
       streamSource.close();
@@ -247,6 +302,10 @@
     }
     if (streamModal) {
       streamModal.style.display = "none";
+    }
+    if (streamTargets) {
+      streamTargets.innerHTML = "";
+      streamTargets.style.display = "none";
     }
   };
 
@@ -278,20 +337,15 @@
       const labelList = row ? row.querySelector("td:nth-child(2)") : null;
       const sourceIp = addressInput ? (addressInput.value || "").trim() : "";
       const targets = targetInput ? (targetInput.value || "").trim().split("\n") : [];
-      const target = targets.find((value) => value.trim().length) || "";
       const label = `${labelCore ? labelCore.textContent.trim() : ""} ${labelList ? labelList.textContent.trim() : ""}`.trim();
-      const params = new URLSearchParams();
+      const params = {};
       if (sourceIp) {
-        params.set("source_ip", sourceIp);
-      }
-      if (target) {
-        params.set("target", target);
+        params.source_ip = sourceIp;
       }
       if (label) {
-        params.set("label", label);
+        params.label = label;
       }
-      const url = `/isp/pulsewatch/ping/stream/${rowId}?${params.toString()}`;
-      openStream("Live Ping (Single ISP)", url);
+      openStreamWithTargets("Live Ping (Single ISP)", `/isp/pulsewatch/ping/stream/${rowId}`, params, targets);
     });
   });
 
