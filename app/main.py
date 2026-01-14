@@ -128,6 +128,7 @@ def build_pulsewatch_netplan(settings):
     content = "\n".join(lines) + "\n"
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(content)
+    os.chmod(path, 0o600)
     return path, "Netplan file updated."
 
 
@@ -141,10 +142,10 @@ def apply_netplan():
         docker_path = shutil.which("docker")
     if docker_path:
         command = (
-            f"{docker_path} run --rm --privileged "
+            f"{docker_path} run --rm --privileged --pid=host "
             "-v /:/host "
             "ubuntu bash -c "
-            "\"chroot /host netplan apply\""
+            "\"chroot /host bash -c 'chmod 600 /etc/netplan/90-threejnotif-pulsewatch.yaml && netplan apply'\""
         )
         result = subprocess.run(["/bin/sh", "-c", command], capture_output=True, text=True)
         if result.returncode != 0:
@@ -173,8 +174,17 @@ def apply_netplan():
 
     payload = {
         "Image": "ubuntu",
-        "Cmd": ["bash", "-c", "chroot /host netplan apply 2>&1"],
-        "HostConfig": {"Privileged": True, "Binds": ["/:/host"], "AutoRemove": False},
+        "Cmd": [
+            "bash",
+            "-c",
+            "chroot /host bash -c 'chmod 600 /etc/netplan/90-threejnotif-pulsewatch.yaml && netplan apply' 2>&1",
+        ],
+        "HostConfig": {
+            "Privileged": True,
+            "Binds": ["/:/host"],
+            "AutoRemove": False,
+            "PidMode": "host",
+        },
     }
     create_cmd = [
         "curl",
