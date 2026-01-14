@@ -99,7 +99,7 @@
       </div>
       <div>
         <button type="submit" formaction="/settings/pulsewatch/test" formmethod="post" style="margin-left: 6px;">Send Test Telegram</button>
-        <button type="submit" class="button-blue" formaction="/isp/pulsewatch/ping" formmethod="post" style="margin-left: 6px;">Run Ping All</button>
+        <button type="button" class="button-blue" id="pulsewatch_ping_all" style="margin-left: 6px;">Run Ping All</button>
         <button type="submit" formaction="/isp/pulsewatch/speedtest" formmethod="post" style="margin-left: 6px;">Run Speedtest All</button>
       </div>
     </div>
@@ -151,7 +151,7 @@
 {% endfor %}</textarea>
               </td>
               <td style="padding: 8px; border-bottom: 1px solid #efefe7; white-space: nowrap;">
-                <button type="submit" class="button-blue" title="Run Ping" formaction="/isp/pulsewatch/ping/{{ row.row_id }}" formmethod="post">P</button>
+                <button type="button" class="button-blue pulsewatch-ping" title="Run Ping" data-row-id="{{ row.row_id }}">P</button>
                 <button type="submit" title="Run Speedtest" formaction="/isp/pulsewatch/speedtest/{{ row.row_id }}" formmethod="post">S</button>
               </td>
             </tr>
@@ -164,6 +164,20 @@
       <button type="submit" class="button-green">Save ISP Pulsewatch Settings</button>
     </div>
   </form>
+</div>
+
+<div id="pulsewatch_stream_modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55); align-items: center; justify-content: center; z-index: 1000;">
+  <div style="background: #0f172a; color: #e2e8f0; border: 1px solid #1f2937; padding: 16px; border-radius: 10px; width: 80vw; max-width: 1100px; max-height: 80vh; display: flex; flex-direction: column;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+      <strong id="pulsewatch_stream_title">Live Ping</strong>
+      <button type="button" id="pulsewatch_stream_close" style="border: none; background: transparent; font-size: 18px; color: #e2e8f0; cursor: pointer;">&times;</button>
+    </div>
+    <div style="font-size: 12px; color: #94a3b8; margin-bottom: 8px;">Live ping output. Closing the modal stops this manual ping.</div>
+    <pre id="pulsewatch_stream_output" style="flex: 1; overflow: auto; margin: 0; padding: 10px; background: #0b1020; border: 1px solid #1f2937; border-radius: 8px; white-space: pre-wrap;"></pre>
+    <div style="margin-top: 12px; text-align: right;">
+      <button type="button" class="button-blue" id="pulsewatch_stream_stop">Stop</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -188,6 +202,83 @@
       if (event.target === modal) {
         closeModal();
       }
+    });
+  }
+
+  const streamModal = document.getElementById("pulsewatch_stream_modal");
+  const streamOutput = document.getElementById("pulsewatch_stream_output");
+  const streamTitle = document.getElementById("pulsewatch_stream_title");
+  const streamClose = document.getElementById("pulsewatch_stream_close");
+  const streamStop = document.getElementById("pulsewatch_stream_stop");
+  let streamSource = null;
+
+  const openStream = (title, url) => {
+    if (!streamModal || !streamOutput) {
+      return;
+    }
+    if (streamSource) {
+      streamSource.close();
+    }
+    streamTitle.textContent = title;
+    streamOutput.textContent = "";
+    streamModal.style.display = "flex";
+    streamSource = new EventSource(url);
+    streamSource.onmessage = (event) => {
+      streamOutput.textContent += `${event.data}\n`;
+      streamOutput.scrollTop = streamOutput.scrollHeight;
+    };
+    streamSource.addEventListener("done", () => {
+      streamSource.close();
+      streamSource = null;
+    });
+    streamSource.onerror = () => {
+      if (streamSource) {
+        streamSource.close();
+        streamSource = null;
+      }
+      streamOutput.textContent += "Stream closed.\n";
+    };
+  };
+
+  const closeStream = () => {
+    if (streamSource) {
+      streamSource.close();
+      streamSource = null;
+    }
+    if (streamModal) {
+      streamModal.style.display = "none";
+    }
+  };
+
+  if (streamClose) {
+    streamClose.addEventListener("click", closeStream);
+  }
+  if (streamStop) {
+    streamStop.addEventListener("click", closeStream);
+  }
+  if (streamModal) {
+    streamModal.addEventListener("click", (event) => {
+      if (event.target === streamModal) {
+        closeStream();
+      }
+    });
+  }
+
+  const pingButtons = document.querySelectorAll(".pulsewatch-ping");
+  pingButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const rowId = button.getAttribute("data-row-id");
+      if (!rowId) {
+        return;
+      }
+      openStream("Live Ping (Single ISP)", `/isp/pulsewatch/ping/stream/${rowId}`);
+    });
+  });
+
+  const pingAllButton = document.getElementById("pulsewatch_ping_all");
+  if (pingAllButton) {
+    pingAllButton.addEventListener("click", () => {
+      openStream("Live Ping (All ISPs)", "/isp/pulsewatch/ping/stream");
     });
   }
 

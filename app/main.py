@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import asyncio
 import json
 import os
 import base64
@@ -8,7 +9,7 @@ import shutil
 import subprocess
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -545,6 +546,21 @@ def render_pulsewatch_response(request, settings, message):
         "settings_pulsewatch.html",
         make_context(request, {"settings": settings, "message": message, "preset_rows": preset_rows}),
     )
+
+
+def find_pulsewatch_row(settings, row_id):
+    for row in build_pulsewatch_rows(settings):
+        if row.get("row_id") == row_id:
+            return row
+    return None
+
+
+def _get_first_target(ping_targets):
+    if isinstance(ping_targets, str):
+        targets = parse_lines(ping_targets)
+    else:
+        targets = ping_targets or []
+    return targets[0].strip() if targets else ""
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1106,6 +1122,106 @@ async def isp_pulsewatch_ping_all(request: Request):
     except Exception as exc:
         message = f"Pulsewatch ping failed: {exc}"
     return render_pulsewatch_response(request, settings, message)
+
+
+async def _stream_ping_process(request, label, source_ip, target):
+    if not source_ip:
+        yield f"data: {label} missing source IP\n\n"
+        return
+    if not target:
+        yield f"data: {label} missing ping target\n\n"
+        return
+
+    cmd = ["ping", "-I", source_ip, "-n", target]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    try:
+        while True:
+            if await request.is_disconnected():
+                break
+            line = await proc.stdout.readline()
+            if not line:
+                break
+            text = line.decode("utf-8", errors="replace").rstrip()
+            if text:
+                yield f"data: {label} {text}\n\n"
+    finally:
+        if proc.returncode is None:
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=2)
+            except asyncio.TimeoutError:
+                proc.kill()
+
+
+@app.get("/isp/pulsewatch/ping/stream/{row_id}")
+async def isp_pulsewatch_ping_stream_one(request: Request, row_id: str):
+    settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    row = find_pulsewatch_row(settings, row_id)
+    if not row:
+        async def _missing():
+            yield "data: Unknown preset\n\n"
+            yield "event: done\ndata: complete\n\n"
+        return StreamingResponse(_missing(), media_type="text/event-stream")
+    label = f"{row.get('core_label')} {row.get('list_name')}".strip()
+    source_ip = (row.get("address") or "").strip()
+    target = _get_first_target(row.get("ping_targets"))
+
+    async def _stream():
+        yield f"data: Starting ping for {label} -> {target}\n\n"
+        async for chunk in _stream_ping_process(request, label, source_ip, target):
+            yield chunk
+        yield "event: done\ndata: complete\n\n"
+
+    return StreamingResponse(_stream(), media_type="text/event-stream")
+
+
+@app.get("/isp/pulsewatch/ping/stream")
+async def isp_pulsewatch_ping_stream_all(request: Request):
+    settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    rows = build_pulsewatch_rows(settings)
+    if not rows:
+        async def _empty():
+            yield "data: No presets available\n\n"
+            yield "event: done\ndata: complete\n\n"
+        return StreamingResponse(_empty(), media_type="text/event-stream")
+
+    queue = asyncio.Queue()
+    tasks = []
+
+    async def _pump(label, source_ip, target):
+        async for chunk in _stream_ping_process(request, label, source_ip, target):
+            await queue.put(chunk)
+        await queue.put(f"data: {label} stopped\n\n")
+        await queue.put(None)
+
+    async def _stream():
+        for row in rows:
+            label = f"{row.get('core_label')} {row.get('list_name')}".strip()
+            source_ip = (row.get("address") or "").strip()
+            target = _get_first_target(row.get("ping_targets"))
+            tasks.append(asyncio.create_task(_pump(label, source_ip, target)))
+        active = len(tasks)
+        while active > 0:
+            if await request.is_disconnected():
+                break
+            try:
+                chunk = await asyncio.wait_for(queue.get(), timeout=0.5)
+            except asyncio.TimeoutError:
+                continue
+            if chunk is None:
+                active -= 1
+                continue
+            yield chunk
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        yield "event: done\ndata: complete\n\n"
+
+    return StreamingResponse(_stream(), media_type="text/event-stream")
 
 
 @app.post("/isp/pulsewatch/ping/{isp_id}", response_class=HTMLResponse)
