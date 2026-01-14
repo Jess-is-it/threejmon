@@ -230,6 +230,7 @@
   let streamParams = {};
   let streamMode = "single";
   const streamPanels = new Map();
+  let streamLabelList = [];
 
   const extractLabel = (line) => {
     const markers = [" PING ", " missing ", " stopped"];
@@ -275,8 +276,18 @@
       freezeBtn.dataset.frozen = frozen ? "false" : "true";
       freezeBtn.textContent = frozen ? "Freeze" : "Unfreeze";
     });
+    const expandBtn = document.createElement("button");
+    expandBtn.type = "button";
+    expandBtn.textContent = "Expand";
+    expandBtn.className = "button-blue";
+    expandBtn.style.fontSize = "12px";
+    expandBtn.style.marginLeft = "6px";
+    expandBtn.dataset.expanded = "false";
     header.appendChild(title);
-    header.appendChild(freezeBtn);
+    const buttonGroup = document.createElement("div");
+    buttonGroup.appendChild(freezeBtn);
+    buttonGroup.appendChild(expandBtn);
+    header.appendChild(buttonGroup);
 
     const pre = document.createElement("pre");
     pre.style.margin = "0";
@@ -287,6 +298,12 @@
     pre.style.whiteSpace = "pre-wrap";
     pre.style.overflow = "auto";
     pre.style.maxHeight = "220px";
+    expandBtn.addEventListener("click", () => {
+      const expanded = expandBtn.dataset.expanded === "true";
+      expandBtn.dataset.expanded = expanded ? "false" : "true";
+      expandBtn.textContent = expanded ? "Expand" : "Collapse";
+      pre.style.maxHeight = expanded ? "220px" : "none";
+    });
 
     wrapper.appendChild(header);
     wrapper.appendChild(pre);
@@ -365,12 +382,27 @@
     streamSource.onmessage = (event) => {
       if (streamMode === "all") {
         const line = event.data || "";
-        const label = extractLabel(line) || "General";
+        let label = "";
+        for (const candidate of streamLabelList) {
+          if (line.startsWith(candidate + " ")) {
+            label = candidate;
+            break;
+          }
+        }
+        if (!label) {
+          label = extractLabel(line) || "";
+        }
+        if (!label || (streamLabelList.length && !streamLabelList.includes(label))) {
+          return;
+        }
         const panel = ensurePanel(label);
         if (!panel) {
           return;
         }
         const message = line.startsWith(label + " ") ? line.slice(label.length + 1) : line;
+        if (message.includes("missing source IP")) {
+          return;
+        }
         panel.pre.textContent += `${message}\n`;
         if (panel.freezeBtn.dataset.frozen !== "true") {
           panel.pre.scrollTop = panel.pre.scrollHeight;
@@ -421,6 +453,7 @@
       streamGrid.innerHTML = "";
       streamGrid.style.display = "none";
     }
+    streamLabelList = [];
   };
 
   if (streamClose) {
@@ -467,6 +500,21 @@
   if (pingAllButton) {
     pingAllButton.addEventListener("click", () => {
       streamMode = "all";
+      streamLabelList = [];
+      const rows = document.querySelectorAll("#pulsewatch_table .pulsewatch-row");
+      rows.forEach((row) => {
+        const addressInput = row.querySelector("input[name$='_address']");
+        const sourceIp = addressInput ? (addressInput.value || "").trim() : "";
+        if (!sourceIp) {
+          return;
+        }
+        const labelCore = row.querySelector("td:nth-child(1)");
+        const labelList = row.querySelector("td:nth-child(2)");
+        const label = `${labelCore ? labelCore.textContent.trim() : ""} ${labelList ? labelList.textContent.trim() : ""}`.trim();
+        if (label) {
+          streamLabelList.push(label);
+        }
+      });
       openStream("Live Ping (All ISPs)", "/isp/pulsewatch/ping/stream");
     });
   }
