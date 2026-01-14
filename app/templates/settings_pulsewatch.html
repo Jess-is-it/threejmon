@@ -159,6 +159,38 @@
       </table>
     </div>
 
+    <h4 style="margin-top: 20px;">Pulsewatch Presets (MikroTik Address Lists)</h4>
+    <div class="help">Lists are loaded from each MikroTik. Fill in the IP address for the list entry you want added.</div>
+    <input type="hidden" name="preset_count" value="{{ preset_rows|length }}" />
+    <div style="overflow-x: auto;">
+      <table style="width: 100%; border-collapse: collapse;">
+        <thead>
+          <tr>
+            <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">MikroTik</th>
+            <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">List</th>
+            <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">IP Address</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in preset_rows %}
+            <tr>
+              <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
+                {{ row.core_label }}
+                <input type="hidden" name="preset_{{ loop.index0 }}_core_id" value="{{ row.core_id }}" />
+              </td>
+              <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
+                {{ row.list_name }}
+                <input type="hidden" name="preset_{{ loop.index0 }}_list" value="{{ row.list_name }}" />
+              </td>
+              <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
+                <input type="text" name="preset_{{ loop.index0 }}_address" value="{{ row.address }}" />
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
     <div style="margin-top: 16px;">
       <button type="submit" class="button-green">Save ISP Pulsewatch Settings</button>
     </div>

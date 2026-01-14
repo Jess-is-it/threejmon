@@ -309,16 +309,25 @@ def _reconcile_mikrotik(cfg, state):
 
     isps = pulse_cfg.get("isps", [])
     cores = pulse_cfg.get("mikrotik", {}).get("cores", [])
+    presets = pulse_cfg.get("list_presets", [])
     desired = {core.get("id"): [] for core in cores if core.get("id")}
-    for idx, isp in enumerate(isps, start=1):
-        list_name = f"TO-ISP{idx}"
-        for core in cores:
-            core_id = core.get("id")
-            if not core_id:
-                continue
-            source_ip = _get_router_source_ip(isp, core_id)
-            if source_ip:
-                desired.setdefault(core_id, []).append({"list": list_name, "address": source_ip})
+    if presets:
+        for preset in presets:
+            core_id = preset.get("core_id")
+            list_name = preset.get("list")
+            address = (preset.get("address") or "").strip()
+            if core_id and list_name and address:
+                desired.setdefault(core_id, []).append({"list": list_name, "address": address})
+    else:
+        for idx, isp in enumerate(isps, start=1):
+            list_name = f"TO-ISP{idx}"
+            for core in cores:
+                core_id = core.get("id")
+                if not core_id:
+                    continue
+                source_ip = _get_router_source_ip(isp, core_id)
+                if source_ip:
+                    desired.setdefault(core_id, []).append({"list": list_name, "address": source_ip})
 
     for core in cores:
         core_id = core.get("id") or "core"

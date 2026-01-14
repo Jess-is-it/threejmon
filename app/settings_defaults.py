@@ -112,6 +112,7 @@ ISP_PING_DEFAULTS = {
         "manage_address_lists": False,
         "reconcile_interval_minutes": 10,
         "store_raw_output": False,
+        "list_presets": [],
         "mikrotik": {
             "cores": [],
         },

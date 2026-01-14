@@ -3,6 +3,7 @@ from pathlib import Path
 import json
 import os
 import shlex
+import shutil
 import subprocess
 
 from fastapi import FastAPI, Request
@@ -73,20 +74,37 @@ def build_pulsewatch_netplan(settings):
     pulsewatch = settings.get("pulsewatch", {})
     cores = pulsewatch.get("mikrotik", {}).get("cores", [])
     isps = pulsewatch.get("isps", [])
+    presets = pulsewatch.get("list_presets", [])
     interface_map = {}
-    for isp in isps:
-        sources = isp.get("sources") or {}
-        for core in cores:
-            core_id = core.get("id")
-            iface = (core.get("interface") or "").strip()
-            if not core_id or not iface:
+    if presets:
+        for preset in presets:
+            core_id = preset.get("core_id")
+            raw_ip = (preset.get("address") or "").strip()
+            if not core_id or not raw_ip:
                 continue
-            raw_ip = (sources.get(core_id) or "").strip()
-            if not raw_ip:
+            core = next((item for item in cores if item.get("id") == core_id), None)
+            if not core:
+                continue
+            iface = (core.get("interface") or "").strip()
+            if not iface:
                 continue
             prefix = str(core.get("prefix") or "24").strip()
             addr = raw_ip if "/" in raw_ip else f"{raw_ip}/{prefix}"
             interface_map.setdefault(iface, set()).add(addr)
+    else:
+        for isp in isps:
+            sources = isp.get("sources") or {}
+            for core in cores:
+                core_id = core.get("id")
+                iface = (core.get("interface") or "").strip()
+                if not core_id or not iface:
+                    continue
+                raw_ip = (sources.get(core_id) or "").strip()
+                if not raw_ip:
+                    continue
+                prefix = str(core.get("prefix") or "24").strip()
+                addr = raw_ip if "/" in raw_ip else f"{raw_ip}/{prefix}"
+                interface_map.setdefault(iface, set()).add(addr)
 
     path = os.path.join(host_dir, "90-threejnotif-pulsewatch.yaml")
     if not interface_map:
@@ -113,8 +131,17 @@ def build_pulsewatch_netplan(settings):
 
 
 def apply_netplan():
+    docker_path = None
+    for candidate in ("/usr/bin/docker", "/usr/local/bin/docker"):
+        if os.path.exists(candidate):
+            docker_path = candidate
+            break
+    if docker_path is None:
+        docker_path = shutil.which("docker")
+    if not docker_path:
+        return False, "Netplan apply skipped (docker CLI not available in container)."
     command = (
-        "docker run --rm --privileged "
+        f"{docker_path} run --rm --privileged "
         "-v /:/host "
         "ubuntu bash -c "
         "\"chroot /host netplan apply\""
@@ -183,7 +210,34 @@ def normalize_pulsewatch_settings(settings):
         if "ping_core_id" not in isp:
             ping_core = isp.get("ping_router")
             isp["ping_core_id"] = ping_core if ping_core in ("core2", "core3") else "auto"
+    pulse.setdefault("list_presets", [])
     return settings
+
+
+def fetch_mikrotik_lists(cores):
+    list_map = {}
+    for core in cores:
+        core_id = core.get("id") or "core"
+        host = core.get("host")
+        if not host:
+            list_map[core_id] = []
+            continue
+        client = RouterOSClient(
+            host,
+            int(core.get("port", 8728)),
+            core.get("username", ""),
+            core.get("password", ""),
+        )
+        try:
+            client.connect()
+            entries = client.list_address_list()
+            names = sorted({entry.get("list") for entry in entries if entry.get("list")})
+            list_map[core_id] = names
+        except Exception:
+            list_map[core_id] = []
+        finally:
+            client.close()
+    return list_map
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -484,9 +538,27 @@ async def isp_settings_save(request: Request):
 @app.get("/settings/pulsewatch", response_class=HTMLResponse)
 async def pulsewatch_settings(request: Request):
     settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    cores = settings.get("pulsewatch", {}).get("mikrotik", {}).get("cores", [])
+    list_map = fetch_mikrotik_lists(cores)
+    preset_rows = []
+    preset_lookup = {
+        (item.get("core_id"), item.get("list")): item.get("address", "")
+        for item in settings.get("pulsewatch", {}).get("list_presets", [])
+    }
+    for core in cores:
+        core_id = core.get("id")
+        for list_name in list_map.get(core_id, []):
+            preset_rows.append(
+                {
+                    "core_id": core_id,
+                    "core_label": core.get("label") or core_id,
+                    "list_name": list_name,
+                    "address": preset_lookup.get((core_id, list_name), ""),
+                }
+            )
     return templates.TemplateResponse(
         "settings_pulsewatch.html",
-        make_context(request, {"settings": settings, "message": ""}),
+        make_context(request, {"settings": settings, "message": "", "preset_rows": preset_rows}),
     )
 
 
@@ -527,6 +599,14 @@ async def pulsewatch_settings_save(request: Request):
                 "cooldown_minutes": parse_int(form, f"{isp_id}_cooldown_minutes", 10),
             }
         )
+    preset_count = parse_int(form, "preset_count", 0)
+    presets = []
+    for idx in range(preset_count):
+        core_id = (form.get(f"preset_{idx}_core_id") or "").strip()
+        list_name = (form.get(f"preset_{idx}_list") or "").strip()
+        address = (form.get(f"preset_{idx}_address") or "").strip()
+        if core_id and list_name:
+            presets.append({"core_id": core_id, "list": list_name, "address": address})
     pulsewatch = current_settings.get("pulsewatch", {})
     pulsewatch.update(
         {
@@ -534,6 +614,7 @@ async def pulsewatch_settings_save(request: Request):
             "manage_address_lists": parse_bool(form, "pulsewatch_manage_address_lists"),
             "reconcile_interval_minutes": parse_int(form, "pulsewatch_reconcile_interval_minutes", 10),
             "store_raw_output": parse_bool(form, "pulsewatch_store_raw_output"),
+            "list_presets": presets,
             "speedtest": {
                 "enabled": parse_bool(form, "speedtest_enabled"),
                 "min_interval_minutes": parse_int(form, "speedtest_min_interval_minutes", 60),
@@ -572,9 +653,27 @@ async def pulsewatch_settings_save(request: Request):
         message = f"{message} {netplan_msg}"
     if apply_msg:
         message = f"{message} {apply_msg}"
+    cores = settings.get("pulsewatch", {}).get("mikrotik", {}).get("cores", [])
+    list_map = fetch_mikrotik_lists(cores)
+    preset_rows = []
+    preset_lookup = {
+        (item.get("core_id"), item.get("list")): item.get("address", "")
+        for item in settings.get("pulsewatch", {}).get("list_presets", [])
+    }
+    for core in cores:
+        core_id = core.get("id")
+        for list_name in list_map.get(core_id, []):
+            preset_rows.append(
+                {
+                    "core_id": core_id,
+                    "core_label": core.get("label") or core_id,
+                    "list_name": list_name,
+                    "address": preset_lookup.get((core_id, list_name), ""),
+                }
+            )
     return templates.TemplateResponse(
         "settings_pulsewatch.html",
-        make_context(request, {"settings": settings, "message": message}),
+        make_context(request, {"settings": settings, "message": message, "preset_rows": preset_rows}),
     )
 
 
@@ -621,9 +720,27 @@ async def pulsewatch_add_isp(request: Request):
         message = f"{message} {netplan_msg}"
     if apply_msg:
         message = f"{message} {apply_msg}"
+    cores = settings.get("pulsewatch", {}).get("mikrotik", {}).get("cores", [])
+    list_map = fetch_mikrotik_lists(cores)
+    preset_rows = []
+    preset_lookup = {
+        (item.get("core_id"), item.get("list")): item.get("address", "")
+        for item in settings.get("pulsewatch", {}).get("list_presets", [])
+    }
+    for core in cores:
+        core_id = core.get("id")
+        for list_name in list_map.get(core_id, []):
+            preset_rows.append(
+                {
+                    "core_id": core_id,
+                    "core_label": core.get("label") or core_id,
+                    "list_name": list_name,
+                    "address": preset_lookup.get((core_id, list_name), ""),
+                }
+            )
     return templates.TemplateResponse(
         "settings_pulsewatch.html",
-        make_context(request, {"settings": settings, "message": message}),
+        make_context(request, {"settings": settings, "message": message, "preset_rows": preset_rows}),
     )
 
 
@@ -688,9 +805,27 @@ async def pulsewatch_create_isp(request: Request):
         message = f"{message} {netplan_msg}"
     if apply_msg:
         message = f"{message} {apply_msg}"
+    cores = settings.get("pulsewatch", {}).get("mikrotik", {}).get("cores", [])
+    list_map = fetch_mikrotik_lists(cores)
+    preset_rows = []
+    preset_lookup = {
+        (item.get("core_id"), item.get("list")): item.get("address", "")
+        for item in settings.get("pulsewatch", {}).get("list_presets", [])
+    }
+    for core in cores:
+        core_id = core.get("id")
+        for list_name in list_map.get(core_id, []):
+            preset_rows.append(
+                {
+                    "core_id": core_id,
+                    "core_label": core.get("label") or core_id,
+                    "list_name": list_name,
+                    "address": preset_lookup.get((core_id, list_name), ""),
+                }
+            )
     return templates.TemplateResponse(
         "settings_pulsewatch.html",
-        make_context(request, {"settings": settings, "message": message}),
+        make_context(request, {"settings": settings, "message": message, "preset_rows": preset_rows}),
     )
 
 
@@ -715,9 +850,27 @@ async def pulsewatch_remove_isp(request: Request, isp_id: str):
         message = f"{message} {netplan_msg}"
     if apply_msg:
         message = f"{message} {apply_msg}"
+    cores = settings.get("pulsewatch", {}).get("mikrotik", {}).get("cores", [])
+    list_map = fetch_mikrotik_lists(cores)
+    preset_rows = []
+    preset_lookup = {
+        (item.get("core_id"), item.get("list")): item.get("address", "")
+        for item in settings.get("pulsewatch", {}).get("list_presets", [])
+    }
+    for core in cores:
+        core_id = core.get("id")
+        for list_name in list_map.get(core_id, []):
+            preset_rows.append(
+                {
+                    "core_id": core_id,
+                    "core_label": core.get("label") or core_id,
+                    "list_name": list_name,
+                    "address": preset_lookup.get((core_id, list_name), ""),
+                }
+            )
     return templates.TemplateResponse(
         "settings_pulsewatch.html",
-        make_context(request, {"settings": settings, "message": message}),
+        make_context(request, {"settings": settings, "message": message, "preset_rows": preset_rows}),
     )
 
 
@@ -749,9 +902,27 @@ async def pulsewatch_settings_test(request: Request):
         message = "Test message sent."
     except TelegramError as exc:
         message = str(exc)
+    cores = settings.get("pulsewatch", {}).get("mikrotik", {}).get("cores", [])
+    list_map = fetch_mikrotik_lists(cores)
+    preset_rows = []
+    preset_lookup = {
+        (item.get("core_id"), item.get("list")): item.get("address", "")
+        for item in settings.get("pulsewatch", {}).get("list_presets", [])
+    }
+    for core in cores:
+        core_id = core.get("id")
+        for list_name in list_map.get(core_id, []):
+            preset_rows.append(
+                {
+                    "core_id": core_id,
+                    "core_label": core.get("label") or core_id,
+                    "list_name": list_name,
+                    "address": preset_lookup.get((core_id, list_name), ""),
+                }
+            )
     return templates.TemplateResponse(
         "settings_pulsewatch.html",
-        make_context(request, {"settings": settings, "message": message}),
+        make_context(request, {"settings": settings, "message": message, "preset_rows": preset_rows}),
     )
 
 
