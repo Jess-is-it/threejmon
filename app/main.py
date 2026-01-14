@@ -1294,8 +1294,14 @@ async def isp_pulsewatch_ping_stream_all(request: Request):
         for row in rows:
             label = f"{row.get('core_label')} {row.get('list_name')}".strip()
             source_ip = (row.get("address") or "").strip()
-            target = _get_first_target(row.get("ping_targets"))
-            tasks.append(asyncio.create_task(_pump(label, source_ip, target)))
+            targets = row.get("ping_targets") or []
+            if not isinstance(targets, list):
+                targets = parse_lines(str(targets))
+            targets = [target.strip() for target in targets if str(target).strip()]
+            if not targets:
+                targets = [_get_first_target(row.get("ping_targets"))]
+            for target in targets:
+                tasks.append(asyncio.create_task(_pump(label, source_ip, target)))
         active = len(tasks)
         while active > 0:
             if await request.is_disconnected():
