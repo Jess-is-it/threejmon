@@ -193,6 +193,19 @@
   </div>
 </div>
 
+<div id="pulsewatch_stream_detail_modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.65); align-items: center; justify-content: center; z-index: 1001;">
+  <div style="background: #0f172a; color: #e2e8f0; border: 1px solid #1f2937; padding: 16px; border-radius: 10px; width: 80vw; max-width: 1100px; max-height: 80vh; display: flex; flex-direction: column;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+      <strong id="pulsewatch_stream_detail_title">ISP Detail</strong>
+      <button type="button" id="pulsewatch_stream_detail_close" style="border: none; background: transparent; font-size: 18px; color: #e2e8f0; cursor: pointer;">&times;</button>
+    </div>
+    <pre id="pulsewatch_stream_detail_output" style="flex: 1; overflow: auto; margin: 0; padding: 10px; background: #0b1020; border: 1px solid #1f2937; border-radius: 8px; white-space: pre-wrap;"></pre>
+    <div style="margin-top: 12px; text-align: right;">
+      <button type="button" class="button-blue" id="pulsewatch_stream_detail_ok">Close</button>
+    </div>
+  </div>
+</div>
+
 <script>
   const modal = document.getElementById("pulsewatch_modal");
   const closeBtn = document.getElementById("pulsewatch_modal_close");
@@ -269,7 +282,8 @@
     freezeBtn.type = "button";
     freezeBtn.textContent = "Freeze";
     freezeBtn.className = "button-blue";
-    freezeBtn.style.fontSize = "12px";
+    freezeBtn.style.fontSize = "11px";
+    freezeBtn.style.padding = "2px 6px";
     freezeBtn.dataset.frozen = "false";
     freezeBtn.addEventListener("click", () => {
       const frozen = freezeBtn.dataset.frozen === "true";
@@ -280,7 +294,8 @@
     expandBtn.type = "button";
     expandBtn.textContent = "Expand";
     expandBtn.className = "button-blue";
-    expandBtn.style.fontSize = "12px";
+    expandBtn.style.fontSize = "11px";
+    expandBtn.style.padding = "2px 6px";
     expandBtn.style.marginLeft = "6px";
     expandBtn.dataset.expanded = "false";
     header.appendChild(title);
@@ -299,10 +314,15 @@
     pre.style.overflow = "auto";
     pre.style.maxHeight = "220px";
     expandBtn.addEventListener("click", () => {
-      const expanded = expandBtn.dataset.expanded === "true";
-      expandBtn.dataset.expanded = expanded ? "false" : "true";
-      expandBtn.textContent = expanded ? "Expand" : "Collapse";
-      pre.style.maxHeight = expanded ? "220px" : "none";
+      const detailModal = document.getElementById("pulsewatch_stream_detail_modal");
+      const detailTitle = document.getElementById("pulsewatch_stream_detail_title");
+      const detailOutput = document.getElementById("pulsewatch_stream_detail_output");
+      if (!detailModal || !detailTitle || !detailOutput) {
+        return;
+      }
+      detailTitle.textContent = label;
+      detailOutput.textContent = pre.textContent || "";
+      detailModal.style.display = "flex";
     });
 
     wrapper.appendChild(header);
@@ -404,6 +424,13 @@
           return;
         }
         panel.pre.textContent += `${message}\n`;
+        const detailModal = document.getElementById("pulsewatch_stream_detail_modal");
+        const detailTitle = document.getElementById("pulsewatch_stream_detail_title");
+        const detailOutput = document.getElementById("pulsewatch_stream_detail_output");
+        if (detailModal && detailTitle && detailOutput && detailModal.style.display === "flex" && detailTitle.textContent === label) {
+          detailOutput.textContent = panel.pre.textContent || "";
+          detailOutput.scrollTop = detailOutput.scrollHeight;
+        }
         if (panel.freezeBtn.dataset.frozen !== "true") {
           panel.pre.scrollTop = panel.pre.scrollHeight;
         }
@@ -453,6 +480,10 @@
       streamGrid.innerHTML = "";
       streamGrid.style.display = "none";
     }
+    const detailModal = document.getElementById("pulsewatch_stream_detail_modal");
+    if (detailModal) {
+      detailModal.style.display = "none";
+    }
     streamLabelList = [];
   };
 
@@ -461,6 +492,30 @@
   }
   if (streamStop) {
     streamStop.addEventListener("click", closeStream);
+  }
+  const detailModal = document.getElementById("pulsewatch_stream_detail_modal");
+  const detailClose = document.getElementById("pulsewatch_stream_detail_close");
+  const detailOk = document.getElementById("pulsewatch_stream_detail_ok");
+  if (detailClose) {
+    detailClose.addEventListener("click", () => {
+      if (detailModal) {
+        detailModal.style.display = "none";
+      }
+    });
+  }
+  if (detailOk) {
+    detailOk.addEventListener("click", () => {
+      if (detailModal) {
+        detailModal.style.display = "none";
+      }
+    });
+  }
+  if (detailModal) {
+    detailModal.addEventListener("click", (event) => {
+      if (event.target === detailModal) {
+        detailModal.style.display = "none";
+      }
+    });
   }
   if (streamModal) {
     streamModal.addEventListener("click", (event) => {
