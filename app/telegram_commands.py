@@ -1,6 +1,11 @@
 import base64
 from datetime import datetime, timezone
 
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
+
 from .notifiers import isp_ping as isp_ping_notifier
 from .settings_store import get_state, save_state
 from .db import utc_now_iso
@@ -46,8 +51,13 @@ def _command_help(settings):
 def _format_ping_results(results_by_isp, label_map, ping_count):
     if not results_by_isp:
         return "No ping results."
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    lines = [f"Ping summary ({now}, ping count={ping_count})"]
+    if ZoneInfo is not None:
+        now = datetime.now(ZoneInfo("Asia/Manila")).strftime("%Y-%m-%d %I:%M:%S %p")
+        stamp = f"{now} PHT"
+    else:
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %I:%M:%S %p")
+        stamp = f"{now} UTC"
+    lines = [f"Ping summary ({stamp}, ping count={ping_count})"]
     for isp_id, results in results_by_isp.items():
         label = label_map.get(isp_id, isp_id)
         if not results:
