@@ -108,15 +108,15 @@
       <table id="pulsewatch_table" style="width: 100%; border-collapse: collapse;">
         <thead>
           <tr>
-            <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">MikroTik</th>
-            <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">List</th>
-            <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">IP Address</th>
-            <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">Latency</th>
-            <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">Loss</th>
-            <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">Breaches</th>
-            <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">Cooldown</th>
-            <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">Targets</th>
-            <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">Actions</th>
+            <th data-sort="text" title="Which MikroTik router this preset belongs to." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">MikroTik</th>
+            <th data-sort="text" title="Address-list name pulled from the MikroTik firewall." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">List</th>
+            <th data-sort="text" title="Source IP to bind for this list (used by ping/speedtest)." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">IP Address</th>
+            <th data-sort="number" title="Latency threshold (ms) before a breach is counted." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Latency</th>
+            <th data-sort="number" title="Packet loss threshold (%) before a breach is counted." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Loss</th>
+            <th data-sort="number" title="How many consecutive breaches trigger an alert." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Breaches</th>
+            <th data-sort="number" title="Cooldown minutes after an alert to avoid repeats." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Cooldown</th>
+            <th data-sort="text" title="Ping targets (one per line) to test for this list." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Targets</th>
+            <th title="Run ping/speedtest actions for this preset." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -315,6 +315,49 @@
 
   if (searchInput) {
     searchInput.addEventListener("input", filterRows);
+  }
+
+  const table = document.getElementById("pulsewatch_table");
+  if (table) {
+    const headers = table.querySelectorAll("thead th[data-sort]");
+    const tbody = table.querySelector("tbody");
+    const sortState = {};
+
+    const getCellValue = (row, index) => {
+      const cell = row.children[index];
+      if (!cell) {
+        return "";
+      }
+      const input = cell.querySelector("input, textarea");
+      if (input) {
+        return (input.value || "").trim();
+      }
+      return (cell.textContent || "").trim();
+    };
+
+    headers.forEach((header, index) => {
+      header.addEventListener("click", () => {
+        const type = header.getAttribute("data-sort") || "text";
+        const current = sortState[index] || "asc";
+        const next = current === "asc" ? "desc" : "asc";
+        sortState[index] = next;
+
+        const sorted = Array.from(tbody.querySelectorAll("tr.pulsewatch-row"));
+        sorted.sort((a, b) => {
+          const aVal = getCellValue(a, index);
+          const bVal = getCellValue(b, index);
+          if (type === "number") {
+            const aNum = parseFloat(aVal) || 0;
+            const bNum = parseFloat(bVal) || 0;
+            return next === "asc" ? aNum - bNum : bNum - aNum;
+          }
+          const compare = aVal.localeCompare(bVal, undefined, { numeric: true, sensitivity: "base" });
+          return next === "asc" ? compare : -compare;
+        });
+
+        sorted.forEach((row) => tbody.appendChild(row));
+      });
+    });
   }
 </script>
 {% endblock %}
