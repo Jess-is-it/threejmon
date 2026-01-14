@@ -173,8 +173,8 @@ def apply_netplan():
 
     payload = {
         "Image": "ubuntu",
-        "Cmd": ["bash", "-c", "chroot /host netplan apply"],
-        "HostConfig": {"Privileged": True, "Binds": ["/:/host"], "AutoRemove": True},
+        "Cmd": ["bash", "-c", "chroot /host netplan apply 2>&1"],
+        "HostConfig": {"Privileged": True, "Binds": ["/:/host"], "AutoRemove": False},
     }
     create_cmd = [
         "curl",
@@ -228,8 +228,30 @@ def apply_netplan():
         status = json.loads(waited.stdout).get("StatusCode", 1)
     except json.JSONDecodeError:
         status = 1
+    logs_cmd = [
+        "curl",
+        "-sS",
+        "--unix-socket",
+        sock,
+        "-X",
+        "GET",
+        f"http://localhost/containers/{container_id}/logs?stdout=1&stderr=1",
+    ]
+    logs = subprocess.run(logs_cmd, capture_output=True, text=True)
+    output = (logs.stdout or logs.stderr or "").strip()
+    delete_cmd = [
+        "curl",
+        "-sS",
+        "--unix-socket",
+        sock,
+        "-X",
+        "DELETE",
+        f"http://localhost/containers/{container_id}?force=1",
+    ]
+    subprocess.run(delete_cmd, capture_output=True, text=True)
     if status != 0:
-        return False, f"Netplan apply failed: container exit {status}"
+        detail = output or f"container exit {status}"
+        return False, f"Netplan apply failed: {detail}"
     return True, "Netplan applied."
 
 
