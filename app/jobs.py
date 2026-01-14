@@ -123,9 +123,13 @@ class JobsManager:
 
             try:
                 state = get_state("telegram_state", {"last_update_id": 0})
+                if state.get("token") != token:
+                    state["last_update_id"] = 0
+                state["token"] = token
                 last_seen = int(state.get("last_update_id") or 0)
                 offset = last_seen + 1
                 updates = get_updates(token, offset=offset, timeout=15)
+                state["last_poll_at"] = utc_now_iso()
                 for update in updates:
                     update_id = update.get("update_id")
                     if update_id is None:
@@ -159,10 +163,12 @@ class JobsManager:
             except TelegramError as exc:
                 state = get_state("telegram_state", {"last_update_id": 0})
                 state["last_error"] = str(exc)
+                state["last_poll_at"] = utc_now_iso()
                 save_state("telegram_state", state)
             except Exception as exc:
                 state = get_state("telegram_state", {"last_update_id": 0})
                 state["last_error"] = f"{type(exc).__name__}: {exc}"
+                state["last_poll_at"] = utc_now_iso()
                 save_state("telegram_state", state)
 
             time_module.sleep(2)
