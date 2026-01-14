@@ -19,39 +19,39 @@
         <div style="font-weight: 700; margin-bottom: 8px;">{{ core.label }}</div>
         <div class="form-grid">
           <div>
-            <label>Core ID</label>
+            <label>Core ID <span class="info" data-tip="Internal identifier for this MikroTik entry.">i</span></label>
             <input type="text" name="{{ core.id }}_id" value="{{ core.id }}" disabled />
           </div>
           <div>
-            <label>Router Name</label>
+            <label>Router Name <span class="info" data-tip="Friendly label shown in Pulsewatch tables.">i</span></label>
             <input type="text" name="{{ core.id }}_label" value="{{ core.label }}" />
           </div>
           <div>
-            <label>Host</label>
+            <label>Host <span class="info" data-tip="MikroTik API IP/hostname for this router.">i</span></label>
             <input type="text" name="{{ core.id }}_host" value="{{ core.host }}" />
           </div>
           <div>
-            <label>Interface</label>
+            <label>Interface <span class="info" data-tip="Linux NIC that carries this router's Pulsewatch source IPs (e.g., enp0s8).">i</span></label>
             <input type="text" name="{{ core.id }}_interface" list="interface_options" value="{{ core.interface }}" />
           </div>
           <div>
-            <label>Prefix</label>
+            <label>Prefix <span class="info" data-tip="CIDR prefix length for the source IPs on this interface (usually 24).">i</span></label>
             <input type="number" name="{{ core.id }}_prefix" value="{{ core.prefix }}" />
           </div>
           <div>
-            <label>Gateway</label>
+            <label>Source IP Gateway <span class="info" data-tip="Default gateway used when traffic is sourced from this core's IPs. Example: 172.16.90.1.">i</span></label>
             <input type="text" name="{{ core.id }}_gateway" value="{{ core.gateway }}" placeholder="e.g. 172.16.90.1" />
           </div>
           <div>
-            <label>Port</label>
+            <label>Port <span class="info" data-tip="MikroTik API port (8728 by default).">i</span></label>
             <input type="number" name="{{ core.id }}_port" value="{{ core.port }}" />
           </div>
           <div>
-            <label>Username</label>
+            <label>Username <span class="info" data-tip="MikroTik API username.">i</span></label>
             <input type="text" name="{{ core.id }}_username" value="{{ core.username }}" />
           </div>
           <div>
-            <label>Password</label>
+            <label>Password <span class="info" data-tip="MikroTik API password.">i</span></label>
             <input type="password" name="{{ core.id }}_password" value="{{ core.password }}" />
           </div>
         </div>
