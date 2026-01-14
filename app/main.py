@@ -1015,9 +1015,7 @@ async def pulsewatch_settings_save(request: Request):
     )
     telegram = dict(current_settings.get("telegram", ISP_PING_DEFAULTS.get("telegram", {})))
     telegram["bot_token"] = form.get("telegram_bot_token", "")
-    telegram["command_chat_id"] = form.get("telegram_command_chat_id", "")
     telegram["alert_channel_id"] = form.get("telegram_alert_channel_id", "")
-    telegram["allowed_user_ids"] = parse_int_list(form.get("telegram_allowed_user_ids", ""))
     settings = {
         "enabled": current_settings.get("enabled", False),
         "telegram": telegram,
@@ -1430,6 +1428,23 @@ async def system_mikrotik_save(request: Request):
         message = f"{message} {netplan_msg}"
     if apply_msg:
         message = f"{message} {apply_msg}"
+    return templates.TemplateResponse(
+        "settings_system.html",
+        make_context(request, {"message": message, "settings": settings, "interfaces": interfaces}),
+    )
+
+
+@app.post("/settings/system/telegram", response_class=HTMLResponse)
+async def system_telegram_save(request: Request):
+    form = await request.form()
+    settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    telegram = dict(settings.get("telegram", ISP_PING_DEFAULTS.get("telegram", {})))
+    telegram["command_chat_id"] = form.get("telegram_command_chat_id", "")
+    telegram["allowed_user_ids"] = parse_int_list(form.get("telegram_allowed_user_ids", ""))
+    settings["telegram"] = telegram
+    save_settings("isp_ping", settings)
+    interfaces = get_interface_options()
+    message = "Telegram command settings saved."
     return templates.TemplateResponse(
         "settings_system.html",
         make_context(request, {"message": message, "settings": settings, "interfaces": interfaces}),

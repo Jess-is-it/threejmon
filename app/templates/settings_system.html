@@ -81,6 +81,26 @@
 </div>
 
 <div class="card" style="margin-top: 20px;">
+  <h2>Telegram Commands</h2>
+  <form method="post" action="/settings/system/telegram">
+    <div class="form-grid">
+      <div>
+        <label>Command Chat ID <span class="info" data-tip="Chat/group ID where users send commands and receive replies.">i</span></label>
+        <input type="text" name="telegram_command_chat_id" value="{{ settings.telegram.command_chat_id }}" />
+      </div>
+      <div>
+        <label>Allowed User IDs <span class="info" data-tip="One Telegram user ID per line for command access control.">i</span></label>
+        <textarea name="telegram_allowed_user_ids">{% for user_id in settings.telegram.allowed_user_ids %}{{ user_id }}
+{% endfor %}</textarea>
+      </div>
+    </div>
+    <div style="margin-top: 12px;">
+      <button type="submit" class="button-green">Save Telegram Command Settings</button>
+    </div>
+  </form>
+</div>
+
+<div class="card" style="margin-top: 20px;">
   <h2>Backup & Restore</h2>
   <div class="status">
     <div><a href="/settings/export">Download settings backup</a></div>

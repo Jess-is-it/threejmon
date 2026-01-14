@@ -26,17 +26,11 @@
         <input type="text" name="telegram_bot_token" value="{{ settings.telegram.bot_token }}" />
       </div>
       <div>
-        <label>Command Chat ID <span class="info" data-tip="Chat/group ID where users send commands and receive replies.">i</span></label>
-        <input type="text" name="telegram_command_chat_id" value="{{ settings.telegram.command_chat_id or settings.telegram.chat_id }}" />
-      </div>
-      <div>
         <label>Alert Channel ID <span class="info" data-tip="Override channel ID for Pulsewatch alerts.">i</span></label>
         <input type="text" name="telegram_alert_channel_id" value="{{ settings.telegram.alert_channel_id }}" />
       </div>
       <div>
-        <label>Allowed User IDs <span class="info" data-tip="One Telegram user ID per line for future commands.">i</span></label>
-        <textarea name="telegram_allowed_user_ids">{% for user_id in settings.telegram.allowed_user_ids %}{{ user_id }}
-{% endfor %}</textarea>
+        <div class="help">Command chat settings live in System Settings.</div>
       </div>
     </div>
 
