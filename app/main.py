@@ -406,7 +406,7 @@ def apply_netplan(interface_map, route_specs):
     ]
     created = run_cmd(create_cmd)
     if created is None:
-        ip_ok, ip_msg = apply_host_addresses(interface_map)
+        ip_ok, ip_msg = apply_host_addresses(interface_map, route_specs)
         return ip_ok, f"Netplan apply timed out. {ip_msg}"
     if created.returncode != 0:
         return False, f"Netplan apply failed: {created.stderr.strip() or created.stdout.strip()}"
@@ -428,7 +428,7 @@ def apply_netplan(interface_map, route_specs):
     ]
     started = run_cmd(start_cmd)
     if started is None:
-        ip_ok, ip_msg = apply_host_addresses(interface_map)
+        ip_ok, ip_msg = apply_host_addresses(interface_map, route_specs)
         return ip_ok, f"Netplan apply timed out. {ip_msg}"
     if started.returncode != 0:
         return False, f"Netplan apply failed: {started.stderr.strip() or started.stdout.strip()}"
@@ -444,7 +444,7 @@ def apply_netplan(interface_map, route_specs):
     ]
     waited = run_cmd(wait_cmd, timeout_seconds=15)
     if waited is None:
-        ip_ok, ip_msg = apply_host_addresses(interface_map)
+        ip_ok, ip_msg = apply_host_addresses(interface_map, route_specs)
         return ip_ok, f"Netplan apply timed out. {ip_msg}"
     if waited.returncode != 0:
         return False, f"Netplan apply failed: {waited.stderr.strip() or waited.stdout.strip()}"
