@@ -243,6 +243,19 @@ async def import_settings_route(request: Request):
         except Exception as exc:
             message = f"Import failed: {exc}"
     settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    if message.startswith("Settings imported"):
+        netplan_msg = None
+        apply_msg = None
+        try:
+            netplan_path, netplan_msg = build_pulsewatch_netplan(settings)
+            if netplan_path:
+                _, apply_msg = apply_netplan()
+        except Exception as exc:
+            apply_msg = f"Netplan update failed: {exc}"
+        if netplan_msg:
+            message = f"{message} {netplan_msg}"
+        if apply_msg:
+            message = f"{message} {apply_msg}"
     interfaces = get_interface_options()
     return templates.TemplateResponse(
         "settings_system.html",
