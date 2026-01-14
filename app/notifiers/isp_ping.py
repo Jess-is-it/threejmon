@@ -6,7 +6,7 @@ import shlex
 import subprocess
 import time as time_module
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 
 try:
     from zoneinfo import ZoneInfo
@@ -215,9 +215,16 @@ def _parse_iso(value):
     try:
         if value.endswith("Z"):
             value = value[:-1] + "+00:00"
-        return datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed
     except ValueError:
         return None
+
+
+def _utcnow():
+    return datetime.now(timezone.utc)
 
 
 def _format_speedtest_command(cfg, source_ip, isp_id):
@@ -328,7 +335,7 @@ def _should_run_reconcile(state, interval_minutes):
     last = _parse_iso(state.get("last_mikrotik_reconcile_at"))
     if not last:
         return True
-    return datetime.utcnow() - last >= timedelta(minutes=interval_minutes)
+    return _utcnow() - last >= timedelta(minutes=interval_minutes)
 
 
 def _reconcile_mikrotik(cfg, state):
@@ -478,13 +485,13 @@ def run_pulsewatch_check(cfg, state, only_isps=None):
         current["last_summary"] = summary
 
         cooldown_until = _parse_iso(current.get("cooldown_until"))
-        if cooldown_until and cooldown_until > datetime.utcnow():
+        if cooldown_until and cooldown_until > _utcnow():
             continue
 
         required_breaches = int(isp.get("consecutive_breach_count", 3) or 1)
         if breach and current["breach_count"] >= required_breaches:
             cooldown_minutes = int(isp.get("cooldown_minutes", 10) or 0)
-            cooldown_until = datetime.utcnow() + timedelta(minutes=cooldown_minutes)
+            cooldown_until = _utcnow() + timedelta(minutes=cooldown_minutes)
             current["cooldown_until"] = cooldown_until.replace(microsecond=0).isoformat() + "Z"
 
             label = isp.get("label") or isp_id
@@ -520,7 +527,7 @@ def run_speedtests(cfg, state, only_isps=None, force=False):
         if not isp_id:
             continue
         last = _parse_iso(last_runs.get(isp_id))
-        if not force and last and datetime.utcnow() - last < timedelta(minutes=min_interval):
+        if not force and last and _utcnow() - last < timedelta(minutes=min_interval):
             messages.append(f"{isp_id} speedtest skipped (rate limit).")
             continue
         try:
