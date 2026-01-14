@@ -393,10 +393,9 @@ def _pulsewatch_summary(results):
 
 def run_pulsewatch_check(cfg, state, only_isps=None):
     pulse_cfg = cfg.get("pulsewatch", {})
+    _reconcile_mikrotik(cfg, state)
     if not pulse_cfg.get("enabled"):
         return state, {}
-
-    _reconcile_mikrotik(cfg, state)
 
     presets = pulse_cfg.get("list_presets", [])
     isps = _isps_from_presets(pulse_cfg) if presets else pulse_cfg.get("isps", [])
