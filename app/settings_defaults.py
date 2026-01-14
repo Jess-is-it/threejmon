@@ -90,6 +90,7 @@ ISP_PING_DEFAULTS = {
     "enabled": False,
     "telegram": {
         "bot_token": "",
+        "command_bot_token": "",
         "chat_id": "",
         "command_chat_id": "",
         "alert_channel_id": "",

@@ -1075,7 +1075,7 @@ async def pulsewatch_settings_test(request: Request):
     settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
     message = ""
     try:
-        token = settings["telegram"].get("bot_token", "")
+        token = settings["telegram"].get("command_bot_token") or settings["telegram"].get("bot_token", "")
         chat_id = settings["telegram"].get("command_chat_id") or settings["telegram"].get("chat_id", "")
         send_telegram(token, chat_id, "ThreeJ Pulsewatch test message.")
         message = "Test message sent."
@@ -1439,6 +1439,7 @@ async def system_telegram_save(request: Request):
     form = await request.form()
     settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
     telegram = dict(settings.get("telegram", ISP_PING_DEFAULTS.get("telegram", {})))
+    telegram["command_bot_token"] = form.get("telegram_command_bot_token", "")
     telegram["command_chat_id"] = form.get("telegram_command_chat_id", "")
     telegram["allowed_user_ids"] = parse_int_list(form.get("telegram_allowed_user_ids", ""))
     settings["telegram"] = telegram

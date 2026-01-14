@@ -113,7 +113,7 @@ class JobsManager:
         while not self.stop_event.is_set():
             cfg = get_settings("isp_ping", ISP_PING_DEFAULTS)
             telegram = cfg.get("telegram", {})
-            token = telegram.get("bot_token", "")
+            token = telegram.get("command_bot_token") or telegram.get("bot_token", "")
             command_chat_id = telegram.get("command_chat_id") or telegram.get("chat_id", "")
             allowed_user_ids = telegram.get("allowed_user_ids", [])
 
