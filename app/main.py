@@ -920,16 +920,26 @@ async def pulsewatch_settings_save(request: Request):
     message = "Saved."
     netplan_msg = None
     apply_msg = None
+    sync_msg = None
     try:
         netplan_path, netplan_msg, interface_map = build_pulsewatch_netplan(settings)
         if netplan_path:
             _, apply_msg = apply_netplan(interface_map)
     except Exception as exc:
         apply_msg = f"Netplan update failed: {exc}"
+    if pulsewatch.get("manage_address_lists"):
+        try:
+            state = {}
+            isp_ping_notifier.run_pulsewatch_check(settings, state, only_isps=[])
+            sync_msg = "MikroTik address-list sync completed."
+        except Exception as exc:
+            sync_msg = f"MikroTik sync failed: {exc}"
     if netplan_msg:
         message = f"{message} {netplan_msg}"
     if apply_msg:
         message = f"{message} {apply_msg}"
+    if sync_msg:
+        message = f"{message} {sync_msg}"
     cores = settings.get("pulsewatch", {}).get("mikrotik", {}).get("cores", [])
     list_map = fetch_mikrotik_lists(cores)
     preset_rows = []
