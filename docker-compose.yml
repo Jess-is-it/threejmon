@@ -7,8 +7,7 @@ services:
         THREEJ_VERSION_DATE: ${THREEJ_VERSION_DATE:-unknown}
     environment:
       THREEJ_HOST_REPO: ${THREEJ_HOST_REPO:-/opt/threejnotif}
-    ports:
-      - "${THREEJ_PORT:-8000}:8000"
+    network_mode: host
     volumes:
       - ./data:/data
       - /var/run/docker.sock:/var/run/docker.sock
