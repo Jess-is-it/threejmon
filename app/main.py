@@ -298,9 +298,12 @@ async def isp_settings_save(request: Request):
     if up_icmp_lines > 20:
         up_icmp_lines = 20
     current_settings = get_settings("isp_ping", ISP_PING_DEFAULTS)
+    telegram = dict(current_settings.get("telegram", ISP_PING_DEFAULTS.get("telegram", {})))
+    telegram["bot_token"] = form.get("telegram_bot_token", "")
+    telegram["chat_id"] = form.get("telegram_chat_id", "")
     settings = {
         "enabled": parse_bool(form, "enabled"),
-        "telegram": current_settings.get("telegram", ISP_PING_DEFAULTS.get("telegram", {})),
+        "telegram": telegram,
         "general": {
             "ping_timeout_seconds": parse_int(form, "ping_timeout_seconds", 1),
             "ping_count": parse_int(form, "ping_count", 5),
