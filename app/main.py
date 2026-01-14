@@ -1013,14 +1013,14 @@ async def pulsewatch_settings_save(request: Request):
             "isps": pulse_isps,
         }
     )
+    telegram = dict(current_settings.get("telegram", ISP_PING_DEFAULTS.get("telegram", {})))
+    telegram["bot_token"] = form.get("telegram_bot_token", "")
+    telegram["command_chat_id"] = form.get("telegram_command_chat_id", "")
+    telegram["alert_channel_id"] = form.get("telegram_alert_channel_id", "")
+    telegram["allowed_user_ids"] = parse_int_list(form.get("telegram_allowed_user_ids", ""))
     settings = {
         "enabled": current_settings.get("enabled", False),
-        "telegram": {
-            "bot_token": form.get("telegram_bot_token", ""),
-            "chat_id": form.get("telegram_chat_id", ""),
-            "alert_channel_id": form.get("telegram_alert_channel_id", ""),
-            "allowed_user_ids": parse_int_list(form.get("telegram_allowed_user_ids", "")),
-        },
+        "telegram": telegram,
         "general": current_settings.get("general", {}),
         "report": current_settings.get("report", {}),
         "targets": current_settings.get("targets", []),
@@ -1078,7 +1078,7 @@ async def pulsewatch_settings_test(request: Request):
     message = ""
     try:
         token = settings["telegram"].get("bot_token", "")
-        chat_id = settings["telegram"].get("chat_id", "")
+        chat_id = settings["telegram"].get("command_chat_id") or settings["telegram"].get("chat_id", "")
         send_telegram(token, chat_id, "ThreeJ Pulsewatch test message.")
         message = "Test message sent."
     except TelegramError as exc:

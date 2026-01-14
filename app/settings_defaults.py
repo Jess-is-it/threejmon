@@ -91,6 +91,7 @@ ISP_PING_DEFAULTS = {
     "telegram": {
         "bot_token": "",
         "chat_id": "",
+        "command_chat_id": "",
         "alert_channel_id": "",
         "allowed_user_ids": [],
     },

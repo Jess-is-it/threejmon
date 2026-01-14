@@ -11,9 +11,10 @@ from .db import update_job_status, utc_now_iso
 from .notifiers import optical as optical_notifier
 from .notifiers import rto as rto_notifier
 from .notifiers import isp_ping as isp_ping_notifier
-from .notifiers.telegram import TelegramError
+from .notifiers.telegram import TelegramError, get_updates, send_telegram
 from .settings_defaults import ISP_PING_DEFAULTS, OPTICAL_DEFAULTS, RTO_DEFAULTS
 from .settings_store import get_settings, get_state, save_state
+from .telegram_commands import handle_telegram_command
 
 
 class JobsManager:
@@ -26,6 +27,7 @@ class JobsManager:
             threading.Thread(target=self._optical_loop, daemon=True),
             threading.Thread(target=self._rto_loop, daemon=True),
             threading.Thread(target=self._isp_loop, daemon=True),
+            threading.Thread(target=self._telegram_loop, daemon=True),
         ]
         for thread in self.threads:
             thread.start()
@@ -106,6 +108,48 @@ class JobsManager:
 
             interval_seconds = int(cfg["general"].get("daemon_interval_seconds", 15))
             time_module.sleep(max(interval_seconds, 1))
+
+    def _telegram_loop(self):
+        while not self.stop_event.is_set():
+            cfg = get_settings("isp_ping", ISP_PING_DEFAULTS)
+            telegram = cfg.get("telegram", {})
+            token = telegram.get("bot_token", "")
+            command_chat_id = telegram.get("command_chat_id") or telegram.get("chat_id", "")
+            allowed_user_ids = telegram.get("allowed_user_ids", [])
+
+            if not token or not command_chat_id:
+                time_module.sleep(5)
+                continue
+
+            try:
+                state = get_state("telegram_state", {"last_update_id": 0})
+                offset = int(state.get("last_update_id") or 0) + 1
+                updates = get_updates(token, offset=offset, timeout=15)
+                for update in updates:
+                    update_id = update.get("update_id")
+                    if update_id is not None:
+                        state["last_update_id"] = max(int(state.get("last_update_id") or 0), int(update_id))
+                    message = update.get("message") or update.get("edited_message")
+                    if not message or "text" not in message:
+                        continue
+                    chat = message.get("chat", {})
+                    chat_id = chat.get("id")
+                    if str(chat_id) != str(command_chat_id):
+                        continue
+                    sender = message.get("from", {})
+                    sender_id = sender.get("id")
+                    if allowed_user_ids and sender_id not in allowed_user_ids:
+                        continue
+                    reply = handle_telegram_command(cfg, message.get("text", ""))
+                    if reply:
+                        send_telegram(token, chat_id, reply)
+                save_state("telegram_state", state)
+            except TelegramError:
+                pass
+            except Exception:
+                pass
+
+            time_module.sleep(2)
 
 
 def parse_time(value):
