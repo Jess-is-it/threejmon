@@ -49,8 +49,11 @@ def make_context(request, extra=None):
 
 
 def get_interface_options():
+    base_dir = "/host_sys_class_net"
+    if not os.path.isdir(base_dir):
+        base_dir = "/sys/class/net"
     try:
-        names = sorted(os.listdir("/sys/class/net"))
+        names = sorted(os.listdir(base_dir))
     except OSError:
         return []
     filtered = []
@@ -61,6 +64,66 @@ def get_interface_options():
             continue
         filtered.append(name)
     return filtered
+
+
+def build_pulsewatch_netplan(settings):
+    host_dir = "/host_netplan"
+    if not os.path.isdir(host_dir):
+        return None, "Host netplan directory is not mounted."
+    pulsewatch = settings.get("pulsewatch", {})
+    cores = pulsewatch.get("mikrotik", {}).get("cores", [])
+    isps = pulsewatch.get("isps", [])
+    interface_map = {}
+    for isp in isps:
+        sources = isp.get("sources") or {}
+        for core in cores:
+            core_id = core.get("id")
+            iface = (core.get("interface") or "").strip()
+            if not core_id or not iface:
+                continue
+            raw_ip = (sources.get(core_id) or "").strip()
+            if not raw_ip:
+                continue
+            prefix = str(core.get("prefix") or "24").strip()
+            addr = raw_ip if "/" in raw_ip else f"{raw_ip}/{prefix}"
+            interface_map.setdefault(iface, set()).add(addr)
+
+    path = os.path.join(host_dir, "90-threejnotif-pulsewatch.yaml")
+    if not interface_map:
+        if os.path.exists(path):
+            os.remove(path)
+            return path, "Netplan file removed (no Pulsewatch IPs configured)."
+        return path, "Netplan unchanged (no Pulsewatch IPs configured)."
+
+    lines = [
+        "network:",
+        "  version: 2",
+        "  renderer: networkd",
+        "  ethernets:",
+    ]
+    for iface in sorted(interface_map.keys()):
+        lines.append(f"    {iface}:")
+        lines.append("      addresses:")
+        for addr in sorted(interface_map[iface]):
+            lines.append(f"        - {addr}")
+    content = "\n".join(lines) + "\n"
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(content)
+    return path, "Netplan file updated."
+
+
+def apply_netplan():
+    command = (
+        "docker run --rm --privileged "
+        "-v /:/host "
+        "ubuntu bash -c "
+        "\"chroot /host netplan apply\""
+    )
+    result = subprocess.run(["/bin/sh", "-c", command], capture_output=True, text=True)
+    if result.returncode != 0:
+        stderr = (result.stderr or result.stdout or "").strip()
+        return False, f"Netplan apply failed: {stderr}"
+    return True, "Netplan applied."
 
 
 def normalize_pulsewatch_settings(settings):
@@ -103,6 +166,7 @@ def normalize_pulsewatch_settings(settings):
         core.setdefault("username", "")
         core.setdefault("password", "")
         core.setdefault("interface", "")
+        core.setdefault("prefix", 24)
 
     for isp in pulse.get("isps", []):
         sources = isp.get("sources")
@@ -482,9 +546,22 @@ async def pulsewatch_settings_save(request: Request):
         "pulsewatch": pulsewatch,
     }
     save_settings("isp_ping", settings)
+    message = "Saved."
+    netplan_msg = None
+    apply_msg = None
+    try:
+        netplan_path, netplan_msg = build_pulsewatch_netplan(settings)
+        if netplan_path:
+            _, apply_msg = apply_netplan()
+    except Exception as exc:
+        apply_msg = f"Netplan update failed: {exc}"
+    if netplan_msg:
+        message = f"{message} {netplan_msg}"
+    if apply_msg:
+        message = f"{message} {apply_msg}"
     return templates.TemplateResponse(
         "settings_pulsewatch.html",
-        make_context(request, {"settings": settings, "message": "Saved."}),
+        make_context(request, {"settings": settings, "message": message}),
     )
 
 
@@ -518,9 +595,22 @@ async def pulsewatch_add_isp(request: Request):
     pulsewatch["isps"] = isps
     settings["pulsewatch"] = pulsewatch
     save_settings("isp_ping", settings)
+    message = "ISP added."
+    netplan_msg = None
+    apply_msg = None
+    try:
+        netplan_path, netplan_msg = build_pulsewatch_netplan(settings)
+        if netplan_path:
+            _, apply_msg = apply_netplan()
+    except Exception as exc:
+        apply_msg = f"Netplan update failed: {exc}"
+    if netplan_msg:
+        message = f"{message} {netplan_msg}"
+    if apply_msg:
+        message = f"{message} {apply_msg}"
     return templates.TemplateResponse(
         "settings_pulsewatch.html",
-        make_context(request, {"settings": settings, "message": "ISP added."}),
+        make_context(request, {"settings": settings, "message": message}),
     )
 
 
@@ -572,9 +662,22 @@ async def pulsewatch_create_isp(request: Request):
     pulsewatch["isps"] = isps
     settings["pulsewatch"] = pulsewatch
     save_settings("isp_ping", settings)
+    message = "ISP created."
+    netplan_msg = None
+    apply_msg = None
+    try:
+        netplan_path, netplan_msg = build_pulsewatch_netplan(settings)
+        if netplan_path:
+            _, apply_msg = apply_netplan()
+    except Exception as exc:
+        apply_msg = f"Netplan update failed: {exc}"
+    if netplan_msg:
+        message = f"{message} {netplan_msg}"
+    if apply_msg:
+        message = f"{message} {apply_msg}"
     return templates.TemplateResponse(
         "settings_pulsewatch.html",
-        make_context(request, {"settings": settings, "message": "ISP created."}),
+        make_context(request, {"settings": settings, "message": message}),
     )
 
 
@@ -586,9 +689,22 @@ async def pulsewatch_remove_isp(request: Request, isp_id: str):
     pulsewatch["isps"] = isps
     settings["pulsewatch"] = pulsewatch
     save_settings("isp_ping", settings)
+    message = f"{isp_id} removed."
+    netplan_msg = None
+    apply_msg = None
+    try:
+        netplan_path, netplan_msg = build_pulsewatch_netplan(settings)
+        if netplan_path:
+            _, apply_msg = apply_netplan()
+    except Exception as exc:
+        apply_msg = f"Netplan update failed: {exc}"
+    if netplan_msg:
+        message = f"{message} {netplan_msg}"
+    if apply_msg:
+        message = f"{message} {apply_msg}"
     return templates.TemplateResponse(
         "settings_pulsewatch.html",
-        make_context(request, {"settings": settings, "message": f"{isp_id} removed."}),
+        make_context(request, {"settings": settings, "message": message}),
     )
 
 
@@ -852,18 +968,29 @@ async def system_mikrotik_save(request: Request):
                 "username": form.get(f"{core_id}_username", ""),
                 "password": form.get(f"{core_id}_password", ""),
                 "interface": form.get(f"{core_id}_interface", ""),
+                "prefix": parse_int(form, f"{core_id}_prefix", 24),
             }
         )
     pulsewatch["mikrotik"] = {"cores": cores}
     settings["pulsewatch"] = pulsewatch
     save_settings("isp_ping", settings)
     interfaces = get_interface_options()
+    message = "MikroTik settings saved."
+    netplan_msg = None
+    apply_msg = None
+    try:
+        netplan_path, netplan_msg = build_pulsewatch_netplan(settings)
+        if netplan_path:
+            _, apply_msg = apply_netplan()
+    except Exception as exc:
+        apply_msg = f"Netplan update failed: {exc}"
+    if netplan_msg:
+        message = f"{message} {netplan_msg}"
+    if apply_msg:
+        message = f"{message} {apply_msg}"
     return templates.TemplateResponse(
         "settings_system.html",
-        make_context(
-            request,
-            {"message": "MikroTik settings saved.", "settings": settings, "interfaces": interfaces},
-        ),
+        make_context(request, {"message": message, "settings": settings, "interfaces": interfaces}),
     )
 
 
@@ -888,15 +1015,29 @@ async def system_mikrotik_add(request: Request):
             "username": "",
             "password": "",
             "interface": "",
+            "prefix": 24,
         }
     )
     mikrotik["cores"] = cores
     pulsewatch["mikrotik"] = mikrotik
     settings["pulsewatch"] = pulsewatch
     save_settings("isp_ping", settings)
+    message = "MikroTik core added."
+    netplan_msg = None
+    apply_msg = None
+    try:
+        netplan_path, netplan_msg = build_pulsewatch_netplan(settings)
+        if netplan_path:
+            _, apply_msg = apply_netplan()
+    except Exception as exc:
+        apply_msg = f"Netplan update failed: {exc}"
+    if netplan_msg:
+        message = f"{message} {netplan_msg}"
+    if apply_msg:
+        message = f"{message} {apply_msg}"
     return templates.TemplateResponse(
         "settings_system.html",
-        make_context(request, {"message": "MikroTik core added.", "settings": settings, "interfaces": interfaces}),
+        make_context(request, {"message": message, "settings": settings, "interfaces": interfaces}),
     )
 
 
@@ -917,9 +1058,22 @@ async def system_mikrotik_remove(request: Request, core_id: str):
     pulsewatch["mikrotik"] = mikrotik
     settings["pulsewatch"] = pulsewatch
     save_settings("isp_ping", settings)
+    message = f"{core_id} removed."
+    netplan_msg = None
+    apply_msg = None
+    try:
+        netplan_path, netplan_msg = build_pulsewatch_netplan(settings)
+        if netplan_path:
+            _, apply_msg = apply_netplan()
+    except Exception as exc:
+        apply_msg = f"Netplan update failed: {exc}"
+    if netplan_msg:
+        message = f"{message} {netplan_msg}"
+    if apply_msg:
+        message = f"{message} {apply_msg}"
     return templates.TemplateResponse(
         "settings_system.html",
-        make_context(request, {"message": f"{core_id} removed.", "settings": settings, "interfaces": interfaces}),
+        make_context(request, {"message": message, "settings": settings, "interfaces": interfaces}),
     )
 
 

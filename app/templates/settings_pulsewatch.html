@@ -81,79 +81,180 @@
     <h4 style="margin-top: 18px;">ISP Profiles</h4>
     <div class="help">Add or remove ISPs as needed. Source IPs are bound to MikroTik cores configured under System Settings.</div>
     {% set cores = settings.pulsewatch.mikrotik.cores %}
-    {% for isp in settings.pulsewatch.isps %}
-      {% set sources = isp.sources if isp.sources is defined else {} %}
-      <div style="margin-top: 12px; padding: 12px; border: 1px dashed #c4c6bf; border-radius: 12px;">
-        <h5 style="margin: 0 0 10px 0;">{{ isp.id | upper }}</h5>
-        <div class="form-grid">
-          <div>
-            <label>Label</label>
-            <input type="text" name="{{ isp.id }}_label" value="{{ isp.label }}" />
-          </div>
-          {% for core in cores %}
-            <div>
-              <label>Source IP ({{ core.label }})</label>
-              <input type="text" name="{{ isp.id }}_source_{{ core.id }}" value="{{ sources.get(core.id, '') }}" />
-            </div>
-          {% endfor %}
-          <div>
-            <label>Ping Source Core</label>
-            <select name="{{ isp.id }}_ping_core_id">
-              <option value="auto" {% if isp.ping_core_id == 'auto' %}selected{% endif %}>auto</option>
-              {% for core in cores %}
-                <option value="{{ core.id }}" {% if isp.ping_core_id == core.id %}selected{% endif %}>{{ core.label }}</option>
-              {% endfor %}
-            </select>
-          </div>
-          <div>
-            <label>Latency Threshold (ms)</label>
-            <input type="number" name="{{ isp.id }}_latency_ms" value="{{ isp.thresholds.latency_ms }}" />
-          </div>
-          <div>
-            <label>Loss Threshold (%)</label>
-            <input type="number" name="{{ isp.id }}_loss_pct" value="{{ isp.thresholds.loss_pct }}" />
-          </div>
-          <div>
-            <label>Consecutive Breaches</label>
-            <input type="number" name="{{ isp.id }}_breach_count" value="{{ isp.consecutive_breach_count }}" />
-          </div>
-          <div>
-            <label>Cooldown Minutes</label>
-            <input type="number" name="{{ isp.id }}_cooldown_minutes" value="{{ isp.cooldown_minutes }}" />
-          </div>
-        </div>
-        <label style="margin-top: 10px;">Ping Targets (one per line)</label>
-        <textarea name="{{ isp.id }}_ping_targets">{% for target in isp.ping_targets %}{{ target }}
-{% endfor %}</textarea>
-        <div style="margin-top: 10px;">
-          <button type="submit" class="button-blue" formaction="/isp/pulsewatch/ping/{{ isp.id }}" formmethod="post">Run Ping</button>
-          <button type="submit" formaction="/isp/pulsewatch/speedtest/{{ isp.id }}" formmethod="post">Run Speedtest</button>
-          <button type="submit" formaction="/settings/pulsewatch/isp/remove/{{ isp.id }}" formmethod="post">Remove ISP</button>
-        </div>
+    <div style="display: flex; justify-content: space-between; align-items: center; margin: 12px 0;">
+      <div>
+        <input type="text" id="pulsewatch_search" placeholder="Search ISP..." style="min-width: 220px;" />
       </div>
-    {% endfor %}
+      <div>
+        <button type="button" id="open_add_isp">Add ISP</button>
+        <button type="submit" formaction="/settings/pulsewatch/test" formmethod="post" style="margin-left: 6px;">Send Test Telegram</button>
+        <button type="submit" class="button-blue" formaction="/isp/pulsewatch/ping" formmethod="post" style="margin-left: 6px;">Run Ping All</button>
+        <button type="submit" formaction="/isp/pulsewatch/speedtest" formmethod="post" style="margin-left: 6px;">Run Speedtest All</button>
+      </div>
+    </div>
+
+    <div style="overflow-x: auto;">
+      <table id="pulsewatch_table" style="width: 100%; border-collapse: collapse;">
+        <thead>
+          <tr>
+            <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">ID</th>
+            <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">Label</th>
+            {% for core in cores %}
+              <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">Src IP ({{ core.label }})</th>
+            {% endfor %}
+            <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">Ping Core</th>
+            <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">Latency</th>
+            <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">Loss</th>
+            <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">Breaches</th>
+            <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">Cooldown</th>
+            <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">Targets</th>
+            <th style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for isp in settings.pulsewatch.isps %}
+            {% set sources = isp.sources if isp.sources is defined else {} %}
+            <tr class="pulsewatch-row">
+              <td style="padding: 8px; border-bottom: 1px solid #efefe7;">{{ isp.id }}</td>
+              <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
+                <input type="text" name="{{ isp.id }}_label" value="{{ isp.label }}" />
+              </td>
+              {% for core in cores %}
+                <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
+                  <input type="text" name="{{ isp.id }}_source_{{ core.id }}" value="{{ sources.get(core.id, '') }}" />
+                </td>
+              {% endfor %}
+              <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
+                <select name="{{ isp.id }}_ping_core_id">
+                  <option value="auto" {% if isp.ping_core_id == 'auto' %}selected{% endif %}>auto</option>
+                  {% for core in cores %}
+                    <option value="{{ core.id }}" {% if isp.ping_core_id == core.id %}selected{% endif %}>{{ core.label }}</option>
+                  {% endfor %}
+                </select>
+              </td>
+              <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
+                <input type="number" name="{{ isp.id }}_latency_ms" value="{{ isp.thresholds.latency_ms }}" style="max-width: 90px;" />
+              </td>
+              <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
+                <input type="number" name="{{ isp.id }}_loss_pct" value="{{ isp.thresholds.loss_pct }}" style="max-width: 70px;" />
+              </td>
+              <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
+                <input type="number" name="{{ isp.id }}_breach_count" value="{{ isp.consecutive_breach_count }}" style="max-width: 70px;" />
+              </td>
+              <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
+                <input type="number" name="{{ isp.id }}_cooldown_minutes" value="{{ isp.cooldown_minutes }}" style="max-width: 80px;" />
+              </td>
+              <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
+                <textarea name="{{ isp.id }}_ping_targets" style="min-width: 160px; min-height: 60px;">{% for target in isp.ping_targets %}{{ target }}
+{% endfor %}</textarea>
+              </td>
+              <td style="padding: 8px; border-bottom: 1px solid #efefe7; white-space: nowrap;">
+                <button type="submit" class="button-blue" title="Run Ping" formaction="/isp/pulsewatch/ping/{{ isp.id }}" formmethod="post">P</button>
+                <button type="submit" title="Run Speedtest" formaction="/isp/pulsewatch/speedtest/{{ isp.id }}" formmethod="post">S</button>
+                <button type="submit" title="Remove ISP" formaction="/settings/pulsewatch/isp/remove/{{ isp.id }}" formmethod="post">X</button>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
 
     <div style="margin-top: 16px;">
       <button type="submit" class="button-green">Save ISP Pulsewatch Settings</button>
     </div>
   </form>
-  <div style="margin-top: 16px;">
-    <form method="post" action="/settings/pulsewatch/isp/add" style="display: inline-block; margin-right: 8px;">
-      <button type="submit">Add ISP</button>
-    </form>
-    <form method="post" action="/settings/pulsewatch/test" style="display: inline-block; margin-right: 8px;">
-      <button type="submit">Send Test Telegram</button>
-    </form>
-  </div>
+</div>
 
-  <div style="margin-top: 16px; padding: 12px; border: 1px dashed #c4c6bf; border-radius: 12px;">
-    <div style="font-weight: 700; margin-bottom: 8px;">Run All</div>
-    <form method="post" action="/isp/pulsewatch/ping" style="display: inline-block; margin-right: 8px;">
-      <button type="submit" class="button-blue">Run Ping Now (All)</button>
-    </form>
-    <form method="post" action="/isp/pulsewatch/speedtest" style="display: inline-block;">
-      <button type="submit">Run Speedtest Now (All)</button>
+<div id="addIspModal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 1000;">
+  <div style="background: #fff; max-width: 720px; margin: 6% auto; padding: 16px; border-radius: 12px;">
+    <h3 style="margin-top: 0;">Add ISP</h3>
+    <form method="post" action="/settings/pulsewatch/isp/create">
+      <div class="form-grid">
+        <div>
+          <label>ISP ID (optional)</label>
+          <input type="text" name="new_id" placeholder="isp10" />
+        </div>
+        <div>
+          <label>Label</label>
+          <input type="text" name="new_label" placeholder="My ISP" />
+        </div>
+        {% for core in cores %}
+          <div>
+            <label>Source IP ({{ core.label }})</label>
+            <input type="text" name="new_source_{{ core.id }}" />
+          </div>
+        {% endfor %}
+        <div>
+          <label>Ping Source Core</label>
+          <select name="new_ping_core_id">
+            <option value="auto">auto</option>
+            {% for core in cores %}
+              <option value="{{ core.id }}">{{ core.label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label>Latency Threshold (ms)</label>
+          <input type="number" name="new_latency_ms" value="120" />
+        </div>
+        <div>
+          <label>Loss Threshold (%)</label>
+          <input type="number" name="new_loss_pct" value="20" />
+        </div>
+        <div>
+          <label>Consecutive Breaches</label>
+          <input type="number" name="new_breach_count" value="3" />
+        </div>
+        <div>
+          <label>Cooldown Minutes</label>
+          <input type="number" name="new_cooldown_minutes" value="10" />
+        </div>
+      </div>
+      <label style="margin-top: 10px;">Ping Targets (one per line)</label>
+      <textarea name="new_ping_targets" style="width: 100%; min-height: 90px;">1.1.1.1
+8.8.8.8</textarea>
+      <div style="margin-top: 12px; display: flex; justify-content: flex-end; gap: 8px;">
+        <button type="button" id="cancel_add_isp">Cancel</button>
+        <button type="submit" class="button-green">Save</button>
+      </div>
     </form>
   </div>
 </div>
+
+<script>
+  const searchInput = document.getElementById("pulsewatch_search");
+  const rows = document.querySelectorAll("#pulsewatch_table .pulsewatch-row");
+  const openAdd = document.getElementById("open_add_isp");
+  const addModal = document.getElementById("addIspModal");
+  const cancelAdd = document.getElementById("cancel_add_isp");
+
+  const filterRows = () => {
+    const query = (searchInput.value || "").toLowerCase();
+    rows.forEach((row) => {
+      const text = row.textContent.toLowerCase();
+      row.style.display = text.includes(query) ? "" : "none";
+    });
+  };
+
+  if (searchInput) {
+    searchInput.addEventListener("input", filterRows);
+  }
+  if (openAdd && addModal) {
+    openAdd.addEventListener("click", () => {
+      addModal.style.display = "block";
+    });
+  }
+  if (cancelAdd && addModal) {
+    cancelAdd.addEventListener("click", () => {
+      addModal.style.display = "none";
+    });
+  }
+  if (addModal) {
+    addModal.addEventListener("click", (event) => {
+      if (event.target === addModal) {
+        addModal.style.display = "none";
+      }
+    });
+  }
+</script>
 {% endblock %}

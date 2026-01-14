@@ -12,4 +12,6 @@ services:
     volumes:
       - ./data:/data
       - /var/run/docker.sock:/var/run/docker.sock
+      - /sys/class/net:/host_sys_class_net:ro
+      - /etc/netplan:/host_netplan:rw
     restart: unless-stopped
