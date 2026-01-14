@@ -113,6 +113,24 @@ ISP_PING_DEFAULTS = {
         "reconcile_interval_minutes": 10,
         "store_raw_output": False,
         "mikrotik": {
+            "cores": [
+                {
+                    "id": "core2",
+                    "label": "Core2",
+                    "host": "192.168.120.253",
+                    "port": 8728,
+                    "username": "",
+                    "password": "",
+                },
+                {
+                    "id": "core3",
+                    "label": "Core3",
+                    "host": "172.16.90.253",
+                    "port": 8728,
+                    "username": "",
+                    "password": "",
+                },
+            ],
             "core2": {
                 "host": "192.168.120.253",
                 "port": 8728,
@@ -141,8 +159,10 @@ ISP_PING_DEFAULTS = {
                 "source_ip": "",
                 "core2_source_ip": "192.168.120.10",
                 "core3_source_ip": "172.16.90.10",
+                "sources": {"core2": "192.168.120.10", "core3": "172.16.90.10"},
                 "router_scope": "both",
                 "ping_router": "auto",
+                "ping_core_id": "auto",
                 "ping_targets": ["1.1.1.1", "8.8.8.8"],
                 "thresholds": {
                     "latency_ms": 120,
@@ -157,8 +177,10 @@ ISP_PING_DEFAULTS = {
                 "source_ip": "",
                 "core2_source_ip": "192.168.120.11",
                 "core3_source_ip": "172.16.90.11",
+                "sources": {"core2": "192.168.120.11", "core3": "172.16.90.11"},
                 "router_scope": "both",
                 "ping_router": "auto",
+                "ping_core_id": "auto",
                 "ping_targets": ["1.1.1.1", "8.8.8.8"],
                 "thresholds": {
                     "latency_ms": 120,
@@ -173,8 +195,10 @@ ISP_PING_DEFAULTS = {
                 "source_ip": "",
                 "core2_source_ip": "192.168.120.12",
                 "core3_source_ip": "172.16.90.12",
+                "sources": {"core2": "192.168.120.12", "core3": "172.16.90.12"},
                 "router_scope": "both",
                 "ping_router": "auto",
+                "ping_core_id": "auto",
                 "ping_targets": ["1.1.1.1", "8.8.8.8"],
                 "thresholds": {
                     "latency_ms": 120,
@@ -189,8 +213,10 @@ ISP_PING_DEFAULTS = {
                 "source_ip": "",
                 "core2_source_ip": "192.168.120.13",
                 "core3_source_ip": "172.16.90.13",
+                "sources": {"core2": "192.168.120.13", "core3": "172.16.90.13"},
                 "router_scope": "both",
                 "ping_router": "auto",
+                "ping_core_id": "auto",
                 "ping_targets": ["1.1.1.1", "8.8.8.8"],
                 "thresholds": {
                     "latency_ms": 120,
@@ -205,8 +231,10 @@ ISP_PING_DEFAULTS = {
                 "source_ip": "",
                 "core2_source_ip": "192.168.120.14",
                 "core3_source_ip": "172.16.90.14",
+                "sources": {"core2": "192.168.120.14", "core3": "172.16.90.14"},
                 "router_scope": "both",
                 "ping_router": "auto",
+                "ping_core_id": "auto",
                 "ping_targets": ["1.1.1.1", "8.8.8.8"],
                 "thresholds": {
                     "latency_ms": 120,

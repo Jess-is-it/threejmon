@@ -24,11 +24,16 @@ RE_TIME = re.compile(r"time=([0-9.]+)\s*ms")
 
 COMMENT_TAG = "threejnotif:pulsewatch"
 
-def _get_router_source_ip(isp, router):
-    router = (router or "").lower()
-    if router == "core2":
+def _get_router_source_ip(isp, core_id):
+    core_id = (core_id or "").lower()
+    sources = isp.get("sources") or {}
+    if isinstance(sources, dict):
+        value = sources.get(core_id)
+        if value:
+            return str(value).strip()
+    if core_id == "core2":
         value = isp.get("core2_source_ip")
-    elif router == "core3":
+    elif core_id == "core3":
         value = isp.get("core3_source_ip")
     else:
         value = None
@@ -39,14 +44,24 @@ def _get_router_source_ip(isp, router):
 
 
 def _get_ping_source_ip(isp):
-    preferred = (isp.get("ping_router") or "auto").lower()
-    core2_ip = _get_router_source_ip(isp, "core2")
-    core3_ip = _get_router_source_ip(isp, "core3")
-    if preferred == "core2":
-        return core2_ip or core3_ip
-    if preferred == "core3":
-        return core3_ip or core2_ip
-    return core2_ip or core3_ip
+    preferred = (isp.get("ping_core_id") or isp.get("ping_router") or "auto").lower()
+    if preferred and preferred != "auto":
+        return _get_router_source_ip(isp, preferred)
+    sources = isp.get("sources") or {}
+    order = []
+    if isinstance(sources, dict):
+        if "core2" in sources:
+            order.append("core2")
+        if "core3" in sources:
+            order.append("core3")
+        for key in sorted(sources.keys()):
+            if key not in order:
+                order.append(key)
+    for core_id in order:
+        value = _get_router_source_ip(isp, core_id)
+        if value:
+            return value
+    return _get_router_source_ip(isp, "core2") or _get_router_source_ip(isp, "core3")
 
 
 def parse_list(values):
@@ -293,34 +308,35 @@ def _reconcile_mikrotik(cfg, state):
         return
 
     isps = pulse_cfg.get("isps", [])
-    desired = {"core2": [], "core3": []}
+    cores = pulse_cfg.get("mikrotik", {}).get("cores", [])
+    desired = {core.get("id"): [] for core in cores if core.get("id")}
     for idx, isp in enumerate(isps, start=1):
         list_name = f"TO-ISP{idx}"
-        scope = (isp.get("router_scope") or "both").lower()
-        core2_ip = _get_router_source_ip(isp, "core2")
-        core3_ip = _get_router_source_ip(isp, "core3")
-        if scope in ("core2", "both") and core2_ip:
-            desired["core2"].append({"list": list_name, "address": core2_ip})
-        if scope in ("core3", "both") and core3_ip:
-            desired["core3"].append({"list": list_name, "address": core3_ip})
+        for core in cores:
+            core_id = core.get("id")
+            if not core_id:
+                continue
+            source_ip = _get_router_source_ip(isp, core_id)
+            if source_ip:
+                desired.setdefault(core_id, []).append({"list": list_name, "address": source_ip})
 
-    for key in ("core2", "core3"):
-        router = pulse_cfg.get("mikrotik", {}).get(key, {})
-        host = router.get("host")
+    for core in cores:
+        core_id = core.get("id") or "core"
+        host = core.get("host")
         if not host:
             continue
         client = RouterOSClient(
             host,
-            int(router.get("port", 8728)),
-            router.get("username", ""),
-            router.get("password", ""),
+            int(core.get("port", 8728)),
+            core.get("username", ""),
+            core.get("password", ""),
         )
         try:
             client.connect()
-            actions, warnings = reconcile_address_lists(client, desired[key], COMMENT_TAG)
+            actions, warnings = reconcile_address_lists(client, desired.get(core_id, []), COMMENT_TAG)
             for warning in warnings:
-                logger.warning("MikroTik %s: %s", key, warning)
-            logger.info("MikroTik %s reconcile actions: %s", key, actions)
+                logger.warning("MikroTik %s: %s", core_id, warning)
+            logger.info("MikroTik %s reconcile actions: %s", core_id, actions)
         finally:
             client.close()
 

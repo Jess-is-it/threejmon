@@ -79,8 +79,10 @@
     </div>
 
     <h4 style="margin-top: 18px;">ISP Profiles</h4>
-    <div class="help">Core2 uses 192.168.120.x (enp0s8). Core3 uses 172.16.90.x (enp0s9).</div>
+    <div class="help">Add or remove ISPs as needed. Source IPs are bound to MikroTik cores configured under System Settings.</div>
+    {% set cores = settings.pulsewatch.mikrotik.cores %}
     {% for isp in settings.pulsewatch.isps %}
+      {% set sources = isp.sources if isp.sources is defined else {} %}
       <div style="margin-top: 12px; padding: 12px; border: 1px dashed #c4c6bf; border-radius: 12px;">
         <h5 style="margin: 0 0 10px 0;">{{ isp.id | upper }}</h5>
         <div class="form-grid">
@@ -88,28 +90,19 @@
             <label>Label</label>
             <input type="text" name="{{ isp.id }}_label" value="{{ isp.label }}" />
           </div>
+          {% for core in cores %}
+            <div>
+              <label>Source IP ({{ core.label }})</label>
+              <input type="text" name="{{ isp.id }}_source_{{ core.id }}" value="{{ sources.get(core.id, '') }}" />
+            </div>
+          {% endfor %}
           <div>
-            <label>Source IP (Core2)</label>
-            <input type="text" name="{{ isp.id }}_core2_source_ip" value="{{ isp.core2_source_ip }}" />
-          </div>
-          <div>
-            <label>Source IP (Core3)</label>
-            <input type="text" name="{{ isp.id }}_core3_source_ip" value="{{ isp.core3_source_ip }}" />
-          </div>
-          <div>
-            <label>Ping Source Router</label>
-            <select name="{{ isp.id }}_ping_router">
-              <option value="auto" {% if isp.ping_router == 'auto' %}selected{% endif %}>auto</option>
-              <option value="core2" {% if isp.ping_router == 'core2' %}selected{% endif %}>core2</option>
-              <option value="core3" {% if isp.ping_router == 'core3' %}selected{% endif %}>core3</option>
-            </select>
-          </div>
-          <div>
-            <label>Router Scope</label>
-            <select name="{{ isp.id }}_router_scope">
-              <option value="core2" {% if isp.router_scope == 'core2' %}selected{% endif %}>core2</option>
-              <option value="core3" {% if isp.router_scope == 'core3' %}selected{% endif %}>core3</option>
-              <option value="both" {% if isp.router_scope == 'both' %}selected{% endif %}>both</option>
+            <label>Ping Source Core</label>
+            <select name="{{ isp.id }}_ping_core_id">
+              <option value="auto" {% if isp.ping_core_id == 'auto' %}selected{% endif %}>auto</option>
+              {% for core in cores %}
+                <option value="{{ core.id }}" {% if isp.ping_core_id == core.id %}selected{% endif %}>{{ core.label }}</option>
+              {% endfor %}
             </select>
           </div>
           <div>
@@ -132,6 +125,11 @@
         <label style="margin-top: 10px;">Ping Targets (one per line)</label>
         <textarea name="{{ isp.id }}_ping_targets">{% for target in isp.ping_targets %}{{ target }}
 {% endfor %}</textarea>
+        <div style="margin-top: 10px;">
+          <button type="submit" class="button-blue" formaction="/isp/pulsewatch/ping/{{ isp.id }}" formmethod="post">Run Ping</button>
+          <button type="submit" formaction="/isp/pulsewatch/speedtest/{{ isp.id }}" formmethod="post">Run Speedtest</button>
+          <button type="submit" formaction="/settings/pulsewatch/isp/remove/{{ isp.id }}" formmethod="post">Remove ISP</button>
+        </div>
       </div>
     {% endfor %}
 
@@ -139,33 +137,23 @@
       <button type="submit" class="button-green">Save ISP Pulsewatch Settings</button>
     </div>
   </form>
-
   <div style="margin-top: 16px;">
+    <form method="post" action="/settings/pulsewatch/isp/add" style="display: inline-block; margin-right: 8px;">
+      <button type="submit">Add ISP</button>
+    </form>
     <form method="post" action="/settings/pulsewatch/test" style="display: inline-block; margin-right: 8px;">
       <button type="submit">Send Test Telegram</button>
     </form>
+  </div>
+
+  <div style="margin-top: 16px; padding: 12px; border: 1px dashed #c4c6bf; border-radius: 12px;">
+    <div style="font-weight: 700; margin-bottom: 8px;">Run All</div>
     <form method="post" action="/isp/pulsewatch/ping" style="display: inline-block; margin-right: 8px;">
       <button type="submit" class="button-blue">Run Ping Now (All)</button>
     </form>
     <form method="post" action="/isp/pulsewatch/speedtest" style="display: inline-block;">
       <button type="submit">Run Speedtest Now (All)</button>
     </form>
-  </div>
-
-  <div style="margin-top: 16px;">
-    {% for isp in settings.pulsewatch.isps %}
-      <div style="margin-top: 14px; padding-top: 12px; border-top: 1px solid #d6d6cf;">
-        <div style="font-weight: 700;">{{ isp.label }}</div>
-        <div style="margin-top: 8px;">
-          <form method="post" action="/isp/pulsewatch/ping/{{ isp.id }}" style="display: inline-block; margin-right: 6px;">
-            <button type="submit" class="button-blue">Run Ping</button>
-          </form>
-          <form method="post" action="/isp/pulsewatch/speedtest/{{ isp.id }}" style="display: inline-block;">
-            <button type="submit">Run Speedtest</button>
-          </form>
-        </div>
-      </div>
-    {% endfor %}
   </div>
 </div>
 {% endblock %}

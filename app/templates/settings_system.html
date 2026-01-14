@@ -10,43 +10,49 @@
 <div class="card" style="margin-top: 20px;">
   <h2>MikroTik API (Pulsewatch)</h2>
   <form method="post" action="/settings/system/mikrotik">
-    <div class="form-grid">
-      <div>
-        <label>Core2 Host</label>
-        <input type="text" name="core2_host" value="{{ settings.pulsewatch.mikrotik.core2.host }}" />
+    {% set cores = settings.pulsewatch.mikrotik.cores %}
+    <textarea name="core_ids" style="display: none;">{% for core in cores %}{{ core.id }}
+{% endfor %}</textarea>
+    {% for core in cores %}
+      <div style="margin-top: 12px; padding: 12px; border: 1px dashed #c4c6bf; border-radius: 12px;">
+        <div style="font-weight: 700; margin-bottom: 8px;">{{ core.label }}</div>
+        <div class="form-grid">
+          <div>
+            <label>Core ID</label>
+            <input type="text" name="{{ core.id }}_id" value="{{ core.id }}" disabled />
+          </div>
+          <div>
+            <label>Label</label>
+            <input type="text" name="{{ core.id }}_label" value="{{ core.label }}" />
+          </div>
+          <div>
+            <label>Host</label>
+            <input type="text" name="{{ core.id }}_host" value="{{ core.host }}" />
+          </div>
+          <div>
+            <label>Port</label>
+            <input type="number" name="{{ core.id }}_port" value="{{ core.port }}" />
+          </div>
+          <div>
+            <label>Username</label>
+            <input type="text" name="{{ core.id }}_username" value="{{ core.username }}" />
+          </div>
+          <div>
+            <label>Password</label>
+            <input type="password" name="{{ core.id }}_password" value="{{ core.password }}" />
+          </div>
+        </div>
+        <div style="margin-top: 8px;">
+          <button type="submit" formaction="/settings/system/mikrotik/remove/{{ core.id }}" formmethod="post">Remove Core</button>
+        </div>
       </div>
-      <div>
-        <label>Core2 Port</label>
-        <input type="number" name="core2_port" value="{{ settings.pulsewatch.mikrotik.core2.port }}" />
-      </div>
-      <div>
-        <label>Core2 Username</label>
-        <input type="text" name="core2_username" value="{{ settings.pulsewatch.mikrotik.core2.username }}" />
-      </div>
-      <div>
-        <label>Core2 Password</label>
-        <input type="password" name="core2_password" value="{{ settings.pulsewatch.mikrotik.core2.password }}" />
-      </div>
-      <div>
-        <label>Core3 Host</label>
-        <input type="text" name="core3_host" value="{{ settings.pulsewatch.mikrotik.core3.host }}" />
-      </div>
-      <div>
-        <label>Core3 Port</label>
-        <input type="number" name="core3_port" value="{{ settings.pulsewatch.mikrotik.core3.port }}" />
-      </div>
-      <div>
-        <label>Core3 Username</label>
-        <input type="text" name="core3_username" value="{{ settings.pulsewatch.mikrotik.core3.username }}" />
-      </div>
-      <div>
-        <label>Core3 Password</label>
-        <input type="password" name="core3_password" value="{{ settings.pulsewatch.mikrotik.core3.password }}" />
-      </div>
-    </div>
+    {% endfor %}
     <div style="margin-top: 12px;">
       <button type="submit" class="button-green">Save MikroTik Settings</button>
     </div>
+  </form>
+  <form method="post" action="/settings/system/mikrotik/add" style="margin-top: 12px;">
+    <button type="submit">Add MikroTik Core</button>
   </form>
   <form method="post" action="/settings/isp/mikrotik/test" style="margin-top: 12px;">
     <button type="submit">Test MikroTik API</button>
