@@ -4,6 +4,18 @@
   <h2>ISP Pulsewatch</h2>
   {% if message %}
     <div class="alert">{{ message }}</div>
+    <div id="pulsewatch_modal" style="position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 1000;">
+      <div style="background: #fffdf4; border: 1px solid #d6d6cf; padding: 18px; border-radius: 10px; min-width: 320px; max-width: 720px; box-shadow: 0 10px 30px rgba(0,0,0,0.2);">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <strong>Pulsewatch Result</strong>
+          <button type="button" id="pulsewatch_modal_close" style="border: none; background: transparent; font-size: 18px; cursor: pointer;">&times;</button>
+        </div>
+        <div style="margin-top: 10px; white-space: pre-wrap;">{{ message }}</div>
+        <div style="margin-top: 14px; text-align: right;">
+          <button type="button" class="button-blue" id="pulsewatch_modal_ok">OK</button>
+        </div>
+      </div>
+    </div>
   {% endif %}
 
   <form method="post">
@@ -155,6 +167,30 @@
 </div>
 
 <script>
+  const modal = document.getElementById("pulsewatch_modal");
+  const closeBtn = document.getElementById("pulsewatch_modal_close");
+  const okBtn = document.getElementById("pulsewatch_modal_ok");
+
+  const closeModal = () => {
+    if (modal) {
+      modal.style.display = "none";
+    }
+  };
+
+  if (closeBtn) {
+    closeBtn.addEventListener("click", closeModal);
+  }
+  if (okBtn) {
+    okBtn.addEventListener("click", closeModal);
+  }
+  if (modal) {
+    modal.addEventListener("click", (event) => {
+      if (event.target === modal) {
+        closeModal();
+      }
+    });
+  }
+
   const searchInput = document.getElementById("pulsewatch_search");
   const rows = document.querySelectorAll("#pulsewatch_table .pulsewatch-row");
 
