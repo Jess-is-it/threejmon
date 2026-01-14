@@ -68,10 +68,7 @@ def get_interface_options():
     return filtered
 
 
-def build_pulsewatch_netplan(settings):
-    host_dir = "/host_netplan"
-    if not os.path.isdir(host_dir):
-        return None, "Host netplan directory is not mounted."
+def compute_pulsewatch_interface_map(settings):
     pulsewatch = settings.get("pulsewatch", {})
     cores = pulsewatch.get("mikrotik", {}).get("cores", [])
     isps = pulsewatch.get("isps", [])
@@ -106,13 +103,20 @@ def build_pulsewatch_netplan(settings):
                 prefix = str(core.get("prefix") or "24").strip()
                 addr = raw_ip if "/" in raw_ip else f"{raw_ip}/{prefix}"
                 interface_map.setdefault(iface, set()).add(addr)
+    return interface_map
 
+
+def build_pulsewatch_netplan(settings):
+    host_dir = "/host_netplan"
+    if not os.path.isdir(host_dir):
+        return None, "Host netplan directory is not mounted.", {}
+    interface_map = compute_pulsewatch_interface_map(settings)
     path = os.path.join(host_dir, "90-threejnotif-pulsewatch.yaml")
     if not interface_map:
         if os.path.exists(path):
             os.remove(path)
-            return path, "Netplan file removed (no Pulsewatch IPs configured)."
-        return path, "Netplan unchanged (no Pulsewatch IPs configured)."
+            return path, "Netplan file removed (no Pulsewatch IPs configured).", interface_map
+        return path, "Netplan unchanged (no Pulsewatch IPs configured).", interface_map
 
     lines = [
         "network:",
@@ -129,10 +133,118 @@ def build_pulsewatch_netplan(settings):
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(content)
     os.chmod(path, 0o600)
-    return path, "Netplan file updated."
+    return path, "Netplan file updated.", interface_map
 
 
-def apply_netplan():
+def apply_host_addresses(interface_map):
+    if not interface_map:
+        return True, "No addresses to apply."
+    sock = "/var/run/docker.sock"
+    if not os.path.exists(sock):
+        return False, "IP apply skipped (docker socket not available)."
+    if not shutil.which("curl"):
+        return False, "IP apply skipped (curl not available in container)."
+
+    lines = []
+    for iface, addrs in interface_map.items():
+        for addr in sorted(addrs):
+            lines.append(f"ip addr add {shlex.quote(addr)} dev {shlex.quote(iface)} || true")
+    script = " ; ".join(lines) if lines else "true"
+
+    pull_cmd = [
+        "curl",
+        "-sS",
+        "--unix-socket",
+        sock,
+        "-X",
+        "POST",
+        "http://localhost/images/create?fromImage=ubuntu&tag=latest",
+    ]
+    pulled = subprocess.run(pull_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if pulled.returncode != 0:
+        return False, f"IP apply failed: {pulled.stderr.strip() or pulled.stdout.strip()}"
+
+    payload = {
+        "Image": "ubuntu",
+        "Cmd": ["bash", "-c", f"chroot /host bash -c {shlex.quote(script)} 2>&1"],
+        "HostConfig": {
+            "Privileged": True,
+            "Binds": ["/:/host"],
+            "AutoRemove": False,
+            "NetworkMode": "host",
+            "PidMode": "host",
+        },
+    }
+    create_cmd = [
+        "curl",
+        "-sS",
+        "--unix-socket",
+        sock,
+        "-H",
+        "Content-Type: application/json",
+        "-X",
+        "POST",
+        "-d",
+        json.dumps(payload),
+        "http://localhost/containers/create",
+    ]
+    created = subprocess.run(create_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if created.returncode != 0:
+        return False, f"IP apply failed: {created.stderr.strip() or created.stdout.strip()}"
+    try:
+        container_id = json.loads(created.stdout).get("Id")
+    except json.JSONDecodeError:
+        container_id = None
+    if not container_id:
+        return False, f"IP apply failed: {created.stdout.strip()}"
+
+    start_cmd = [
+        "curl",
+        "-sS",
+        "--unix-socket",
+        sock,
+        "-X",
+        "POST",
+        f"http://localhost/containers/{container_id}/start",
+    ]
+    started = subprocess.run(start_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if started.returncode != 0:
+        return False, f"IP apply failed: {started.stderr.strip() or started.stdout.strip()}"
+
+    wait_cmd = [
+        "curl",
+        "-sS",
+        "--unix-socket",
+        sock,
+        "-X",
+        "POST",
+        f"http://localhost/containers/{container_id}/wait",
+    ]
+    waited = subprocess.run(wait_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if waited.returncode != 0:
+        return False, f"IP apply failed: {waited.stderr.strip() or waited.stdout.strip()}"
+    try:
+        status = json.loads(waited.stdout).get("StatusCode", 1)
+    except json.JSONDecodeError:
+        status = 1
+
+    delete_cmd = [
+        "curl",
+        "-sS",
+        "--unix-socket",
+        sock,
+        "-X",
+        "DELETE",
+        f"http://localhost/containers/{container_id}?force=1",
+    ]
+    subprocess.run(delete_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+    if status != 0:
+        return False, f"IP apply failed: container exit {status}"
+    return True, "IP addresses applied."
+
+
+def apply_netplan(interface_map):
     def run_cmd(cmd, timeout_seconds=30):
         try:
             return subprocess.run(
@@ -162,7 +274,8 @@ def apply_netplan():
         )
         result = run_cmd(["/bin/sh", "-c", command], timeout_seconds=60)
         if result is None:
-            return False, "Netplan apply failed: docker CLI timed out."
+            ip_ok, ip_msg = apply_host_addresses(interface_map)
+            return ip_ok, f"Netplan apply timed out. {ip_msg}"
         if result.returncode != 0:
             stderr = (result.stderr or result.stdout or "").strip()
             return False, f"Netplan apply failed: {stderr}"
@@ -185,7 +298,8 @@ def apply_netplan():
     ]
     pulled = run_cmd(pull_cmd, timeout_seconds=60)
     if pulled is None:
-        return False, "Netplan apply failed: image pull timed out."
+        ip_ok, ip_msg = apply_host_addresses(interface_map)
+        return ip_ok, f"Netplan apply timed out. {ip_msg}"
     if pulled.returncode != 0:
         return False, f"Netplan apply failed: {pulled.stderr.strip() or pulled.stdout.strip()}"
 
@@ -218,7 +332,8 @@ def apply_netplan():
     ]
     created = run_cmd(create_cmd)
     if created is None:
-        return False, "Netplan apply failed: container create timed out."
+        ip_ok, ip_msg = apply_host_addresses(interface_map)
+        return ip_ok, f"Netplan apply timed out. {ip_msg}"
     if created.returncode != 0:
         return False, f"Netplan apply failed: {created.stderr.strip() or created.stdout.strip()}"
     try:
@@ -239,7 +354,8 @@ def apply_netplan():
     ]
     started = run_cmd(start_cmd)
     if started is None:
-        return False, "Netplan apply failed: container start timed out."
+        ip_ok, ip_msg = apply_host_addresses(interface_map)
+        return ip_ok, f"Netplan apply timed out. {ip_msg}"
     if started.returncode != 0:
         return False, f"Netplan apply failed: {started.stderr.strip() or started.stdout.strip()}"
 
@@ -252,9 +368,10 @@ def apply_netplan():
         "POST",
         f"http://localhost/containers/{container_id}/wait",
     ]
-    waited = run_cmd(wait_cmd, timeout_seconds=60)
+    waited = run_cmd(wait_cmd, timeout_seconds=15)
     if waited is None:
-        return False, "Netplan apply failed: container wait timed out."
+        ip_ok, ip_msg = apply_host_addresses(interface_map)
+        return ip_ok, f"Netplan apply timed out. {ip_msg}"
     if waited.returncode != 0:
         return False, f"Netplan apply failed: {waited.stderr.strip() or waited.stdout.strip()}"
     try:
@@ -443,9 +560,9 @@ async def import_settings_route(request: Request):
         netplan_msg = None
         apply_msg = None
         try:
-            netplan_path, netplan_msg = build_pulsewatch_netplan(settings)
+            netplan_path, netplan_msg, interface_map = build_pulsewatch_netplan(settings)
             if netplan_path:
-                _, apply_msg = apply_netplan()
+                _, apply_msg = apply_netplan(interface_map)
         except Exception as exc:
             apply_msg = f"Netplan update failed: {exc}"
         if netplan_msg:
@@ -804,9 +921,9 @@ async def pulsewatch_settings_save(request: Request):
     netplan_msg = None
     apply_msg = None
     try:
-        netplan_path, netplan_msg = build_pulsewatch_netplan(settings)
+        netplan_path, netplan_msg, interface_map = build_pulsewatch_netplan(settings)
         if netplan_path:
-            _, apply_msg = apply_netplan()
+            _, apply_msg = apply_netplan(interface_map)
     except Exception as exc:
         apply_msg = f"Netplan update failed: {exc}"
     if netplan_msg:
@@ -1135,9 +1252,9 @@ async def system_mikrotik_save(request: Request):
     netplan_msg = None
     apply_msg = None
     try:
-        netplan_path, netplan_msg = build_pulsewatch_netplan(settings)
+        netplan_path, netplan_msg, interface_map = build_pulsewatch_netplan(settings)
         if netplan_path:
-            _, apply_msg = apply_netplan()
+            _, apply_msg = apply_netplan(interface_map)
     except Exception as exc:
         apply_msg = f"Netplan update failed: {exc}"
     if netplan_msg:
@@ -1182,9 +1299,9 @@ async def system_mikrotik_add(request: Request):
     netplan_msg = None
     apply_msg = None
     try:
-        netplan_path, netplan_msg = build_pulsewatch_netplan(settings)
+        netplan_path, netplan_msg, interface_map = build_pulsewatch_netplan(settings)
         if netplan_path:
-            _, apply_msg = apply_netplan()
+            _, apply_msg = apply_netplan(interface_map)
     except Exception as exc:
         apply_msg = f"Netplan update failed: {exc}"
     if netplan_msg:
@@ -1218,9 +1335,9 @@ async def system_mikrotik_remove(request: Request, core_id: str):
     netplan_msg = None
     apply_msg = None
     try:
-        netplan_path, netplan_msg = build_pulsewatch_netplan(settings)
+        netplan_path, netplan_msg, interface_map = build_pulsewatch_netplan(settings)
         if netplan_path:
-            _, apply_msg = apply_netplan()
+            _, apply_msg = apply_netplan(interface_map)
     except Exception as exc:
         apply_msg = f"Netplan update failed: {exc}"
     if netplan_msg:
