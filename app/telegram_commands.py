@@ -2,6 +2,7 @@ import base64
 
 from .notifiers import isp_ping as isp_ping_notifier
 from .settings_store import get_state, save_state
+from .db import utc_now_iso
 
 
 def _preset_id(core_id, list_name):
@@ -41,10 +42,10 @@ def _command_help(settings):
     return "\n".join(lines)
 
 
-def _format_ping_results(results_by_isp, label_map):
+def _format_ping_results(results_by_isp, label_map, ping_count):
     if not results_by_isp:
         return "No ping results."
-    lines = []
+    lines = [f"Ping summary ({utc_now_iso()}, count={ping_count})"]
     for isp_id, results in results_by_isp.items():
         label = label_map.get(isp_id, isp_id)
         if not results:
@@ -129,7 +130,8 @@ def handle_telegram_command(settings, text):
         state = get_state("isp_ping_state", {"pulsewatch": {}})
         state, results = isp_ping_notifier.run_pulsewatch_check(settings, state, force=True)
         save_state("isp_ping_state", state)
-        return _format_ping_results(results, label_map)
+        ping_count = int(settings.get("pulsewatch", {}).get("ping", {}).get("count", 5))
+        return _format_ping_results(results, label_map, ping_count)
 
     if command == "/runping":
         if len(args) < 2:
@@ -142,7 +144,8 @@ def handle_telegram_command(settings, text):
             settings, state, only_isps=[isp_id], force=True
         )
         save_state("isp_ping_state", state)
-        return _format_ping_results(results, label_map)
+        ping_count = int(settings.get("pulsewatch", {}).get("ping", {}).get("count", 5))
+        return _format_ping_results(results, label_map, ping_count)
 
     if command == "/runspeedtestall":
         state = get_state("isp_ping_state", {"pulsewatch": {}})
