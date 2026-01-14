@@ -1462,6 +1462,7 @@ async def system_telegram_save(request: Request):
     telegram["command_bot_token"] = form.get("telegram_command_bot_token", "")
     telegram["command_chat_id"] = form.get("telegram_command_chat_id", "")
     telegram["allowed_user_ids"] = parse_int_list(form.get("telegram_allowed_user_ids", ""))
+    telegram["command_feedback_seconds"] = parse_int(form, "telegram_command_feedback_seconds", 10)
     settings["telegram"] = telegram
     save_settings("isp_ping", settings)
     interfaces = get_interface_options()

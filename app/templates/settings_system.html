@@ -97,6 +97,10 @@
         <textarea name="telegram_allowed_user_ids" placeholder="123456789">{% for user_id in settings.telegram.allowed_user_ids %}{{ user_id }}
 {% endfor %}</textarea>
       </div>
+      <div>
+        <label>Feedback Reply Seconds <span class="info" data-tip="Send a progress reply if a command takes longer than this. Set 0 to disable.">i</span></label>
+        <input type="number" name="telegram_command_feedback_seconds" value="{{ settings.telegram.command_feedback_seconds }}" />
+      </div>
     </div>
     <div style="margin-top: 12px;">
       <button type="submit" class="button-green">Save Telegram Command Settings</button>

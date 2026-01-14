@@ -95,6 +95,7 @@ ISP_PING_DEFAULTS = {
         "command_chat_id": "",
         "alert_channel_id": "",
         "allowed_user_ids": [],
+        "command_feedback_seconds": 10,
     },
     "general": {
         "ping_timeout_seconds": 1,

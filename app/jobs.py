@@ -1,6 +1,7 @@
 import threading
 import time as time_module
 from datetime import datetime, time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 
 try:
     from zoneinfo import ZoneInfo
@@ -110,12 +111,14 @@ class JobsManager:
             time_module.sleep(max(interval_seconds, 1))
 
     def _telegram_loop(self):
+        executor = ThreadPoolExecutor(max_workers=2)
         while not self.stop_event.is_set():
             cfg = get_settings("isp_ping", ISP_PING_DEFAULTS)
             telegram = cfg.get("telegram", {})
             token = telegram.get("command_bot_token") or telegram.get("bot_token", "")
             command_chat_id = (telegram.get("command_chat_id") or "").strip()
             allowed_user_ids = telegram.get("allowed_user_ids", [])
+            feedback_seconds = int(telegram.get("command_feedback_seconds", 10) or 0)
 
             if not token:
                 time_module.sleep(5)
@@ -152,13 +155,27 @@ class JobsManager:
                     if allowed_user_ids and sender_id not in allowed_user_ids:
                         continue
                     text = message.get("text", "")
-                    reply = handle_telegram_command(cfg, text)
                     state["last_command"] = text
                     state["last_command_from"] = sender_id
+                    future = executor.submit(handle_telegram_command, cfg, text)
+                    last_feedback = time_module.time()
+                    sent_feedback = False
+                    while True:
+                        try:
+                            reply = future.result(timeout=1)
+                            break
+                        except FutureTimeout:
+                            if feedback_seconds > 0 and time_module.time() - last_feedback >= feedback_seconds:
+                                send_telegram(token, chat_id, "Working on it, please wait...")
+                                last_feedback = time_module.time()
+                                sent_feedback = True
+                            continue
                     if reply:
                         send_telegram(token, chat_id, reply)
                         state["last_reply"] = reply[:500]
                         state["last_error"] = ""
+                    elif sent_feedback:
+                        state["last_reply"] = "Working on it, please wait..."
                 save_state("telegram_state", state)
             except TelegramError as exc:
                 state = get_state("telegram_state", {"last_update_id": 0})
