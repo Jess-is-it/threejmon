@@ -110,14 +110,63 @@ def compute_pulsewatch_interface_map(settings):
 def build_pulsewatch_netplan(settings):
     host_dir = "/host_netplan"
     if not os.path.isdir(host_dir):
-        return None, "Host netplan directory is not mounted.", {}
+        return None, "Host netplan directory is not mounted.", {}, []
     interface_map = compute_pulsewatch_interface_map(settings)
+    pulsewatch = settings.get("pulsewatch", {})
+    cores = pulsewatch.get("mikrotik", {}).get("cores", [])
+    presets = pulsewatch.get("list_presets", [])
+    isps = pulsewatch.get("isps", [])
+    core_tables = {core.get("id"): 200 + idx for idx, core in enumerate(cores, start=1) if core.get("id")}
+    core_addrs = {}
+    if presets:
+        for preset in presets:
+            core_id = preset.get("core_id")
+            raw_ip = (preset.get("address") or "").strip()
+            if not core_id or not raw_ip:
+                continue
+            core = next((item for item in cores if item.get("id") == core_id), None)
+            if not core:
+                continue
+            prefix = str(core.get("prefix") or "24").strip()
+            addr = raw_ip if "/" in raw_ip else f"{raw_ip}/{prefix}"
+            core_addrs.setdefault(core_id, set()).add(addr)
+    else:
+        for isp in isps:
+            sources = isp.get("sources") or {}
+            for core in cores:
+                core_id = core.get("id")
+                if not core_id:
+                    continue
+                raw_ip = (sources.get(core_id) or "").strip()
+                if not raw_ip:
+                    continue
+                prefix = str(core.get("prefix") or "24").strip()
+                addr = raw_ip if "/" in raw_ip else f"{raw_ip}/{prefix}"
+                core_addrs.setdefault(core_id, set()).add(addr)
+    route_specs = []
+    for core in cores:
+        core_id = core.get("id")
+        iface = (core.get("interface") or "").strip()
+        gateway = (core.get("gateway") or "").strip()
+        table = core_tables.get(core_id)
+        sources = sorted(core_addrs.get(core_id, []))
+        if not core_id or not iface or not gateway or not table or not sources:
+            continue
+        route_specs.append(
+            {
+                "core_id": core_id,
+                "iface": iface,
+                "gateway": gateway,
+                "table": table,
+                "sources": sources,
+            }
+        )
     path = os.path.join(host_dir, "90-threejnotif-pulsewatch.yaml")
     if not interface_map:
         if os.path.exists(path):
             os.remove(path)
-            return path, "Netplan file removed (no Pulsewatch IPs configured).", interface_map
-        return path, "Netplan unchanged (no Pulsewatch IPs configured).", interface_map
+            return path, "Netplan file removed (no Pulsewatch IPs configured).", interface_map, []
+        return path, "Netplan unchanged (no Pulsewatch IPs configured).", interface_map, []
 
     lines = [
         "network:",
@@ -130,14 +179,25 @@ def build_pulsewatch_netplan(settings):
         lines.append("      addresses:")
         for addr in sorted(interface_map[iface]):
             lines.append(f"        - {addr}")
+        spec = next((item for item in route_specs if item["iface"] == iface), None)
+        if spec:
+            lines.append("      routes:")
+            lines.append("        - to: 0.0.0.0/0")
+            lines.append(f"          via: {spec['gateway']}")
+            lines.append(f"          table: {spec['table']}")
+            lines.append("      routing-policy:")
+            for addr in spec["sources"]:
+                ip_only = addr.split("/", 1)[0]
+                lines.append(f"        - from: {ip_only}/32")
+                lines.append(f"          table: {spec['table']}")
     content = "\n".join(lines) + "\n"
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(content)
     os.chmod(path, 0o600)
-    return path, "Netplan file updated.", interface_map
+    return path, "Netplan file updated.", interface_map, route_specs
 
 
-def apply_host_addresses(interface_map):
+def apply_host_addresses(interface_map, route_specs):
     if not interface_map:
         return True, "No addresses to apply."
     sock = "/var/run/docker.sock"
@@ -150,6 +210,19 @@ def apply_host_addresses(interface_map):
     for iface, addrs in interface_map.items():
         for addr in sorted(addrs):
             lines.append(f"ip addr add {shlex.quote(addr)} dev {shlex.quote(iface)} || true")
+    for spec in route_specs:
+        gateway = spec.get("gateway")
+        table = spec.get("table")
+        iface = spec.get("iface")
+        sources = spec.get("sources", [])
+        if not gateway or not table or not iface:
+            continue
+        lines.append(
+            f"ip route replace default via {shlex.quote(gateway)} dev {shlex.quote(iface)} table {int(table)}"
+        )
+        for addr in sources:
+            ip_only = addr.split('/', 1)[0]
+            lines.append(f"ip rule add from {shlex.quote(ip_only)}/32 table {int(table)} || true")
     script = " ; ".join(lines) if lines else "true"
 
     pull_cmd = [
@@ -245,7 +318,7 @@ def apply_host_addresses(interface_map):
     return True, "IP addresses applied."
 
 
-def apply_netplan(interface_map):
+def apply_netplan(interface_map, route_specs):
     def run_cmd(cmd, timeout_seconds=30):
         try:
             return subprocess.run(
@@ -275,7 +348,7 @@ def apply_netplan(interface_map):
         )
         result = run_cmd(["/bin/sh", "-c", command], timeout_seconds=60)
         if result is None:
-            ip_ok, ip_msg = apply_host_addresses(interface_map)
+            ip_ok, ip_msg = apply_host_addresses(interface_map, route_specs)
             return ip_ok, f"Netplan apply timed out. {ip_msg}"
         if result.returncode != 0:
             stderr = (result.stderr or result.stdout or "").strip()
@@ -299,7 +372,7 @@ def apply_netplan(interface_map):
     ]
     pulled = run_cmd(pull_cmd, timeout_seconds=60)
     if pulled is None:
-        ip_ok, ip_msg = apply_host_addresses(interface_map)
+        ip_ok, ip_msg = apply_host_addresses(interface_map, route_specs)
         return ip_ok, f"Netplan apply timed out. {ip_msg}"
     if pulled.returncode != 0:
         return False, f"Netplan apply failed: {pulled.stderr.strip() or pulled.stdout.strip()}"
@@ -449,6 +522,7 @@ def normalize_pulsewatch_settings(settings):
         core.setdefault("password", "")
         core.setdefault("interface", "")
         core.setdefault("prefix", 24)
+        core.setdefault("gateway", "")
 
     for isp in pulse.get("isps", []):
         sources = isp.get("sources")
@@ -624,9 +698,9 @@ async def import_settings_route(request: Request):
         netplan_msg = None
         apply_msg = None
         try:
-            netplan_path, netplan_msg, interface_map = build_pulsewatch_netplan(settings)
+            netplan_path, netplan_msg, interface_map, route_specs = build_pulsewatch_netplan(settings)
             if netplan_path:
-                _, apply_msg = apply_netplan(interface_map)
+                _, apply_msg = apply_netplan(interface_map, route_specs)
         except Exception as exc:
             apply_msg = f"Netplan update failed: {exc}"
         if netplan_msg:
@@ -958,9 +1032,9 @@ async def pulsewatch_settings_save(request: Request):
     apply_msg = None
     sync_msg = None
     try:
-        netplan_path, netplan_msg, interface_map = build_pulsewatch_netplan(settings)
+        netplan_path, netplan_msg, interface_map, route_specs = build_pulsewatch_netplan(settings)
         if netplan_path:
-            _, apply_msg = apply_netplan(interface_map)
+            _, apply_msg = apply_netplan(interface_map, route_specs)
     except Exception as exc:
         apply_msg = f"Netplan update failed: {exc}"
     if pulsewatch.get("manage_address_lists"):
@@ -1336,6 +1410,7 @@ async def system_mikrotik_save(request: Request):
                 "password": form.get(f"{core_id}_password", ""),
                 "interface": form.get(f"{core_id}_interface", ""),
                 "prefix": parse_int(form, f"{core_id}_prefix", 24),
+                "gateway": form.get(f"{core_id}_gateway", ""),
             }
         )
     pulsewatch["mikrotik"] = {"cores": cores}
@@ -1346,9 +1421,9 @@ async def system_mikrotik_save(request: Request):
     netplan_msg = None
     apply_msg = None
     try:
-        netplan_path, netplan_msg, interface_map = build_pulsewatch_netplan(settings)
+        netplan_path, netplan_msg, interface_map, route_specs = build_pulsewatch_netplan(settings)
         if netplan_path:
-            _, apply_msg = apply_netplan(interface_map)
+            _, apply_msg = apply_netplan(interface_map, route_specs)
     except Exception as exc:
         apply_msg = f"Netplan update failed: {exc}"
     if netplan_msg:
@@ -1383,6 +1458,7 @@ async def system_mikrotik_add(request: Request):
             "password": "",
             "interface": "",
             "prefix": 24,
+            "gateway": "",
         }
     )
     mikrotik["cores"] = cores
@@ -1393,9 +1469,9 @@ async def system_mikrotik_add(request: Request):
     netplan_msg = None
     apply_msg = None
     try:
-        netplan_path, netplan_msg, interface_map = build_pulsewatch_netplan(settings)
+        netplan_path, netplan_msg, interface_map, route_specs = build_pulsewatch_netplan(settings)
         if netplan_path:
-            _, apply_msg = apply_netplan(interface_map)
+            _, apply_msg = apply_netplan(interface_map, route_specs)
     except Exception as exc:
         apply_msg = f"Netplan update failed: {exc}"
     if netplan_msg:
@@ -1429,9 +1505,9 @@ async def system_mikrotik_remove(request: Request, core_id: str):
     netplan_msg = None
     apply_msg = None
     try:
-        netplan_path, netplan_msg, interface_map = build_pulsewatch_netplan(settings)
+        netplan_path, netplan_msg, interface_map, route_specs = build_pulsewatch_netplan(settings)
         if netplan_path:
-            _, apply_msg = apply_netplan(interface_map)
+            _, apply_msg = apply_netplan(interface_map, route_specs)
     except Exception as exc:
         apply_msg = f"Netplan update failed: {exc}"
     if netplan_msg:
