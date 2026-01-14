@@ -488,6 +488,68 @@
     };
   };
 
+  const startStreamAll = (url) => {
+    if (!url) {
+      return;
+    }
+    if (streamSource) {
+      streamSource.close();
+    }
+    streamSource = new EventSource(url);
+    streamSource.onmessage = (event) => {
+      if (streamMode !== "all") {
+        return;
+      }
+      const line = event.data || "";
+      let label = "";
+      for (const candidate of streamLabelList) {
+        if (line.startsWith(candidate + " ")) {
+          label = candidate;
+          break;
+        }
+      }
+      if (!label) {
+        label = extractLabel(line) || "";
+      }
+      if (!label || (streamLabelList.length && !streamLabelList.includes(label))) {
+        return;
+      }
+      const panel = streamPanels.get(label);
+      if (!panel) {
+        return;
+      }
+      const message = line.startsWith(label + " ") ? line.slice(label.length + 1) : line;
+      if (message.includes("missing source IP")) {
+        return;
+      }
+      const selectedTarget = panel.targetSelect ? panel.targetSelect.value : "";
+      if (selectedTarget && !message.includes(selectedTarget)) {
+        return;
+      }
+      panel.pre.textContent += `${message}\n`;
+      const detailModal = document.getElementById("pulsewatch_stream_detail_modal");
+      const detailTitle = document.getElementById("pulsewatch_stream_detail_title");
+      const detailOutput = document.getElementById("pulsewatch_stream_detail_output");
+      if (detailModal && detailTitle && detailOutput && detailModal.style.display === "flex" && detailTitle.textContent === label) {
+        detailOutput.textContent = panel.pre.textContent || "";
+        detailOutput.scrollTop = detailOutput.scrollHeight;
+      }
+      if (panel.freezeBtn.dataset.frozen !== "true") {
+        panel.pre.scrollTop = panel.pre.scrollHeight;
+      }
+    };
+    streamSource.addEventListener("done", () => {
+      streamSource.close();
+      streamSource = null;
+    });
+    streamSource.onerror = () => {
+      if (streamSource) {
+        streamSource.close();
+        streamSource = null;
+      }
+    };
+  };
+
   const openAllModal = (title) => {
     if (!streamModal || !streamOutput) {
       return;
@@ -643,7 +705,7 @@
           });
         }
       });
-      openStream("Live Ping (All ISPs)", "/isp/pulsewatch/ping/stream");
+      startStreamAll("/isp/pulsewatch/ping/stream");
     });
   }
 
