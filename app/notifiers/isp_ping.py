@@ -13,7 +13,7 @@ try:
 except Exception:
     ZoneInfo = None
 
-from ..db import insert_alert_log, insert_ping_result, insert_speedtest_result, utc_now_iso
+from ..db import delete_pulsewatch_older_than, insert_alert_log, insert_ping_result, insert_speedtest_result, utc_now_iso
 from ..mikrotik import RouterOSClient, reconcile_address_lists
 from .telegram import send_telegram
 
@@ -398,8 +398,22 @@ def _pulsewatch_summary(results):
     return loss_max, avg_max
 
 
+def _purge_pulsewatch_data(cfg, state):
+    pulse_cfg = cfg.get("pulsewatch", {})
+    retention_days = int(pulse_cfg.get("retention_days", 0) or 0)
+    if retention_days <= 0:
+        return
+    last_run = _parse_iso(state.get("last_pulsewatch_prune_at"))
+    if last_run and _utcnow() - last_run < timedelta(hours=24):
+        return
+    cutoff = _utcnow() - timedelta(days=retention_days)
+    delete_pulsewatch_older_than(cutoff.replace(microsecond=0).isoformat() + "Z")
+    state["last_pulsewatch_prune_at"] = _utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
 def run_pulsewatch_check(cfg, state, only_isps=None, force=False):
     pulse_cfg = cfg.get("pulsewatch", {})
+    _purge_pulsewatch_data(cfg, state)
     _reconcile_mikrotik(cfg, state)
     if not pulse_cfg.get("enabled") and not force:
         return state, {}

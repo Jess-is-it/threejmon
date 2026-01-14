@@ -1001,6 +1001,7 @@ async def pulsewatch_settings_save(request: Request):
             "manage_address_lists": parse_bool(form, "pulsewatch_manage_address_lists"),
             "reconcile_interval_minutes": parse_int(form, "pulsewatch_reconcile_interval_minutes", 10),
             "store_raw_output": parse_bool(form, "pulsewatch_store_raw_output"),
+            "retention_days": parse_int(form, "pulsewatch_retention_days", 14),
             "list_presets": presets,
             "speedtest": {
                 "enabled": parse_bool(form, "speedtest_enabled"),

@@ -294,3 +294,14 @@ def get_latest_ping_results(isp_id, limit=5):
         return [dict(row) for row in rows]
     finally:
         conn.close()
+
+
+def delete_pulsewatch_older_than(cutoff_iso):
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM ping_results WHERE timestamp < ?", (cutoff_iso,))
+            conn.execute("DELETE FROM speedtest_results WHERE timestamp < ?", (cutoff_iso,))
+            conn.execute("DELETE FROM alerts_log WHERE timestamp < ?", (cutoff_iso,))
+    finally:
+        conn.close()

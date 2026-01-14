@@ -50,6 +50,10 @@
         <label>Store raw output <span class="info" data-tip="Persist raw ping/speedtest output in the database.">i</span></label>
         <input type="checkbox" name="pulsewatch_store_raw_output" {% if settings.pulsewatch.store_raw_output %}checked{% endif %} />
       </div>
+      <div>
+        <label>Retention Days <span class="info" data-tip="Auto-delete Pulsewatch results older than this many days.">i</span></label>
+        <input type="number" name="pulsewatch_retention_days" value="{{ settings.pulsewatch.retention_days }}" />
+      </div>
     </div>
     <div class="help">MikroTik API credentials are managed under System Settings.</div>
 
