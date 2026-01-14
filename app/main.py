@@ -1031,7 +1031,7 @@ async def pulsewatch_settings_save(request: Request):
         "pulsewatch": pulsewatch,
     }
     save_settings("isp_ping", settings)
-    message = "Saved."
+    message_lines = ["Saved Pulsewatch settings."]
     netplan_msg = None
     apply_msg = None
     sync_msg = None
@@ -1049,11 +1049,21 @@ async def pulsewatch_settings_save(request: Request):
         except Exception as exc:
             sync_msg = f"MikroTik sync failed: {exc}"
     if netplan_msg:
-        message = f"{message} {netplan_msg}"
+        if "Netplan file updated" in netplan_msg:
+            message_lines.append("Network IPs updated.")
+        else:
+            message_lines.append(netplan_msg)
     if apply_msg:
-        message = f"{message} {apply_msg}"
+        if "Netplan apply timed out" in apply_msg:
+            message_lines.append("Applied IPs directly (netplan timeout).")
+        else:
+            message_lines.append(apply_msg)
     if sync_msg:
-        message = f"{message} {sync_msg}"
+        if "sync completed" in sync_msg:
+            message_lines.append("MikroTik address-lists synced.")
+        else:
+            message_lines.append(sync_msg)
+    message = "\n".join(message_lines)
     return render_pulsewatch_response(request, settings, message)
 
 
