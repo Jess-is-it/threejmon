@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>ISP Pulsewatch</h2>
+  {% if message %}
+    <div class="alert">{{ message }}</div>
+  {% endif %}
+
+  <form method="post">
+    <h3>Telegram</h3>
+    <div class="form-grid">
+      <div>
+        <label>Bot Token <span class="info" data-tip="Telegram bot token from BotFather.">i</span></label>
+        <input type="text" name="telegram_bot_token" value="{{ settings.telegram.bot_token }}" />
+      </div>
+      <div>
+        <label>Chat ID <span class="info" data-tip="Target Telegram chat ID where alerts should be sent.">i</span></label>
+        <input type="text" name="telegram_chat_id" value="{{ settings.telegram.chat_id }}" />
+      </div>
+      <div>
+        <label>Alert Channel ID <span class="info" data-tip="Override channel ID for Pulsewatch alerts.">i</span></label>
+        <input type="text" name="telegram_alert_channel_id" value="{{ settings.telegram.alert_channel_id }}" />
+      </div>
+      <div>
+        <label>Allowed User IDs <span class="info" data-tip="One Telegram user ID per line for future commands.">i</span></label>
+        <textarea name="telegram_allowed_user_ids">{% for user_id in settings.telegram.allowed_user_ids %}{{ user_id }}
+{% endfor %}</textarea>
+      </div>
+    </div>
+
+    <h3>Pulsewatch</h3>
+    <div class="toggle" style="margin-bottom: 12px;">
+      <input type="checkbox" name="pulsewatch_enabled" id="pulsewatch_enabled" {% if settings.pulsewatch.enabled %}checked{% endif %} />
+      <label for="pulsewatch_enabled">Enable ISP Pulsewatch</label>
+    </div>
+
+    <div class="form-grid">
+      <div>
+        <label>Auto-manage MikroTik address-lists <span class="info" data-tip="Keeps TO-ISP# address-lists in sync for Pulsewatch source IPs.">i</span></label>
+        <input type="checkbox" name="pulsewatch_manage_address_lists" {% if settings.pulsewatch.manage_address_lists %}checked{% endif %} />
+      </div>
+      <div>
+        <label>Reconcile Interval (minutes) <span class="info" data-tip="How often to reconcile MikroTik address-lists.">i</span></label>
+        <input type="number" name="pulsewatch_reconcile_interval_minutes" value="{{ settings.pulsewatch.reconcile_interval_minutes }}" />
+      </div>
+      <div>
+        <label>Store raw output <span class="info" data-tip="Persist raw ping/speedtest output in the database.">i</span></label>
+        <input type="checkbox" name="pulsewatch_store_raw_output" {% if settings.pulsewatch.store_raw_output %}checked{% endif %} />
+      </div>
+    </div>
+    <div class="help">MikroTik API credentials are managed under System Settings.</div>
+
+    <h4 style="margin-top: 18px;">Pulsewatch Speedtest</h4>
+    <div class="form-grid">
+      <div>
+        <label>Enable Speedtest</label>
+        <input type="checkbox" name="speedtest_enabled" {% if settings.pulsewatch.speedtest.enabled %}checked{% endif %} />
+      </div>
+      <div>
+        <label>Min Interval (minutes)</label>
+        <input type="number" name="speedtest_min_interval_minutes" value="{{ settings.pulsewatch.speedtest.min_interval_minutes }}" />
+      </div>
+      <div>
+        <label>Command</label>
+        <input type="text" name="speedtest_command" value="{{ settings.pulsewatch.speedtest.command }}" />
+      </div>
+      <div>
+        <label>Args</label>
+        <input type="text" name="speedtest_args" value="{{ settings.pulsewatch.speedtest.args }}" />
+      </div>
+      <div>
+        <label>Use network namespaces</label>
+        <input type="checkbox" name="speedtest_use_netns" {% if settings.pulsewatch.speedtest.use_netns %}checked{% endif %} />
+      </div>
+      <div>
+        <label>Netns Prefix</label>
+        <input type="text" name="speedtest_netns_prefix" value="{{ settings.pulsewatch.speedtest.netns_prefix }}" />
+      </div>
+    </div>
+
+    <h4 style="margin-top: 18px;">ISP Profiles</h4>
+    <div class="help">Core2 uses 192.168.120.x (enp0s8). Core3 uses 172.16.90.x (enp0s9).</div>
+    {% for isp in settings.pulsewatch.isps %}
+      <div style="margin-top: 12px; padding: 12px; border: 1px dashed #c4c6bf; border-radius: 12px;">
+        <h5 style="margin: 0 0 10px 0;">{{ isp.id | upper }}</h5>
+        <div class="form-grid">
+          <div>
+            <label>Label</label>
+            <input type="text" name="{{ isp.id }}_label" value="{{ isp.label }}" />
+          </div>
+          <div>
+            <label>Source IP (Core2)</label>
+            <input type="text" name="{{ isp.id }}_core2_source_ip" value="{{ isp.core2_source_ip }}" />
+          </div>
+          <div>
+            <label>Source IP (Core3)</label>
+            <input type="text" name="{{ isp.id }}_core3_source_ip" value="{{ isp.core3_source_ip }}" />
+          </div>
+          <div>
+            <label>Ping Source Router</label>
+            <select name="{{ isp.id }}_ping_router">
+              <option value="auto" {% if isp.ping_router == 'auto' %}selected{% endif %}>auto</option>
+              <option value="core2" {% if isp.ping_router == 'core2' %}selected{% endif %}>core2</option>
+              <option value="core3" {% if isp.ping_router == 'core3' %}selected{% endif %}>core3</option>
+            </select>
+          </div>
+          <div>
+            <label>Router Scope</label>
+            <select name="{{ isp.id }}_router_scope">
+              <option value="core2" {% if isp.router_scope == 'core2' %}selected{% endif %}>core2</option>
+              <option value="core3" {% if isp.router_scope == 'core3' %}selected{% endif %}>core3</option>
+              <option value="both" {% if isp.router_scope == 'both' %}selected{% endif %}>both</option>
+            </select>
+          </div>
+          <div>
+            <label>Latency Threshold (ms)</label>
+            <input type="number" name="{{ isp.id }}_latency_ms" value="{{ isp.thresholds.latency_ms }}" />
+          </div>
+          <div>
+            <label>Loss Threshold (%)</label>
+            <input type="number" name="{{ isp.id }}_loss_pct" value="{{ isp.thresholds.loss_pct }}" />
+          </div>
+          <div>
+            <label>Consecutive Breaches</label>
+            <input type="number" name="{{ isp.id }}_breach_count" value="{{ isp.consecutive_breach_count }}" />
+          </div>
+          <div>
+            <label>Cooldown Minutes</label>
+            <input type="number" name="{{ isp.id }}_cooldown_minutes" value="{{ isp.cooldown_minutes }}" />
+          </div>
+        </div>
+        <label style="margin-top: 10px;">Ping Targets (one per line)</label>
+        <textarea name="{{ isp.id }}_ping_targets">{% for target in isp.ping_targets %}{{ target }}
+{% endfor %}</textarea>
+      </div>
+    {% endfor %}
+
+    <div style="margin-top: 16px;">
+      <button type="submit" class="button-green">Save ISP Pulsewatch Settings</button>
+    </div>
+  </form>
+
+  <div style="margin-top: 16px;">
+    <form method="post" action="/settings/pulsewatch/test" style="display: inline-block; margin-right: 8px;">
+      <button type="submit">Send Test Telegram</button>
+    </form>
+    <form method="post" action="/isp/pulsewatch/ping" style="display: inline-block; margin-right: 8px;">
+      <button type="submit" class="button-blue">Run Ping Now (All)</button>
+    </form>
+    <form method="post" action="/isp/pulsewatch/speedtest" style="display: inline-block;">
+      <button type="submit">Run Speedtest Now (All)</button>
+    </form>
+  </div>
+
+  <div style="margin-top: 16px;">
+    {% for isp in settings.pulsewatch.isps %}
+      <div style="margin-top: 14px; padding-top: 12px; border-top: 1px solid #d6d6cf;">
+        <div style="font-weight: 700;">{{ isp.label }}</div>
+        <div style="margin-top: 8px;">
+          <form method="post" action="/isp/pulsewatch/ping/{{ isp.id }}" style="display: inline-block; margin-right: 6px;">
+            <button type="submit" class="button-blue">Run Ping</button>
+          </form>
+          <form method="post" action="/isp/pulsewatch/speedtest/{{ isp.id }}" style="display: inline-block;">
+            <button type="submit">Run Speedtest</button>
+          </form>
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

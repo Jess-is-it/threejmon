@@ -1,20 +1,52 @@
-import os
+import json
+import logging
 import re
+import shlex
 import subprocess
 import time as time_module
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 
 try:
     from zoneinfo import ZoneInfo
 except Exception:
     ZoneInfo = None
 
+from ..db import insert_alert_log, insert_ping_result, insert_speedtest_result, utc_now_iso
+from ..mikrotik import RouterOSClient, reconcile_address_lists
 from .telegram import send_telegram
+
+logger = logging.getLogger(__name__)
 
 RE_BYTES = re.compile(r"(\d+)\s+bytes from")
 RE_TTL = re.compile(r"ttl=(\d+)")
 RE_TIME = re.compile(r"time=([0-9.]+)\s*ms")
+
+COMMENT_TAG = "threejnotif:pulsewatch"
+
+def _get_router_source_ip(isp, router):
+    router = (router or "").lower()
+    if router == "core2":
+        value = isp.get("core2_source_ip")
+    elif router == "core3":
+        value = isp.get("core3_source_ip")
+    else:
+        value = None
+    if value:
+        return str(value).strip()
+    legacy = isp.get("source_ip")
+    return str(legacy).strip() if legacy else ""
+
+
+def _get_ping_source_ip(isp):
+    preferred = (isp.get("ping_router") or "auto").lower()
+    core2_ip = _get_router_source_ip(isp, "core2")
+    core3_ip = _get_router_source_ip(isp, "core3")
+    if preferred == "core2":
+        return core2_ip or core3_ip
+    if preferred == "core3":
+        return core3_ip or core2_ip
+    return core2_ip or core3_ip
 
 
 def parse_list(values):
@@ -52,6 +84,43 @@ def ping_ip(ip, timeout_seconds, count):
         replies.append("Request timed out.")
 
     return replies
+
+
+def ping_with_source(ip, source_ip, timeout_seconds, count):
+    cmd = ["ping", "-c", str(count), "-W", str(timeout_seconds)]
+    if source_ip:
+        cmd.extend(["-I", source_ip])
+    cmd.append(ip)
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    output = result.stdout or ""
+    replies = 0
+    times = []
+    for line in output.splitlines():
+        if "bytes from" in line:
+            replies += 1
+        time_match = RE_TIME.search(line)
+        if time_match:
+            times.append(float(time_match.group(1)))
+    loss = 100.0
+    if count > 0:
+        loss = round(100.0 * (count - replies) / count, 1)
+    min_ms = min(times) if times else None
+    max_ms = max(times) if times else None
+    avg_ms = round(sum(times) / len(times), 1) if times else None
+    return {
+        "loss": loss,
+        "min_ms": min_ms,
+        "avg_ms": avg_ms,
+        "max_ms": max_ms,
+        "raw_output": output,
+        "replies": replies,
+    }
 
 
 def parse_daily_time(value):
@@ -92,6 +161,320 @@ def build_report_message(now, results):
         lines.append(f"{item['label']} ({item['ip']}) | {status}")
         lines.extend(item["icmp_lines"])
     return "\n".join(lines)
+
+
+def _parse_iso(value):
+    if not value:
+        return None
+    try:
+        if value.endswith("Z"):
+            value = value[:-1] + "+00:00"
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _format_speedtest_command(cfg, source_ip, isp_id):
+    speed_cfg = cfg["pulsewatch"]["speedtest"]
+    cmd = [speed_cfg.get("command") or "speedtest"]
+    args = speed_cfg.get("args") or ""
+    if args:
+        cmd.extend(shlex.split(args))
+
+    if speed_cfg.get("use_netns"):
+        netns = f"{speed_cfg.get('netns_prefix', 'isp')}{isp_id}"
+        cmd = ["ip", "netns", "exec", netns] + cmd
+        return cmd
+
+    if source_ip and "--source" not in args and "--interface" not in args:
+        cmd.extend(["--source", source_ip])
+    return cmd
+
+
+def _parse_speedtest_json(raw_output):
+    data = json.loads(raw_output)
+    download_mbps = None
+    upload_mbps = None
+    latency_ms = None
+    server_name = None
+    server_id = None
+    public_ip = None
+
+    if isinstance(data, dict):
+        if "download" in data and isinstance(data["download"], dict):
+            bandwidth = data["download"].get("bandwidth")
+            if bandwidth is not None:
+                download_mbps = round(bandwidth * 8 / 1_000_000, 2)
+        elif "download" in data and isinstance(data["download"], (int, float)):
+            download_mbps = round(float(data["download"]) / 1_000_000, 2)
+
+        if "upload" in data and isinstance(data["upload"], dict):
+            bandwidth = data["upload"].get("bandwidth")
+            if bandwidth is not None:
+                upload_mbps = round(bandwidth * 8 / 1_000_000, 2)
+        elif "upload" in data and isinstance(data["upload"], (int, float)):
+            upload_mbps = round(float(data["upload"]) / 1_000_000, 2)
+
+        ping = data.get("ping") or {}
+        if isinstance(ping, dict):
+            latency_ms = ping.get("latency")
+
+        server = data.get("server") or {}
+        if isinstance(server, dict):
+            server_name = server.get("name")
+            server_id = server.get("id")
+
+        interface = data.get("interface") or {}
+        if isinstance(interface, dict):
+            public_ip = interface.get("externalIp")
+
+    return {
+        "download_mbps": download_mbps,
+        "upload_mbps": upload_mbps,
+        "latency_ms": latency_ms,
+        "server_name": server_name,
+        "server_id": server_id,
+        "public_ip": public_ip,
+    }
+
+
+def _run_speedtest(cfg, isp):
+    source_ip = _get_ping_source_ip(isp)
+    cmd = _format_speedtest_command(cfg, source_ip, isp.get("id"))
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stdout or "Speedtest failed.")
+    raw_output = result.stdout.strip()
+    if not raw_output:
+        raise RuntimeError("Speedtest returned empty output.")
+    parsed = _parse_speedtest_json(raw_output)
+    if parsed["download_mbps"] is None or parsed["upload_mbps"] is None:
+        raise RuntimeError("Speedtest JSON missing bandwidth fields.")
+    if not cfg["pulsewatch"].get("store_raw_output"):
+        raw_output = None
+    insert_speedtest_result(
+        isp.get("id"),
+        parsed["download_mbps"],
+        parsed["upload_mbps"],
+        parsed.get("latency_ms"),
+        parsed.get("server_name"),
+        parsed.get("server_id"),
+        parsed.get("public_ip"),
+        raw_output=raw_output,
+    )
+    return parsed
+
+
+def _select_alert_chat_id(cfg):
+    alert_channel = cfg["telegram"].get("alert_channel_id")
+    return alert_channel or cfg["telegram"].get("chat_id", "")
+
+
+def _should_run_reconcile(state, interval_minutes):
+    if interval_minutes <= 0:
+        return True
+    last = _parse_iso(state.get("last_mikrotik_reconcile_at"))
+    if not last:
+        return True
+    return datetime.utcnow() - last >= timedelta(minutes=interval_minutes)
+
+
+def _reconcile_mikrotik(cfg, state):
+    pulse_cfg = cfg.get("pulsewatch", {})
+    if not pulse_cfg.get("manage_address_lists"):
+        return
+    if not _should_run_reconcile(state, int(pulse_cfg.get("reconcile_interval_minutes", 10))):
+        return
+
+    isps = pulse_cfg.get("isps", [])
+    desired = {"core2": [], "core3": []}
+    for idx, isp in enumerate(isps, start=1):
+        list_name = f"TO-ISP{idx}"
+        scope = (isp.get("router_scope") or "both").lower()
+        core2_ip = _get_router_source_ip(isp, "core2")
+        core3_ip = _get_router_source_ip(isp, "core3")
+        if scope in ("core2", "both") and core2_ip:
+            desired["core2"].append({"list": list_name, "address": core2_ip})
+        if scope in ("core3", "both") and core3_ip:
+            desired["core3"].append({"list": list_name, "address": core3_ip})
+
+    for key in ("core2", "core3"):
+        router = pulse_cfg.get("mikrotik", {}).get(key, {})
+        host = router.get("host")
+        if not host:
+            continue
+        client = RouterOSClient(
+            host,
+            int(router.get("port", 8728)),
+            router.get("username", ""),
+            router.get("password", ""),
+        )
+        try:
+            client.connect()
+            actions, warnings = reconcile_address_lists(client, desired[key], COMMENT_TAG)
+            for warning in warnings:
+                logger.warning("MikroTik %s: %s", key, warning)
+            logger.info("MikroTik %s reconcile actions: %s", key, actions)
+        finally:
+            client.close()
+
+    state["last_mikrotik_reconcile_at"] = utc_now_iso()
+
+
+def _pulsewatch_summary(results):
+    loss_values = [item["loss"] for item in results if item.get("loss") is not None]
+    avg_values = [item["avg_ms"] for item in results if item.get("avg_ms") is not None]
+    loss_max = max(loss_values) if loss_values else None
+    avg_max = max(avg_values) if avg_values else None
+    return loss_max, avg_max
+
+
+def run_pulsewatch_check(cfg, state, only_isps=None):
+    pulse_cfg = cfg.get("pulsewatch", {})
+    if not pulse_cfg.get("enabled"):
+        return state, {}
+
+    _reconcile_mikrotik(cfg, state)
+
+    isps = pulse_cfg.get("isps", [])
+    if only_isps is not None:
+        isps = [isp for isp in isps if isp.get("id") in only_isps]
+
+    timeout_seconds = int(cfg["general"].get("ping_timeout_seconds", 1))
+    ping_count = int(cfg["general"].get("ping_count", 5))
+    max_workers = int(cfg["general"].get("max_parallel_pings", 8))
+
+    tasks = {}
+    results_by_isp = {isp.get("id"): [] for isp in isps}
+    with ThreadPoolExecutor(max_workers=max(max_workers, 1)) as executor:
+        for isp in isps:
+            isp_id = isp.get("id")
+            source_ip = _get_ping_source_ip(isp)
+            targets = parse_list(isp.get("ping_targets", []))
+            if not source_ip or not targets:
+                continue
+            for target in targets:
+                future = executor.submit(ping_with_source, target, source_ip, timeout_seconds, ping_count)
+                tasks[future] = (isp_id, target)
+
+        for future in as_completed(tasks):
+            isp_id, target = tasks[future]
+            try:
+                result = future.result()
+            except Exception as exc:
+                logger.exception("Pulsewatch ping failed for %s %s", isp_id, target)
+                result = {"loss": 100.0, "min_ms": None, "avg_ms": None, "max_ms": None, "raw_output": str(exc)}
+            if not cfg["pulsewatch"].get("store_raw_output"):
+                result["raw_output"] = None
+            insert_ping_result(
+                isp_id,
+                target,
+                result.get("loss"),
+                result.get("min_ms"),
+                result.get("avg_ms"),
+                result.get("max_ms"),
+                raw_output=result.get("raw_output"),
+            )
+            results_by_isp.setdefault(isp_id, []).append({"target": target, **result})
+
+    pulse_state = state.setdefault("pulsewatch", {})
+    isp_state = pulse_state.setdefault("isps", {})
+
+    for isp in isps:
+        isp_id = isp.get("id")
+        if not isp_id:
+            continue
+        results = results_by_isp.get(isp_id, [])
+        loss_max, avg_max = _pulsewatch_summary(results)
+        thresholds = isp.get("thresholds", {})
+        latency_threshold = float(thresholds.get("latency_ms", 0) or 0)
+        loss_threshold = float(thresholds.get("loss_pct", 0) or 0)
+        breach = False
+        if loss_max is not None and loss_threshold and loss_max >= loss_threshold:
+            breach = True
+        if avg_max is not None and latency_threshold and avg_max >= latency_threshold:
+            breach = True
+
+        current = isp_state.setdefault(
+            isp_id,
+            {
+                "breach_count": 0,
+                "cooldown_until": "",
+                "last_summary": {},
+            },
+        )
+        if breach:
+            current["breach_count"] = int(current.get("breach_count", 0)) + 1
+        else:
+            current["breach_count"] = 0
+
+        summary = {
+            "loss_max": loss_max,
+            "avg_max": avg_max,
+            "last_check": utc_now_iso(),
+        }
+        current["last_summary"] = summary
+
+        cooldown_until = _parse_iso(current.get("cooldown_until"))
+        if cooldown_until and cooldown_until > datetime.utcnow():
+            continue
+
+        required_breaches = int(isp.get("consecutive_breach_count", 3) or 1)
+        if breach and current["breach_count"] >= required_breaches:
+            cooldown_minutes = int(isp.get("cooldown_minutes", 10) or 0)
+            cooldown_until = datetime.utcnow() + timedelta(minutes=cooldown_minutes)
+            current["cooldown_until"] = cooldown_until.replace(microsecond=0).isoformat() + "Z"
+
+            label = isp.get("label") or isp_id
+            loss_text = "n/a" if loss_max is None else f"{loss_max}%"
+            avg_text = "n/a" if avg_max is None else f"{avg_max}ms"
+            message = (
+                f"Pulsewatch Alert: {label} sustained high latency/loss. "
+                f"Loss max {loss_text}, Avg max {avg_text}."
+            )
+            send_telegram(cfg["telegram"].get("bot_token", ""), _select_alert_chat_id(cfg), message)
+            insert_alert_log(isp_id, "pulsewatch_threshold", message, current["cooldown_until"])
+
+    return state, results_by_isp
+
+
+def run_speedtests(cfg, state, only_isps=None, force=False):
+    pulse_cfg = cfg.get("pulsewatch", {})
+    if not pulse_cfg.get("enabled") or not pulse_cfg.get("speedtest", {}).get("enabled"):
+        return {}, ["Speedtest is disabled."]
+
+    isps = pulse_cfg.get("isps", [])
+    if only_isps:
+        isps = [isp for isp in isps if isp.get("id") in only_isps]
+
+    messages = []
+    results = {}
+    last_runs = state.setdefault("pulsewatch", {}).setdefault("speedtest_last", {})
+    min_interval = int(pulse_cfg.get("speedtest", {}).get("min_interval_minutes", 60))
+
+    for isp in isps:
+        isp_id = isp.get("id")
+        if not isp_id:
+            continue
+        last = _parse_iso(last_runs.get(isp_id))
+        if not force and last and datetime.utcnow() - last < timedelta(minutes=min_interval):
+            messages.append(f"{isp_id} speedtest skipped (rate limit).")
+            continue
+        try:
+            result = _run_speedtest(cfg, isp)
+            results[isp_id] = result
+            last_runs[isp_id] = utc_now_iso()
+        except Exception as exc:
+            logger.exception("Speedtest failed for %s", isp_id)
+            messages.append(f"{isp_id} speedtest failed: {exc}")
+
+    return results, messages
 
 
 def run_check(cfg, state, force_report=False):
@@ -153,10 +536,15 @@ def run_check(cfg, state, force_report=False):
                 )
             state.setdefault("last_status", {})[target["ip"]] = "up" if up else "down"
 
-    if force_report or should_send_report(cfg, state, now):
-        send_telegram(cfg["telegram"].get("bot_token", ""), cfg["telegram"].get("chat_id", ""), build_report_message(now, results))
+    if targets and (force_report or should_send_report(cfg, state, now)):
+        send_telegram(
+            cfg["telegram"].get("bot_token", ""),
+            cfg["telegram"].get("chat_id", ""),
+            build_report_message(now, results),
+        )
         state["last_report_date"] = now.date().isoformat()
 
+    state, _ = run_pulsewatch_check(cfg, state)
     return state
 
 

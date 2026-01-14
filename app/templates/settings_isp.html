@@ -10,18 +10,7 @@
       <input type="checkbox" name="enabled" id="enabled" {% if settings.enabled %}checked{% endif %} />
       <label for="enabled">Enable ISP ping notifier</label>
     </div>
-
-    <h3>Telegram</h3>
-    <div class="form-grid">
-      <div>
-        <label>Bot Token <span class="info" data-tip="Telegram bot token from BotFather.">i</span></label>
-        <input type="text" name="telegram_bot_token" value="{{ settings.telegram.bot_token }}" />
-      </div>
-      <div>
-        <label>Chat ID <span class="info" data-tip="Target Telegram chat ID where alerts should be sent.">i</span></label>
-        <input type="text" name="telegram_chat_id" value="{{ settings.telegram.chat_id }}" />
-      </div>
-    </div>
+    <div class="help">Telegram settings are managed under ISP Pulsewatch.</div>
 
     <h3>Ping</h3>
     <div class="form-grid">
@@ -64,7 +53,7 @@
       </div>
     </div>
 
-    <h3>Targets</h3>
+    <h3>Legacy Targets</h3>
     <label>Targets (ip | label | down_message | up_message) <span class="info" data-tip="One target per line. Only IP is required; label and messages are optional.">i</span></label>
     <textarea name="targets">{% for item in settings.targets %}{{ item.ip }} | {{ item.label }} | {{ item.down_message }} | {{ item.up_message }}
 {% endfor %}</textarea>

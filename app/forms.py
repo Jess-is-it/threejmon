@@ -31,6 +31,16 @@ def parse_lines(text):
     return lines
 
 
+def parse_int_list(text):
+    values = []
+    for item in parse_lines(text):
+        try:
+            values.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return values
+
+
 def parse_targets(text):
     targets = []
     for line in parse_lines(text):

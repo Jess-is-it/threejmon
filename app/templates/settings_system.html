@@ -8,6 +8,69 @@
 </div>
 
 <div class="card" style="margin-top: 20px;">
+  <h2>MikroTik API (Pulsewatch)</h2>
+  <form method="post" action="/settings/system/mikrotik">
+    <div class="form-grid">
+      <div>
+        <label>Core2 Host</label>
+        <input type="text" name="core2_host" value="{{ settings.pulsewatch.mikrotik.core2.host }}" />
+      </div>
+      <div>
+        <label>Core2 Port</label>
+        <input type="number" name="core2_port" value="{{ settings.pulsewatch.mikrotik.core2.port }}" />
+      </div>
+      <div>
+        <label>Core2 Username</label>
+        <input type="text" name="core2_username" value="{{ settings.pulsewatch.mikrotik.core2.username }}" />
+      </div>
+      <div>
+        <label>Core2 Password</label>
+        <input type="password" name="core2_password" value="{{ settings.pulsewatch.mikrotik.core2.password }}" />
+      </div>
+      <div>
+        <label>Core3 Host</label>
+        <input type="text" name="core3_host" value="{{ settings.pulsewatch.mikrotik.core3.host }}" />
+      </div>
+      <div>
+        <label>Core3 Port</label>
+        <input type="number" name="core3_port" value="{{ settings.pulsewatch.mikrotik.core3.port }}" />
+      </div>
+      <div>
+        <label>Core3 Username</label>
+        <input type="text" name="core3_username" value="{{ settings.pulsewatch.mikrotik.core3.username }}" />
+      </div>
+      <div>
+        <label>Core3 Password</label>
+        <input type="password" name="core3_password" value="{{ settings.pulsewatch.mikrotik.core3.password }}" />
+      </div>
+    </div>
+    <div style="margin-top: 12px;">
+      <button type="submit" class="button-green">Save MikroTik Settings</button>
+    </div>
+  </form>
+  <form method="post" action="/settings/isp/mikrotik/test" style="margin-top: 12px;">
+    <button type="submit">Test MikroTik API</button>
+  </form>
+  <form method="post" action="/settings/isp/mikrotik/sync" style="margin-top: 12px;">
+    <button type="submit" class="button-blue">Sync MikroTik Address-Lists</button>
+  </form>
+</div>
+
+<div class="card" style="margin-top: 20px;">
+  <h2>Backup & Restore</h2>
+  <div class="status">
+    <div><a href="/settings/export">Download settings backup</a></div>
+  </div>
+  <form method="post" action="/settings/import" enctype="multipart/form-data" style="margin-top: 12px;">
+    <label>Restore from JSON file</label>
+    <input type="file" name="settings_file" accept="application/json" />
+    <div style="margin-top: 10px;">
+      <button type="submit">Import Settings</button>
+    </div>
+  </form>
+</div>
+
+<div class="card" style="margin-top: 20px;">
   <h2>Uninstall</h2>
   <div class="alert">Warning: This will remove Docker, all containers/images/volumes, and delete the app files. This action is irreversible.</div>
   <p class="help">Type UNINSTALL to confirm.</p>

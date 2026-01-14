@@ -42,6 +42,49 @@ def init_db():
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ping_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                isp_id TEXT NOT NULL,
+                target TEXT NOT NULL,
+                loss REAL,
+                min_ms REAL,
+                avg_ms REAL,
+                max_ms REAL,
+                raw_output TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS speedtest_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                isp_id TEXT NOT NULL,
+                download_mbps REAL,
+                upload_mbps REAL,
+                latency_ms REAL,
+                server_name TEXT,
+                server_id TEXT,
+                public_ip TEXT,
+                raw_output TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS alerts_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                isp_id TEXT NOT NULL,
+                alert_type TEXT NOT NULL,
+                message TEXT NOT NULL,
+                cooldown_until TEXT
+            )
+            """
+        )
     conn.close()
 
 
@@ -136,5 +179,118 @@ def fetch_all_settings():
     try:
         rows = conn.execute("SELECT key, value FROM settings").fetchall()
         return {row["key"]: row["value"] for row in rows}
+    finally:
+        conn.close()
+
+
+def insert_ping_result(isp_id, target, loss, min_ms, avg_ms, max_ms, raw_output=None, timestamp=None):
+    stamp = timestamp or utc_now_iso()
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO ping_results (timestamp, isp_id, target, loss, min_ms, avg_ms, max_ms, raw_output)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (stamp, isp_id, target, loss, min_ms, avg_ms, max_ms, raw_output),
+            )
+    finally:
+        conn.close()
+
+
+def insert_speedtest_result(
+    isp_id,
+    download_mbps,
+    upload_mbps,
+    latency_ms,
+    server_name,
+    server_id,
+    public_ip,
+    raw_output=None,
+    timestamp=None,
+):
+    stamp = timestamp or utc_now_iso()
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO speedtest_results (
+                    timestamp, isp_id, download_mbps, upload_mbps, latency_ms, server_name, server_id, public_ip, raw_output
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    stamp,
+                    isp_id,
+                    download_mbps,
+                    upload_mbps,
+                    latency_ms,
+                    server_name,
+                    server_id,
+                    public_ip,
+                    raw_output,
+                ),
+            )
+    finally:
+        conn.close()
+
+
+def insert_alert_log(isp_id, alert_type, message, cooldown_until=None, timestamp=None):
+    stamp = timestamp or utc_now_iso()
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO alerts_log (timestamp, isp_id, alert_type, message, cooldown_until)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (stamp, isp_id, alert_type, message, cooldown_until),
+            )
+    finally:
+        conn.close()
+
+
+def get_latest_speedtest_map(isp_ids):
+    if not isp_ids:
+        return {}
+    placeholders = ",".join("?" for _ in isp_ids)
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT s.*
+            FROM speedtest_results s
+            JOIN (
+                SELECT isp_id, MAX(timestamp) AS max_ts
+                FROM speedtest_results
+                WHERE isp_id IN ({placeholders})
+                GROUP BY isp_id
+            ) latest
+            ON s.isp_id = latest.isp_id AND s.timestamp = latest.max_ts
+            """,
+            isp_ids,
+        ).fetchall()
+        return {row["isp_id"]: dict(row) for row in rows}
+    finally:
+        conn.close()
+
+
+def get_latest_ping_results(isp_id, limit=5):
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM ping_results
+            WHERE isp_id = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """,
+            (isp_id, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
     finally:
         conn.close()
