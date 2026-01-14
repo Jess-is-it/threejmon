@@ -89,8 +89,8 @@
         <input type="text" name="telegram_command_bot_token" value="{{ settings.telegram.command_bot_token }}" />
       </div>
       <div>
-        <label>Command Chat ID <span class="info" data-tip="Chat/group ID where users send commands and receive replies.">i</span></label>
-        <input type="text" name="telegram_command_chat_id" value="{{ settings.telegram.command_chat_id }}" placeholder="-1001234567890 or 123456789" />
+        <label>Command Chat ID <span class="info" data-tip="Optional: lock commands to a single chat/group. Leave blank to allow private chats for allowed users.">i</span></label>
+        <input type="text" name="telegram_command_chat_id" value="{{ settings.telegram.command_chat_id }}" placeholder="Leave blank for private chats" />
       </div>
       <div>
         <label>Allowed User IDs <span class="info" data-tip="One Telegram user ID per line for command access control.">i</span></label>

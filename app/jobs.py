@@ -114,10 +114,10 @@ class JobsManager:
             cfg = get_settings("isp_ping", ISP_PING_DEFAULTS)
             telegram = cfg.get("telegram", {})
             token = telegram.get("command_bot_token") or telegram.get("bot_token", "")
-            command_chat_id = telegram.get("command_chat_id") or telegram.get("chat_id", "")
+            command_chat_id = (telegram.get("command_chat_id") or "").strip()
             allowed_user_ids = telegram.get("allowed_user_ids", [])
 
-            if not token or not command_chat_id:
+            if not token:
                 time_module.sleep(5)
                 continue
 
@@ -142,7 +142,7 @@ class JobsManager:
                         continue
                     chat = message.get("chat", {})
                     chat_id = chat.get("id")
-                    if str(chat_id) != str(command_chat_id):
+                    if command_chat_id and str(chat_id) != str(command_chat_id):
                         continue
                     sender_id = sender.get("id")
                     if allowed_user_ids and sender_id not in allowed_user_ids:
