@@ -398,10 +398,10 @@ def _pulsewatch_summary(results):
     return loss_max, avg_max
 
 
-def run_pulsewatch_check(cfg, state, only_isps=None):
+def run_pulsewatch_check(cfg, state, only_isps=None, force=False):
     pulse_cfg = cfg.get("pulsewatch", {})
     _reconcile_mikrotik(cfg, state)
-    if not pulse_cfg.get("enabled"):
+    if not pulse_cfg.get("enabled") and not force:
         return state, {}
 
     presets = pulse_cfg.get("list_presets", [])

@@ -499,6 +499,54 @@ def fetch_mikrotik_lists(cores):
     return list_map
 
 
+def build_pulsewatch_rows(settings):
+    cores = settings.get("pulsewatch", {}).get("mikrotik", {}).get("cores", [])
+    list_map = fetch_mikrotik_lists(cores)
+    preset_rows = []
+    preset_lookup = {
+        (item.get("core_id"), item.get("list")): item
+        for item in settings.get("pulsewatch", {}).get("list_presets", [])
+    }
+    for core in cores:
+        core_id = core.get("id")
+        if not core_id:
+            continue
+        lists = list_map.get(core_id, [])
+        if not lists:
+            lists = sorted(
+                {
+                    item.get("list")
+                    for item in settings.get("pulsewatch", {}).get("list_presets", [])
+                    if item.get("core_id") == core_id and item.get("list")
+                }
+            )
+        for list_name in lists:
+            preset = preset_lookup.get((core_id, list_name), {}) or {}
+            preset_rows.append(
+                {
+                    "row_id": preset_row_id(core_id, list_name),
+                    "core_id": core_id,
+                    "core_label": core.get("label") or core_id,
+                    "list_name": list_name,
+                    "address": preset.get("address", ""),
+                    "latency_ms": preset.get("latency_ms", 120),
+                    "loss_pct": preset.get("loss_pct", 20),
+                    "breach_count": preset.get("breach_count", 3),
+                    "cooldown_minutes": preset.get("cooldown_minutes", 10),
+                    "ping_targets": preset.get("ping_targets", ["1.1.1.1", "8.8.8.8"]),
+                }
+            )
+    return preset_rows
+
+
+def render_pulsewatch_response(request, settings, message):
+    preset_rows = build_pulsewatch_rows(settings)
+    return templates.TemplateResponse(
+        "settings_pulsewatch.html",
+        make_context(request, {"settings": settings, "message": message, "preset_rows": preset_rows}),
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     job_status = {item["job_name"]: item for item in get_job_status()}
@@ -797,35 +845,7 @@ async def isp_settings_save(request: Request):
 @app.get("/settings/pulsewatch", response_class=HTMLResponse)
 async def pulsewatch_settings(request: Request):
     settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
-    cores = settings.get("pulsewatch", {}).get("mikrotik", {}).get("cores", [])
-    list_map = fetch_mikrotik_lists(cores)
-    preset_rows = []
-    preset_lookup = {
-        (item.get("core_id"), item.get("list")): item
-        for item in settings.get("pulsewatch", {}).get("list_presets", [])
-    }
-    for core in cores:
-        core_id = core.get("id")
-        for list_name in list_map.get(core_id, []):
-            preset = preset_lookup.get((core_id, list_name), {}) or {}
-            preset_rows.append(
-                {
-                    "row_id": preset_row_id(core_id, list_name),
-                    "core_id": core_id,
-                    "core_label": core.get("label") or core_id,
-                    "list_name": list_name,
-                    "address": preset.get("address", ""),
-                    "latency_ms": preset.get("latency_ms", 120),
-                    "loss_pct": preset.get("loss_pct", 20),
-                    "breach_count": preset.get("breach_count", 3),
-                    "cooldown_minutes": preset.get("cooldown_minutes", 10),
-                    "ping_targets": preset.get("ping_targets", ["1.1.1.1", "8.8.8.8"]),
-                }
-            )
-    return templates.TemplateResponse(
-        "settings_pulsewatch.html",
-        make_context(request, {"settings": settings, "message": "", "preset_rows": preset_rows}),
-    )
+    return render_pulsewatch_response(request, settings, "")
 
 
 @app.post("/settings/pulsewatch", response_class=HTMLResponse)
@@ -940,35 +960,7 @@ async def pulsewatch_settings_save(request: Request):
         message = f"{message} {apply_msg}"
     if sync_msg:
         message = f"{message} {sync_msg}"
-    cores = settings.get("pulsewatch", {}).get("mikrotik", {}).get("cores", [])
-    list_map = fetch_mikrotik_lists(cores)
-    preset_rows = []
-    preset_lookup = {
-        (item.get("core_id"), item.get("list")): item
-        for item in settings.get("pulsewatch", {}).get("list_presets", [])
-    }
-    for core in cores:
-        core_id = core.get("id")
-        for list_name in list_map.get(core_id, []):
-            preset = preset_lookup.get((core_id, list_name), {}) or {}
-            preset_rows.append(
-                {
-                    "row_id": preset_row_id(core_id, list_name),
-                    "core_id": core_id,
-                    "core_label": core.get("label") or core_id,
-                    "list_name": list_name,
-                    "address": preset.get("address", ""),
-                    "latency_ms": preset.get("latency_ms", 120),
-                    "loss_pct": preset.get("loss_pct", 20),
-                    "breach_count": preset.get("breach_count", 3),
-                    "cooldown_minutes": preset.get("cooldown_minutes", 10),
-                    "ping_targets": preset.get("ping_targets", ["1.1.1.1", "8.8.8.8"]),
-                }
-            )
-    return templates.TemplateResponse(
-        "settings_pulsewatch.html",
-        make_context(request, {"settings": settings, "message": message, "preset_rows": preset_rows}),
-    )
+    return render_pulsewatch_response(request, settings, message)
 
 
 
@@ -1001,28 +993,7 @@ async def pulsewatch_settings_test(request: Request):
         message = "Test message sent."
     except TelegramError as exc:
         message = str(exc)
-    cores = settings.get("pulsewatch", {}).get("mikrotik", {}).get("cores", [])
-    list_map = fetch_mikrotik_lists(cores)
-    preset_rows = []
-    preset_lookup = {
-        (item.get("core_id"), item.get("list")): item.get("address", "")
-        for item in settings.get("pulsewatch", {}).get("list_presets", [])
-    }
-    for core in cores:
-        core_id = core.get("id")
-        for list_name in list_map.get(core_id, []):
-            preset_rows.append(
-                {
-                    "core_id": core_id,
-                    "core_label": core.get("label") or core_id,
-                    "list_name": list_name,
-                    "address": preset_lookup.get((core_id, list_name), ""),
-                }
-            )
-    return templates.TemplateResponse(
-        "settings_pulsewatch.html",
-        make_context(request, {"settings": settings, "message": message, "preset_rows": preset_rows}),
-    )
+    return render_pulsewatch_response(request, settings, message)
 
 
 @app.post("/settings/isp/run", response_class=HTMLResponse)
@@ -1129,15 +1100,12 @@ async def isp_pulsewatch_ping_all(request: Request):
                 "pulsewatch": {},
             },
         )
-        state, _ = isp_ping_notifier.run_pulsewatch_check(settings, state)
+        state, _ = isp_ping_notifier.run_pulsewatch_check(settings, state, force=True)
         save_state("isp_ping_state", state)
         message = "Pulsewatch ping completed for all ISPs."
     except Exception as exc:
         message = f"Pulsewatch ping failed: {exc}"
-    return templates.TemplateResponse(
-        "settings_pulsewatch.html",
-        make_context(request, {"settings": settings, "message": message}),
-    )
+    return render_pulsewatch_response(request, settings, message)
 
 
 @app.post("/isp/pulsewatch/ping/{isp_id}", response_class=HTMLResponse)
@@ -1155,15 +1123,17 @@ async def isp_pulsewatch_ping_one(request: Request, isp_id: str):
                 "pulsewatch": {},
             },
         )
-        state, _ = isp_ping_notifier.run_pulsewatch_check(settings, state, only_isps=[isp_id])
+        state, _ = isp_ping_notifier.run_pulsewatch_check(settings, state, only_isps=[isp_id], force=True)
         save_state("isp_ping_state", state)
-        message = f"Pulsewatch ping completed for {isp_id}."
+        label = isp_id
+        for row in build_pulsewatch_rows(settings):
+            if row.get("row_id") == isp_id:
+                label = f"{row.get('core_label')} {row.get('list_name')}"
+                break
+        message = f"Pulsewatch ping completed for {label}."
     except Exception as exc:
         message = f"Pulsewatch ping failed: {exc}"
-    return templates.TemplateResponse(
-        "settings_pulsewatch.html",
-        make_context(request, {"settings": settings, "message": message}),
-    )
+    return render_pulsewatch_response(request, settings, message)
 
 
 @app.post("/isp/pulsewatch/speedtest", response_class=HTMLResponse)
@@ -1186,10 +1156,7 @@ async def isp_pulsewatch_speedtest_all(request: Request):
         message = " ".join(messages) if messages else "Pulsewatch speedtests completed."
     except Exception as exc:
         message = f"Speedtest failed: {exc}"
-    return templates.TemplateResponse(
-        "settings_pulsewatch.html",
-        make_context(request, {"settings": settings, "message": message}),
-    )
+    return render_pulsewatch_response(request, settings, message)
 
 
 @app.post("/isp/pulsewatch/speedtest/{isp_id}", response_class=HTMLResponse)
@@ -1212,10 +1179,7 @@ async def isp_pulsewatch_speedtest_one(request: Request, isp_id: str):
         message = " ".join(messages) if messages else f"Speedtest completed for {isp_id}."
     except Exception as exc:
         message = f"Speedtest failed: {exc}"
-    return templates.TemplateResponse(
-        "settings_pulsewatch.html",
-        make_context(request, {"settings": settings, "message": message}),
-    )
+    return render_pulsewatch_response(request, settings, message)
 
 
 @app.get("/settings", response_class=HTMLResponse)
