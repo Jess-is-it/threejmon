@@ -24,6 +24,10 @@ RE_TIME = re.compile(r"time=([0-9.]+)\s*ms")
 
 COMMENT_TAG = "threejnotif:pulsewatch"
 
+def _preset_id(core_id, list_name):
+    safe = f"{core_id}|{list_name}"
+    return safe
+
 def _get_router_source_ip(isp, core_id):
     core_id = (core_id or "").lower()
     sources = isp.get("sources") or {}
@@ -62,6 +66,34 @@ def _get_ping_source_ip(isp):
         if value:
             return value
     return _get_router_source_ip(isp, "core2") or _get_router_source_ip(isp, "core3")
+
+
+def _isps_from_presets(pulse_cfg):
+    presets = pulse_cfg.get("list_presets", [])
+    isps = []
+    for preset in presets:
+        core_id = preset.get("core_id")
+        list_name = preset.get("list")
+        if not core_id or not list_name:
+            continue
+        isp_id = _preset_id(core_id, list_name)
+        isps.append(
+            {
+                "id": isp_id,
+                "label": list_name,
+                "sources": {core_id: preset.get("address")},
+                "ping_core_id": preset.get("ping_core_id", "auto"),
+                "ping_router": preset.get("ping_core_id", "auto"),
+                "ping_targets": preset.get("ping_targets", []),
+                "thresholds": {
+                    "latency_ms": preset.get("latency_ms", 120),
+                    "loss_pct": preset.get("loss_pct", 20),
+                },
+                "consecutive_breach_count": preset.get("breach_count", 3),
+                "cooldown_minutes": preset.get("cooldown_minutes", 10),
+            }
+        )
+    return isps
 
 
 def parse_list(values):
@@ -367,7 +399,8 @@ def run_pulsewatch_check(cfg, state, only_isps=None):
 
     _reconcile_mikrotik(cfg, state)
 
-    isps = pulse_cfg.get("isps", [])
+    presets = pulse_cfg.get("list_presets", [])
+    isps = _isps_from_presets(pulse_cfg) if presets else pulse_cfg.get("isps", [])
     if only_isps is not None:
         isps = [isp for isp in isps if isp.get("id") in only_isps]
 
@@ -474,7 +507,8 @@ def run_speedtests(cfg, state, only_isps=None, force=False):
     if not pulse_cfg.get("enabled") or not pulse_cfg.get("speedtest", {}).get("enabled"):
         return {}, ["Speedtest is disabled."]
 
-    isps = pulse_cfg.get("isps", [])
+    presets = pulse_cfg.get("list_presets", [])
+    isps = _isps_from_presets(pulse_cfg) if presets else pulse_cfg.get("isps", [])
     if only_isps:
         isps = [isp for isp in isps if isp.get("id") in only_isps]
 

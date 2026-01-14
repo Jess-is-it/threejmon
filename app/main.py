@@ -2,6 +2,7 @@ from pathlib import Path
 
 import json
 import os
+import base64
 import shlex
 import shutil
 import subprocess
@@ -212,6 +213,11 @@ def normalize_pulsewatch_settings(settings):
             isp["ping_core_id"] = ping_core if ping_core in ("core2", "core3") else "auto"
     pulse.setdefault("list_presets", [])
     return settings
+
+
+def preset_row_id(core_id, list_name):
+    raw = f"{core_id}|{list_name}".encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
 def fetch_mikrotik_lists(cores):
@@ -542,18 +548,26 @@ async def pulsewatch_settings(request: Request):
     list_map = fetch_mikrotik_lists(cores)
     preset_rows = []
     preset_lookup = {
-        (item.get("core_id"), item.get("list")): item.get("address", "")
+        (item.get("core_id"), item.get("list")): item
         for item in settings.get("pulsewatch", {}).get("list_presets", [])
     }
     for core in cores:
         core_id = core.get("id")
         for list_name in list_map.get(core_id, []):
+            preset = preset_lookup.get((core_id, list_name), {}) or {}
             preset_rows.append(
                 {
+                    "row_id": preset_row_id(core_id, list_name),
                     "core_id": core_id,
                     "core_label": core.get("label") or core_id,
                     "list_name": list_name,
-                    "address": preset_lookup.get((core_id, list_name), ""),
+                    "address": preset.get("address", ""),
+                    "ping_core_id": preset.get("ping_core_id", "auto"),
+                    "latency_ms": preset.get("latency_ms", 120),
+                    "loss_pct": preset.get("loss_pct", 20),
+                    "breach_count": preset.get("breach_count", 3),
+                    "cooldown_minutes": preset.get("cooldown_minutes", 10),
+                    "ping_targets": preset.get("ping_targets", ["1.1.1.1", "8.8.8.8"]),
                 }
             )
     return templates.TemplateResponse(
@@ -606,7 +620,19 @@ async def pulsewatch_settings_save(request: Request):
         list_name = (form.get(f"preset_{idx}_list") or "").strip()
         address = (form.get(f"preset_{idx}_address") or "").strip()
         if core_id and list_name:
-            presets.append({"core_id": core_id, "list": list_name, "address": address})
+            presets.append(
+                {
+                    "core_id": core_id,
+                    "list": list_name,
+                    "address": address,
+                    "ping_core_id": (form.get(f"preset_{idx}_ping_core_id") or "auto").strip(),
+                    "latency_ms": parse_float(form, f"preset_{idx}_latency_ms", 120.0),
+                    "loss_pct": parse_float(form, f"preset_{idx}_loss_pct", 20.0),
+                    "breach_count": parse_int(form, f"preset_{idx}_breach_count", 3),
+                    "cooldown_minutes": parse_int(form, f"preset_{idx}_cooldown_minutes", 10),
+                    "ping_targets": parse_lines(form.get(f"preset_{idx}_ping_targets", "")),
+                }
+            )
     pulsewatch = current_settings.get("pulsewatch", {})
     pulsewatch.update(
         {
@@ -657,18 +683,26 @@ async def pulsewatch_settings_save(request: Request):
     list_map = fetch_mikrotik_lists(cores)
     preset_rows = []
     preset_lookup = {
-        (item.get("core_id"), item.get("list")): item.get("address", "")
+        (item.get("core_id"), item.get("list")): item
         for item in settings.get("pulsewatch", {}).get("list_presets", [])
     }
     for core in cores:
         core_id = core.get("id")
         for list_name in list_map.get(core_id, []):
+            preset = preset_lookup.get((core_id, list_name), {}) or {}
             preset_rows.append(
                 {
+                    "row_id": preset_row_id(core_id, list_name),
                     "core_id": core_id,
                     "core_label": core.get("label") or core_id,
                     "list_name": list_name,
-                    "address": preset_lookup.get((core_id, list_name), ""),
+                    "address": preset.get("address", ""),
+                    "ping_core_id": preset.get("ping_core_id", "auto"),
+                    "latency_ms": preset.get("latency_ms", 120),
+                    "loss_pct": preset.get("loss_pct", 20),
+                    "breach_count": preset.get("breach_count", 3),
+                    "cooldown_minutes": preset.get("cooldown_minutes", 10),
+                    "ping_targets": preset.get("ping_targets", ["1.1.1.1", "8.8.8.8"]),
                 }
             )
     return templates.TemplateResponse(
@@ -724,18 +758,26 @@ async def pulsewatch_add_isp(request: Request):
     list_map = fetch_mikrotik_lists(cores)
     preset_rows = []
     preset_lookup = {
-        (item.get("core_id"), item.get("list")): item.get("address", "")
+        (item.get("core_id"), item.get("list")): item
         for item in settings.get("pulsewatch", {}).get("list_presets", [])
     }
     for core in cores:
         core_id = core.get("id")
         for list_name in list_map.get(core_id, []):
+            preset = preset_lookup.get((core_id, list_name), {}) or {}
             preset_rows.append(
                 {
+                    "row_id": preset_row_id(core_id, list_name),
                     "core_id": core_id,
                     "core_label": core.get("label") or core_id,
                     "list_name": list_name,
-                    "address": preset_lookup.get((core_id, list_name), ""),
+                    "address": preset.get("address", ""),
+                    "ping_core_id": preset.get("ping_core_id", "auto"),
+                    "latency_ms": preset.get("latency_ms", 120),
+                    "loss_pct": preset.get("loss_pct", 20),
+                    "breach_count": preset.get("breach_count", 3),
+                    "cooldown_minutes": preset.get("cooldown_minutes", 10),
+                    "ping_targets": preset.get("ping_targets", ["1.1.1.1", "8.8.8.8"]),
                 }
             )
     return templates.TemplateResponse(
@@ -809,18 +851,26 @@ async def pulsewatch_create_isp(request: Request):
     list_map = fetch_mikrotik_lists(cores)
     preset_rows = []
     preset_lookup = {
-        (item.get("core_id"), item.get("list")): item.get("address", "")
+        (item.get("core_id"), item.get("list")): item
         for item in settings.get("pulsewatch", {}).get("list_presets", [])
     }
     for core in cores:
         core_id = core.get("id")
         for list_name in list_map.get(core_id, []):
+            preset = preset_lookup.get((core_id, list_name), {}) or {}
             preset_rows.append(
                 {
+                    "row_id": preset_row_id(core_id, list_name),
                     "core_id": core_id,
                     "core_label": core.get("label") or core_id,
                     "list_name": list_name,
-                    "address": preset_lookup.get((core_id, list_name), ""),
+                    "address": preset.get("address", ""),
+                    "ping_core_id": preset.get("ping_core_id", "auto"),
+                    "latency_ms": preset.get("latency_ms", 120),
+                    "loss_pct": preset.get("loss_pct", 20),
+                    "breach_count": preset.get("breach_count", 3),
+                    "cooldown_minutes": preset.get("cooldown_minutes", 10),
+                    "ping_targets": preset.get("ping_targets", ["1.1.1.1", "8.8.8.8"]),
                 }
             )
     return templates.TemplateResponse(
@@ -854,18 +904,26 @@ async def pulsewatch_remove_isp(request: Request, isp_id: str):
     list_map = fetch_mikrotik_lists(cores)
     preset_rows = []
     preset_lookup = {
-        (item.get("core_id"), item.get("list")): item.get("address", "")
+        (item.get("core_id"), item.get("list")): item
         for item in settings.get("pulsewatch", {}).get("list_presets", [])
     }
     for core in cores:
         core_id = core.get("id")
         for list_name in list_map.get(core_id, []):
+            preset = preset_lookup.get((core_id, list_name), {}) or {}
             preset_rows.append(
                 {
+                    "row_id": preset_row_id(core_id, list_name),
                     "core_id": core_id,
                     "core_label": core.get("label") or core_id,
                     "list_name": list_name,
-                    "address": preset_lookup.get((core_id, list_name), ""),
+                    "address": preset.get("address", ""),
+                    "ping_core_id": preset.get("ping_core_id", "auto"),
+                    "latency_ms": preset.get("latency_ms", 120),
+                    "loss_pct": preset.get("loss_pct", 20),
+                    "breach_count": preset.get("breach_count", 3),
+                    "cooldown_minutes": preset.get("cooldown_minutes", 10),
+                    "ping_targets": preset.get("ping_targets", ["1.1.1.1", "8.8.8.8"]),
                 }
             )
     return templates.TemplateResponse(
