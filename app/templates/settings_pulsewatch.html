@@ -133,7 +133,7 @@
         <tbody>
           <input type="hidden" name="preset_count" value="{{ preset_rows|length }}" />
           {% for row in preset_rows %}
-            <tr class="pulsewatch-row">
+            <tr class="pulsewatch-row" data-row-id="{{ row.row_id }}">
               <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
                 {{ row.core_label }}
                 <input type="hidden" name="preset_{{ loop.index0 }}_core_id" value="{{ row.core_id }}" />
@@ -244,6 +244,7 @@
   let streamMode = "single";
   const streamPanels = new Map();
   let streamLabelList = [];
+  let streamAllSources = new Map();
 
   const extractLabel = (line) => {
     const markers = [" PING ", " missing ", " stopped"];
@@ -256,7 +257,7 @@
     return null;
   };
 
-  const ensurePanel = (label) => {
+  const ensurePanel = (label, targets) => {
     if (!streamGrid) {
       return null;
     }
@@ -278,6 +279,44 @@
     header.style.marginBottom = "6px";
     const title = document.createElement("strong");
     title.textContent = label;
+    header.appendChild(title);
+
+    const pre = document.createElement("pre");
+    pre.style.margin = "0";
+    pre.style.padding = "8px";
+    pre.style.background = "#0f172a";
+    pre.style.border = "1px solid #1f2937";
+    pre.style.borderRadius = "6px";
+    pre.style.whiteSpace = "pre-wrap";
+    pre.style.overflow = "auto";
+    pre.style.maxHeight = "220px";
+
+    const footer = document.createElement("div");
+    footer.style.display = "flex";
+    footer.style.justifyContent = "space-between";
+    footer.style.alignItems = "center";
+    footer.style.marginTop = "8px";
+
+    const targetSelect = document.createElement("select");
+    targetSelect.style.fontSize = "11px";
+    targetSelect.style.padding = "2px 6px";
+    targetSelect.style.maxWidth = "140px";
+    targetSelect.style.background = "#0f172a";
+    targetSelect.style.color = "#e2e8f0";
+    targetSelect.style.border = "1px solid #1f2937";
+    targetSelect.style.borderRadius = "6px";
+    (targets || []).forEach((value, idx) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = value;
+      if (idx === 0) {
+        option.selected = true;
+      }
+      targetSelect.appendChild(option);
+    });
+
+    const buttonGroup = document.createElement("div");
+
     const freezeBtn = document.createElement("button");
     freezeBtn.type = "button";
     freezeBtn.textContent = "Freeze";
@@ -290,6 +329,7 @@
       freezeBtn.dataset.frozen = frozen ? "false" : "true";
       freezeBtn.textContent = frozen ? "Freeze" : "Unfreeze";
     });
+
     const expandBtn = document.createElement("button");
     expandBtn.type = "button";
     expandBtn.textContent = "Expand";
@@ -297,22 +337,6 @@
     expandBtn.style.fontSize = "11px";
     expandBtn.style.padding = "2px 6px";
     expandBtn.style.marginLeft = "6px";
-    expandBtn.dataset.expanded = "false";
-    header.appendChild(title);
-    const buttonGroup = document.createElement("div");
-    buttonGroup.appendChild(freezeBtn);
-    buttonGroup.appendChild(expandBtn);
-    header.appendChild(buttonGroup);
-
-    const pre = document.createElement("pre");
-    pre.style.margin = "0";
-    pre.style.padding = "8px";
-    pre.style.background = "#0f172a";
-    pre.style.border = "1px solid #1f2937";
-    pre.style.borderRadius = "6px";
-    pre.style.whiteSpace = "pre-wrap";
-    pre.style.overflow = "auto";
-    pre.style.maxHeight = "220px";
     expandBtn.addEventListener("click", () => {
       const detailModal = document.getElementById("pulsewatch_stream_detail_modal");
       const detailTitle = document.getElementById("pulsewatch_stream_detail_title");
@@ -325,10 +349,16 @@
       detailModal.style.display = "flex";
     });
 
+    buttonGroup.appendChild(freezeBtn);
+    buttonGroup.appendChild(expandBtn);
+    footer.appendChild(targetSelect);
+    footer.appendChild(buttonGroup);
+
     wrapper.appendChild(header);
     wrapper.appendChild(pre);
+    wrapper.appendChild(footer);
     streamGrid.appendChild(wrapper);
-    const panel = { wrapper, pre, freezeBtn };
+    const panel = { wrapper, pre, freezeBtn, targetSelect };
     streamPanels.set(label, panel);
     return panel;
   };
@@ -398,42 +428,13 @@
       }
       streamOutput.style.display = "block";
     }
+    if (!url) {
+      return;
+    }
     streamSource = new EventSource(url);
     streamSource.onmessage = (event) => {
       if (streamMode === "all") {
-        const line = event.data || "";
-        let label = "";
-        for (const candidate of streamLabelList) {
-          if (line.startsWith(candidate + " ")) {
-            label = candidate;
-            break;
-          }
-        }
-        if (!label) {
-          label = extractLabel(line) || "";
-        }
-        if (!label || (streamLabelList.length && !streamLabelList.includes(label))) {
-          return;
-        }
-        const panel = ensurePanel(label);
-        if (!panel) {
-          return;
-        }
-        const message = line.startsWith(label + " ") ? line.slice(label.length + 1) : line;
-        if (message.includes("missing source IP")) {
-          return;
-        }
-        panel.pre.textContent += `${message}\n`;
-        const detailModal = document.getElementById("pulsewatch_stream_detail_modal");
-        const detailTitle = document.getElementById("pulsewatch_stream_detail_title");
-        const detailOutput = document.getElementById("pulsewatch_stream_detail_output");
-        if (detailModal && detailTitle && detailOutput && detailModal.style.display === "flex" && detailTitle.textContent === label) {
-          detailOutput.textContent = panel.pre.textContent || "";
-          detailOutput.scrollTop = detailOutput.scrollHeight;
-        }
-        if (panel.freezeBtn.dataset.frozen !== "true") {
-          panel.pre.scrollTop = panel.pre.scrollHeight;
-        }
+        return;
       } else {
         streamOutput.textContent += `${event.data}\n`;
         streamOutput.scrollTop = streamOutput.scrollHeight;
@@ -485,6 +486,10 @@
       detailModal.style.display = "none";
     }
     streamLabelList = [];
+    streamAllSources.forEach((source) => {
+      source.close();
+    });
+    streamAllSources.clear();
   };
 
   if (streamClose) {
@@ -556,6 +561,10 @@
     pingAllButton.addEventListener("click", () => {
       streamMode = "all";
       streamLabelList = [];
+      streamAllSources.forEach((source) => {
+        source.close();
+      });
+      streamAllSources.clear();
       const rows = document.querySelectorAll("#pulsewatch_table .pulsewatch-row");
       rows.forEach((row) => {
         const addressInput = row.querySelector("input[name$='_address']");
@@ -569,8 +578,64 @@
         if (label) {
           streamLabelList.push(label);
         }
+        const targetsInput = row.querySelector("textarea[name$='_ping_targets']");
+        const targets = targetsInput ? (targetsInput.value || "").trim().split("\n").filter((value) => value.trim()) : [];
+        const rowId = row.getAttribute("data-row-id") || "";
+        if (!rowId) {
+          return;
+        }
+        const panel = ensurePanel(label, targets);
+        if (!panel) {
+          return;
+        }
+        const openPanelStream = (target) => {
+          const params = new URLSearchParams();
+          params.set("source_ip", sourceIp);
+          params.set("label", label);
+          if (target) {
+            params.set("target", target);
+          }
+          const url = `/isp/pulsewatch/ping/stream/${rowId}?${params.toString()}`;
+          const existing = streamAllSources.get(label);
+          if (existing) {
+            existing.close();
+          }
+          const source = new EventSource(url);
+          streamAllSources.set(label, source);
+          source.onmessage = (event) => {
+            const line = event.data || "";
+            const message = line.startsWith(label + " ") ? line.slice(label.length + 1) : line;
+            if (message.includes("missing source IP")) {
+              return;
+            }
+            panel.pre.textContent += `${message}\n`;
+            const detailModal = document.getElementById("pulsewatch_stream_detail_modal");
+            const detailTitle = document.getElementById("pulsewatch_stream_detail_title");
+            const detailOutput = document.getElementById("pulsewatch_stream_detail_output");
+            if (detailModal && detailTitle && detailOutput && detailModal.style.display === "flex" && detailTitle.textContent === label) {
+              detailOutput.textContent = panel.pre.textContent || "";
+              detailOutput.scrollTop = detailOutput.scrollHeight;
+            }
+            if (panel.freezeBtn.dataset.frozen !== "true") {
+              panel.pre.scrollTop = panel.pre.scrollHeight;
+            }
+          };
+          source.addEventListener("done", () => {
+            source.close();
+          });
+          source.onerror = () => {
+            source.close();
+          };
+        };
+        const initialTarget = targets[0] || "";
+        openPanelStream(initialTarget);
+        if (panel.targetSelect) {
+          panel.targetSelect.addEventListener("change", () => {
+            openPanelStream(panel.targetSelect.value);
+          });
+        }
       });
-      openStream("Live Ping (All ISPs)", "/isp/pulsewatch/ping/stream");
+      openStream("Live Ping (All ISPs)", "");
     });
   }
 
