@@ -85,6 +85,22 @@
       </div>
     </div>
 
+    <h4 style="margin-top: 18px;">Pulsewatch Ping</h4>
+    <div class="form-grid">
+      <div>
+        <label>Ping Timeout (seconds)</label>
+        <input type="number" name="pulsewatch_ping_timeout_seconds" value="{{ settings.pulsewatch.ping.timeout_seconds }}" />
+      </div>
+      <div>
+        <label>Ping Count</label>
+        <input type="number" name="pulsewatch_ping_count" value="{{ settings.pulsewatch.ping.count }}" />
+      </div>
+      <div>
+        <label>Max Parallel Pings</label>
+        <input type="number" name="pulsewatch_ping_max_parallel" value="{{ settings.pulsewatch.ping.max_parallel }}" />
+      </div>
+    </div>
+
     <h4 style="margin-top: 18px;">Pulsewatch Presets</h4>
     <div class="help">Lists are loaded from each MikroTik. Fill in the IP address for the list entry you want added.</div>
     {% set cores = settings.pulsewatch.mikrotik.cores %}

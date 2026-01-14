@@ -127,6 +127,11 @@ ISP_PING_DEFAULTS = {
             "use_netns": False,
             "netns_prefix": "isp",
         },
+        "ping": {
+            "timeout_seconds": 1,
+            "count": 5,
+            "max_parallel": 8,
+        },
         "isps": [
             {
                 "id": "isp1",

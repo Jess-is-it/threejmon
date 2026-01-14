@@ -1011,6 +1011,11 @@ async def pulsewatch_settings_save(request: Request):
                 "use_netns": parse_bool(form, "speedtest_use_netns"),
                 "netns_prefix": form.get("speedtest_netns_prefix", "isp"),
             },
+            "ping": {
+                "timeout_seconds": parse_int(form, "pulsewatch_ping_timeout_seconds", 1),
+                "count": parse_int(form, "pulsewatch_ping_count", 5),
+                "max_parallel": parse_int(form, "pulsewatch_ping_max_parallel", 8),
+            },
             "isps": pulse_isps,
         }
     )

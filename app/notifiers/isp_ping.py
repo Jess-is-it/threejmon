@@ -423,9 +423,10 @@ def run_pulsewatch_check(cfg, state, only_isps=None, force=False):
     if only_isps is not None:
         isps = [isp for isp in isps if isp.get("id") in only_isps]
 
-    timeout_seconds = int(cfg["general"].get("ping_timeout_seconds", 1))
-    ping_count = int(cfg["general"].get("ping_count", 5))
-    max_workers = int(cfg["general"].get("max_parallel_pings", 8))
+    ping_cfg = pulse_cfg.get("ping", {})
+    timeout_seconds = int(ping_cfg.get("timeout_seconds", 1))
+    ping_count = int(ping_cfg.get("count", 5))
+    max_workers = int(ping_cfg.get("max_parallel", 8))
 
     tasks = {}
     results_by_isp = {isp.get("id"): [] for isp in isps}
