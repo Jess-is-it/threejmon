@@ -453,6 +453,27 @@
     };
   };
 
+  const openAllModal = (title) => {
+    if (!streamModal || !streamOutput) {
+      return;
+    }
+    if (streamSource) {
+      streamSource.close();
+      streamSource = null;
+    }
+    streamTitle.textContent = title;
+    streamOutput.textContent = "";
+    streamPanels.clear();
+    if (streamGrid) {
+      streamGrid.innerHTML = "";
+    }
+    streamModal.style.display = "flex";
+    if (streamGrid) {
+      streamGrid.style.display = "grid";
+    }
+    streamOutput.style.display = "none";
+  };
+
   const openStreamWithTargets = (title, baseUrl, params, targets) => {
     streamMode = "single";
     streamBase = baseUrl;
@@ -565,6 +586,7 @@
         source.close();
       });
       streamAllSources.clear();
+      openAllModal("Live Ping (All ISPs)");
       const rows = document.querySelectorAll("#pulsewatch_table .pulsewatch-row");
       rows.forEach((row) => {
         const addressInput = row.querySelector("input[name$='_address']");
@@ -635,7 +657,6 @@
           });
         }
       });
-      openStream("Live Ping (All ISPs)", "");
     });
   }
 
