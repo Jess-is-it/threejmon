@@ -1,6 +1,9 @@
 from pathlib import Path
 
 import json
+import os
+import shlex
+import subprocess
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -45,6 +48,21 @@ def make_context(request, extra=None):
     return ctx
 
 
+def get_interface_options():
+    try:
+        names = sorted(os.listdir("/sys/class/net"))
+    except OSError:
+        return []
+    filtered = []
+    for name in names:
+        if name == "lo":
+            continue
+        if name.startswith(("br-", "docker", "veth", "tun", "tap", "ifb")):
+            continue
+        filtered.append(name)
+    return filtered
+
+
 def normalize_pulsewatch_settings(settings):
     pulse = settings.setdefault("pulsewatch", {})
     mikrotik = pulse.setdefault("mikrotik", {})
@@ -84,6 +102,7 @@ def normalize_pulsewatch_settings(settings):
         core.setdefault("port", 8728)
         core.setdefault("username", "")
         core.setdefault("password", "")
+        core.setdefault("interface", "")
 
     for isp in pulse.get("isps", []):
         sources = isp.get("sources")
@@ -160,9 +179,10 @@ async def import_settings_route(request: Request):
         except Exception as exc:
             message = f"Import failed: {exc}"
     settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    interfaces = get_interface_options()
     return templates.TemplateResponse(
         "settings_system.html",
-        make_context(request, {"message": message, "settings": settings}),
+        make_context(request, {"message": message, "settings": settings, "interfaces": interfaces}),
     )
 
 
@@ -504,6 +524,60 @@ async def pulsewatch_add_isp(request: Request):
     )
 
 
+@app.post("/settings/pulsewatch/isp/create", response_class=HTMLResponse)
+async def pulsewatch_create_isp(request: Request):
+    form = await request.form()
+    settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    pulsewatch = settings.get("pulsewatch", {})
+    isps = pulsewatch.get("isps", [])
+    cores = pulsewatch.get("mikrotik", {}).get("cores", [])
+
+    desired_id = (form.get("new_id") or "").strip()
+    existing_ids = {isp.get("id") for isp in isps if isp.get("id")}
+    if not desired_id or desired_id in existing_ids:
+        next_idx = 1
+        while f"isp{next_idx}" in existing_ids:
+            next_idx += 1
+        desired_id = f"isp{next_idx}"
+    label = (form.get("new_label") or "").strip() or desired_id.upper()
+
+    sources = {}
+    for core in cores:
+        core_id = core.get("id")
+        if not core_id:
+            continue
+        value = (form.get(f"new_source_{core_id}") or "").strip()
+        if value:
+            sources[core_id] = value
+
+    new_isp = {
+        "id": desired_id,
+        "label": label,
+        "source_ip": "",
+        "core2_source_ip": sources.get("core2", ""),
+        "core3_source_ip": sources.get("core3", ""),
+        "sources": sources,
+        "router_scope": "both",
+        "ping_router": (form.get("new_ping_core_id") or "auto").strip(),
+        "ping_core_id": (form.get("new_ping_core_id") or "auto").strip(),
+        "ping_targets": parse_lines(form.get("new_ping_targets", "")),
+        "thresholds": {
+            "latency_ms": parse_float(form, "new_latency_ms", 120.0),
+            "loss_pct": parse_float(form, "new_loss_pct", 20.0),
+        },
+        "consecutive_breach_count": parse_int(form, "new_breach_count", 3),
+        "cooldown_minutes": parse_int(form, "new_cooldown_minutes", 10),
+    }
+    isps.append(new_isp)
+    pulsewatch["isps"] = isps
+    settings["pulsewatch"] = pulsewatch
+    save_settings("isp_ping", settings)
+    return templates.TemplateResponse(
+        "settings_pulsewatch.html",
+        make_context(request, {"settings": settings, "message": "ISP created."}),
+    )
+
+
 @app.post("/settings/pulsewatch/isp/remove/{isp_id}", response_class=HTMLResponse)
 async def pulsewatch_remove_isp(request: Request, isp_id: str):
     settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
@@ -607,9 +681,10 @@ async def isp_mikrotik_test(request: Request):
         finally:
             client.close()
     message = " | ".join(results)
+    interfaces = get_interface_options()
     return templates.TemplateResponse(
         "settings_system.html",
-        make_context(request, {"settings": settings, "message": message}),
+        make_context(request, {"settings": settings, "message": message, "interfaces": interfaces}),
     )
 
 
@@ -633,9 +708,10 @@ async def isp_mikrotik_sync(request: Request):
         message = "MikroTik address-list sync completed."
     except Exception as exc:
         message = f"Sync failed: {exc}"
+    interfaces = get_interface_options()
     return templates.TemplateResponse(
         "settings_system.html",
-        make_context(request, {"settings": settings, "message": message}),
+        make_context(request, {"settings": settings, "message": message, "interfaces": interfaces}),
     )
 
 
@@ -750,9 +826,10 @@ async def settings_root():
 @app.get("/settings/system", response_class=HTMLResponse)
 async def system_settings(request: Request):
     settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    interfaces = get_interface_options()
     return templates.TemplateResponse(
         "settings_system.html",
-        make_context(request, {"message": "", "settings": settings}),
+        make_context(request, {"message": "", "settings": settings, "interfaces": interfaces}),
     )
 
 
@@ -774,20 +851,26 @@ async def system_mikrotik_save(request: Request):
                 "port": parse_int(form, f"{core_id}_port", 8728),
                 "username": form.get(f"{core_id}_username", ""),
                 "password": form.get(f"{core_id}_password", ""),
+                "interface": form.get(f"{core_id}_interface", ""),
             }
         )
     pulsewatch["mikrotik"] = {"cores": cores}
     settings["pulsewatch"] = pulsewatch
     save_settings("isp_ping", settings)
+    interfaces = get_interface_options()
     return templates.TemplateResponse(
         "settings_system.html",
-        make_context(request, {"message": "MikroTik settings saved.", "settings": settings}),
+        make_context(
+            request,
+            {"message": "MikroTik settings saved.", "settings": settings, "interfaces": interfaces},
+        ),
     )
 
 
 @app.post("/settings/system/mikrotik/add", response_class=HTMLResponse)
 async def system_mikrotik_add(request: Request):
     settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    interfaces = get_interface_options()
     pulsewatch = settings.get("pulsewatch", {})
     mikrotik = pulsewatch.get("mikrotik", {})
     cores = mikrotik.get("cores", [])
@@ -804,6 +887,7 @@ async def system_mikrotik_add(request: Request):
             "port": 8728,
             "username": "",
             "password": "",
+            "interface": "",
         }
     )
     mikrotik["cores"] = cores
@@ -812,13 +896,14 @@ async def system_mikrotik_add(request: Request):
     save_settings("isp_ping", settings)
     return templates.TemplateResponse(
         "settings_system.html",
-        make_context(request, {"message": "MikroTik core added.", "settings": settings}),
+        make_context(request, {"message": "MikroTik core added.", "settings": settings, "interfaces": interfaces}),
     )
 
 
 @app.post("/settings/system/mikrotik/remove/{core_id}", response_class=HTMLResponse)
 async def system_mikrotik_remove(request: Request, core_id: str):
     settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    interfaces = get_interface_options()
     pulsewatch = settings.get("pulsewatch", {})
     mikrotik = pulsewatch.get("mikrotik", {})
     mikrotik["cores"] = [core for core in mikrotik.get("cores", []) if core.get("id") != core_id]
@@ -834,7 +919,7 @@ async def system_mikrotik_remove(request: Request, core_id: str):
     save_settings("isp_ping", settings)
     return templates.TemplateResponse(
         "settings_system.html",
-        make_context(request, {"message": f"{core_id} removed.", "settings": settings}),
+        make_context(request, {"message": f"{core_id} removed.", "settings": settings, "interfaces": interfaces}),
     )
 
 
@@ -869,7 +954,8 @@ async def system_uninstall(request: Request):
         message = f"Uninstall failed: {exc}"
 
     settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    interfaces = get_interface_options()
     return templates.TemplateResponse(
         "settings_system.html",
-        make_context(request, {"message": message, "settings": settings}),
+        make_context(request, {"message": message, "settings": settings, "interfaces": interfaces}),
     )

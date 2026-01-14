@@ -11,6 +11,7 @@
   <h2>MikroTik API (Pulsewatch)</h2>
   <form method="post" action="/settings/system/mikrotik">
     {% set cores = settings.pulsewatch.mikrotik.cores %}
+    {% set interface_options = interfaces if interfaces is defined else [] %}
     <textarea name="core_ids" style="display: none;">{% for core in cores %}{{ core.id }}
 {% endfor %}</textarea>
     {% for core in cores %}
@@ -22,12 +23,16 @@
             <input type="text" name="{{ core.id }}_id" value="{{ core.id }}" disabled />
           </div>
           <div>
-            <label>Label</label>
+            <label>Router Name</label>
             <input type="text" name="{{ core.id }}_label" value="{{ core.label }}" />
           </div>
           <div>
             <label>Host</label>
             <input type="text" name="{{ core.id }}_host" value="{{ core.host }}" />
+          </div>
+          <div>
+            <label>Interface</label>
+            <input type="text" name="{{ core.id }}_interface" list="interface_options" value="{{ core.interface }}" />
           </div>
           <div>
             <label>Port</label>
@@ -47,6 +52,11 @@
         </div>
       </div>
     {% endfor %}
+    <datalist id="interface_options">
+      {% for iface in interface_options %}
+        <option value="{{ iface }}"></option>
+      {% endfor %}
+    </datalist>
     <div style="margin-top: 12px;">
       <button type="submit" class="button-green">Save MikroTik Settings</button>
     </div>
