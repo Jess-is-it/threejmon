@@ -158,6 +158,19 @@ def apply_netplan():
     if not shutil.which("curl"):
         return False, "Netplan apply skipped (curl not available in container)."
 
+    pull_cmd = [
+        "curl",
+        "-sS",
+        "--unix-socket",
+        sock,
+        "-X",
+        "POST",
+        "http://localhost/images/create?fromImage=ubuntu&tag=latest",
+    ]
+    pulled = subprocess.run(pull_cmd, capture_output=True, text=True)
+    if pulled.returncode != 0:
+        return False, f"Netplan apply failed: {pulled.stderr.strip() or pulled.stdout.strip()}"
+
     payload = {
         "Image": "ubuntu",
         "Cmd": ["bash", "-c", "chroot /host netplan apply"],
