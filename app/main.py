@@ -139,18 +139,84 @@ def apply_netplan():
             break
     if docker_path is None:
         docker_path = shutil.which("docker")
-    if not docker_path:
-        return False, "Netplan apply skipped (docker CLI not available in container)."
-    command = (
-        f"{docker_path} run --rm --privileged "
-        "-v /:/host "
-        "ubuntu bash -c "
-        "\"chroot /host netplan apply\""
-    )
-    result = subprocess.run(["/bin/sh", "-c", command], capture_output=True, text=True)
-    if result.returncode != 0:
-        stderr = (result.stderr or result.stdout or "").strip()
-        return False, f"Netplan apply failed: {stderr}"
+    if docker_path:
+        command = (
+            f"{docker_path} run --rm --privileged "
+            "-v /:/host "
+            "ubuntu bash -c "
+            "\"chroot /host netplan apply\""
+        )
+        result = subprocess.run(["/bin/sh", "-c", command], capture_output=True, text=True)
+        if result.returncode != 0:
+            stderr = (result.stderr or result.stdout or "").strip()
+            return False, f"Netplan apply failed: {stderr}"
+        return True, "Netplan applied."
+
+    sock = "/var/run/docker.sock"
+    if not os.path.exists(sock):
+        return False, "Netplan apply skipped (docker socket not available)."
+    if not shutil.which("curl"):
+        return False, "Netplan apply skipped (curl not available in container)."
+
+    payload = {
+        "Image": "ubuntu",
+        "Cmd": ["bash", "-c", "chroot /host netplan apply"],
+        "HostConfig": {"Privileged": True, "Binds": ["/:/host"], "AutoRemove": True},
+    }
+    create_cmd = [
+        "curl",
+        "-sS",
+        "--unix-socket",
+        sock,
+        "-H",
+        "Content-Type: application/json",
+        "-X",
+        "POST",
+        "-d",
+        json.dumps(payload),
+        "http://localhost/containers/create",
+    ]
+    created = subprocess.run(create_cmd, capture_output=True, text=True)
+    if created.returncode != 0:
+        return False, f"Netplan apply failed: {created.stderr.strip() or created.stdout.strip()}"
+    try:
+        container_id = json.loads(created.stdout).get("Id")
+    except json.JSONDecodeError:
+        container_id = None
+    if not container_id:
+        return False, f"Netplan apply failed: {created.stdout.strip()}"
+
+    start_cmd = [
+        "curl",
+        "-sS",
+        "--unix-socket",
+        sock,
+        "-X",
+        "POST",
+        f"http://localhost/containers/{container_id}/start",
+    ]
+    started = subprocess.run(start_cmd, capture_output=True, text=True)
+    if started.returncode != 0:
+        return False, f"Netplan apply failed: {started.stderr.strip() or started.stdout.strip()}"
+
+    wait_cmd = [
+        "curl",
+        "-sS",
+        "--unix-socket",
+        sock,
+        "-X",
+        "POST",
+        f"http://localhost/containers/{container_id}/wait",
+    ]
+    waited = subprocess.run(wait_cmd, capture_output=True, text=True)
+    if waited.returncode != 0:
+        return False, f"Netplan apply failed: {waited.stderr.strip() or waited.stdout.strip()}"
+    try:
+        status = json.loads(waited.stdout).get("StatusCode", 1)
+    except json.JSONDecodeError:
+        status = 1
+    if status != 0:
+        return False, f"Netplan apply failed: container exit {status}"
     return True, "Netplan applied."
 
 
