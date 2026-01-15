@@ -1295,7 +1295,9 @@ async def isp_pulsewatch_ping_stream_all(request: Request):
 
     async def _stream():
         for row in rows:
-            label = f"{row.get('core_label')} {row.get('list_name')}".strip()
+            identifier = (row.get("identifier") or "").strip()
+            label_value = identifier or row.get("list_name")
+            label = f"{row.get('core_label')} {label_value}".strip()
             source_ip = (row.get("address") or "").strip()
             targets = row.get("ping_targets") or []
             if not isinstance(targets, list):
