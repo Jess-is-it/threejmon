@@ -9,8 +9,12 @@ RUN apt-get update \
         curl \
         docker.io \
         git \
+        gnupg \
+        apt-transport-https \
         iputils-ping \
         openssh-client \
+    && curl -fsSL https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | bash \
+    && apt-get install -y --no-install-recommends speedtest \
     && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /usr/local/lib/docker/cli-plugins \

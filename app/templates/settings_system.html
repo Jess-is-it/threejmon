@@ -1,147 +1,159 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="card">
-  <h2>System Settings</h2>
-  {% if message %}
-    <div class="alert">{{ message }}</div>
-  {% endif %}
-</div>
-
-<div class="card" style="margin-top: 20px;">
-  <h2>MikroTik API (Pulsewatch)</h2>
-  <form method="post" action="/settings/system/mikrotik">
-    {% set cores = settings.pulsewatch.mikrotik.cores %}
-    {% set interface_options = interfaces if interfaces is defined else [] %}
-    <textarea name="core_ids" style="display: none;">{% for core in cores %}{{ core.id }}
-{% endfor %}</textarea>
-    {% for core in cores %}
-      <div style="margin-top: 12px; padding: 12px; border: 1px dashed #c4c6bf; border-radius: 12px;">
-        <div style="font-weight: 700; margin-bottom: 8px;">{{ core.label }}</div>
-        <div class="form-grid">
-          <div>
-            <label>Core ID <span class="info" data-tip="Internal identifier for this MikroTik entry.">i</span></label>
-            <input type="text" name="{{ core.id }}_id" value="{{ core.id }}" disabled />
-          </div>
-          <div>
-            <label>Router Name <span class="info" data-tip="Friendly label shown in Pulsewatch tables.">i</span></label>
-            <input type="text" name="{{ core.id }}_label" value="{{ core.label }}" />
-          </div>
-          <div>
-            <label>Host <span class="info" data-tip="MikroTik API IP/hostname for this router.">i</span></label>
-            <input type="text" name="{{ core.id }}_host" value="{{ core.host }}" />
-          </div>
-          <div>
-            <label>Interface <span class="info" data-tip="Linux NIC that carries this router's Pulsewatch source IPs (e.g., enp0s8).">i</span></label>
-            <input type="text" name="{{ core.id }}_interface" list="interface_options" value="{{ core.interface }}" />
-          </div>
-          <div>
-            <label>Prefix <span class="info" data-tip="CIDR prefix length for the source IPs on this interface (usually 24).">i</span></label>
-            <input type="number" name="{{ core.id }}_prefix" value="{{ core.prefix }}" />
-          </div>
-          <div>
-            <label>Source IP Gateway <span class="info" data-tip="Default gateway used when traffic is sourced from this core's IPs. Example: 172.16.90.1.">i</span></label>
-            <input type="text" name="{{ core.id }}_gateway" value="{{ core.gateway }}" placeholder="e.g. 172.16.90.1" />
-          </div>
-          <div>
-            <label>Port <span class="info" data-tip="MikroTik API port (8728 by default).">i</span></label>
-            <input type="number" name="{{ core.id }}_port" value="{{ core.port }}" />
-          </div>
-          <div>
-            <label>Username <span class="info" data-tip="MikroTik API username.">i</span></label>
-            <input type="text" name="{{ core.id }}_username" value="{{ core.username }}" />
-          </div>
-          <div>
-            <label>Password <span class="info" data-tip="MikroTik API password.">i</span></label>
-            <input type="password" name="{{ core.id }}_password" value="{{ core.password }}" />
-          </div>
-        </div>
-        <div style="margin-top: 8px;">
-          <button type="submit" formaction="/settings/system/mikrotik/remove/{{ core.id }}" formmethod="post">Remove Core</button>
-        </div>
-      </div>
-    {% endfor %}
-    <datalist id="interface_options">
-      {% for iface in interface_options %}
-        <option value="{{ iface }}"></option>
-      {% endfor %}
-    </datalist>
-    <div style="margin-top: 12px;">
-      <button type="submit" class="button-green">Save MikroTik Settings</button>
+<div class="page-header d-print-none">
+  <div class="row align-items-center">
+    <div class="col">
+      <h2 class="page-title">System Settings</h2>
     </div>
-  </form>
-  <form method="post" action="/settings/system/mikrotik/add" style="margin-top: 12px;">
-    <button type="submit">Add MikroTik Core</button>
-  </form>
-  <form method="post" action="/settings/isp/mikrotik/test" style="margin-top: 12px;">
-    <button type="submit">Test MikroTik API</button>
-  </form>
-  <form method="post" action="/settings/isp/mikrotik/sync" style="margin-top: 12px;">
-    <button type="submit" class="button-blue">Sync MikroTik Address-Lists</button>
-  </form>
-</div>
-
-<div class="card" style="margin-top: 20px;">
-  <h2>Telegram Commands</h2>
-  <form method="post" action="/settings/system/telegram">
-    <div class="form-grid">
-      <div>
-        <label>Command Bot Token <span class="info" data-tip="Bot token used for command replies and interactions.">i</span></label>
-        <input type="text" name="telegram_command_bot_token" value="{{ settings.telegram.command_bot_token }}" />
-      </div>
-      <div>
-        <label>Command Chat ID <span class="info" data-tip="Optional: lock commands to a single chat/group. Leave blank to allow private chats for allowed users.">i</span></label>
-        <input type="text" name="telegram_command_chat_id" value="{{ settings.telegram.command_chat_id }}" placeholder="Leave blank for private chats" />
-      </div>
-      <div>
-        <label>Allowed User IDs <span class="info" data-tip="One Telegram user ID per line for command access control.">i</span></label>
-        <textarea name="telegram_allowed_user_ids" placeholder="123456789">{% for user_id in settings.telegram.allowed_user_ids %}{{ user_id }}
-{% endfor %}</textarea>
-      </div>
-      <div>
-        <label>Feedback Reply Seconds <span class="info" data-tip="Send a progress reply if a command takes longer than this. Set 0 to disable.">i</span></label>
-        <input type="number" name="telegram_command_feedback_seconds" value="{{ settings.telegram.command_feedback_seconds }}" />
-      </div>
-    </div>
-    <div style="margin-top: 12px;">
-      <button type="submit" class="button-green">Save Telegram Command Settings</button>
-    </div>
-  </form>
-  {% if telegram_state %}
-    <div class="help" style="margin-top: 10px;">
-      Last poll: {{ telegram_state.last_poll_at or "n/a" }}
-    </div>
-    <div class="help">Last command: {{ telegram_state.last_command or "n/a" }} | From: {{ telegram_state.last_command_from or "n/a" }}</div>
-    <div class="help">Last reply: {{ telegram_state.last_reply or "n/a" }}</div>
-    {% if telegram_state.last_error %}
-      <div class="alert" style="margin-top: 10px;">Telegram command error: {{ telegram_state.last_error }}</div>
-    {% endif %}
-  {% endif %}
-</div>
-
-<div class="card" style="margin-top: 20px;">
-  <h2>Backup & Restore</h2>
-  <div class="status">
-    <div><a href="/settings/export">Download settings backup</a></div>
   </div>
-  <form method="post" action="/settings/import" enctype="multipart/form-data" style="margin-top: 12px;">
-    <label>Restore from JSON file</label>
-    <input type="file" name="settings_file" accept="application/json" />
-    <div style="margin-top: 10px;">
-      <button type="submit">Import Settings</button>
-    </div>
-  </form>
 </div>
 
-<div class="card" style="margin-top: 20px;">
-  <h2>Uninstall</h2>
-  <div class="alert">Warning: This will remove Docker, all containers/images/volumes, and delete the app files. This action is irreversible.</div>
-  <p class="help">Type UNINSTALL to confirm.</p>
-  <form method="post" action="/settings/system/uninstall">
-    <input type="text" name="confirm_text" placeholder="Type UNINSTALL" />
-    <div style="margin-top: 12px;">
-      <button type="submit" class="button-blue">Uninstall Everything</button>
-    </div>
-  </form>
+{% if message %}
+  <div class="alert alert-info">{{ message }}</div>
+{% endif %}
+
+<div class="card mb-4">
+  <div class="card-header">
+    <h3 class="card-title">MikroTik API (Pulsewatch)</h3>
+  </div>
+  <div class="card-body">
+    <form method="post" action="/settings/system/mikrotik">
+      {% set cores = settings.pulsewatch.mikrotik.cores %}
+      {% set interface_options = interfaces if interfaces is defined else [] %}
+      <textarea name="core_ids" style="display: none;">{% for core in cores %}{{ core.id }}
+{% endfor %}</textarea>
+      {% for core in cores %}
+        <div class="border rounded p-3 mb-3">
+          <div class="fw-semibold mb-2">{{ core.label }}</div>
+          <div class="row g-3">
+            <div class="col-md-3">
+              <label class="form-label">Core ID <span class="info" data-tip="Internal identifier for this MikroTik entry.">i</span></label>
+              <input class="form-control" type="text" name="{{ core.id }}_id" value="{{ core.id }}" disabled />
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Router Name <span class="info" data-tip="Friendly label shown in Pulsewatch tables.">i</span></label>
+              <input class="form-control" type="text" name="{{ core.id }}_label" value="{{ core.label }}" />
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Host <span class="info" data-tip="MikroTik API IP/hostname for this router.">i</span></label>
+              <input class="form-control" type="text" name="{{ core.id }}_host" value="{{ core.host }}" />
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Interface <span class="info" data-tip="Linux NIC that carries this router's Pulsewatch source IPs (e.g., enp0s8).">i</span></label>
+              <input class="form-control" type="text" name="{{ core.id }}_interface" list="interface_options" value="{{ core.interface }}" />
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Prefix <span class="info" data-tip="CIDR prefix length for the source IPs on this interface (usually 24).">i</span></label>
+              <input class="form-control" type="number" name="{{ core.id }}_prefix" value="{{ core.prefix }}" />
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Source IP Gateway <span class="info" data-tip="Default gateway used when traffic is sourced from this core's IPs. Example: 172.16.90.1.">i</span></label>
+              <input class="form-control" type="text" name="{{ core.id }}_gateway" value="{{ core.gateway }}" placeholder="e.g. 172.16.90.1" />
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Port <span class="info" data-tip="MikroTik API port (8728 by default).">i</span></label>
+              <input class="form-control" type="number" name="{{ core.id }}_port" value="{{ core.port }}" />
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Username <span class="info" data-tip="MikroTik API username.">i</span></label>
+              <input class="form-control" type="text" name="{{ core.id }}_username" value="{{ core.username }}" />
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Password <span class="info" data-tip="MikroTik API password.">i</span></label>
+              <input class="form-control" type="password" name="{{ core.id }}_password" value="{{ core.password }}" />
+            </div>
+          </div>
+          <div class="mt-3">
+            <button type="submit" class="btn btn-outline-danger btn-sm" formaction="/settings/system/mikrotik/remove/{{ core.id }}" formmethod="post">Remove Core</button>
+          </div>
+        </div>
+      {% endfor %}
+      <datalist id="interface_options">
+        {% for iface in interface_options %}
+          <option value="{{ iface }}"></option>
+        {% endfor %}
+      </datalist>
+      <div class="d-flex gap-2 flex-wrap">
+        <button type="submit" class="btn btn-primary">Save MikroTik Settings</button>
+        <button type="submit" class="btn" formaction="/settings/system/mikrotik/add" formmethod="post">Add MikroTik Core</button>
+        <button type="submit" class="btn btn-outline-primary" formaction="/settings/isp/mikrotik/test" formmethod="post">Test MikroTik API</button>
+        <button type="submit" class="btn btn-outline-primary" formaction="/settings/isp/mikrotik/sync" formmethod="post">Sync MikroTik Address-Lists</button>
+      </div>
+    </form>
+  </div>
 </div>
 
+<div class="card mb-4">
+  <div class="card-header">
+    <h3 class="card-title">Telegram Commands</h3>
+  </div>
+  <div class="card-body">
+    <form method="post" action="/settings/system/telegram">
+      <div class="row g-3">
+        <div class="col-md-6">
+          <label class="form-label">Command Bot Token <span class="info" data-tip="Bot token used for command replies and interactions.">i</span></label>
+          <input class="form-control" type="text" name="telegram_command_bot_token" value="{{ settings.telegram.command_bot_token }}" />
+        </div>
+        <div class="col-md-6">
+          <label class="form-label">Command Chat ID <span class="info" data-tip="Optional: lock commands to a single chat/group. Leave blank to allow private chats for allowed users.">i</span></label>
+          <input class="form-control" type="text" name="telegram_command_chat_id" value="{{ settings.telegram.command_chat_id }}" placeholder="Leave blank for private chats" />
+        </div>
+        <div class="col-md-6">
+          <label class="form-label">Allowed User IDs <span class="info" data-tip="One Telegram user ID per line for command access control.">i</span></label>
+          <textarea class="form-control" name="telegram_allowed_user_ids" rows="5" placeholder="123456789">{% for user_id in settings.telegram.allowed_user_ids %}{{ user_id }}
+{% endfor %}</textarea>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">Feedback Reply Seconds <span class="info" data-tip="Send a progress reply if a command takes longer than this. Set 0 to disable.">i</span></label>
+          <input class="form-control" type="number" name="telegram_command_feedback_seconds" value="{{ settings.telegram.command_feedback_seconds }}" />
+        </div>
+      </div>
+      <div class="d-flex gap-2 mt-3">
+        <button type="submit" class="btn btn-primary">Save Telegram Command Settings</button>
+      </div>
+    </form>
+    {% if telegram_state %}
+      <div class="text-muted mt-3">Last poll: {{ telegram_state.last_poll_at or "n/a" }}</div>
+      <div class="text-muted">Last command: {{ telegram_state.last_command or "n/a" }} | From: {{ telegram_state.last_command_from or "n/a" }}</div>
+      <div class="text-muted">Last reply: {{ telegram_state.last_reply or "n/a" }}</div>
+      {% if telegram_state.last_error %}
+        <div class="alert alert-warning mt-2">Telegram command error: {{ telegram_state.last_error }}</div>
+      {% endif %}
+    {% endif %}
+  </div>
+</div>
+
+<div class="card mb-4">
+  <div class="card-header">
+    <h3 class="card-title">Backup & Restore</h3>
+  </div>
+  <div class="card-body">
+    <div class="text-muted mb-2">
+      <a href="/settings/export">Download settings backup</a>
+    </div>
+    <form method="post" action="/settings/import" enctype="multipart/form-data">
+      <label class="form-label">Restore from JSON file</label>
+      <input class="form-control" type="file" name="settings_file" accept="application/json" />
+      <div class="mt-3">
+        <button type="submit" class="btn btn-primary">Import Settings</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card mb-4">
+  <div class="card-header">
+    <h3 class="card-title text-danger">Uninstall</h3>
+  </div>
+  <div class="card-body">
+    <div class="alert alert-warning">Warning: This will remove Docker, all containers/images/volumes, and delete the app files. This action is irreversible.</div>
+    <p class="text-muted">Type UNINSTALL to confirm.</p>
+    <form method="post" action="/settings/system/uninstall">
+      <input class="form-control" type="text" name="confirm_text" placeholder="Type UNINSTALL" />
+      <div class="mt-3">
+        <button type="submit" class="btn btn-danger">Uninstall Everything</button>
+      </div>
+    </form>
+  </div>
+</div>
 {% endblock %}

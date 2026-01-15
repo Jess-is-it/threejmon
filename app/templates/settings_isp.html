@@ -1,85 +1,124 @@
 {% extends "base.html" %}
 {% block content %}
+<div class="page-header d-print-none">
+  <div class="row align-items-center">
+    <div class="col">
+      <h2 class="page-title">ISP Ping Settings</h2>
+    </div>
+  </div>
+</div>
+
+{% if message %}
+  <div class="alert alert-info">{{ message }}</div>
+{% endif %}
+
 <div class="card">
-  <h2>ISP Ping Settings</h2>
-  {% if message %}
-    <div class="alert">{{ message }}</div>
-  {% endif %}
-  <form method="post">
-    <div class="toggle">
-      <input type="checkbox" name="enabled" id="enabled" {% if settings.enabled %}checked{% endif %} />
-      <label for="enabled">Enable ISP ping notifier</label>
-    </div>
+  <div class="card-body">
+    <form method="post">
+      <div class="card mb-3">
+        <div class="card-body">
+          <h4 class="mb-3">General</h4>
+          <label class="form-label">Enable ISP ping notifier</label>
+          <label class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" name="enabled" {% if settings.enabled %}checked{% endif %} />
+            <span class="form-check-label">Active</span>
+          </label>
+        </div>
+      </div>
 
-    <h3>Telegram</h3>
-    <div class="form-grid">
-      <div>
-        <label>Bot Token <span class="info" data-tip="Telegram bot token from BotFather.">i</span></label>
-        <input type="text" name="telegram_bot_token" value="{{ settings.telegram.bot_token }}" />
+      <div class="card mb-3">
+        <div class="card-body">
+          <h4 class="mb-3">Telegram</h4>
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label">Bot Token <span class="info" data-tip="Telegram bot token from BotFather.">i</span></label>
+              <input class="form-control" type="text" name="telegram_bot_token" value="{{ settings.telegram.bot_token }}" />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Chat ID <span class="info" data-tip="Target Telegram chat ID where alerts should be sent.">i</span></label>
+              <input class="form-control" type="text" name="telegram_chat_id" value="{{ settings.telegram.chat_id }}" />
+            </div>
+          </div>
+        </div>
       </div>
-      <div>
-        <label>Chat ID <span class="info" data-tip="Target Telegram chat ID where alerts should be sent.">i</span></label>
-        <input type="text" name="telegram_chat_id" value="{{ settings.telegram.chat_id }}" />
-      </div>
-    </div>
 
-    <h3>Ping</h3>
-    <div class="form-grid">
-      <div>
-        <label>Timeout (seconds) <span class="info" data-tip="Timeout per ping attempt.">i</span></label>
-        <input type="number" name="ping_timeout_seconds" value="{{ settings.general.ping_timeout_seconds }}" />
+      <div class="card mb-3">
+        <div class="card-body">
+          <h4 class="mb-3">Ping</h4>
+          <div class="row g-3">
+            <div class="col-md-3">
+              <label class="form-label">Timeout (seconds) <span class="info" data-tip="Timeout per ping attempt.">i</span></label>
+              <input class="form-control" type="number" name="ping_timeout_seconds" value="{{ settings.general.ping_timeout_seconds }}" />
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Ping Count <span class="info" data-tip="How many ping attempts per target.">i</span></label>
+              <input class="form-control" type="number" name="ping_count" value="{{ settings.general.ping_count }}" />
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Max Parallel Pings <span class="info" data-tip="Number of targets checked in parallel.">i</span></label>
+              <input class="form-control" type="number" name="max_parallel_pings" value="{{ settings.general.max_parallel_pings }}" />
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Interval (seconds) <span class="info" data-tip="Delay between repeated checks in daemon mode.">i</span></label>
+              <input class="form-control" type="number" name="daemon_interval_seconds" value="{{ settings.general.daemon_interval_seconds }}" />
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Include ICMP ping when ISP is UP <span class="info" data-tip="Include ICMP reply lines when a link goes UP.">i</span></label>
+              <label class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" name="include_up_icmp" id="include_up_icmp" {% if settings.general.include_up_icmp %}checked{% endif %} />
+                <span class="form-check-label">Enabled</span>
+              </label>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">UP ICMP Lines <span class="info" data-tip="Number of ICMP lines to include (max 20). Higher values delay notifications.">i</span></label>
+              <input class="form-control" type="number" name="up_icmp_lines" id="up_icmp_lines" min="1" max="20" value="{{ settings.general.up_icmp_lines }}" />
+              <div class="help">Higher values take longer to send.</div>
+            </div>
+          </div>
+        </div>
       </div>
-      <div>
-        <label>Ping Count <span class="info" data-tip="How many ping attempts per target.">i</span></label>
-        <input type="number" name="ping_count" value="{{ settings.general.ping_count }}" />
-      </div>
-      <div>
-        <label>Max Parallel Pings <span class="info" data-tip="Number of targets checked in parallel.">i</span></label>
-        <input type="number" name="max_parallel_pings" value="{{ settings.general.max_parallel_pings }}" />
-      </div>
-      <div>
-        <label>Interval (seconds) <span class="info" data-tip="Delay between repeated checks in daemon mode.">i</span></label>
-        <input type="number" name="daemon_interval_seconds" value="{{ settings.general.daemon_interval_seconds }}" />
-      </div>
-      <div>
-        <label>Include ICMP ping when ISP is UP <span class="info" data-tip="Include ICMP reply lines when a link goes UP.">i</span></label>
-        <input type="checkbox" name="include_up_icmp" id="include_up_icmp" {% if settings.general.include_up_icmp %}checked{% endif %} />
-      </div>
-      <div>
-        <label>UP ICMP Lines <span class="info" data-tip="Number of ICMP lines to include (max 20). Higher values delay notifications.">i</span></label>
-        <input type="number" name="up_icmp_lines" id="up_icmp_lines" min="1" max="20" value="{{ settings.general.up_icmp_lines }}" />
-        <div class="help">Higher values take longer to send.</div>
-      </div>
-    </div>
 
-    <h3>Daily Report</h3>
-    <div class="form-grid">
-      <div>
-        <label>Daily Time (HH:MM) <span class="info" data-tip="Daily report time for ISP status summary.">i</span></label>
-        <input type="text" name="daily_time" value="{{ settings.report.daily_time }}" />
+      <div class="card mb-3">
+        <div class="card-body">
+          <h4 class="mb-3">Daily Report</h4>
+          <div class="row g-3">
+            <div class="col-md-4">
+              <label class="form-label">Daily Time (HH:MM) <span class="info" data-tip="Daily report time for ISP status summary.">i</span></label>
+              <input class="form-control" type="text" name="daily_time" value="{{ settings.report.daily_time }}" />
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Timezone <span class="info" data-tip="Timezone for the daily report schedule.">i</span></label>
+              <input class="form-control" type="text" name="timezone" value="{{ settings.report.timezone }}" />
+            </div>
+          </div>
+        </div>
       </div>
-      <div>
-        <label>Timezone <span class="info" data-tip="Timezone for the daily report schedule.">i</span></label>
-        <input type="text" name="timezone" value="{{ settings.report.timezone }}" />
-      </div>
-    </div>
 
-    <h3>Targets</h3>
-    <label>Targets (ip | label | down_message | up_message) <span class="info" data-tip="One target per line. Only IP is required; label and messages are optional.">i</span></label>
-    <textarea name="targets">{% for item in settings.targets %}{{ item.ip }} | {{ item.label }} | {{ item.down_message }} | {{ item.up_message }}
+      <div class="card mb-3">
+        <div class="card-body">
+          <h4 class="mb-3">Targets</h4>
+          <label class="form-label">Targets (ip | label | down_message | up_message) <span class="info" data-tip="One target per line. Only IP is required; label and messages are optional.">i</span></label>
+          <textarea class="form-control" name="targets" rows="6">{% for item in settings.targets %}{{ item.ip }} | {{ item.label }} | {{ item.down_message }} | {{ item.up_message }}
 {% endfor %}</textarea>
-    <div class="help">One target per line. Only IP is required; other fields are optional.</div>
+          <div class="help">One target per line. Only IP is required; other fields are optional.</div>
+        </div>
+      </div>
 
-    <div style="margin-top: 16px;">
-      <button type="submit" class="button-green">Save ISP Ping Settings</button>
+      <div class="d-flex gap-2 mt-4">
+        <button type="submit" class="btn btn-primary">Save ISP Ping Settings</button>
+      </div>
+    </form>
+  </div>
+  <div class="card-footer">
+    <div class="d-flex flex-wrap gap-2">
+      <form method="post" action="/settings/isp/test">
+        <button type="submit" class="btn">Send Test Telegram</button>
+      </form>
+      <form method="post" action="/settings/isp/run">
+        <button type="submit" class="btn btn-outline-primary">Send Actual Test</button>
+      </form>
     </div>
-  </form>
-  <form method="post" action="/settings/isp/test" style="margin-top: 12px;">
-    <button type="submit">Send Test Telegram</button>
-  </form>
-  <form method="post" action="/settings/isp/run" style="margin-top: 12px;">
-    <button type="submit" class="button-blue">Send Actual Test</button>
-  </form>
+  </div>
 </div>
 <script>
   const includeUpIcmp = document.getElementById("include_up_icmp");

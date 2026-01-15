@@ -1,9 +1,16 @@
 {% extends "base.html" %}
 {% block content %}
+<div class="page-header d-print-none">
+  <div class="row align-items-center">
+    <div class="col">
+      <h2 class="page-title">ISP Pulsewatch</h2>
+    </div>
+  </div>
+</div>
 <div class="card">
-  <h2>ISP Pulsewatch</h2>
+  <div class="card-body">
   {% if message %}
-    <div class="alert">{{ message }}</div>
+    <div class="alert alert-info">{{ message }}</div>
     <div id="pulsewatch_modal" style="position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 1000;">
       <div style="background: #fffdf4; border: 1px solid #d6d6cf; padding: 18px; border-radius: 10px; min-width: 320px; max-width: 720px; box-shadow: 0 10px 30px rgba(0,0,0,0.2);">
         <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -12,173 +19,248 @@
         </div>
         <div style="margin-top: 10px; white-space: pre-wrap;">{{ message }}</div>
         <div style="margin-top: 14px; text-align: right;">
-          <button type="button" class="button-blue" id="pulsewatch_modal_ok">OK</button>
+          <button type="button" class="btn btn-primary" id="pulsewatch_modal_ok">OK</button>
         </div>
       </div>
     </div>
   {% endif %}
 
-  <form method="post">
-    <h3>Telegram</h3>
-    <div class="form-grid">
-      <div>
-        <label>Bot Token <span class="info" data-tip="Telegram bot token from BotFather.">i</span></label>
-        <input type="text" name="telegram_bot_token" value="{{ settings.telegram.bot_token }}" />
-      </div>
-      <div>
-        <label>Alert Channel ID <span class="info" data-tip="Override channel ID for Pulsewatch alerts.">i</span></label>
-        <input type="text" name="telegram_alert_channel_id" value="{{ settings.telegram.alert_channel_id }}" />
-      </div>
-    </div>
+  <ul class="nav nav-tabs" data-bs-toggle="tabs">
+    <li class="nav-item">
+      <a href="#pulsewatch-presets" class="nav-link active" data-bs-toggle="tab">Pulsewatch Presets</a>
+    </li>
+    <li class="nav-item">
+      <a href="#pulsewatch-settings" class="nav-link" data-bs-toggle="tab">Settings</a>
+    </li>
+  </ul>
+  <div class="tab-content pt-4">
+    <div class="tab-pane active" id="pulsewatch-presets">
+      <form method="post">
+        <div class="card">
+          <div class="card-body">
+            <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+              <h4 class="mb-0">Pulsewatch Presets</h4>
+              <div class="d-flex gap-2 flex-wrap">
+                <button type="submit" class="btn" formaction="/settings/pulsewatch/test" formmethod="post">Send Test Telegram</button>
+                <button type="button" class="btn btn-primary" id="pulsewatch_ping_all">Run Ping All</button>
+                <button type="button" class="btn btn-outline-primary" id="pulsewatch_speedtest_all">Run Speedtest All</button>
+              </div>
+            </div>
 
-    <h3>Pulsewatch</h3>
-    <div class="toggle" style="margin-bottom: 12px;">
-      <input type="checkbox" name="pulsewatch_enabled" id="pulsewatch_enabled" {% if settings.pulsewatch.enabled %}checked{% endif %} />
-      <label for="pulsewatch_enabled">Enable ISP Pulsewatch</label>
-    </div>
+            <div class="alert alert-info mt-3 mb-3">
+              <div class="d-flex align-items-start">
+                <span class="me-2"><i class="ti ti-info-circle"></i></span>
+                <div>
+                  Lists are loaded from each MikroTik. Fill in the IP address for the list entry you want added.
+                  Saving presets updates the host IP assignments (netplan) and can sync MikroTik address-lists if enabled.
+                </div>
+              </div>
+            </div>
 
-    <div class="form-grid">
-      <div>
-        <label>Auto-manage MikroTik address-lists <span class="info" data-tip="Keeps TO-ISP# address-lists in sync for Pulsewatch source IPs.">i</span></label>
-        <input type="checkbox" name="pulsewatch_manage_address_lists" {% if settings.pulsewatch.manage_address_lists %}checked{% endif %} />
-      </div>
-      <div>
-        <label>Reconcile Interval (minutes) <span class="info" data-tip="How often to reconcile MikroTik address-lists.">i</span></label>
-        <input type="number" name="pulsewatch_reconcile_interval_minutes" value="{{ settings.pulsewatch.reconcile_interval_minutes }}" />
-      </div>
-      <div>
-        <label>Store raw output <span class="info" data-tip="Persist raw ping/speedtest output in the database.">i</span></label>
-        <input type="checkbox" name="pulsewatch_store_raw_output" {% if settings.pulsewatch.store_raw_output %}checked{% endif %} />
-      </div>
-      <div>
-        <label>Retention Days <span class="info" data-tip="Auto-delete Pulsewatch results older than this many days.">i</span></label>
-        <input type="number" name="pulsewatch_retention_days" value="{{ settings.pulsewatch.retention_days }}" />
-      </div>
-    </div>
-    <div class="help">MikroTik API credentials are managed under System Settings.</div>
+            {% set cores = settings.pulsewatch.mikrotik.cores %}
+            <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+              <input class="form-control" type="text" id="pulsewatch_search" placeholder="Search list..." style="min-width: 220px;" />
+            </div>
 
-    <h4 style="margin-top: 18px;">Pulsewatch Speedtest</h4>
-    <div class="form-grid">
-      <div>
-        <label>Enable Speedtest</label>
-        <input type="checkbox" name="speedtest_enabled" {% if settings.pulsewatch.speedtest.enabled %}checked{% endif %} />
-      </div>
-      <div>
-        <label>Min Interval (minutes)</label>
-        <input type="number" name="speedtest_min_interval_minutes" value="{{ settings.pulsewatch.speedtest.min_interval_minutes }}" />
-      </div>
-      <div>
-        <label>Command</label>
-        <input type="text" name="speedtest_command" value="{{ settings.pulsewatch.speedtest.command }}" />
-      </div>
-      <div>
-        <label>Args</label>
-        <input type="text" name="speedtest_args" value="{{ settings.pulsewatch.speedtest.args }}" />
-      </div>
-      <div>
-        <label>Use network namespaces</label>
-        <input type="checkbox" name="speedtest_use_netns" {% if settings.pulsewatch.speedtest.use_netns %}checked{% endif %} />
-      </div>
-      <div>
-        <label>Netns Prefix</label>
-        <input type="text" name="speedtest_netns_prefix" value="{{ settings.pulsewatch.speedtest.netns_prefix }}" />
-      </div>
-    </div>
-
-    <h4 style="margin-top: 18px;">Pulsewatch Ping</h4>
-    <div class="form-grid">
-      <div>
-        <label>Ping Timeout (seconds)</label>
-        <input type="number" name="pulsewatch_ping_timeout_seconds" value="{{ settings.pulsewatch.ping.timeout_seconds }}" />
-      </div>
-      <div>
-        <label>Ping Count</label>
-        <input type="number" name="pulsewatch_ping_count" value="{{ settings.pulsewatch.ping.count }}" />
-      </div>
-      <div>
-        <label>Max Parallel Pings</label>
-        <input type="number" name="pulsewatch_ping_max_parallel" value="{{ settings.pulsewatch.ping.max_parallel }}" />
-      </div>
-    </div>
-
-    <h4 style="margin-top: 18px;">Pulsewatch Presets</h4>
-    <div class="help">Lists are loaded from each MikroTik. Fill in the IP address for the list entry you want added.</div>
-    {% set cores = settings.pulsewatch.mikrotik.cores %}
-    <div style="display: flex; justify-content: space-between; align-items: center; margin: 12px 0;">
-      <div>
-        <input type="text" id="pulsewatch_search" placeholder="Search list..." style="min-width: 220px;" />
-      </div>
-      <div>
-        <button type="submit" formaction="/settings/pulsewatch/test" formmethod="post" style="margin-left: 6px;">Send Test Telegram</button>
-        <button type="button" class="button-blue" id="pulsewatch_ping_all" style="margin-left: 6px;">Run Ping All</button>
-        <button type="submit" formaction="/isp/pulsewatch/speedtest" formmethod="post" style="margin-left: 6px;">Run Speedtest All</button>
-      </div>
-    </div>
-
-    <div style="overflow-x: auto;">
-      <table id="pulsewatch_table" style="width: 100%; border-collapse: collapse;">
-        <thead>
-          <tr>
-            <th data-sort="text" title="Which MikroTik router this preset belongs to." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">MikroTik</th>
-            <th data-sort="text" title="Address-list name pulled from the MikroTik firewall." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">List</th>
-            <th data-sort="text" title="Friendly identifier for this ISP/list." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Identifier</th>
-            <th data-sort="text" title="Source IP to bind for this list (used by ping/speedtest)." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">IP Address</th>
-            <th data-sort="number" title="Latency threshold (ms) before a breach is counted." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Latency</th>
-            <th data-sort="number" title="Packet loss threshold (%) before a breach is counted." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Loss</th>
-            <th data-sort="number" title="How many consecutive breaches trigger an alert." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Breaches</th>
-            <th data-sort="number" title="Cooldown minutes after an alert to avoid repeats." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Cooldown</th>
-            <th data-sort="text" title="Ping targets (one per line) to test for this list." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Targets</th>
-            <th title="Run ping/speedtest actions for this preset." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          <input type="hidden" name="preset_count" value="{{ preset_rows|length }}" />
-          {% for row in preset_rows %}
-            <tr class="pulsewatch-row" data-row-id="{{ row.row_id }}">
-              <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
-                {{ row.core_label }}
-                <input type="hidden" name="preset_{{ loop.index0 }}_core_id" value="{{ row.core_id }}" />
-              </td>
-              <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
-                {{ row.list_name }}
-                <input type="hidden" name="preset_{{ loop.index0 }}_list" value="{{ row.list_name }}" />
-              </td>
-              <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
-                <input type="text" name="preset_{{ loop.index0 }}_identifier" value="{{ row.identifier }}" />
-              </td>
-              <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
-                <input type="text" name="preset_{{ loop.index0 }}_address" value="{{ row.address }}" />
-              </td>
-              <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
-                <input type="number" name="preset_{{ loop.index0 }}_latency_ms" value="{{ row.latency_ms }}" style="max-width: 90px;" />
-              </td>
-              <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
-                <input type="number" name="preset_{{ loop.index0 }}_loss_pct" value="{{ row.loss_pct }}" style="max-width: 70px;" />
-              </td>
-              <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
-                <input type="number" name="preset_{{ loop.index0 }}_breach_count" value="{{ row.breach_count }}" style="max-width: 70px;" />
-              </td>
-              <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
-                <input type="number" name="preset_{{ loop.index0 }}_cooldown_minutes" value="{{ row.cooldown_minutes }}" style="max-width: 80px;" />
-              </td>
-              <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
-                <textarea name="preset_{{ loop.index0 }}_ping_targets" style="min-width: 160px; min-height: 60px;">{% for target in row.ping_targets %}{{ target }}
+            <div style="overflow-x: auto;">
+              <table id="pulsewatch_table" class="table table-vcenter" style="width: 100%;">
+            <thead>
+              <tr>
+                <th data-sort="text" title="Which MikroTik router this preset belongs to." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">MikroTik</th>
+                <th data-sort="text" title="Address-list name pulled from the MikroTik firewall." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">List</th>
+                <th data-sort="text" title="Friendly identifier for this ISP/list." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Identifier</th>
+                <th data-sort="text" title="Source IP to bind for this list (used by ping/speedtest)." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">IP Address</th>
+                <th data-sort="number" title="Latency threshold (ms) before a breach is counted." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Latency</th>
+                <th data-sort="number" title="Packet loss threshold (%) before a breach is counted." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Loss</th>
+                <th data-sort="number" title="How many consecutive breaches trigger an alert." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Breaches</th>
+                <th data-sort="number" title="Cooldown minutes after an alert to avoid repeats." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Cooldown</th>
+                <th data-sort="text" title="Ping targets (one per line) to test for this list." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Targets</th>
+                <th title="Run ping/speedtest actions for this preset." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf;">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <input type="hidden" name="preset_count" value="{{ preset_rows|length }}" />
+              {% for row in preset_rows %}
+                <tr class="pulsewatch-row" data-row-id="{{ row.row_id }}">
+                  <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
+                    {{ row.core_label }}
+                    <input type="hidden" name="preset_{{ loop.index0 }}_core_id" value="{{ row.core_id }}" />
+                  </td>
+                  <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
+                    {{ row.list_name }}
+                    <input type="hidden" name="preset_{{ loop.index0 }}_list" value="{{ row.list_name }}" />
+                  </td>
+                  <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
+                    <input type="text" name="preset_{{ loop.index0 }}_identifier" value="{{ row.identifier }}" />
+                  </td>
+                  <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
+                    <input type="text" name="preset_{{ loop.index0 }}_address" value="{{ row.address }}" />
+                  </td>
+                  <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
+                    <input type="number" name="preset_{{ loop.index0 }}_latency_ms" value="{{ row.latency_ms }}" style="max-width: 90px;" />
+                  </td>
+                  <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
+                    <input type="number" name="preset_{{ loop.index0 }}_loss_pct" value="{{ row.loss_pct }}" style="max-width: 70px;" />
+                  </td>
+                  <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
+                    <input type="number" name="preset_{{ loop.index0 }}_breach_count" value="{{ row.breach_count }}" style="max-width: 70px;" />
+                  </td>
+                  <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
+                    <input type="number" name="preset_{{ loop.index0 }}_cooldown_minutes" value="{{ row.cooldown_minutes }}" style="max-width: 80px;" />
+                  </td>
+                  <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
+                    <textarea name="preset_{{ loop.index0 }}_ping_targets" style="min-width: 160px; min-height: 60px;">{% for target in row.ping_targets %}{{ target }}
 {% endfor %}</textarea>
-              </td>
-              <td style="padding: 8px; border-bottom: 1px solid #efefe7; white-space: nowrap;">
-                <button type="button" class="button-blue pulsewatch-ping" title="Run Ping" data-row-id="{{ row.row_id }}">P</button>
-                <button type="submit" title="Run Speedtest" formaction="/isp/pulsewatch/speedtest/{{ row.row_id }}" formmethod="post">S</button>
-              </td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+                  </td>
+                  <td style="padding: 8px; border-bottom: 1px solid #efefe7; white-space: nowrap;">
+                    <button type="button" class="btn btn-primary pulsewatch-ping" title="Run Ping" data-row-id="{{ row.row_id }}">P</button>
+                    <button type="button" class="btn btn-outline-primary pulsewatch-speedtest" title="Run Speedtest" data-row-id="{{ row.row_id }}">S</button>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+            </div>
+          </div>
+          <div class="card-footer d-flex justify-content-end">
+            <button type="submit" class="btn btn-primary">Save ISP Pulsewatch Settings</button>
+          </div>
+        </div>
+      </form>
     </div>
+    <div class="tab-pane" id="pulsewatch-settings">
+      <form method="post">
+        <div class="card mb-3">
+          <div class="card-body">
+            <h4 class="mb-3">Pulsewatch Core Settings</h4>
+            <div class="mb-3">
+              <label class="form-label">Enable ISP Pulsewatch</label>
+              <label class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" name="pulsewatch_enabled" id="pulsewatch_enabled" {% if settings.pulsewatch.enabled %}checked{% endif %} />
+                <span class="form-check-label">Active</span>
+              </label>
+            </div>
 
-    <div style="margin-top: 16px;">
-      <button type="submit" class="button-green">Save ISP Pulsewatch Settings</button>
+            <div class="form-grid">
+              <div>
+                <label>Auto-manage MikroTik address-lists <span class="info" data-tip="Keeps TO-ISP# address-lists in sync for Pulsewatch source IPs.">i</span></label>
+                <label class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="pulsewatch_manage_address_lists" {% if settings.pulsewatch.manage_address_lists %}checked{% endif %} />
+                  <span class="form-check-label">Enabled</span>
+                </label>
+              </div>
+              <div>
+                <label>Reconcile Interval (minutes) <span class="info" data-tip="How often to reconcile MikroTik address-lists.">i</span></label>
+                <input type="number" name="pulsewatch_reconcile_interval_minutes" value="{{ settings.pulsewatch.reconcile_interval_minutes }}" />
+              </div>
+              <div>
+                <label>Store raw output <span class="info" data-tip="Persist raw ping/speedtest output in the database.">i</span></label>
+                <label class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="pulsewatch_store_raw_output" {% if settings.pulsewatch.store_raw_output %}checked{% endif %} />
+                  <span class="form-check-label">Enabled</span>
+                </label>
+              </div>
+              <div>
+                <label>Retention Days <span class="info" data-tip="Auto-delete Pulsewatch results older than this many days.">i</span></label>
+                <input type="number" name="pulsewatch_retention_days" value="{{ settings.pulsewatch.retention_days }}" />
+              </div>
+            </div>
+            <div class="alert alert-info mt-3">
+              <div class="d-flex align-items-center">
+                <span class="me-2"><i class="ti ti-info-circle"></i></span>
+                <div>MikroTik API credentials are managed under System Settings.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card mb-3">
+          <div class="card-body">
+            <h4 class="mb-3">Ping</h4>
+            <div class="form-grid">
+              <div>
+                <label>Ping Timeout (seconds)</label>
+                <input type="number" name="pulsewatch_ping_timeout_seconds" value="{{ settings.pulsewatch.ping.timeout_seconds }}" />
+              </div>
+              <div>
+                <label>Ping Count</label>
+                <input type="number" name="pulsewatch_ping_count" value="{{ settings.pulsewatch.ping.count }}" />
+              </div>
+              <div>
+                <label>Max Parallel Pings</label>
+                <input type="number" name="pulsewatch_ping_max_parallel" value="{{ settings.pulsewatch.ping.max_parallel }}" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card mb-3">
+          <div class="card-body">
+            <h4 class="mb-3">Speedtest</h4>
+            <div class="form-grid">
+              <div>
+                <label>Enable Speedtest</label>
+                <label class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="speedtest_enabled" {% if settings.pulsewatch.speedtest.enabled %}checked{% endif %} />
+                  <span class="form-check-label">Enabled</span>
+                </label>
+              </div>
+              <div>
+                <label>Min Interval (minutes)</label>
+                <input type="number" name="speedtest_min_interval_minutes" value="{{ settings.pulsewatch.speedtest.min_interval_minutes }}" />
+              </div>
+              <div>
+                <label>Command</label>
+                <input type="text" name="speedtest_command" value="{{ settings.pulsewatch.speedtest.command }}" />
+              </div>
+              <div>
+                <label>Args</label>
+                <input type="text" name="speedtest_args" value="{{ settings.pulsewatch.speedtest.args }}" />
+              </div>
+              <div>
+                <label>Use network namespaces</label>
+                <label class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="speedtest_use_netns" {% if settings.pulsewatch.speedtest.use_netns %}checked{% endif %} />
+                  <span class="form-check-label">Enabled</span>
+                </label>
+              </div>
+              <div>
+                <label>Netns Prefix</label>
+                <input type="text" name="speedtest_netns_prefix" value="{{ settings.pulsewatch.speedtest.netns_prefix }}" />
+              </div>
+            </div>
+            <div class="alert alert-info mt-3">
+              <div class="d-flex align-items-center">
+                <span class="me-2"><i class="ti ti-info-circle"></i></span>
+                <div>Speedtest All runs sequentially to avoid saturating a single 1G LAN uplink.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card mb-3">
+          <div class="card-body">
+            <h4 class="mb-3">Telegram</h4>
+            <div class="form-grid">
+              <div>
+                <label>Bot Token <span class="info" data-tip="Telegram bot token from BotFather.">i</span></label>
+                <input type="text" name="telegram_bot_token" value="{{ settings.telegram.bot_token }}" />
+              </div>
+              <div>
+                <label>Alert Channel ID <span class="info" data-tip="Override channel ID for Pulsewatch alerts.">i</span></label>
+                <input type="text" name="telegram_alert_channel_id" value="{{ settings.telegram.alert_channel_id }}" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top: 16px;">
+          <button type="submit" class="btn btn-primary">Save ISP Pulsewatch Settings</button>
+        </div>
+      </form>
     </div>
-  </form>
+  </div>
+  </div>
 </div>
 
   <div id="pulsewatch_stream_modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55); align-items: center; justify-content: center; z-index: 1000;">
@@ -192,7 +274,7 @@
     <div id="pulsewatch_stream_grid" style="display: none; gap: 12px; overflow: auto; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); flex: 1;"></div>
     <pre id="pulsewatch_stream_output" style="flex: 1; overflow: auto; margin: 0; padding: 10px; background: #0b1020; border: 1px solid #1f2937; border-radius: 8px; white-space: pre-wrap;"></pre>
     <div style="margin-top: 12px; text-align: right;">
-      <button type="button" class="button-blue" id="pulsewatch_stream_stop">Stop</button>
+      <button type="button" class="btn btn-primary" id="pulsewatch_stream_stop">Stop</button>
     </div>
   </div>
 </div>
@@ -205,10 +287,97 @@
     </div>
     <pre id="pulsewatch_stream_detail_output" style="flex: 1; overflow: auto; margin: 0; padding: 10px; background: #0b1020; border: 1px solid #1f2937; border-radius: 8px; white-space: pre-wrap;"></pre>
     <div style="margin-top: 12px; text-align: right;">
-      <button type="button" class="button-blue" id="pulsewatch_stream_detail_ok">Close</button>
+      <button type="button" class="btn btn-primary" id="pulsewatch_stream_detail_ok">Close</button>
     </div>
   </div>
 </div>
+
+<div id="pulsewatch_speedtest_modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55); align-items: center; justify-content: center; z-index: 1002;">
+  <div style="background: #0f172a; color: #e2e8f0; border: 1px solid #1f2937; padding: 20px; border-radius: 12px; width: 90vw; max-width: 720px; display: flex; flex-direction: column; gap: 14px;">
+    <div style="display: flex; justify-content: space-between; align-items: center;">
+      <strong id="pulsewatch_speedtest_title">Speedtest</strong>
+      <button type="button" id="pulsewatch_speedtest_close" style="border: none; background: transparent; font-size: 18px; color: #e2e8f0; cursor: pointer;">&times;</button>
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px;">
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <div style="font-size: 42px; font-weight: 700;" id="pulsewatch_speedtest_download_number">0</div>
+          <div style="text-align: right;">
+            <div style="font-size: 12px; color: #94a3b8;">Download Mbps</div>
+            <div id="pulsewatch_speedtest_status" style="font-size: 12px; color: #94a3b8; margin-top: 4px;">Waiting to start…</div>
+          </div>
+        </div>
+        <div style="height: 10px; background: #1f2937; border-radius: 999px; overflow: hidden;">
+          <div id="pulsewatch_speedtest_download_bar" style="height: 100%; width: 0%; background: linear-gradient(90deg, #22c55e, #38bdf8); transition: width 0.4s ease;"></div>
+        </div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <div style="font-size: 42px; font-weight: 700;" id="pulsewatch_speedtest_upload_number">0</div>
+          <div style="text-align: right;">
+            <div style="font-size: 12px; color: #94a3b8;">Upload Mbps</div>
+          </div>
+        </div>
+        <div style="height: 10px; background: #1f2937; border-radius: 999px; overflow: hidden;">
+          <div id="pulsewatch_speedtest_upload_bar" style="height: 100%; width: 0%; background: linear-gradient(90deg, #f97316, #facc15); transition: width 0.4s ease;"></div>
+        </div>
+      </div>
+    </div>
+    <div id="pulsewatch_speedtest_loading" style="display: none; align-items: center; gap: 10px; color: #94a3b8; font-size: 13px;">
+      <div style="width: 18px; height: 18px; border: 2px solid #1f2937; border-top-color: #38bdf8; border-radius: 50%; animation: spin 0.9s linear infinite;"></div>
+      <div>Speedtest ongoing…</div>
+    </div>
+    <div id="pulsewatch_speedtest_details" style="font-size: 13px; color: #cbd5f5;">Upload: -- Mbps · Ping: -- ms · Server: --</div>
+    <div style="display: flex; gap: 8px; align-items: center; justify-content: space-between;">
+      <div style="flex: 1;">
+        <label style="font-size: 12px; color: #94a3b8;">Server</label>
+        <select id="pulsewatch_speedtest_server" style="width: 100%; background: #0b1020; color: #e2e8f0; border: 1px solid #1f2937; border-radius: 8px; padding: 6px 8px; font-size: 12px;">
+          <option value="">Automatic</option>
+        </select>
+      </div>
+      <button type="button" class="btn btn-primary" id="pulsewatch_speedtest_run" style="white-space: nowrap;">Run Test</button>
+    </div>
+  </div>
+</div>
+
+<div id="pulsewatch_speedtest_all_modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55); align-items: center; justify-content: center; z-index: 1003;">
+  <div style="background: #0f172a; color: #e2e8f0; border: 1px solid #1f2937; padding: 20px; border-radius: 12px; width: 95vw; max-width: 1200px; max-height: 90vh; display: flex; flex-direction: column; gap: 14px;">
+    <div style="display: flex; justify-content: space-between; align-items: center;">
+      <strong>Speedtest All ISPs</strong>
+      <button type="button" id="pulsewatch_speedtest_all_close" style="border: none; background: transparent; font-size: 18px; color: #e2e8f0; cursor: pointer;">&times;</button>
+    </div>
+    <div style="display: flex; gap: 20px; flex-wrap: wrap; align-items: baseline;">
+      <div style="font-size: 24px; font-weight: 700;" id="pulsewatch_speedtest_all_download">Total Download: -- Mbps</div>
+      <div style="font-size: 24px; font-weight: 700;" id="pulsewatch_speedtest_all_upload">Total Upload: -- Mbps</div>
+    </div>
+    <div style="display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap;">
+      <div style="min-width: 240px;">
+        <label style="font-size: 12px; color: #94a3b8;">Server (applies to all ISPs)</label>
+        <select id="pulsewatch_speedtest_all_server" style="width: 100%; background: #0b1020; color: #e2e8f0; border: 1px solid #1f2937; border-radius: 8px; padding: 6px 8px; font-size: 12px;">
+          <option value="">Automatic</option>
+        </select>
+      </div>
+      <button type="button" class="btn btn-primary" id="pulsewatch_speedtest_all_start">Start</button>
+      <button type="button" class="btn btn-outline-primary" id="pulsewatch_speedtest_all_stop_run">Stop</button>
+    </div>
+    <div id="pulsewatch_speedtest_all_grid" style="display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); overflow: auto;"></div>
+    <div style="text-align: right;">
+      <button type="button" class="btn btn-primary" id="pulsewatch_speedtest_all_stop">Close</button>
+    </div>
+  </div>
+</div>
+
+<style>
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+  @keyframes glow {
+    0% { box-shadow: 0 0 0 rgba(56, 189, 248, 0.0); }
+    50% { box-shadow: 0 0 14px rgba(56, 189, 248, 0.45); }
+    100% { box-shadow: 0 0 0 rgba(56, 189, 248, 0.0); }
+  }
+</style>
 
 <script>
   const modal = document.getElementById("pulsewatch_modal");
@@ -323,7 +492,7 @@
     const freezeBtn = document.createElement("button");
     freezeBtn.type = "button";
     freezeBtn.textContent = "Freeze";
-    freezeBtn.className = "button-blue";
+    freezeBtn.className = "btn btn-primary btn-sm";
     freezeBtn.style.fontSize = "11px";
     freezeBtn.style.padding = "2px 6px";
     freezeBtn.dataset.frozen = "false";
@@ -336,7 +505,7 @@
     const expandBtn = document.createElement("button");
     expandBtn.type = "button";
     expandBtn.textContent = "Expand";
-    expandBtn.className = "button-blue";
+    expandBtn.className = "btn btn-primary btn-sm";
     expandBtn.style.fontSize = "11px";
     expandBtn.style.padding = "2px 6px";
     expandBtn.style.marginLeft = "6px";
@@ -391,7 +560,7 @@
       const btn = document.createElement("button");
       btn.type = "button";
       btn.textContent = target;
-      btn.className = "button-blue";
+      btn.className = "btn btn-primary btn-sm";
       if (index !== 0) {
         btn.style.opacity = "0.75";
       }
@@ -733,6 +902,479 @@
   if (searchInput) {
     searchInput.addEventListener("input", filterRows);
   }
+
+  const speedtestModal = document.getElementById("pulsewatch_speedtest_modal");
+  const speedtestTitle = document.getElementById("pulsewatch_speedtest_title");
+  const speedtestDownloadNumber = document.getElementById("pulsewatch_speedtest_download_number");
+  const speedtestUploadNumber = document.getElementById("pulsewatch_speedtest_upload_number");
+  const speedtestStatus = document.getElementById("pulsewatch_speedtest_status");
+  const speedtestDownloadBar = document.getElementById("pulsewatch_speedtest_download_bar");
+  const speedtestUploadBar = document.getElementById("pulsewatch_speedtest_upload_bar");
+  const speedtestDetails = document.getElementById("pulsewatch_speedtest_details");
+  const speedtestLoading = document.getElementById("pulsewatch_speedtest_loading");
+  const speedtestServer = document.getElementById("pulsewatch_speedtest_server");
+  const speedtestRun = document.getElementById("pulsewatch_speedtest_run");
+  const speedtestClose = document.getElementById("pulsewatch_speedtest_close");
+  let speedtestTimer = null;
+  let speedtestRowId = "";
+
+  const resetSpeedtestUI = () => {
+    if (speedtestDownloadNumber) {
+      speedtestDownloadNumber.textContent = "0";
+    }
+    if (speedtestUploadNumber) {
+      speedtestUploadNumber.textContent = "0";
+    }
+    if (speedtestStatus) {
+      speedtestStatus.textContent = "Waiting to start…";
+    }
+    if (speedtestDownloadBar) {
+      speedtestDownloadBar.style.width = "0%";
+    }
+    if (speedtestUploadBar) {
+      speedtestUploadBar.style.width = "0%";
+    }
+    if (speedtestDetails) {
+      speedtestDetails.textContent = "Upload: -- Mbps · Ping: -- ms · Server: --";
+    }
+    if (speedtestLoading) {
+      speedtestLoading.style.display = "none";
+    }
+  };
+
+  const stopSpeedtestAnimation = () => {
+    if (speedtestTimer) {
+      clearInterval(speedtestTimer);
+      speedtestTimer = null;
+    }
+  };
+
+  const setSpeedtestProcessing = () => {
+    stopSpeedtestAnimation();
+    if (speedtestLoading) {
+      speedtestLoading.style.display = "flex";
+    }
+    if (speedtestStatus) {
+      speedtestStatus.textContent = "Speedtest ongoing…";
+    }
+    if (speedtestDownloadNumber) {
+      speedtestDownloadNumber.textContent = "0";
+    }
+    if (speedtestUploadNumber) {
+      speedtestUploadNumber.textContent = "0";
+    }
+    if (speedtestDownloadBar) {
+      speedtestDownloadBar.style.width = "20%";
+    }
+    if (speedtestUploadBar) {
+      speedtestUploadBar.style.width = "20%";
+    }
+  };
+
+  const showSpeedtestResult = (download, upload) => {
+    stopSpeedtestAnimation();
+    if (speedtestLoading) {
+      speedtestLoading.style.display = "none";
+    }
+    if (speedtestDownloadNumber) {
+      speedtestDownloadNumber.textContent = (download || 0).toFixed(2);
+    }
+    if (speedtestUploadNumber) {
+      speedtestUploadNumber.textContent = (upload || 0).toFixed(2);
+    }
+    if (speedtestDownloadBar) {
+      speedtestDownloadBar.style.width = "100%";
+    }
+    if (speedtestUploadBar) {
+      speedtestUploadBar.style.width = "100%";
+    }
+  };
+
+  const openSpeedtestModal = (title) => {
+    if (!speedtestModal) {
+      return;
+    }
+    resetSpeedtestUI();
+    if (speedtestTitle) {
+      speedtestTitle.textContent = title || "Speedtest";
+    }
+    speedtestModal.style.display = "flex";
+  };
+
+  const closeSpeedtestModal = () => {
+    if (speedtestModal) {
+      speedtestModal.style.display = "none";
+    }
+    stopSpeedtestAnimation();
+  };
+
+  const loadSpeedtestServers = async (rowId) => {
+    if (!speedtestServer) {
+      return;
+    }
+    speedtestServer.innerHTML = "<option value=\"\">Automatic</option>";
+    speedtestServer.disabled = true;
+    try {
+      const response = await fetch(`/isp/pulsewatch/speedtest/servers/${rowId}`);
+      const data = await response.json();
+      if (data && Array.isArray(data.servers)) {
+        data.servers.forEach((server) => {
+          const option = document.createElement("option");
+          option.value = server.id;
+          option.textContent = `${server.id} - ${server.label}`;
+          speedtestServer.appendChild(option);
+        });
+      }
+    } catch (err) {
+      // ignore
+    } finally {
+      speedtestServer.disabled = false;
+    }
+  };
+
+  const runSpeedtest = async () => {
+    if (!speedtestRowId) {
+      return;
+    }
+    setSpeedtestProcessing();
+    const serverId = speedtestServer ? speedtestServer.value : "";
+    try {
+      const response = await fetch(`/isp/pulsewatch/speedtest/run/${speedtestRowId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ server_id: serverId || null }),
+      });
+      const data = await response.json();
+      if (!data || !data.ok) {
+        stopSpeedtestAnimation();
+        if (speedtestStatus) {
+          speedtestStatus.textContent = data && data.message ? data.message : "Speedtest failed.";
+        }
+        return;
+      }
+      const result = data.result || {};
+      showSpeedtestResult(result.download_mbps || 0, result.upload_mbps || 0);
+      if (speedtestStatus) {
+        speedtestStatus.textContent = "Speedtest completed.";
+      }
+      if (speedtestDetails) {
+        const upload = result.upload_mbps != null ? result.upload_mbps : "--";
+        const ping = result.latency_ms != null ? result.latency_ms : "--";
+        const server = result.server_name || "Auto";
+        speedtestDetails.textContent = `Upload: ${upload} Mbps · Ping: ${ping} ms · Server: ${server}`;
+      }
+    } catch (err) {
+      stopSpeedtestAnimation();
+      if (speedtestStatus) {
+        speedtestStatus.textContent = "Speedtest failed.";
+      }
+    }
+  };
+
+  if (speedtestRun) {
+    speedtestRun.addEventListener("click", () => {
+      runSpeedtest();
+    });
+  }
+  if (speedtestClose) {
+    speedtestClose.addEventListener("click", closeSpeedtestModal);
+  }
+  if (speedtestModal) {
+    speedtestModal.addEventListener("click", (event) => {
+      if (event.target === speedtestModal) {
+        closeSpeedtestModal();
+      }
+    });
+  }
+
+  const speedtestAllModal = document.getElementById("pulsewatch_speedtest_all_modal");
+  const speedtestAllGrid = document.getElementById("pulsewatch_speedtest_all_grid");
+  const speedtestAllClose = document.getElementById("pulsewatch_speedtest_all_close");
+  const speedtestAllStop = document.getElementById("pulsewatch_speedtest_all_stop");
+  const speedtestAllDownload = document.getElementById("pulsewatch_speedtest_all_download");
+  const speedtestAllUpload = document.getElementById("pulsewatch_speedtest_all_upload");
+  const speedtestAllServer = document.getElementById("pulsewatch_speedtest_all_server");
+  const speedtestAllStart = document.getElementById("pulsewatch_speedtest_all_start");
+  const speedtestAllStopRun = document.getElementById("pulsewatch_speedtest_all_stop_run");
+  const speedtestAllButton = document.getElementById("pulsewatch_speedtest_all");
+  let speedtestAllRunning = false;
+
+  const openSpeedtestAllModal = () => {
+    if (!speedtestAllModal) {
+      return;
+    }
+    speedtestAllModal.style.display = "flex";
+  };
+
+  const closeSpeedtestAllModal = () => {
+    speedtestAllRunning = false;
+    if (speedtestAllModal) {
+      speedtestAllModal.style.display = "none";
+    }
+    if (speedtestAllGrid) {
+      speedtestAllGrid.innerHTML = "";
+    }
+  };
+
+  const createSpeedtestPanel = (label) => {
+    const wrapper = document.createElement("div");
+    wrapper.style.border = "1px solid #1f2937";
+    wrapper.style.borderRadius = "10px";
+    wrapper.style.padding = "12px";
+    wrapper.style.background = "#0b1020";
+    wrapper.style.display = "flex";
+    wrapper.style.flexDirection = "column";
+    wrapper.style.gap = "10px";
+
+    const title = document.createElement("strong");
+    title.textContent = label;
+
+    const downloadNumber = document.createElement("div");
+    downloadNumber.style.fontSize = "32px";
+    downloadNumber.style.fontWeight = "700";
+    downloadNumber.textContent = "0";
+
+    const downloadLabel = document.createElement("div");
+    downloadLabel.style.fontSize = "11px";
+    downloadLabel.style.color = "#94a3b8";
+    downloadLabel.textContent = "Download Mbps";
+
+    const downloadBarWrap = document.createElement("div");
+    downloadBarWrap.style.height = "8px";
+    downloadBarWrap.style.background = "#1f2937";
+    downloadBarWrap.style.borderRadius = "999px";
+    const downloadBar = document.createElement("div");
+    downloadBar.style.height = "100%";
+    downloadBar.style.width = "0%";
+    downloadBar.style.background = "linear-gradient(90deg, #22c55e, #38bdf8)";
+    downloadBarWrap.appendChild(downloadBar);
+
+    const uploadNumber = document.createElement("div");
+    uploadNumber.style.fontSize = "28px";
+    uploadNumber.style.fontWeight = "700";
+    uploadNumber.textContent = "0";
+
+    const uploadLabel = document.createElement("div");
+    uploadLabel.style.fontSize = "11px";
+    uploadLabel.style.color = "#94a3b8";
+    uploadLabel.textContent = "Upload Mbps";
+
+    const uploadBarWrap = document.createElement("div");
+    uploadBarWrap.style.height = "8px";
+    uploadBarWrap.style.background = "#1f2937";
+    uploadBarWrap.style.borderRadius = "999px";
+    const uploadBar = document.createElement("div");
+    uploadBar.style.height = "100%";
+    uploadBar.style.width = "0%";
+    uploadBar.style.background = "linear-gradient(90deg, #f97316, #facc15)";
+    uploadBarWrap.appendChild(uploadBar);
+
+    const status = document.createElement("div");
+    status.style.fontSize = "12px";
+    status.style.color = "#94a3b8";
+    status.textContent = "Waiting…";
+
+    const meta = document.createElement("div");
+    meta.style.fontSize = "12px";
+    meta.style.color = "#cbd5f5";
+    meta.textContent = "Ping: -- ms · Server: --";
+
+    const loading = document.createElement("div");
+    loading.style.display = "none";
+    loading.style.alignItems = "center";
+    loading.style.gap = "8px";
+    loading.style.color = "#94a3b8";
+    loading.style.fontSize = "12px";
+    const spinner = document.createElement("div");
+    spinner.style.width = "14px";
+    spinner.style.height = "14px";
+    spinner.style.border = "2px solid #1f2937";
+    spinner.style.borderTopColor = "#38bdf8";
+    spinner.style.borderRadius = "50%";
+    spinner.style.animation = "spin 0.9s linear infinite";
+    const loadingText = document.createElement("div");
+    loadingText.textContent = "Speedtest ongoing…";
+    loading.appendChild(spinner);
+    loading.appendChild(loadingText);
+
+    wrapper.appendChild(title);
+    wrapper.appendChild(downloadNumber);
+    wrapper.appendChild(downloadLabel);
+    wrapper.appendChild(downloadBarWrap);
+    wrapper.appendChild(uploadNumber);
+    wrapper.appendChild(uploadLabel);
+    wrapper.appendChild(uploadBarWrap);
+    wrapper.appendChild(status);
+    wrapper.appendChild(meta);
+    wrapper.appendChild(loading);
+
+    return {
+      wrapper,
+      downloadNumber,
+      uploadNumber,
+      downloadBar,
+      uploadBar,
+      status,
+      meta,
+      loading,
+    };
+  };
+
+  const loadSpeedtestAllServers = async (rowId) => {
+    if (!speedtestAllServer || !rowId) {
+      return;
+    }
+    speedtestAllServer.innerHTML = "<option value=\"\">Automatic</option>";
+    speedtestAllServer.disabled = true;
+    try {
+      const response = await fetch(`/isp/pulsewatch/speedtest/servers/${rowId}`);
+      const data = await response.json();
+      if (data && Array.isArray(data.servers)) {
+        data.servers.forEach((server) => {
+          const option = document.createElement("option");
+          option.value = server.id;
+          option.textContent = `${server.id} - ${server.label}`;
+          speedtestAllServer.appendChild(option);
+        });
+      }
+    } catch (err) {
+      // ignore
+    } finally {
+      speedtestAllServer.disabled = false;
+    }
+  };
+
+  const runSpeedtestAll = async () => {
+    if (!speedtestAllGrid || !speedtestAllDownload || !speedtestAllUpload) {
+      return;
+    }
+    speedtestAllGrid.innerHTML = "";
+    speedtestAllDownload.textContent = "Total Download: -- Mbps";
+    speedtestAllUpload.textContent = "Total Upload: -- Mbps";
+    speedtestAllRunning = true;
+
+    const rows = Array.from(document.querySelectorAll("#pulsewatch_table .pulsewatch-row")).filter((row) => {
+      const addressInput = row.querySelector("input[name$='_address']");
+      return addressInput && (addressInput.value || "").trim().length > 0;
+    });
+
+    const panels = rows.map((row) => {
+      const labelCore = row.querySelector("td:nth-child(1)");
+      const labelList = row.querySelector("td:nth-child(2)");
+      const identifierInput = row.querySelector("input[name$='_identifier']");
+      const identifier = identifierInput ? (identifierInput.value || "").trim() : "";
+      const labelValue = identifier || (labelList ? labelList.textContent.trim() : "");
+      const label = `${labelCore ? labelCore.textContent.trim() : ""} ${labelValue}`.trim();
+      const panel = createSpeedtestPanel(label || "ISP");
+      speedtestAllGrid.appendChild(panel.wrapper);
+      return { rowId: row.getAttribute("data-row-id"), panel };
+    });
+
+    let totalDownload = 0;
+    let totalUpload = 0;
+    const selectedServer = speedtestAllServer ? speedtestAllServer.value : "";
+
+    for (const entry of panels) {
+      if (!speedtestAllRunning) {
+        break;
+      }
+      entry.panel.wrapper.style.borderColor = "#38bdf8";
+      entry.panel.wrapper.style.animation = "glow 1.2s ease-in-out infinite";
+      entry.panel.loading.style.display = "flex";
+      entry.panel.status.textContent = "Running…";
+
+      const response = await fetch(`/isp/pulsewatch/speedtest/run/${entry.rowId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ server_id: selectedServer || null }),
+      });
+      const data = await response.json();
+      entry.panel.loading.style.display = "none";
+      entry.panel.wrapper.style.borderColor = "#1f2937";
+      entry.panel.wrapper.style.animation = "none";
+
+      if (data && data.ok) {
+        const result = data.result || {};
+        const download = result.download_mbps || 0;
+        const upload = result.upload_mbps || 0;
+        entry.panel.downloadNumber.textContent = download.toFixed(2);
+        entry.panel.uploadNumber.textContent = upload.toFixed(2);
+        entry.panel.downloadBar.style.width = "100%";
+        entry.panel.uploadBar.style.width = "100%";
+        entry.panel.status.textContent = "Completed.";
+        const ping = result.latency_ms != null ? result.latency_ms : "--";
+        const server = result.server_name || "Auto";
+        entry.panel.meta.textContent = `Ping: ${ping} ms · Server: ${server}`;
+        totalDownload += download;
+        totalUpload += upload;
+      } else {
+        entry.panel.status.textContent = data && data.message ? data.message : "Failed.";
+      }
+    }
+
+    if (speedtestAllRunning) {
+      speedtestAllDownload.textContent = `Total Download: ${totalDownload.toFixed(2)} Mbps`;
+      speedtestAllUpload.textContent = `Total Upload: ${totalUpload.toFixed(2)} Mbps`;
+    }
+    speedtestAllRunning = false;
+  };
+
+  if (speedtestAllButton) {
+    speedtestAllButton.addEventListener("click", () => {
+      openSpeedtestAllModal();
+      const firstRow = document.querySelector("#pulsewatch_table .pulsewatch-row");
+      if (firstRow) {
+        loadSpeedtestAllServers(firstRow.getAttribute("data-row-id"));
+      }
+    });
+  }
+  if (speedtestAllStart) {
+    speedtestAllStart.addEventListener("click", () => {
+      if (speedtestAllRunning) {
+        return;
+      }
+      runSpeedtestAll();
+    });
+  }
+  if (speedtestAllStopRun) {
+    speedtestAllStopRun.addEventListener("click", () => {
+      speedtestAllRunning = false;
+    });
+  }
+  if (speedtestAllClose) {
+    speedtestAllClose.addEventListener("click", closeSpeedtestAllModal);
+  }
+  if (speedtestAllStop) {
+    speedtestAllStop.addEventListener("click", closeSpeedtestAllModal);
+  }
+  if (speedtestAllModal) {
+    speedtestAllModal.addEventListener("click", (event) => {
+      if (event.target === speedtestAllModal) {
+        closeSpeedtestAllModal();
+      }
+    });
+  }
+
+  const speedtestButtons = document.querySelectorAll(".pulsewatch-speedtest");
+  speedtestButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const rowId = button.getAttribute("data-row-id");
+      if (!rowId) {
+        return;
+      }
+      const row = button.closest("tr");
+      const labelCore = row ? row.querySelector("td:nth-child(1)") : null;
+      const labelList = row ? row.querySelector("td:nth-child(2)") : null;
+      const identifierInput = row ? row.querySelector("input[name$='_identifier']") : null;
+      const identifier = identifierInput ? (identifierInput.value || "").trim() : "";
+      const labelValue = identifier || (labelList ? labelList.textContent.trim() : "");
+      const label = `${labelCore ? labelCore.textContent.trim() : ""} ${labelValue}`.trim();
+      speedtestRowId = rowId;
+      openSpeedtestModal(`Speedtest - ${label || rowId}`);
+      loadSpeedtestServers(rowId);
+      runSpeedtest();
+    });
+  });
 
   const table = document.getElementById("pulsewatch_table");
   if (table) {

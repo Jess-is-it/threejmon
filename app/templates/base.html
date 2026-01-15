@@ -4,22 +4,79 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>ThreeJ Notifier Suite</title>
-  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/tabler/css/tabler.min.css" />
+  <link rel="stylesheet" href="/static/tabler/css/tabler-icons.min.css" />
+  <link rel="stylesheet" href="/static/style.css?v=tabler1" />
 </head>
-<body>
-  <header>
-    <h1>ThreeJ Notifier Suite</h1>
-    <nav>
-      <a href="/">Dashboard</a>
-      <a href="/settings/optical">Optical</a>
-      <a href="/settings/rto">RTO</a>
-      <a href="/settings/isp">ISP Ping</a>
-      <a href="/settings/pulsewatch">ISP Pulsewatch</a>
-      <a href="/settings/system">System Settings</a>
-    </nav>
-  </header>
-  <main>
-    {% block content %}{% endblock %}
-  </main>
+<body class="layout-fluid">
+  <div class="page">
+    <aside class="navbar navbar-vertical navbar-expand-lg" data-bs-theme="dark">
+      <div class="container-fluid">
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-menu" aria-controls="sidebar-menu" aria-expanded="false" aria-label="Toggle navigation">
+          <span class="navbar-toggler-icon"></span>
+        </button>
+        <h1 class="navbar-brand navbar-brand-autodark">
+          <a href="/">ThreeJ Notifier</a>
+        </h1>
+        <div class="collapse navbar-collapse" id="sidebar-menu">
+          <ul class="navbar-nav pt-lg-3">
+            <li class="nav-item">
+              <a class="nav-link" href="/">
+                <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-dashboard"></i></span>
+                <span class="nav-link-title">Dashboard</span>
+              </a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link" href="/settings/optical">
+                <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-sun"></i></span>
+                <span class="nav-link-title">Optical</span>
+              </a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link" href="/settings/rto">
+                <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-tower"></i></span>
+                <span class="nav-link-title">RTO</span>
+              </a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link" href="/settings/isp">
+                <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-world"></i></span>
+                <span class="nav-link-title">ISP Ping</span>
+              </a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link" href="/settings/pulsewatch">
+                <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-activity"></i></span>
+                <span class="nav-link-title">ISP Pulsewatch</span>
+              </a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link" href="/settings/system">
+                <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-settings"></i></span>
+                <span class="nav-link-title">System Settings</span>
+              </a>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </aside>
+    <div class="page-wrapper">
+      <header class="navbar navbar-expand-md navbar-light d-print-none">
+        <div class="container-xl">
+          <div class="navbar-nav flex-row order-md-last">
+            <div class="nav-item d-none d-md-flex">
+              <div class="text-muted">ThreeJ Notifier Suite</div>
+            </div>
+          </div>
+        </div>
+      </header>
+      <div class="page-body">
+        <div class="container-xl">
+          {% block content %}{% endblock %}
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="/static/tabler/js/tabler.min.js"></script>
 </body>
 </html>

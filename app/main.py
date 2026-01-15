@@ -9,7 +9,7 @@ import shutil
 import subprocess
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -628,6 +628,42 @@ def find_pulsewatch_row(settings, row_id):
         if row.get("row_id") == row_id:
             return row
     return None
+
+
+def pulsewatch_row_label(row):
+    if not row:
+        return ""
+    core_label = row.get("core_label") or ""
+    identifier = row.get("identifier") or ""
+    list_name = row.get("list_name") or ""
+    label_value = identifier or list_name
+    return f"{core_label} {label_value}".strip()
+
+
+def format_pulsewatch_speedtest_summary(settings, results):
+    if not results:
+        return []
+    row_map = {row["row_id"]: row for row in build_pulsewatch_rows(settings)}
+    messages = []
+    for isp_id, result in results.items():
+        row = row_map.get(isp_id)
+        label = pulsewatch_row_label(row) if row else isp_id
+        download = result.get("download_mbps")
+        upload = result.get("upload_mbps")
+        latency = result.get("latency_ms")
+        server = result.get("server_name")
+        parts = []
+        if download is not None:
+            parts.append(f"dl {download} Mbps")
+        if upload is not None:
+            parts.append(f"ul {upload} Mbps")
+        if latency is not None:
+            parts.append(f"ping {latency} ms")
+        if server:
+            parts.append(f"server {server}")
+        summary = ", ".join(parts) if parts else "speedtest completed"
+        messages.append(f"{label} {summary}")
+    return messages
 
 
 def _get_first_target(ping_targets):
@@ -1370,9 +1406,13 @@ async def isp_pulsewatch_speedtest_all(request: Request):
                 "pulsewatch": {},
             },
         )
-        _, messages = isp_ping_notifier.run_speedtests(settings, state, force=True)
+        results, messages = isp_ping_notifier.run_speedtests(settings, state, force=True)
         save_state("isp_ping_state", state)
-        message = " ".join(messages) if messages else "Pulsewatch speedtests completed."
+        if results:
+            summary_lines = format_pulsewatch_speedtest_summary(settings, results)
+            message = "\n".join(summary_lines) if summary_lines else "Pulsewatch speedtests completed."
+        else:
+            message = " ".join(messages) if messages else "Pulsewatch speedtests completed."
     except Exception as exc:
         message = f"Speedtest failed: {exc}"
     return render_pulsewatch_response(request, settings, message)
@@ -1393,12 +1433,81 @@ async def isp_pulsewatch_speedtest_one(request: Request, isp_id: str):
                 "pulsewatch": {},
             },
         )
-        _, messages = isp_ping_notifier.run_speedtests(settings, state, only_isps=[isp_id], force=True)
+        results, messages = isp_ping_notifier.run_speedtests(settings, state, only_isps=[isp_id], force=True)
         save_state("isp_ping_state", state)
-        message = " ".join(messages) if messages else f"Speedtest completed for {isp_id}."
+        if results:
+            summary_lines = format_pulsewatch_speedtest_summary(settings, results)
+            message = "\n".join(summary_lines) if summary_lines else f"Speedtest completed for {isp_id}."
+        else:
+            message = " ".join(messages) if messages else f"Speedtest completed for {isp_id}."
     except Exception as exc:
         message = f"Speedtest failed: {exc}"
     return render_pulsewatch_response(request, settings, message)
+
+
+@app.get("/isp/pulsewatch/speedtest/servers/{isp_id}", response_class=JSONResponse)
+async def isp_pulsewatch_speedtest_servers(request: Request, isp_id: str):
+    settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    row = find_pulsewatch_row(settings, isp_id)
+    if not row:
+        return JSONResponse({"ok": False, "message": "Preset not found.", "servers": []})
+    try:
+        isp = {
+            "id": isp_id,
+            "sources": {row.get("core_id"): row.get("address")},
+            "source_ip": row.get("address"),
+        }
+        servers = isp_ping_notifier.list_speedtest_servers(settings, isp)
+        return JSONResponse({"ok": True, "servers": servers})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "message": str(exc), "servers": []})
+
+
+@app.post("/isp/pulsewatch/speedtest/run/{isp_id}", response_class=JSONResponse)
+async def isp_pulsewatch_speedtest_run(request: Request, isp_id: str):
+    settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    row = find_pulsewatch_row(settings, isp_id)
+    if not row:
+        return JSONResponse({"ok": False, "message": "Preset not found."})
+    try:
+        payload = {}
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        server_id = payload.get("server_id") if isinstance(payload, dict) else None
+        state = get_state(
+            "isp_ping_state",
+            {
+                "last_status": {},
+                "last_report_date": None,
+                "last_report_time": None,
+                "last_report_timezone": None,
+                "pulsewatch": {},
+            },
+        )
+        results, messages = isp_ping_notifier.run_speedtests(
+            settings,
+            state,
+            only_isps=[isp_id],
+            force=True,
+            server_id=server_id,
+        )
+        save_state("isp_ping_state", state)
+        if results:
+            summary_lines = format_pulsewatch_speedtest_summary(settings, results)
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "label": pulsewatch_row_label(row) or isp_id,
+                    "result": results.get(isp_id, {}),
+                    "summary": summary_lines[0] if summary_lines else "",
+                }
+            )
+        message = " ".join(messages) if messages else "Speedtest completed."
+        return JSONResponse({"ok": False, "message": message})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "message": str(exc)})
 
 
 @app.get("/settings", response_class=HTMLResponse)

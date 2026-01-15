@@ -76,7 +76,8 @@ def _isps_from_presets(pulse_cfg):
         core_id = preset.get("core_id")
         list_name = preset.get("list")
         identifier = (preset.get("identifier") or "").strip()
-        if not core_id or not list_name:
+        address = (preset.get("address") or "").strip()
+        if not core_id or not list_name or not address:
             continue
         isp_id = _preset_id(core_id, list_name)
         label_value = identifier or list_name
@@ -84,7 +85,7 @@ def _isps_from_presets(pulse_cfg):
             {
                 "id": isp_id,
                 "label": label_value,
-                "sources": {core_id: preset.get("address")},
+                "sources": {core_id: address},
                 "ping_targets": preset.get("ping_targets", []),
                 "thresholds": {
                     "latency_ms": preset.get("latency_ms", 120),
@@ -229,25 +230,61 @@ def _utcnow():
     return datetime.now(timezone.utc)
 
 
-def _format_speedtest_command(cfg, source_ip, isp_id):
+def _base_speedtest_command(cfg, source_ip, isp_id):
     speed_cfg = cfg["pulsewatch"]["speedtest"]
     cmd = [speed_cfg.get("command") or "speedtest"]
-    args = speed_cfg.get("args") or ""
-    if args:
-        cmd.extend(shlex.split(args))
+    if "--accept-license" not in cmd:
+        cmd.append("--accept-license")
+    if "--accept-gdpr" not in cmd:
+        cmd.append("--accept-gdpr")
 
     if speed_cfg.get("use_netns"):
         netns = f"{speed_cfg.get('netns_prefix', 'isp')}{isp_id}"
         cmd = ["ip", "netns", "exec", netns] + cmd
         return cmd
 
-    if source_ip and "--source" not in args and "--interface" not in args:
-        cmd.extend(["--source", source_ip])
+    if source_ip:
+        if all(flag not in cmd for flag in ("--ip", "-i", "--interface", "-I")):
+            cmd.extend(["--ip", source_ip])
+    return cmd
+
+
+def _format_speedtest_command(cfg, source_ip, isp_id, server_id=None):
+    speed_cfg = cfg["pulsewatch"]["speedtest"]
+    cmd = _base_speedtest_command(cfg, source_ip, isp_id)
+    args = speed_cfg.get("args") or ""
+    if args:
+        cmd.extend(shlex.split(args))
+
+    if all(flag not in cmd for flag in ("--format", "-f")):
+        cmd.extend(["--format", "json"])
+    if all(flag not in cmd for flag in ("--progress", "-p")):
+        cmd.extend(["--progress", "no"])
+    if server_id and all(flag not in cmd for flag in ("--server-id", "-s")):
+        cmd.extend(["--server-id", str(server_id)])
     return cmd
 
 
 def _parse_speedtest_json(raw_output):
-    data = json.loads(raw_output)
+    try:
+        data = json.loads(raw_output)
+    except json.JSONDecodeError:
+        lines = [line.strip() for line in raw_output.splitlines() if line.strip()]
+        for line in reversed(lines):
+            if not line.startswith(("{", "[")):
+                continue
+            try:
+                data = json.loads(line)
+                break
+            except json.JSONDecodeError:
+                continue
+        else:
+            start = raw_output.find("{")
+            end = raw_output.rfind("}")
+            if start >= 0 and end > start:
+                data = json.loads(raw_output[start : end + 1])
+            else:
+                raise
     download_mbps = None
     upload_mbps = None
     latency_ms = None
@@ -293,9 +330,9 @@ def _parse_speedtest_json(raw_output):
     }
 
 
-def _run_speedtest(cfg, isp):
+def _run_speedtest(cfg, isp, server_id=None):
     source_ip = _get_ping_source_ip(isp)
-    cmd = _format_speedtest_command(cfg, source_ip, isp.get("id"))
+    cmd = _format_speedtest_command(cfg, source_ip, isp.get("id"), server_id=server_id)
     result = subprocess.run(
         cmd,
         stdout=subprocess.PIPE,
@@ -524,7 +561,7 @@ def run_pulsewatch_check(cfg, state, only_isps=None, force=False):
     return state, results_by_isp
 
 
-def run_speedtests(cfg, state, only_isps=None, force=False):
+def run_speedtests(cfg, state, only_isps=None, force=False, server_id=None):
     pulse_cfg = cfg.get("pulsewatch", {})
     if not pulse_cfg.get("speedtest", {}).get("enabled"):
         return {}, ["Speedtest is disabled."]
@@ -550,7 +587,7 @@ def run_speedtests(cfg, state, only_isps=None, force=False):
             messages.append(f"{isp_id} speedtest skipped (rate limit).")
             continue
         try:
-            result = _run_speedtest(cfg, isp)
+            result = _run_speedtest(cfg, isp, server_id=server_id)
             results[isp_id] = result
             last_runs[isp_id] = utc_now_iso()
         except Exception as exc:
@@ -558,6 +595,39 @@ def run_speedtests(cfg, state, only_isps=None, force=False):
             messages.append(f"{isp_id} speedtest failed: {exc}")
 
     return results, messages
+
+
+def list_speedtest_servers(cfg, isp):
+    source_ip = _get_ping_source_ip(isp)
+    cmd = _base_speedtest_command(cfg, source_ip, isp.get("id"))
+    cmd.append("--servers")
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stdout or "Speedtest server list failed.")
+    servers = []
+    for line in result.stdout.splitlines():
+        cleaned = line.strip()
+        if not cleaned or not cleaned[0].isdigit():
+            continue
+        parts = cleaned.split()
+        server_id = parts[0]
+        distance = ""
+        if "km" in parts:
+            idx = parts.index("km")
+            if idx > 0:
+                distance = f"{parts[idx - 1]} km"
+                parts = parts[: idx - 1] + parts[idx + 1 :]
+        label = " ".join(parts[1:]) if len(parts) > 1 else server_id
+        if distance:
+            label = f"{label} ({distance})"
+        servers.append({"id": server_id, "label": label})
+    return servers
 
 
 def run_check(cfg, state, force_report=False):

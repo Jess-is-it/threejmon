@@ -1,7 +1,11 @@
 
 def parse_bool(form, key):
+    if hasattr(form, "getlist"):
+        values = form.getlist(key)
+        if values:
+            return any(str(value).lower() in ("on", "true", "1", "yes") for value in values)
     value = form.get(key)
-    return value in ("on", "true", "1", True)
+    return str(value).lower() in ("on", "true", "1", "yes")
 
 
 def parse_int(form, key, default):
