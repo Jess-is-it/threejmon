@@ -526,8 +526,10 @@ def run_pulsewatch_check(cfg, state, only_isps=None, force=False):
 
 def run_speedtests(cfg, state, only_isps=None, force=False):
     pulse_cfg = cfg.get("pulsewatch", {})
-    if not pulse_cfg.get("enabled") or not pulse_cfg.get("speedtest", {}).get("enabled"):
+    if not pulse_cfg.get("speedtest", {}).get("enabled"):
         return {}, ["Speedtest is disabled."]
+    if not pulse_cfg.get("enabled") and not force:
+        return {}, ["Pulsewatch is disabled."]
 
     presets = pulse_cfg.get("list_presets", [])
     isps = _isps_from_presets(pulse_cfg) if presets else pulse_cfg.get("isps", [])

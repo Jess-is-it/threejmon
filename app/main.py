@@ -1370,7 +1370,7 @@ async def isp_pulsewatch_speedtest_all(request: Request):
                 "pulsewatch": {},
             },
         )
-        _, messages = isp_ping_notifier.run_speedtests(settings, state)
+        _, messages = isp_ping_notifier.run_speedtests(settings, state, force=True)
         save_state("isp_ping_state", state)
         message = " ".join(messages) if messages else "Pulsewatch speedtests completed."
     except Exception as exc:
@@ -1393,7 +1393,7 @@ async def isp_pulsewatch_speedtest_one(request: Request, isp_id: str):
                 "pulsewatch": {},
             },
         )
-        _, messages = isp_ping_notifier.run_speedtests(settings, state, only_isps=[isp_id])
+        _, messages = isp_ping_notifier.run_speedtests(settings, state, only_isps=[isp_id], force=True)
         save_state("isp_ping_state", state)
         message = " ".join(messages) if messages else f"Speedtest completed for {isp_id}."
     except Exception as exc:
