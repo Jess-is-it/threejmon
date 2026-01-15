@@ -183,6 +183,15 @@ def fetch_all_settings():
         conn.close()
 
 
+def fetch_all_state():
+    conn = get_conn()
+    try:
+        rows = conn.execute("SELECT key, value FROM state").fetchall()
+        return {row["key"]: row["value"] for row in rows}
+    finally:
+        conn.close()
+
+
 def insert_ping_result(isp_id, target, loss, min_ms, avg_ms, max_ms, raw_output=None, timestamp=None):
     stamp = timestamp or utc_now_iso()
     conn = get_conn()
@@ -292,6 +301,29 @@ def get_latest_ping_results(isp_id, limit=5):
             (isp_id, limit),
         ).fetchall()
         return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_ping_history_map(isp_ids, limit_per_isp=30):
+    if not isp_ids:
+        return {}
+    conn = get_conn()
+    try:
+        history = {}
+        for isp_id in isp_ids:
+            rows = conn.execute(
+                """
+                SELECT timestamp, loss, avg_ms
+                FROM ping_results
+                WHERE isp_id = ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+                """,
+                (isp_id, limit_per_isp),
+            ).fetchall()
+            history[isp_id] = [dict(row) for row in rows][::-1]
+        return history
     finally:
         conn.close()
 

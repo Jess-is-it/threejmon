@@ -183,6 +183,24 @@ class RouterOSClient:
             if sentence[0] == "!trap":
                 raise RuntimeError(f"RouterOS set failed: {sentence}")
 
+    def list_mangle_rules(self):
+        replies = self.talk(["/ip/firewall/mangle/print"])
+        entries = []
+        for sentence in replies:
+            if sentence[0] != "!re":
+                continue
+            data = {}
+            for word in sentence[1:]:
+                if not word:
+                    continue
+                if word.startswith("="):
+                    word = word[1:]
+                if "=" in word:
+                    key, value = word.split("=", 1)
+                    data[key] = value
+            entries.append(data)
+        return entries
+
 
 def reconcile_address_lists(client, desired_entries, comment_tag):
     existing = client.list_address_list()

@@ -24,8 +24,8 @@
           </div>
         </div>
         <div class="mt-3 text-muted small">
-          <div>Last run: {{ status.last_run_at if status else 'never' }}</div>
-          <div>Last success: {{ status.last_success_at if status else 'never' }}</div>
+          <div>Last run: {{ status.last_run_at_ph if status else 'never' }}</div>
+          <div>Last success: {{ status.last_success_at_ph if status else 'never' }}</div>
           <div>Last error: {{ status.last_error if status and status.last_error else 'none' }}</div>
         </div>
       </div>
@@ -43,8 +43,8 @@
           </div>
         </div>
         <div class="mt-3 text-muted small">
-          <div>Last run: {{ status.last_run_at if status else 'never' }}</div>
-          <div>Last success: {{ status.last_success_at if status else 'never' }}</div>
+          <div>Last run: {{ status.last_run_at_ph if status else 'never' }}</div>
+          <div>Last success: {{ status.last_success_at_ph if status else 'never' }}</div>
           <div>Last error: {{ status.last_error if status and status.last_error else 'none' }}</div>
         </div>
       </div>
@@ -62,8 +62,8 @@
           </div>
         </div>
         <div class="mt-3 text-muted small">
-          <div>Last run: {{ status.last_run_at if status else 'never' }}</div>
-          <div>Last success: {{ status.last_success_at if status else 'never' }}</div>
+          <div>Last run: {{ status.last_run_at_ph if status else 'never' }}</div>
+          <div>Last success: {{ status.last_success_at_ph if status else 'never' }}</div>
           <div>Last error: {{ status.last_error if status and status.last_error else 'none' }}</div>
         </div>
       </div>
@@ -81,8 +81,9 @@
         </div>
         {% set pulse_state = isp_state.get('pulsewatch', {}) %}
         <div class="mt-3 text-muted small">
-          <div>Enabled: {{ 'yes' if isp_settings.pulsewatch.enabled else 'no' }}</div>
+          <div>Enabled: {{ 'yes' if pulse_enabled else 'no' }}</div>
           <div>Address-list sync: {{ 'on' if isp_settings.pulsewatch.manage_address_lists else 'off' }}</div>
+          <div>Last reconcile: {{ pulse_last_reconcile or 'n/a' }}</div>
         </div>
       </div>
     </div>
@@ -96,30 +97,85 @@
         <h3 class="card-title">Pulsewatch ISP Summary</h3>
       </div>
       <div class="card-body">
-        {% set isp_state_map = pulse_state.get('isps', {}) %}
-        {% if isp_settings.pulsewatch.isps %}
-          <div class="row">
-            {% for isp in isp_settings.pulsewatch.isps %}
-              {% set isp_summary = isp_state_map.get(isp.id, {}).get('last_summary', {}) %}
-              {% set speed = speedtests.get(isp.id) %}
-              <div class="col-md-6 col-xl-4 mb-3">
-                <div class="border rounded p-3 h-100">
-                  <div class="fw-semibold">{{ isp.label }}</div>
-                  <div class="text-muted small mt-2">Last ping check: {{ isp_summary.get('last_check') or 'n/a' }}</div>
-                  <div class="text-muted small">Loss max: {{ isp_summary.get('loss_max') if isp_summary.get('loss_max') is not none else 'n/a' }}%</div>
-                  <div class="text-muted small">Avg max: {{ isp_summary.get('avg_max') if isp_summary.get('avg_max') is not none else 'n/a' }}ms</div>
-                  <div class="text-muted small">
-                    Last speedtest:
-                    {% if speed %}
-                      {{ speed.download_mbps if speed.download_mbps is not none else 'n/a' }} / {{ speed.upload_mbps if speed.upload_mbps is not none else 'n/a' }} Mbps,
-                      {{ speed.latency_ms if speed.latency_ms is not none else 'n/a' }} ms
-                    {% else %}
-                      n/a
-                    {% endif %}
-                  </div>
-                </div>
-              </div>
-            {% endfor %}
+        <div class="row mb-4">
+          <div class="col-sm-6 col-xl-3 mb-3">
+            <div class="border rounded p-3 h-100">
+              <div class="text-muted small">Total ISPs</div>
+              <div class="fs-3 fw-semibold">{{ pulse_total }}</div>
+            </div>
+          </div>
+          <div class="col-sm-6 col-xl-3 mb-3">
+            <div class="border rounded p-3 h-100">
+              <div class="text-muted small">With Source IP</div>
+              <div class="fs-3 fw-semibold">{{ pulse_with_ip }}</div>
+            </div>
+          </div>
+          <div class="col-sm-6 col-xl-3 mb-3">
+            <div class="border rounded p-3 h-100">
+              <div class="text-muted small">Missing IP</div>
+              <div class="fs-3 fw-semibold">{{ pulse_missing_ip }}</div>
+            </div>
+          </div>
+          <div class="col-sm-6 col-xl-3 mb-3">
+            <div class="border rounded p-3 h-100">
+              <div class="text-muted small">Last Pulsewatch Check</div>
+              <div class="fs-4 fw-semibold">{{ pulse_last_check or 'n/a' }}</div>
+            </div>
+          </div>
+        </div>
+
+        {% if pulse_rows %}
+          <div style="overflow-x:auto;">
+            <table class="table table-vcenter">
+              <thead>
+                <tr>
+                  <th>ISP</th>
+                  <th>Source IP</th>
+                  <th>Last Check</th>
+                  <th>Loss Max</th>
+                  <th>Avg Max</th>
+                  <th>Loss History</th>
+                  <th>Downtime</th>
+                  <th>Last Speedtest</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in pulse_rows %}
+                  <tr>
+                    <td class="fw-semibold">{{ row.label }}</td>
+                    <td>{{ row.source_ip or 'n/a' }}</td>
+                    <td>{{ row.last_check or 'n/a' }}</td>
+                    <td>{{ row.loss_max if row.loss_max is not none else 'n/a' }}%</td>
+                    <td>{{ row.avg_max if row.avg_max is not none else 'n/a' }}ms</td>
+                    <td>
+                      {% if row.loss_points %}
+                        <svg width="120" height="30" viewBox="0 0 120 30">
+                          <polyline points="{{ row.loss_points }}" fill="none" stroke="#2fb344" stroke-width="2" />
+                        </svg>
+                      {% else %}
+                        <span class="text-muted">n/a</span>
+                      {% endif %}
+                    </td>
+                    <td>
+                      {% if row.total_samples %}
+                        {{ row.down_samples }}/{{ row.total_samples }}
+                      {% else %}
+                        n/a
+                      {% endif %}
+                    </td>
+                    <td class="text-muted">
+                      {% if row.speed %}
+                        {{ row.speed.download_mbps if row.speed.download_mbps is not none else 'n/a' }} /
+                        {{ row.speed.upload_mbps if row.speed.upload_mbps is not none else 'n/a' }} Mbps,
+                        {{ row.speed.latency_ms if row.speed.latency_ms is not none else 'n/a' }} ms
+                      {% else %}
+                        n/a
+                      {% endif %}
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
           </div>
         {% else %}
           <div class="text-muted">No Pulsewatch presets configured yet.</div>

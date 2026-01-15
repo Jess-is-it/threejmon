@@ -1,7 +1,7 @@
 import copy
 import json
 
-from .db import fetch_all_settings, get_json, set_json
+from .db import fetch_all_settings, fetch_all_state, get_json, set_json
 
 
 def deep_merge(defaults, overrides):
@@ -34,19 +34,40 @@ def save_state(key, state):
 
 
 def export_settings():
-    raw = fetch_all_settings()
-    payload = {}
-    for key, value in raw.items():
+    raw_settings = fetch_all_settings()
+    raw_state = fetch_all_state()
+    settings_payload = {}
+    state_payload = {}
+    for key, value in raw_settings.items():
         try:
-            payload[key] = json.loads(value)
+            settings_payload[key] = json.loads(value)
         except json.JSONDecodeError:
-            payload[key] = value
-    return payload
+            settings_payload[key] = value
+    for key, value in raw_state.items():
+        try:
+            state_payload[key] = json.loads(value)
+        except json.JSONDecodeError:
+            state_payload[key] = value
+    return {"settings": settings_payload, "state": state_payload}
 
 
 def import_settings(data):
     if not isinstance(data, dict):
         raise ValueError("settings payload must be an object")
+    if "settings" in data or "state" in data:
+        settings_data = data.get("settings", {})
+        state_data = data.get("state", {})
+        if isinstance(settings_data, dict):
+            for key, value in settings_data.items():
+                if not isinstance(key, str):
+                    continue
+                set_json("settings", key, value)
+        if isinstance(state_data, dict):
+            for key, value in state_data.items():
+                if not isinstance(key, str):
+                    continue
+                set_json("state", key, value)
+        return
     for key, value in data.items():
         if not isinstance(key, str):
             continue

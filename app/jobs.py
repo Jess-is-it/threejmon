@@ -159,15 +159,17 @@ class JobsManager:
                     state["last_command_from"] = sender_id
                     future = executor.submit(handle_telegram_command, cfg, text)
                     last_feedback = time_module.time()
+                    next_feedback = feedback_seconds
                     sent_feedback = False
                     while True:
                         try:
                             reply = future.result(timeout=1)
                             break
                         except FutureTimeout:
-                            if feedback_seconds > 0 and time_module.time() - last_feedback >= feedback_seconds:
+                            if next_feedback > 0 and time_module.time() - last_feedback >= next_feedback:
                                 send_telegram(token, chat_id, "Working on it, please wait...")
                                 last_feedback = time_module.time()
+                                next_feedback = min(next_feedback * 2, 3600)
                                 sent_feedback = True
                             continue
                     if reply:

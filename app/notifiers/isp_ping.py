@@ -429,6 +429,12 @@ def _reconcile_mikrotik(cfg, state):
     state["last_mikrotik_reconcile_at"] = utc_now_iso()
 
 
+def sync_mikrotik_lists(cfg, state):
+    state["last_mikrotik_reconcile_at"] = None
+    _reconcile_mikrotik(cfg, state)
+    return state
+
+
 def _pulsewatch_summary(results):
     loss_values = [item["loss"] for item in results if item.get("loss") is not None]
     avg_values = [item["avg_ms"] for item in results if item.get("avg_ms") is not None]
@@ -502,6 +508,7 @@ def run_pulsewatch_check(cfg, state, only_isps=None, force=False):
 
     pulse_state = state.setdefault("pulsewatch", {})
     isp_state = pulse_state.setdefault("isps", {})
+    pulse_state["last_check_at"] = utc_now_iso()
 
     for isp in isps:
         isp_id = isp.get("id")

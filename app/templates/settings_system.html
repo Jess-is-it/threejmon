@@ -40,7 +40,12 @@
             </div>
             <div class="col-md-3">
               <label class="form-label">Interface <span class="info" data-tip="Linux NIC that carries this router's Pulsewatch source IPs (e.g., enp0s8).">i</span></label>
-              <input class="form-control" type="text" name="{{ core.id }}_interface" list="interface_options" value="{{ core.interface }}" />
+              <select class="form-select" name="{{ core.id }}_interface">
+                <option value="">Select interface</option>
+                {% for iface in interface_options %}
+                  <option value="{{ iface }}" {% if iface == core.interface %}selected{% endif %}>{{ iface }}</option>
+                {% endfor %}
+              </select>
             </div>
             <div class="col-md-3">
               <label class="form-label">Prefix <span class="info" data-tip="CIDR prefix length for the source IPs on this interface (usually 24).">i</span></label>
@@ -68,11 +73,6 @@
           </div>
         </div>
       {% endfor %}
-      <datalist id="interface_options">
-        {% for iface in interface_options %}
-          <option value="{{ iface }}"></option>
-        {% endfor %}
-      </datalist>
       <div class="d-flex gap-2 flex-wrap">
         <button type="submit" class="btn btn-primary">Save MikroTik Settings</button>
         <button type="submit" class="btn" formaction="/settings/system/mikrotik/add" formmethod="post">Add MikroTik Core</button>
@@ -104,7 +104,7 @@
 {% endfor %}</textarea>
         </div>
         <div class="col-md-3">
-          <label class="form-label">Feedback Reply Seconds <span class="info" data-tip="Send a progress reply if a command takes longer than this. Set 0 to disable.">i</span></label>
+          <label class="form-label">Feedback Reply Seconds <span class="info" data-tip="Send a progress reply after this delay, then double the delay each time (e.g., 10s, 20s, 40s). Set 0 to disable.">i</span></label>
           <input class="form-control" type="number" name="telegram_command_feedback_seconds" value="{{ settings.telegram.command_feedback_seconds }}" />
         </div>
       </div>
@@ -136,6 +136,24 @@
       <input class="form-control" type="file" name="settings_file" accept="application/json" />
       <div class="mt-3">
         <button type="submit" class="btn btn-primary">Import Settings</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card mb-4">
+  <div class="card-header">
+    <h3 class="card-title">Database Backup & Restore</h3>
+  </div>
+  <div class="card-body">
+    <div class="text-muted mb-2">
+      <a href="/settings/db/export">Download database backup</a>
+    </div>
+    <form method="post" action="/settings/db/import" enctype="multipart/form-data">
+      <label class="form-label">Restore from DB file</label>
+      <input class="form-control" type="file" name="db_file" accept=".db,application/octet-stream" />
+      <div class="mt-3">
+        <button type="submit" class="btn btn-primary">Import Database</button>
       </div>
     </form>
   </div>

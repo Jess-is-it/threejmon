@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import copy
+
 import asyncio
 import json
 import os
@@ -7,13 +9,15 @@ import base64
 import shlex
 import shutil
 import subprocess
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .db import get_job_status, get_latest_speedtest_map, init_db
+from .db import get_job_status, get_latest_speedtest_map, get_ping_history_map, init_db
 from .forms import parse_bool, parse_float, parse_int, parse_int_list, parse_lines, parse_targets
 from .jobs import JobsManager
 from .notifiers import isp_ping as isp_ping_notifier
@@ -25,6 +29,7 @@ from .settings_defaults import ISP_PING_DEFAULTS, OPTICAL_DEFAULTS, RTO_DEFAULTS
 from .settings_store import export_settings, get_settings, get_state, import_settings, save_settings, save_state
 
 BASE_DIR = Path(__file__).resolve().parent
+PH_TZ = ZoneInfo("Asia/Manila")
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
@@ -197,8 +202,89 @@ def build_pulsewatch_netplan(settings):
     return path, "Netplan file updated.", interface_map, route_specs
 
 
+def parse_netplan_addresses():
+    host_dir = "/host_netplan"
+    if not os.path.isdir(host_dir):
+        return {}
+    result = {}
+    try:
+        files = sorted(
+            entry
+            for entry in os.listdir(host_dir)
+            if entry.endswith((".yaml", ".yml"))
+        )
+    except OSError:
+        return {}
+    for filename in files:
+        path = os.path.join(host_dir, filename)
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                lines = handle.readlines()
+        except OSError:
+            continue
+        in_ethernets = False
+        ethernets_indent = None
+        iface = None
+        iface_indent = None
+        addresses_indent = None
+        for raw in lines:
+            line = raw.split("#", 1)[0].rstrip("\n")
+            if not line.strip():
+                continue
+            indent = len(line) - len(line.lstrip(" "))
+            key = line.strip()
+            if key == "ethernets:":
+                in_ethernets = True
+                ethernets_indent = indent
+                iface = None
+                iface_indent = None
+                addresses_indent = None
+                continue
+            if in_ethernets and ethernets_indent is not None and indent <= ethernets_indent:
+                in_ethernets = False
+                iface = None
+                iface_indent = None
+                addresses_indent = None
+                continue
+            if in_ethernets:
+                if key == "addresses:" and iface:
+                    addresses_indent = indent
+                    continue
+                if key.endswith(":") and not key.startswith("- ") and key not in (
+                    "addresses:",
+                    "routes:",
+                    "routing-policy:",
+                    "nameservers:",
+                ):
+                    iface = key[:-1].strip()
+                    iface_indent = indent
+                    addresses_indent = None
+                    continue
+                if iface and iface_indent is not None:
+                    if indent <= iface_indent:
+                        iface = None
+                        iface_indent = None
+                        addresses_indent = None
+                        continue
+                    if addresses_indent is not None:
+                        if indent <= addresses_indent:
+                            addresses_indent = None
+                            continue
+                        if key.startswith("- "):
+                            addr = key[2:].strip()
+                            if addr:
+                                result.setdefault(iface, set()).add(addr)
+        continue
+    return result
+
+
 def apply_host_addresses(interface_map, route_specs):
-    if not interface_map:
+    desired_map = parse_netplan_addresses()
+    if desired_map and interface_map:
+        desired_map = {iface: desired_map.get(iface, set()) for iface in interface_map.keys()}
+    if not desired_map:
+        desired_map = interface_map
+    if not desired_map:
         return True, "No addresses to apply."
     sock = "/var/run/docker.sock"
     if not os.path.exists(sock):
@@ -207,9 +293,14 @@ def apply_host_addresses(interface_map, route_specs):
         return False, "IP apply skipped (curl not available in container)."
 
     lines = []
-    for iface, addrs in interface_map.items():
+    for iface, addrs in desired_map.items():
+        if not addrs:
+            continue
+        iface_quoted = shlex.quote(iface)
+        wanted = " ".join(shlex.quote(addr) for addr in sorted(addrs))
+        lines.append(f"ip addr flush dev {iface_quoted} || true")
         for addr in sorted(addrs):
-            lines.append(f"ip addr add {shlex.quote(addr)} dev {shlex.quote(iface)} || true")
+            lines.append(f"ip addr add {shlex.quote(addr)} dev {iface_quoted} || true")
     for spec in route_specs:
         gateway = spec.get("gateway")
         table = spec.get("table")
@@ -332,6 +423,11 @@ def apply_netplan(interface_map, route_specs):
         except subprocess.TimeoutExpired:
             return None
 
+    host_netplan_path = "/host_netplan/90-threejnotif-pulsewatch.yaml"
+    chmod_cmd = ""
+    if os.path.exists(host_netplan_path):
+        chmod_cmd = "chmod 600 /etc/netplan/90-threejnotif-pulsewatch.yaml && "
+
     docker_path = None
     for candidate in ("/usr/bin/docker", "/usr/local/bin/docker"):
         if os.path.exists(candidate):
@@ -344,7 +440,7 @@ def apply_netplan(interface_map, route_specs):
             f"{docker_path} run --rm --privileged --pid=host "
             "-v /:/host "
             "ubuntu bash -c "
-            "\"chroot /host bash -c 'chmod 600 /etc/netplan/90-threejnotif-pulsewatch.yaml && netplan apply'\""
+            f"\"chroot /host bash -c '{chmod_cmd}netplan apply'\""
         )
         result = run_cmd(["/bin/sh", "-c", command], timeout_seconds=60)
         if result is None:
@@ -353,6 +449,9 @@ def apply_netplan(interface_map, route_specs):
         if result.returncode != 0:
             stderr = (result.stderr or result.stdout or "").strip()
             return False, f"Netplan apply failed: {stderr}"
+        ip_ok, ip_msg = apply_host_addresses(interface_map, route_specs)
+        if not ip_ok:
+            return False, f"Netplan applied. {ip_msg}"
         return True, "Netplan applied."
 
     sock = "/var/run/docker.sock"
@@ -382,7 +481,7 @@ def apply_netplan(interface_map, route_specs):
         "Cmd": [
             "bash",
             "-c",
-            "chroot /host bash -c 'chmod 600 /etc/netplan/90-threejnotif-pulsewatch.yaml && netplan apply' 2>&1",
+            f"chroot /host bash -c {shlex.quote(f'{chmod_cmd}netplan apply')} 2>&1",
         ],
         "HostConfig": {
             "Privileged": True,
@@ -478,6 +577,9 @@ def apply_netplan(interface_map, route_specs):
     if status != 0:
         detail = output or f"container exit {status}"
         return False, f"Netplan apply failed: {detail}"
+    ip_ok, ip_msg = apply_host_addresses(interface_map, route_specs)
+    if not ip_ok:
+        return False, f"Netplan applied. {ip_msg}"
     return True, "Netplan applied."
 
 
@@ -564,8 +666,17 @@ def fetch_mikrotik_lists(cores):
         )
         try:
             client.connect()
-            entries = client.list_address_list()
-            names = sorted({entry.get("list") for entry in entries if entry.get("list")})
+            mangle_entries = client.list_mangle_rules()
+            names = sorted(
+                {
+                    entry.get("src-address-list")
+                    for entry in mangle_entries
+                    if entry.get("src-address-list")
+                }
+            )
+            if not names:
+                entries = client.list_address_list()
+                names = sorted({entry.get("list") for entry in entries if entry.get("list")})
             list_map[core_id] = names
         except Exception:
             list_map[core_id] = []
@@ -582,6 +693,12 @@ def build_pulsewatch_rows(settings):
         (item.get("core_id"), item.get("list")): item
         for item in settings.get("pulsewatch", {}).get("list_presets", [])
     }
+    all_presets_blank = True
+    for preset in preset_lookup.values():
+        if (preset.get("address") or "").strip():
+            all_presets_blank = False
+            break
+    recommendations = {}
     for core in cores:
         core_id = core.get("id")
         if not core_id:
@@ -595,8 +712,25 @@ def build_pulsewatch_rows(settings):
                     if item.get("core_id") == core_id and item.get("list")
                 }
             )
+        blank_count = 0
         for list_name in lists:
             preset = preset_lookup.get((core_id, list_name), {}) or {}
+            if not (preset.get("address") or "").strip():
+                blank_count += 1
+        if all_presets_blank and blank_count > 1:
+            gateway = (core.get("gateway") or "").strip()
+            parts = gateway.split(".") if gateway else []
+            if len(parts) == 4 and all(part.isdigit() for part in parts):
+                base = ".".join(parts[:3])
+                start = 50
+                recommendations[core_id] = [f"{base}.{start + idx}" for idx in range(len(lists))]
+        for list_name in lists:
+            preset = preset_lookup.get((core_id, list_name), {}) or {}
+            recommended = ""
+            if all_presets_blank and blank_count > 1:
+                rec_list = recommendations.get(core_id, [])
+                if rec_list:
+                    recommended = rec_list.pop(0)
             preset_rows.append(
                 {
                     "row_id": preset_row_id(core_id, list_name),
@@ -605,6 +739,7 @@ def build_pulsewatch_rows(settings):
                     "list_name": list_name,
                     "identifier": preset.get("identifier", ""),
                     "address": preset.get("address", ""),
+                    "recommended_address": recommended,
                     "latency_ms": preset.get("latency_ms", 120),
                     "loss_pct": preset.get("loss_pct", 20),
                     "breach_count": preset.get("breach_count", 3),
@@ -612,19 +747,28 @@ def build_pulsewatch_rows(settings):
                     "ping_targets": preset.get("ping_targets", ["1.1.1.1", "8.8.8.8"]),
                 }
             )
-    return preset_rows
+    show_recommendation = all_presets_blank and any(row.get("recommended_address") for row in preset_rows)
+    return preset_rows, show_recommendation
 
 
 def render_pulsewatch_response(request, settings, message):
-    preset_rows = build_pulsewatch_rows(settings)
+    preset_rows, show_recommendation = build_pulsewatch_rows(settings)
     return templates.TemplateResponse(
         "settings_pulsewatch.html",
-        make_context(request, {"settings": settings, "message": message, "preset_rows": preset_rows}),
+        make_context(
+            request,
+            {
+                "settings": settings,
+                "message": message,
+                "preset_rows": preset_rows,
+                "show_preset_recommendation": show_recommendation,
+            },
+        ),
     )
 
 
 def find_pulsewatch_row(settings, row_id):
-    for row in build_pulsewatch_rows(settings):
+    for row in build_pulsewatch_rows(settings)[0]:
         if row.get("row_id") == row_id:
             return row
     return None
@@ -643,7 +787,7 @@ def pulsewatch_row_label(row):
 def format_pulsewatch_speedtest_summary(settings, results):
     if not results:
         return []
-    row_map = {row["row_id"]: row for row in build_pulsewatch_rows(settings)}
+    row_map = {row["row_id"]: row for row in build_pulsewatch_rows(settings)[0]}
     messages = []
     for isp_id, result in results.items():
         row = row_map.get(isp_id)
@@ -674,9 +818,77 @@ def _get_first_target(ping_targets):
     return targets[0].strip() if targets else ""
 
 
+def _sparkline_points(values, width=120, height=30):
+    if not values:
+        return ""
+    max_val = max(values)
+    min_val = min(values)
+    span = max(max_val - min_val, 1)
+    step = width / max(len(values) - 1, 1)
+    points = []
+    for idx, value in enumerate(values):
+        x = idx * step
+        y = height - ((value - min_val) / span) * height
+        points.append(f"{x:.1f},{y:.1f}")
+    return " ".join(points)
+
+
+def format_ts_ph(value):
+    if not value:
+        return "n/a"
+    try:
+        raw = str(value).strip()
+        if raw.endswith("Z"):
+            raw = raw[:-1]
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt_ph = dt.astimezone(PH_TZ)
+        return dt_ph.strftime("%Y-%m-%d %I:%M %p")
+    except Exception:
+        return str(value)
+
+
+def build_pulsewatch_dashboard_rows(settings, isp_state, speedtests, ping_history):
+    rows, _ = build_pulsewatch_rows(settings)
+    state_map = isp_state.get("pulsewatch", {}).get("isps", {})
+    dashboard_rows = []
+    for row in rows:
+        row_id = row.get("row_id")
+        history = ping_history.get(row_id, [])
+        loss_series = [item["loss"] for item in history if item.get("loss") is not None]
+        avg_series = [item["avg_ms"] for item in history if item.get("avg_ms") is not None]
+        down_samples = sum(1 for item in history if (item.get("loss") or 0) >= 100)
+        total_samples = len(history)
+        summary = state_map.get(row_id, {}).get("last_summary", {})
+        speed = speedtests.get(row_id)
+        label = pulsewatch_row_label(row)
+        dashboard_rows.append(
+            {
+                "row_id": row_id,
+                "label": label,
+                "list_name": row.get("list_name"),
+                "source_ip": row.get("address"),
+                "last_check": format_ts_ph(summary.get("last_check")),
+                "loss_max": summary.get("loss_max"),
+                "avg_max": summary.get("avg_max"),
+                "down_samples": down_samples,
+                "total_samples": total_samples,
+                "loss_points": _sparkline_points(loss_series),
+                "avg_points": _sparkline_points(avg_series),
+                "speed": speed or {},
+            }
+        )
+    return dashboard_rows
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    job_status = {item["job_name"]: item for item in get_job_status()}
+    job_status = {item["job_name"]: dict(item) for item in get_job_status()}
+    for status in job_status.values():
+        status["last_run_at_ph"] = format_ts_ph(status.get("last_run_at"))
+        status["last_success_at_ph"] = format_ts_ph(status.get("last_success_at"))
+        status["last_error_at_ph"] = format_ts_ph(status.get("last_error_at"))
     isp_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
     isp_state = get_state(
         "isp_ping_state",
@@ -688,9 +900,19 @@ async def dashboard(request: Request):
             "pulsewatch": {},
         },
     )
-    isps = isp_settings.get("pulsewatch", {}).get("isps", [])
-    isp_ids = [isp.get("id") for isp in isps if isp.get("id")]
-    speedtests = get_latest_speedtest_map(isp_ids)
+    pulse_rows, _ = build_pulsewatch_rows(isp_settings)
+    pulse_ids = [row.get("row_id") for row in pulse_rows if row.get("row_id")]
+    speedtests = get_latest_speedtest_map(pulse_ids)
+    ping_history = get_ping_history_map(pulse_ids, limit_per_isp=30)
+    pulse_dashboard_rows = build_pulsewatch_dashboard_rows(isp_settings, isp_state, speedtests, ping_history)
+    pulse_display_rows = [row for row in pulse_dashboard_rows if (row.get("source_ip") or "").strip()]
+    pulse_enabled = bool(isp_settings.get("pulsewatch", {}).get("enabled"))
+    pulse_state = isp_state.get("pulsewatch", {})
+    pulse_last_reconcile = format_ts_ph(pulse_state.get("last_mikrotik_reconcile_at"))
+    pulse_last_check = format_ts_ph(pulse_state.get("last_check_at"))
+    pulse_total = len(pulse_dashboard_rows)
+    pulse_with_ip = sum(1 for row in pulse_dashboard_rows if (row.get("source_ip") or "").strip())
+    pulse_missing_ip = pulse_total - pulse_with_ip
     return templates.TemplateResponse(
         "dashboard.html",
         make_context(
@@ -700,6 +922,13 @@ async def dashboard(request: Request):
                 "isp_settings": isp_settings,
                 "isp_state": isp_state,
                 "speedtests": speedtests,
+                "pulse_rows": pulse_display_rows,
+                "pulse_enabled": pulse_enabled,
+                "pulse_last_reconcile": pulse_last_reconcile,
+                "pulse_last_check": pulse_last_check,
+                "pulse_total": pulse_total,
+                "pulse_with_ip": pulse_with_ip,
+                "pulse_missing_ip": pulse_missing_ip,
             },
         ),
     )
@@ -740,10 +969,50 @@ async def import_settings_route(request: Request):
                 _, apply_msg = apply_netplan(interface_map, route_specs)
         except Exception as exc:
             apply_msg = f"Netplan update failed: {exc}"
-        if netplan_msg:
+        if netplan_msg and "no Pulsewatch IPs configured" not in netplan_msg:
             message = f"{message} {netplan_msg}"
-        if apply_msg:
+        if apply_msg and not apply_msg.startswith("Netplan applied"):
             message = f"{message} {apply_msg}"
+    interfaces = get_interface_options()
+    return templates.TemplateResponse(
+        "settings_system.html",
+        make_context(request, {"message": message, "settings": settings, "interfaces": interfaces}),
+    )
+
+
+@app.get("/settings/db/export")
+async def export_db_route():
+    db_path = os.environ.get("THREEJ_DB_PATH", "/data/threejnotif.db")
+    if not os.path.exists(db_path):
+        return Response(content=b"Database not found.", media_type="text/plain", status_code=404)
+    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    headers = {"Content-Disposition": f"attachment; filename=threejnotif-db-{timestamp}.db"}
+    with open(db_path, "rb") as handle:
+        content = handle.read()
+    return Response(content=content, media_type="application/octet-stream", headers=headers)
+
+
+@app.post("/settings/db/import", response_class=HTMLResponse)
+async def import_db_route(request: Request):
+    form = await request.form()
+    uploaded = form.get("db_file")
+    message = ""
+    db_path = os.environ.get("THREEJ_DB_PATH", "/data/threejnotif.db")
+    if not uploaded:
+        message = "No database file uploaded."
+    else:
+        try:
+            timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+            if os.path.exists(db_path):
+                shutil.copy(db_path, f"{db_path}.bak-{timestamp}")
+            content = await uploaded.read()
+            with open(db_path, "wb") as handle:
+                handle.write(content)
+            init_db()
+            message = "Database restored successfully."
+        except Exception as exc:
+            message = f"Database restore failed: {exc}"
+    settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
     interfaces = get_interface_options()
     return templates.TemplateResponse(
         "settings_system.html",
@@ -979,6 +1248,7 @@ async def pulsewatch_settings(request: Request):
 async def pulsewatch_settings_save(request: Request):
     form = await request.form()
     current_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    prev_settings = copy.deepcopy(current_settings)
     cores = current_settings.get("pulsewatch", {}).get("mikrotik", {}).get("cores", [])
     pulse_isps = []
     for idx, existing in enumerate(current_settings.get("pulsewatch", {}).get("isps", []), start=1):
@@ -1012,27 +1282,31 @@ async def pulsewatch_settings_save(request: Request):
                 "cooldown_minutes": parse_int(form, f"{isp_id}_cooldown_minutes", 10),
             }
         )
-    preset_count = parse_int(form, "preset_count", 0)
+    preset_count_raw = form.get("preset_count")
     presets = []
-    for idx in range(preset_count):
-        core_id = (form.get(f"preset_{idx}_core_id") or "").strip()
-        list_name = (form.get(f"preset_{idx}_list") or "").strip()
-        identifier = (form.get(f"preset_{idx}_identifier") or "").strip()
-        address = (form.get(f"preset_{idx}_address") or "").strip()
-        if core_id and list_name:
-            presets.append(
-                {
-                    "core_id": core_id,
-                    "list": list_name,
-                    "identifier": identifier,
-                    "address": address,
-                    "latency_ms": parse_float(form, f"preset_{idx}_latency_ms", 120.0),
-                    "loss_pct": parse_float(form, f"preset_{idx}_loss_pct", 20.0),
-                    "breach_count": parse_int(form, f"preset_{idx}_breach_count", 3),
-                    "cooldown_minutes": parse_int(form, f"preset_{idx}_cooldown_minutes", 10),
-                    "ping_targets": parse_lines(form.get(f"preset_{idx}_ping_targets", "")),
-                }
-            )
+    if preset_count_raw is None:
+        presets = current_settings.get("pulsewatch", {}).get("list_presets", [])
+    else:
+        preset_count = parse_int(form, "preset_count", 0)
+        for idx in range(preset_count):
+            core_id = (form.get(f"preset_{idx}_core_id") or "").strip()
+            list_name = (form.get(f"preset_{idx}_list") or "").strip()
+            identifier = (form.get(f"preset_{idx}_identifier") or "").strip()
+            address = (form.get(f"preset_{idx}_address") or "").strip()
+            if core_id and list_name:
+                presets.append(
+                    {
+                        "core_id": core_id,
+                        "list": list_name,
+                        "identifier": identifier,
+                        "address": address,
+                        "latency_ms": parse_float(form, f"preset_{idx}_latency_ms", 120.0),
+                        "loss_pct": parse_float(form, f"preset_{idx}_loss_pct", 20.0),
+                        "breach_count": parse_int(form, f"preset_{idx}_breach_count", 3),
+                        "cooldown_minutes": parse_int(form, f"preset_{idx}_cooldown_minutes", 10),
+                        "ping_targets": parse_lines(form.get(f"preset_{idx}_ping_targets", "")),
+                    }
+                )
     pulsewatch = current_settings.get("pulsewatch", {})
     pulsewatch.update(
         {
@@ -1070,32 +1344,100 @@ async def pulsewatch_settings_save(request: Request):
         "pulsewatch": pulsewatch,
     }
     save_settings("isp_ping", settings)
-    message_lines = ["Saved Pulsewatch settings."]
+    message_lines = ["ISP Pulsewatch modification saved!"]
+    changes = []
+    def _json_dump(value):
+        try:
+            return json.dumps(value, sort_keys=True, default=str)
+        except TypeError:
+            return str(value)
+    if prev_settings.get("pulsewatch", {}).get("enabled") != settings.get("pulsewatch", {}).get("enabled"):
+        changes.append("Core: enable pulsewatch updated [ok]")
+    if prev_settings.get("pulsewatch", {}).get("manage_address_lists") != settings.get("pulsewatch", {}).get("manage_address_lists"):
+        changes.append("Core: auto-manage address lists updated [ok]")
+    if prev_settings.get("pulsewatch", {}).get("reconcile_interval_minutes") != settings.get("pulsewatch", {}).get("reconcile_interval_minutes"):
+        changes.append("Core: reconcile interval updated [ok]")
+    if prev_settings.get("pulsewatch", {}).get("store_raw_output") != settings.get("pulsewatch", {}).get("store_raw_output"):
+        changes.append("Core: store raw output updated [ok]")
+    if prev_settings.get("pulsewatch", {}).get("retention_days") != settings.get("pulsewatch", {}).get("retention_days"):
+        changes.append("Core: retention days updated [ok]")
+    if prev_settings.get("pulsewatch", {}).get("ping", {}).get("timeout_seconds") != settings.get("pulsewatch", {}).get("ping", {}).get("timeout_seconds"):
+        changes.append("Ping: timeout seconds updated [ok]")
+    if prev_settings.get("pulsewatch", {}).get("ping", {}).get("count") != settings.get("pulsewatch", {}).get("ping", {}).get("count"):
+        changes.append("Ping: count updated [ok]")
+    if prev_settings.get("pulsewatch", {}).get("ping", {}).get("max_parallel") != settings.get("pulsewatch", {}).get("ping", {}).get("max_parallel"):
+        changes.append("Ping: max parallel ping updated [ok]")
+    if prev_settings.get("pulsewatch", {}).get("speedtest", {}).get("enabled") != settings.get("pulsewatch", {}).get("speedtest", {}).get("enabled"):
+        changes.append("Speedtest: enabled updated [ok]")
+    if prev_settings.get("pulsewatch", {}).get("speedtest", {}).get("min_interval_minutes") != settings.get("pulsewatch", {}).get("speedtest", {}).get("min_interval_minutes"):
+        changes.append("Speedtest: min interval updated [ok]")
+    if prev_settings.get("pulsewatch", {}).get("speedtest", {}).get("command") != settings.get("pulsewatch", {}).get("speedtest", {}).get("command"):
+        changes.append("Speedtest: command updated [ok]")
+    if prev_settings.get("pulsewatch", {}).get("speedtest", {}).get("args") != settings.get("pulsewatch", {}).get("speedtest", {}).get("args"):
+        changes.append("Speedtest: args updated [ok]")
+    if prev_settings.get("pulsewatch", {}).get("speedtest", {}).get("use_netns") != settings.get("pulsewatch", {}).get("speedtest", {}).get("use_netns"):
+        changes.append("Speedtest: use netns updated [ok]")
+    if prev_settings.get("pulsewatch", {}).get("speedtest", {}).get("netns_prefix") != settings.get("pulsewatch", {}).get("speedtest", {}).get("netns_prefix"):
+        changes.append("Speedtest: netns prefix updated [ok]")
+    if prev_settings.get("telegram", {}).get("bot_token") != settings.get("telegram", {}).get("bot_token"):
+        changes.append("Telegram: bot token updated [ok]")
+    if prev_settings.get("telegram", {}).get("alert_channel_id") != settings.get("telegram", {}).get("alert_channel_id"):
+        changes.append("Telegram: alert channel updated [ok]")
+    if changes:
+        message_lines.append("Changes: " + ", ".join(changes))
+    else:
+        message_lines.append("Changes: none")
     netplan_msg = None
     apply_msg = None
     sync_msg = None
-    try:
-        netplan_path, netplan_msg, interface_map, route_specs = build_pulsewatch_netplan(settings)
-        if netplan_path:
-            _, apply_msg = apply_netplan(interface_map, route_specs)
-    except Exception as exc:
-        apply_msg = f"Netplan update failed: {exc}"
-    if pulsewatch.get("manage_address_lists"):
+    had_addresses = bool(compute_pulsewatch_interface_map(prev_settings))
+    presets_before = prev_settings.get("pulsewatch", {}).get("list_presets", [])
+    presets_after = settings.get("pulsewatch", {}).get("list_presets", [])
+    presets_changed = _json_dump(presets_before) != _json_dump(presets_after)
+    cores_before = prev_settings.get("pulsewatch", {}).get("mikrotik", {}).get("cores", [])
+    cores_after = settings.get("pulsewatch", {}).get("mikrotik", {}).get("cores", [])
+    core_netplan_fields = ["id", "interface", "prefix", "gateway"]
+    cores_before_net = [
+        {key: core.get(key) for key in core_netplan_fields} for core in cores_before
+    ]
+    cores_after_net = [
+        {key: core.get(key) for key in core_netplan_fields} for core in cores_after
+    ]
+    netplan_needed = presets_changed or _json_dump(cores_before_net) != _json_dump(cores_after_net)
+    if netplan_needed:
         try:
-            state = {}
-            isp_ping_notifier.run_pulsewatch_check(settings, state, only_isps=[])
+            netplan_path, netplan_msg, interface_map, route_specs = build_pulsewatch_netplan(settings)
+            if netplan_path:
+                _, apply_msg = apply_netplan(interface_map, route_specs)
+        except Exception as exc:
+            apply_msg = f"Netplan update failed: {exc}"
+    presets_with_address = any((item.get("address") or "").strip() for item in presets_after)
+    manage_enabled = bool(pulsewatch.get("manage_address_lists"))
+    if presets_with_address and (manage_enabled or presets_changed):
+        try:
+            state = get_state("isp_ping_state", {})
+            isp_ping_notifier.sync_mikrotik_lists(settings, state)
+            save_state("isp_ping_state", state)
             sync_msg = "MikroTik address-list sync completed."
         except Exception as exc:
             sync_msg = f"MikroTik sync failed: {exc}"
     if netplan_msg:
         if "Netplan file updated" in netplan_msg:
             message_lines.append("Network IPs updated.")
-        else:
+        elif "Netplan file removed" in netplan_msg:
+            if had_addresses:
+                message_lines.append("Network IPs removed.")
+        elif "Netplan unchanged" in netplan_msg:
+            if had_addresses:
+                message_lines.append("Network IPs unchanged.")
+        elif "no Pulsewatch IPs configured" not in netplan_msg:
             message_lines.append(netplan_msg)
+    if not netplan_needed:
+        message_lines.append("Network IPs unchanged (no preset/IP changes).")
     if apply_msg:
         if "Netplan apply timed out" in apply_msg:
             message_lines.append("Applied IPs directly (netplan timeout).")
-        else:
+        elif apply_msg.startswith("Netplan apply failed"):
             message_lines.append(apply_msg)
     if sync_msg:
         if "sync completed" in sync_msg:
@@ -1313,7 +1655,7 @@ async def isp_pulsewatch_ping_stream_one(request: Request, row_id: str):
 @app.get("/isp/pulsewatch/ping/stream")
 async def isp_pulsewatch_ping_stream_all(request: Request):
     settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
-    rows = build_pulsewatch_rows(settings)
+    rows = build_pulsewatch_rows(settings)[0]
     if not rows:
         async def _empty():
             yield "data: No presets available\n\n"
@@ -1381,7 +1723,7 @@ async def isp_pulsewatch_ping_one(request: Request, isp_id: str):
         state, _ = isp_ping_notifier.run_pulsewatch_check(settings, state, only_isps=[isp_id], force=True)
         save_state("isp_ping_state", state)
         label = isp_id
-        for row in build_pulsewatch_rows(settings):
+        for row in build_pulsewatch_rows(settings)[0]:
             if row.get("row_id") == isp_id:
                 label = f"{row.get('core_label')} {row.get('list_name')}"
                 break
@@ -1561,9 +1903,9 @@ async def system_mikrotik_save(request: Request):
             _, apply_msg = apply_netplan(interface_map, route_specs)
     except Exception as exc:
         apply_msg = f"Netplan update failed: {exc}"
-    if netplan_msg:
+    if netplan_msg and "no Pulsewatch IPs configured" not in netplan_msg:
         message = f"{message} {netplan_msg}"
-    if apply_msg:
+    if apply_msg and not apply_msg.startswith("Netplan applied"):
         message = f"{message} {apply_msg}"
     return templates.TemplateResponse(
         "settings_system.html",
@@ -1634,9 +1976,9 @@ async def system_mikrotik_add(request: Request):
             _, apply_msg = apply_netplan(interface_map, route_specs)
     except Exception as exc:
         apply_msg = f"Netplan update failed: {exc}"
-    if netplan_msg:
+    if netplan_msg and "no Pulsewatch IPs configured" not in netplan_msg:
         message = f"{message} {netplan_msg}"
-    if apply_msg:
+    if apply_msg and not apply_msg.startswith("Netplan applied"):
         message = f"{message} {apply_msg}"
     return templates.TemplateResponse(
         "settings_system.html",
@@ -1670,9 +2012,9 @@ async def system_mikrotik_remove(request: Request, core_id: str):
             _, apply_msg = apply_netplan(interface_map, route_specs)
     except Exception as exc:
         apply_msg = f"Netplan update failed: {exc}"
-    if netplan_msg:
+    if netplan_msg and "no Pulsewatch IPs configured" not in netplan_msg:
         message = f"{message} {netplan_msg}"
-    if apply_msg:
+    if apply_msg and not apply_msg.startswith("Netplan applied"):
         message = f"{message} {apply_msg}"
     return templates.TemplateResponse(
         "settings_system.html",

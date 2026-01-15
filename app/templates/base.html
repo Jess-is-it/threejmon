@@ -78,5 +78,29 @@
     </div>
   </div>
   <script src="/static/tabler/js/tabler.min.js"></script>
+  <script>
+    document.addEventListener("submit", (event) => {
+      const form = event.target;
+      if (!form || form.tagName !== "FORM") {
+        return;
+      }
+      const active = document.activeElement;
+      let button = null;
+      if (active && active.type === "submit" && form.contains(active)) {
+        button = active;
+      } else {
+        button = form.querySelector("button[type='submit'], input[type='submit']");
+      }
+      if (!button || button.dataset.loading === "1") {
+        return;
+      }
+      button.dataset.loading = "1";
+      button.disabled = true;
+      if (!button.dataset.originalText) {
+        button.dataset.originalText = button.innerHTML;
+      }
+      button.innerHTML = `${button.dataset.originalText} <span class="spinner-border spinner-border-sm ms-2" role="status" aria-hidden="true"></span>`;
+    });
+  </script>
 </body>
 </html>
