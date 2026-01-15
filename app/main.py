@@ -603,6 +603,7 @@ def build_pulsewatch_rows(settings):
                     "core_id": core_id,
                     "core_label": core.get("label") or core_id,
                     "list_name": list_name,
+                    "identifier": preset.get("identifier", ""),
                     "address": preset.get("address", ""),
                     "latency_ms": preset.get("latency_ms", 120),
                     "loss_pct": preset.get("loss_pct", 20),
@@ -980,12 +981,14 @@ async def pulsewatch_settings_save(request: Request):
     for idx in range(preset_count):
         core_id = (form.get(f"preset_{idx}_core_id") or "").strip()
         list_name = (form.get(f"preset_{idx}_list") or "").strip()
+        identifier = (form.get(f"preset_{idx}_identifier") or "").strip()
         address = (form.get(f"preset_{idx}_address") or "").strip()
         if core_id and list_name:
             presets.append(
                 {
                     "core_id": core_id,
                     "list": list_name,
+                    "identifier": identifier,
                     "address": address,
                     "latency_ms": parse_float(form, f"preset_{idx}_latency_ms", 120.0),
                     "loss_pct": parse_float(form, f"preset_{idx}_loss_pct", 20.0),

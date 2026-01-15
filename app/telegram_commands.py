@@ -23,10 +23,12 @@ def _build_label_map(settings):
     for preset in settings.get("pulsewatch", {}).get("list_presets", []):
         core_id = preset.get("core_id")
         list_name = preset.get("list")
+        identifier = (preset.get("identifier") or "").strip()
         if not core_id or not list_name:
             continue
         key = _preset_id(core_id, list_name)
-        labels[key] = f"{core_labels.get(core_id, core_id)} {list_name}".strip()
+        label_value = identifier or list_name
+        labels[key] = f"{core_labels.get(core_id, core_id)} {label_value}".strip()
     return labels
 
 
@@ -133,9 +135,13 @@ def handle_telegram_command(settings, text):
             core_id = preset.get("core_id")
             list_name = preset.get("list")
             address = preset.get("address")
+            identifier = (preset.get("identifier") or "").strip()
             if not core_id or not list_name:
                 continue
-            lines.append(f"{core_id} {list_name} ({address})")
+            if identifier:
+                lines.append(f"{core_id} {list_name} ({identifier}) ({address})")
+            else:
+                lines.append(f"{core_id} {list_name} ({address})")
         return "\n".join(lines)
 
     if command == "/runpingall":

@@ -121,6 +121,7 @@
           <tr>
             <th data-sort="text" title="Which MikroTik router this preset belongs to." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">MikroTik</th>
             <th data-sort="text" title="Address-list name pulled from the MikroTik firewall." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">List</th>
+            <th data-sort="text" title="Friendly identifier for this ISP/list." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Identifier</th>
             <th data-sort="text" title="Source IP to bind for this list (used by ping/speedtest)." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">IP Address</th>
             <th data-sort="number" title="Latency threshold (ms) before a breach is counted." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Latency</th>
             <th data-sort="number" title="Packet loss threshold (%) before a breach is counted." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Loss</th>
@@ -141,6 +142,9 @@
               <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
                 {{ row.list_name }}
                 <input type="hidden" name="preset_{{ loop.index0 }}_list" value="{{ row.list_name }}" />
+              </td>
+              <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
+                <input type="text" name="preset_{{ loop.index0 }}_identifier" value="{{ row.identifier }}" />
               </td>
               <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
                 <input type="text" name="preset_{{ loop.index0 }}_address" value="{{ row.address }}" />
@@ -656,9 +660,12 @@
       const targetInput = row ? row.querySelector("textarea[name$='_ping_targets']") : null;
       const labelCore = row ? row.querySelector("td:nth-child(1)") : null;
       const labelList = row ? row.querySelector("td:nth-child(2)") : null;
+      const identifierInput = row ? row.querySelector("input[name$='_identifier']") : null;
       const sourceIp = addressInput ? (addressInput.value || "").trim() : "";
       const targets = targetInput ? (targetInput.value || "").trim().split("\n") : [];
-      const label = `${labelCore ? labelCore.textContent.trim() : ""} ${labelList ? labelList.textContent.trim() : ""}`.trim();
+      const identifier = identifierInput ? (identifierInput.value || "").trim() : "";
+      const labelValue = identifier || (labelList ? labelList.textContent.trim() : "");
+      const label = `${labelCore ? labelCore.textContent.trim() : ""} ${labelValue}`.trim();
       const params = {};
       if (sourceIp) {
         params.source_ip = sourceIp;
@@ -685,7 +692,10 @@
         }
         const labelCore = row.querySelector("td:nth-child(1)");
         const labelList = row.querySelector("td:nth-child(2)");
-        const label = `${labelCore ? labelCore.textContent.trim() : ""} ${labelList ? labelList.textContent.trim() : ""}`.trim();
+        const identifierInput = row.querySelector("input[name$='_identifier']");
+        const identifier = identifierInput ? (identifierInput.value || "").trim() : "";
+        const labelValue = identifier || (labelList ? labelList.textContent.trim() : "");
+        const label = `${labelCore ? labelCore.textContent.trim() : ""} ${labelValue}`.trim();
         if (label) {
           streamLabelList.push(label);
         }

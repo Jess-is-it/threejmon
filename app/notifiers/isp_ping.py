@@ -75,13 +75,15 @@ def _isps_from_presets(pulse_cfg):
     for preset in presets:
         core_id = preset.get("core_id")
         list_name = preset.get("list")
+        identifier = (preset.get("identifier") or "").strip()
         if not core_id or not list_name:
             continue
         isp_id = _preset_id(core_id, list_name)
+        label_value = identifier or list_name
         isps.append(
             {
                 "id": isp_id,
-                "label": list_name,
+                "label": label_value,
                 "sources": {core_id: preset.get("address")},
                 "ping_targets": preset.get("ping_targets", []),
                 "thresholds": {
