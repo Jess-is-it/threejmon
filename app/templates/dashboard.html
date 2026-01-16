@@ -406,7 +406,14 @@
     const timeMode = rangeHours >= 24 ? "date" : "time";
     const xTicks = [];
     if (timeMode === "date") {
-      xTicks.push(minX, maxX);
+      const start = new Date(minX);
+      start.setHours(0, 0, 0, 0);
+      for (let t = start.getTime(); t <= maxX; t += 24 * 60 * 60 * 1000) {
+        if (t >= minX) xTicks.push(t);
+      }
+      if (!xTicks.length) {
+        xTicks.push(minX, maxX);
+      }
     } else {
       const tickStep = rangeHours <= 6 ? 1 : 2;
       const start = new Date(minX);

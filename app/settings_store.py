@@ -35,20 +35,13 @@ def save_state(key, state):
 
 def export_settings():
     raw_settings = fetch_all_settings()
-    raw_state = fetch_all_state()
     settings_payload = {}
-    state_payload = {}
     for key, value in raw_settings.items():
         try:
             settings_payload[key] = json.loads(value)
         except json.JSONDecodeError:
             settings_payload[key] = value
-    for key, value in raw_state.items():
-        try:
-            state_payload[key] = json.loads(value)
-        except json.JSONDecodeError:
-            state_payload[key] = value
-    return {"settings": settings_payload, "state": state_payload}
+    return {"settings": settings_payload}
 
 
 def import_settings(data):

@@ -24,6 +24,7 @@ from .db import (
     get_ping_latency_trend_map,
     get_ping_latency_trend_window,
     init_db,
+    clear_pulsewatch_data,
 )
 from .forms import parse_bool, parse_float, parse_int, parse_int_list, parse_lines, parse_targets
 from .jobs import JobsManager
@@ -1582,6 +1583,21 @@ async def pulsewatch_settings_save(request: Request):
             message_lines.append(sync_msg)
     message = "\n".join(message_lines)
     return render_pulsewatch_response(request, settings, message)
+
+
+@app.post("/settings/pulsewatch/format", response_class=HTMLResponse)
+async def pulsewatch_format_db(request: Request):
+    form = await request.form()
+    if not parse_bool(form, "confirm_format"):
+        settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+        return render_pulsewatch_response(request, settings, "Format canceled. Please confirm before formatting.")
+    clear_pulsewatch_data()
+    settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    return render_pulsewatch_response(
+        request,
+        settings,
+        "Pulsewatch database cleared. Ping, speedtest, alerts, and rollups removed. Settings preserved.",
+    )
 
 
 

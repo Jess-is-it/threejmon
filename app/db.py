@@ -483,6 +483,18 @@ def delete_pulsewatch_rollups_older_than(cutoff_iso):
         conn.close()
 
 
+def clear_pulsewatch_data():
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM ping_results")
+            conn.execute("DELETE FROM speedtest_results")
+            conn.execute("DELETE FROM alerts_log")
+            conn.execute("DELETE FROM ping_rollups")
+    finally:
+        conn.close()
+
+
 def backfill_ping_rollups(since_iso, until_iso=None):
     conn = get_conn()
     try:
