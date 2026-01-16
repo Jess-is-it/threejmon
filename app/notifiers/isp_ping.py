@@ -13,7 +13,7 @@ try:
 except Exception:
     ZoneInfo = None
 
-from ..db import delete_pulsewatch_older_than, insert_alert_log, insert_ping_result, insert_speedtest_result, utc_now_iso
+from ..db import delete_pulsewatch_raw_older_than, delete_pulsewatch_rollups_older_than, insert_alert_log, insert_ping_result, insert_speedtest_result, utc_now_iso
 from ..mikrotik import RouterOSClient, reconcile_address_lists
 from .telegram import send_telegram
 
@@ -452,7 +452,10 @@ def _purge_pulsewatch_data(cfg, state):
     if last_run and _utcnow() - last_run < timedelta(hours=24):
         return
     cutoff = _utcnow() - timedelta(days=retention_days)
-    delete_pulsewatch_older_than(cutoff.replace(microsecond=0).isoformat() + "Z")
+    delete_pulsewatch_raw_older_than(cutoff.replace(microsecond=0).isoformat() + "Z")
+    rollup_days = int(pulse_cfg.get("rollup_retention_days", 365) or 365)
+    rollup_cutoff = _utcnow() - timedelta(days=rollup_days)
+    delete_pulsewatch_rollups_older_than(rollup_cutoff.replace(microsecond=0).isoformat() + "Z")
     state["last_pulsewatch_prune_at"] = _utcnow().replace(microsecond=0).isoformat() + "Z"
 
 
@@ -562,7 +565,11 @@ def run_pulsewatch_check(cfg, state, only_isps=None, force=False):
                 f"Pulsewatch Alert: {label} sustained high latency/loss. "
                 f"Loss max {loss_text}, Avg max {avg_text}."
             )
-            send_telegram(cfg["telegram"].get("bot_token", ""), _select_alert_chat_id(cfg), message)
+            send_telegram(
+                cfg["telegram"].get("pulsewatch_bot_token", "") or cfg["telegram"].get("bot_token", ""),
+                _select_alert_chat_id(cfg),
+                message,
+            )
             insert_alert_log(isp_id, "pulsewatch_threshold", message, current["cooldown_until"])
 
     return state, results_by_isp
@@ -641,13 +648,14 @@ def run_check(cfg, state, force_report=False):
     timeout_seconds = int(cfg["general"].get("ping_timeout_seconds", 1))
     ping_count = int(cfg["general"].get("ping_count", 5))
     timezone = cfg["report"].get("timezone", "Asia/Manila")
+    reminder_hours = int(cfg["general"].get("down_reminder_hours", 8) or 8)
     targets = cfg.get("targets", [])
 
     if ZoneInfo is not None:
         now = datetime.now(ZoneInfo(timezone))
     else:
         now = datetime.now()
-    stamp = now.strftime("%Y-%m-%d %H:%M:%S")
+    stamp = now.strftime("%Y-%m-%d %I:%M:%S %p")
 
     normalize_report_state(cfg, state)
 
@@ -670,31 +678,82 @@ def run_check(cfg, state, force_report=False):
                     "icmp_lines": icmp_lines,
                 }
             )
-            last_status = state.get("last_status", {}).get(target["ip"])
-            if not up and last_status != "down":
-                base_message = target.get("down_message") or f"{target['ip']} is DOWN"
-                send_telegram(
-                    cfg["telegram"].get("bot_token", ""),
-                    cfg["telegram"].get("chat_id", ""),
-                    f"{base_message} | {stamp}",
-                )
-            if up and last_status == "down":
-                base_message = target.get("up_message") or f"{target['ip']} is UP"
-                ping_count = int(cfg["general"].get("ping_count", 5))
-                include_up_icmp = bool(cfg["general"].get("include_up_icmp", False))
-                up_icmp_lines = int(cfg["general"].get("up_icmp_lines", ping_count))
-                up_icmp_lines = max(0, min(up_icmp_lines, 20))
-                ping_details = "\n".join(icmp_lines[:up_icmp_lines])
-                send_telegram(
-                    cfg["telegram"].get("bot_token", ""),
-                    cfg["telegram"].get("chat_id", ""),
-                    (
-                        f"{base_message} | {stamp}\n({ping_count} pings) {ping_details}"
-                        if include_up_icmp and up_icmp_lines > 0
-                        else f"{base_message} | {stamp}"
-                    ),
-                )
-            state.setdefault("last_status", {})[target["ip"]] = "up" if up else "down"
+            ip_key = target["ip"]
+            status_map = state.setdefault("last_status", {})
+            notified_map = state.setdefault("last_notified_status", {})
+            notified_at_map = state.setdefault("last_notified_at", {})
+            current_status = "up" if up else "down"
+            last_status = status_map.get(ip_key)
+            last_notified = notified_map.get(ip_key)
+            down_since_map = state.setdefault("down_since", {})
+            last_reminder_map = state.setdefault("down_reminder_at", {})
+            down_since = _parse_iso(down_since_map.get(ip_key))
+            last_reminder = _parse_iso(last_reminder_map.get(ip_key))
+            now_utc = _utcnow()
+
+            try:
+                if current_status != last_status:
+                    status_map[ip_key] = current_status
+                    if current_status == "down":
+                        down_since_map[ip_key] = utc_now_iso()
+                        last_reminder_map[ip_key] = down_since_map[ip_key]
+                        if last_notified != "down":
+                            base_message = target.get("down_message") or f"{target['ip']} is DOWN"
+                            send_telegram(
+                                cfg["telegram"].get("bot_token", ""),
+                                cfg["telegram"].get("chat_id", ""),
+                                f"{base_message} | {stamp}",
+                            )
+                            notified_map[ip_key] = "down"
+                            notified_at_map[ip_key] = utc_now_iso()
+                    else:
+                        down_since_map.pop(ip_key, None)
+                        last_reminder_map.pop(ip_key, None)
+                        base_message = target.get("up_message") or f"{target['ip']} is UP"
+                        include_up_icmp = bool(cfg["general"].get("include_up_icmp", False))
+                        up_icmp_lines = int(cfg["general"].get("up_icmp_lines", ping_count))
+                        up_icmp_lines = max(0, min(up_icmp_lines, 20))
+                        ping_details = "\n".join(icmp_lines[:up_icmp_lines])
+                        send_telegram(
+                            cfg["telegram"].get("bot_token", ""),
+                            cfg["telegram"].get("chat_id", ""),
+                            (
+                                f"{base_message} | {stamp}\n({ping_count} pings) {ping_details}"
+                                if include_up_icmp and up_icmp_lines > 0
+                                else f"{base_message} | {stamp}"
+                            ),
+                        )
+                        notified_map[ip_key] = "up"
+                        notified_at_map[ip_key] = utc_now_iso()
+                elif current_status == "down":
+                    if down_since is None:
+                        down_since_map[ip_key] = utc_now_iso()
+                        down_since = _parse_iso(down_since_map.get(ip_key))
+                    elapsed = (now_utc - down_since) if down_since else timedelta(0)
+                    reminder_due = elapsed >= timedelta(hours=reminder_hours) and (
+                        last_reminder is None or (now_utc - last_reminder) >= timedelta(hours=reminder_hours)
+                    )
+                    if reminder_due and down_since:
+                        down_local = down_since
+                        if ZoneInfo is not None:
+                            try:
+                                down_local = down_since.astimezone(ZoneInfo(timezone))
+                            except Exception:
+                                down_local = down_since
+                        hours_down = int((now_utc - down_since).total_seconds() // 3600)
+                        label = target.get("label") or target["ip"]
+                        message = (
+                            f"🔴 {label} ({target['ip']}) is still DOWN since "
+                            f"{down_local.strftime('%Y-%m-%d %I:%M:%S %p')} ({hours_down}hrs ago)"
+                        )
+                        send_telegram(
+                            cfg["telegram"].get("bot_token", ""),
+                            cfg["telegram"].get("chat_id", ""),
+                            message,
+                        )
+                        last_reminder_map[ip_key] = utc_now_iso()
+            except TelegramError:
+                logger.exception("ISP Ping Telegram send failed for %s", target["ip"])
 
     if targets and (force_report or should_send_report(cfg, state, now)):
         send_telegram(
@@ -704,7 +763,6 @@ def run_check(cfg, state, force_report=False):
         )
         state["last_report_date"] = now.date().isoformat()
 
-    state, _ = run_pulsewatch_check(cfg, state)
     return state
 
 

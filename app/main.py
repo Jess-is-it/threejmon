@@ -9,7 +9,7 @@ import base64
 import shlex
 import shutil
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Request
@@ -17,7 +17,14 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .db import get_job_status, get_latest_speedtest_map, get_ping_history_map, init_db
+from .db import (
+    get_job_status,
+    get_latest_speedtest_map,
+    get_ping_history_map,
+    get_ping_latency_trend_map,
+    get_ping_latency_trend_window,
+    init_db,
+)
 from .forms import parse_bool, parse_float, parse_int, parse_int_list, parse_lines, parse_targets
 from .jobs import JobsManager
 from .notifiers import isp_ping as isp_ping_notifier
@@ -585,6 +592,8 @@ def apply_netplan(interface_map, route_specs):
 
 def normalize_pulsewatch_settings(settings):
     pulse = settings.setdefault("pulsewatch", {})
+    pulse.setdefault("retention_days", 30)
+    pulse.setdefault("rollup_retention_days", 365)
     mikrotik = pulse.setdefault("mikrotik", {})
     cores = mikrotik.get("cores")
     if cores is None:
@@ -738,6 +747,7 @@ def build_pulsewatch_rows(settings):
                     "core_label": core.get("label") or core_id,
                     "list_name": list_name,
                     "identifier": preset.get("identifier", ""),
+                    "color": preset.get("color", ""),
                     "address": preset.get("address", ""),
                     "recommended_address": recommended,
                     "latency_ms": preset.get("latency_ms", 120),
@@ -868,6 +878,9 @@ def build_pulsewatch_dashboard_rows(settings, isp_state, speedtests, ping_histor
                 "row_id": row_id,
                 "label": label,
                 "list_name": row.get("list_name"),
+                "core_id": row.get("core_id"),
+                "core_label": row.get("core_label"),
+                "color": row.get("color"),
                 "source_ip": row.get("address"),
                 "last_check": format_ts_ph(summary.get("last_check")),
                 "loss_max": summary.get("loss_max"),
@@ -877,9 +890,59 @@ def build_pulsewatch_dashboard_rows(settings, isp_state, speedtests, ping_histor
                 "loss_points": _sparkline_points(loss_series),
                 "avg_points": _sparkline_points(avg_series),
                 "speed": speed or {},
+                "history": history,
             }
         )
     return dashboard_rows
+
+
+def build_pulsewatch_latency_series(rows, history_map=None):
+    palette = [
+        "#1f77b4",
+        "#ff7f0e",
+        "#2ca02c",
+        "#d62728",
+        "#9467bd",
+        "#8c564b",
+        "#e377c2",
+        "#7f7f7f",
+        "#bcbd22",
+        "#17becf",
+        "#e41a1c",
+        "#377eb8",
+        "#4daf4a",
+        "#984ea3",
+        "#ff7f00",
+        "#a65628",
+        "#f781bf",
+        "#999999",
+    ]
+    series = []
+    for idx, row in enumerate(rows):
+        targets = {}
+        history = history_map.get(row.get("row_id"), []) if history_map is not None else row.get("history", [])
+        for item in history:
+            value = item.get("avg_ms")
+            ts = item.get("timestamp") or item.get("bucket_ts")
+            target = item.get("target")
+            if value is None or not ts or not target:
+                continue
+            targets.setdefault(target, []).append({"ts": ts, "value": value})
+        for target, points in targets.items():
+            preset_color = (row.get("color") or "").strip()
+            label = pulsewatch_row_label(row) or row.get("label") or ""
+            series.append(
+                {
+                    "id": f"{row.get('row_id')}|{target}",
+                    "name": f"{label} {target}".strip(),
+                    "target": target,
+                    "core_id": row.get("core_id"),
+                    "core_label": row.get("core_label"),
+                    "color": preset_color or palette[len(series) % len(palette)],
+                    "points": points,
+                }
+            )
+    return series
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -904,8 +967,12 @@ async def dashboard(request: Request):
     pulse_ids = [row.get("row_id") for row in pulse_rows if row.get("row_id")]
     speedtests = get_latest_speedtest_map(pulse_ids)
     ping_history = get_ping_history_map(pulse_ids, limit_per_isp=30)
+    latency_since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat().replace("+00:00", "Z")
+    latency_history = get_ping_latency_trend_map(pulse_ids, latency_since)
     pulse_dashboard_rows = build_pulsewatch_dashboard_rows(isp_settings, isp_state, speedtests, ping_history)
     pulse_display_rows = [row for row in pulse_dashboard_rows if (row.get("source_ip") or "").strip()]
+    pulse_latency_series = build_pulsewatch_latency_series(pulse_display_rows, latency_history)
+    pulse_targets = sorted({item.get("target") for item in pulse_latency_series if item.get("target")})
     pulse_enabled = bool(isp_settings.get("pulsewatch", {}).get("enabled"))
     pulse_state = isp_state.get("pulsewatch", {})
     pulse_last_reconcile = format_ts_ph(pulse_state.get("last_mikrotik_reconcile_at"))
@@ -923,6 +990,8 @@ async def dashboard(request: Request):
                 "isp_state": isp_state,
                 "speedtests": speedtests,
                 "pulse_rows": pulse_display_rows,
+                "pulse_latency_series": pulse_latency_series,
+                "pulse_targets": pulse_targets,
                 "pulse_enabled": pulse_enabled,
                 "pulse_last_reconcile": pulse_last_reconcile,
                 "pulse_last_check": pulse_last_check,
@@ -932,6 +1001,64 @@ async def dashboard(request: Request):
             },
         ),
     )
+
+
+@app.get("/pulsewatch/latency-series")
+async def pulsewatch_latency_series(
+    core_id: str = "all",
+    target: str = "all",
+    hours: int = 24,
+    start: str | None = None,
+    end: str | None = None,
+):
+    def _parse_iso_utc(value):
+        if not value:
+            return None
+        raw = value.strip()
+        if raw.endswith("Z"):
+            raw = raw[:-1]
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt
+
+    start_dt = _parse_iso_utc(start)
+    end_dt = _parse_iso_utc(end)
+    if start_dt or end_dt:
+        if start_dt and end_dt:
+            window_start = start_dt
+            window_end = end_dt
+        elif start_dt:
+            window_start = start_dt
+            window_end = start_dt + timedelta(hours=max(int(hours), 1))
+        else:
+            window_end = end_dt
+            window_start = end_dt - timedelta(hours=max(int(hours), 1))
+    else:
+        window_end = datetime.now(timezone.utc)
+        window_start = window_end - timedelta(hours=max(int(hours), 1))
+    if window_start > window_end:
+        window_start, window_end = window_end, window_start
+    max_window = timedelta(days=370)
+    if window_end - window_start > max_window:
+        window_start = window_end - max_window
+
+    start_iso = window_start.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    end_iso = window_end.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+    isp_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    pulse_rows, _ = build_pulsewatch_rows(isp_settings)
+    pulse_display_rows = [row for row in pulse_rows if (row.get("address") or "").strip()]
+    if core_id and core_id != "all":
+        pulse_display_rows = [row for row in pulse_display_rows if row.get("core_id") == core_id]
+    pulse_ids = [row.get("row_id") for row in pulse_display_rows if row.get("row_id")]
+    latency_history = get_ping_latency_trend_window(pulse_ids, start_iso, end_iso)
+    series = build_pulsewatch_latency_series(pulse_display_rows, latency_history)
+    if target and target != "all":
+        series = [item for item in series if item.get("target") == target]
+    return JSONResponse({"series": series, "window": {"start": start_iso, "end": end_iso}})
 
 
 @app.get("/settings/export")
@@ -1223,6 +1350,7 @@ async def isp_settings_save(request: Request):
             "daemon_interval_seconds": parse_int(form, "daemon_interval_seconds", 15),
             "include_up_icmp": parse_bool(form, "include_up_icmp"),
             "up_icmp_lines": up_icmp_lines,
+            "down_reminder_hours": parse_int(form, "down_reminder_hours", 8),
         },
         "report": {
             "daily_time": form.get("daily_time", "07:00"),
@@ -1299,6 +1427,7 @@ async def pulsewatch_settings_save(request: Request):
                         "core_id": core_id,
                         "list": list_name,
                         "identifier": identifier,
+                        "color": (form.get(f"preset_{idx}_color") or "").strip(),
                         "address": address,
                         "latency_ms": parse_float(form, f"preset_{idx}_latency_ms", 120.0),
                         "loss_pct": parse_float(form, f"preset_{idx}_loss_pct", 20.0),
@@ -1314,7 +1443,8 @@ async def pulsewatch_settings_save(request: Request):
             "manage_address_lists": parse_bool(form, "pulsewatch_manage_address_lists"),
             "reconcile_interval_minutes": parse_int(form, "pulsewatch_reconcile_interval_minutes", 10),
             "store_raw_output": parse_bool(form, "pulsewatch_store_raw_output"),
-            "retention_days": parse_int(form, "pulsewatch_retention_days", 14),
+            "retention_days": parse_int(form, "pulsewatch_retention_days", 30),
+            "rollup_retention_days": parse_int(form, "pulsewatch_rollup_retention_days", 365),
             "list_presets": presets,
             "speedtest": {
                 "enabled": parse_bool(form, "speedtest_enabled"),
@@ -1328,13 +1458,17 @@ async def pulsewatch_settings_save(request: Request):
                 "timeout_seconds": parse_int(form, "pulsewatch_ping_timeout_seconds", 1),
                 "count": parse_int(form, "pulsewatch_ping_count", 5),
                 "max_parallel": parse_int(form, "pulsewatch_ping_max_parallel", 8),
+                "interval_seconds": parse_int(form, "pulsewatch_ping_interval_seconds", 1),
             },
             "isps": pulse_isps,
         }
     )
     telegram = dict(current_settings.get("telegram", ISP_PING_DEFAULTS.get("telegram", {})))
-    telegram["bot_token"] = form.get("telegram_bot_token", "")
-    telegram["alert_channel_id"] = form.get("telegram_alert_channel_id", "")
+    if "telegram_bot_token" in form:
+        telegram["bot_token"] = form.get("telegram_bot_token", "")
+    telegram["pulsewatch_bot_token"] = form.get("pulsewatch_bot_token", "")
+    if "telegram_alert_channel_id" in form:
+        telegram["alert_channel_id"] = form.get("telegram_alert_channel_id", "")
     settings = {
         "enabled": current_settings.get("enabled", False),
         "telegram": telegram,
@@ -1360,7 +1494,9 @@ async def pulsewatch_settings_save(request: Request):
     if prev_settings.get("pulsewatch", {}).get("store_raw_output") != settings.get("pulsewatch", {}).get("store_raw_output"):
         changes.append("Core: store raw output updated [ok]")
     if prev_settings.get("pulsewatch", {}).get("retention_days") != settings.get("pulsewatch", {}).get("retention_days"):
-        changes.append("Core: retention days updated [ok]")
+        changes.append("Core: raw retention days updated [ok]")
+    if prev_settings.get("pulsewatch", {}).get("rollup_retention_days") != settings.get("pulsewatch", {}).get("rollup_retention_days"):
+        changes.append("Core: rollup retention updated [ok]")
     if prev_settings.get("pulsewatch", {}).get("ping", {}).get("timeout_seconds") != settings.get("pulsewatch", {}).get("ping", {}).get("timeout_seconds"):
         changes.append("Ping: timeout seconds updated [ok]")
     if prev_settings.get("pulsewatch", {}).get("ping", {}).get("count") != settings.get("pulsewatch", {}).get("ping", {}).get("count"):

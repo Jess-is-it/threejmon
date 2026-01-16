@@ -1,7 +1,7 @@
 import json
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 
 DB_PATH = os.environ.get("THREEJ_DB_PATH", "/data/threejnotif.db")
 
@@ -54,6 +54,24 @@ def init_db():
                 avg_ms REAL,
                 max_ms REAL,
                 raw_output TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ping_rollups (
+                bucket_ts TEXT NOT NULL,
+                isp_id TEXT NOT NULL,
+                target TEXT NOT NULL,
+                sample_count INTEGER NOT NULL,
+                avg_sum REAL NOT NULL,
+                avg_count INTEGER NOT NULL,
+                loss_sum REAL NOT NULL,
+                loss_count INTEGER NOT NULL,
+                min_ms REAL,
+                max_ms REAL,
+                max_avg_ms REAL,
+                PRIMARY KEY (bucket_ts, isp_id, target)
             )
             """
         )
@@ -174,6 +192,19 @@ def utc_now_iso():
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
 
+def _bucket_ts_iso(timestamp, bucket_seconds=60):
+    raw = str(timestamp).strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1]
+    dt = datetime.fromisoformat(raw)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    bucket = int(dt.timestamp() // max(int(bucket_seconds), 1)) * max(int(bucket_seconds), 1)
+    return datetime.fromtimestamp(bucket, tz=timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
 def fetch_all_settings():
     conn = get_conn()
     try:
@@ -194,6 +225,7 @@ def fetch_all_state():
 
 def insert_ping_result(isp_id, target, loss, min_ms, avg_ms, max_ms, raw_output=None, timestamp=None):
     stamp = timestamp or utc_now_iso()
+    bucket_ts = _bucket_ts_iso(stamp, bucket_seconds=60)
     conn = get_conn()
     try:
         with conn:
@@ -203,6 +235,51 @@ def insert_ping_result(isp_id, target, loss, min_ms, avg_ms, max_ms, raw_output=
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (stamp, isp_id, target, loss, min_ms, avg_ms, max_ms, raw_output),
+            )
+            avg_sum = float(avg_ms) if avg_ms is not None else 0.0
+            avg_count = 1 if avg_ms is not None else 0
+            loss_sum = float(loss) if loss is not None else 0.0
+            loss_count = 1 if loss is not None else 0
+            conn.execute(
+                """
+                INSERT INTO ping_rollups (
+                    bucket_ts, isp_id, target, sample_count, avg_sum, avg_count, loss_sum, loss_count, min_ms, max_ms, max_avg_ms
+                )
+                VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(bucket_ts, isp_id, target) DO UPDATE SET
+                    sample_count = sample_count + 1,
+                    avg_sum = avg_sum + excluded.avg_sum,
+                    avg_count = avg_count + excluded.avg_count,
+                    loss_sum = loss_sum + excluded.loss_sum,
+                    loss_count = loss_count + excluded.loss_count,
+                    min_ms = CASE
+                        WHEN min_ms IS NULL THEN excluded.min_ms
+                        WHEN excluded.min_ms IS NULL THEN min_ms
+                        ELSE MIN(min_ms, excluded.min_ms)
+                    END,
+                    max_ms = CASE
+                        WHEN max_ms IS NULL THEN excluded.max_ms
+                        WHEN excluded.max_ms IS NULL THEN max_ms
+                        ELSE MAX(max_ms, excluded.max_ms)
+                    END,
+                    max_avg_ms = CASE
+                        WHEN max_avg_ms IS NULL THEN excluded.max_avg_ms
+                        WHEN excluded.max_avg_ms IS NULL THEN max_avg_ms
+                        ELSE MAX(max_avg_ms, excluded.max_avg_ms)
+                    END
+                """,
+                (
+                    bucket_ts,
+                    isp_id,
+                    target,
+                    avg_sum,
+                    avg_count,
+                    loss_sum,
+                    loss_count,
+                    min_ms,
+                    max_ms,
+                    avg_ms,
+                ),
             )
     finally:
         conn.close()
@@ -314,7 +391,7 @@ def get_ping_history_map(isp_ids, limit_per_isp=30):
         for isp_id in isp_ids:
             rows = conn.execute(
                 """
-                SELECT timestamp, loss, avg_ms
+                SELECT timestamp, target, loss, avg_ms
                 FROM ping_results
                 WHERE isp_id = ?
                 ORDER BY timestamp DESC
@@ -328,12 +405,140 @@ def get_ping_history_map(isp_ids, limit_per_isp=30):
         conn.close()
 
 
-def delete_pulsewatch_older_than(cutoff_iso):
+def get_ping_latency_trend_map(isp_ids, since_iso):
+    if not isp_ids:
+        return {}
+    conn = get_conn()
+    try:
+        history = {}
+        for isp_id in isp_ids:
+            rows = conn.execute(
+                """
+                SELECT
+                  target,
+                  bucket_ts,
+                  CASE WHEN avg_count > 0 THEN (avg_sum / avg_count) ELSE NULL END AS avg_ms,
+                  CASE WHEN loss_count > 0 THEN (loss_sum / loss_count) ELSE NULL END AS loss_avg,
+                  min_ms,
+                  max_ms,
+                  max_avg_ms
+                FROM ping_rollups
+                WHERE isp_id = ? AND bucket_ts >= ? AND avg_count > 0
+                ORDER BY bucket_ts ASC
+                """,
+                (isp_id, since_iso),
+            ).fetchall()
+            history[isp_id] = [dict(row) for row in rows]
+        return history
+    finally:
+        conn.close()
+
+
+def get_ping_latency_trend_window(isp_ids, start_iso, end_iso):
+    if not isp_ids:
+        return {}
+    conn = get_conn()
+    try:
+        history = {}
+        for isp_id in isp_ids:
+            rows = conn.execute(
+                """
+                SELECT
+                  target,
+                  bucket_ts,
+                  CASE WHEN avg_count > 0 THEN (avg_sum / avg_count) ELSE NULL END AS avg_ms,
+                  CASE WHEN loss_count > 0 THEN (loss_sum / loss_count) ELSE NULL END AS loss_avg,
+                  min_ms,
+                  max_ms,
+                  max_avg_ms
+                FROM ping_rollups
+                WHERE isp_id = ? AND bucket_ts >= ? AND bucket_ts <= ? AND avg_count > 0
+                ORDER BY bucket_ts ASC
+                """,
+                (isp_id, start_iso, end_iso),
+            ).fetchall()
+            history[isp_id] = [dict(row) for row in rows]
+        return history
+    finally:
+        conn.close()
+
+
+def delete_pulsewatch_raw_older_than(cutoff_iso):
     conn = get_conn()
     try:
         with conn:
             conn.execute("DELETE FROM ping_results WHERE timestamp < ?", (cutoff_iso,))
             conn.execute("DELETE FROM speedtest_results WHERE timestamp < ?", (cutoff_iso,))
             conn.execute("DELETE FROM alerts_log WHERE timestamp < ?", (cutoff_iso,))
+    finally:
+        conn.close()
+
+
+def delete_pulsewatch_rollups_older_than(cutoff_iso):
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM ping_rollups WHERE bucket_ts < ?", (cutoff_iso,))
+    finally:
+        conn.close()
+
+
+def backfill_ping_rollups(since_iso, until_iso=None):
+    conn = get_conn()
+    try:
+        with conn:
+            if until_iso:
+                conn.execute(
+                    "DELETE FROM ping_rollups WHERE bucket_ts >= ? AND bucket_ts <= ?",
+                    (since_iso, until_iso),
+                )
+            else:
+                conn.execute("DELETE FROM ping_rollups WHERE bucket_ts >= ?", (since_iso,))
+
+            where_clause = "timestamp >= ?"
+            params = [since_iso]
+            if until_iso:
+                where_clause += " AND timestamp <= ?"
+                params.append(until_iso)
+
+            conn.execute(
+                f"""
+                INSERT INTO ping_rollups (
+                    bucket_ts, isp_id, target, sample_count, avg_sum, avg_count, loss_sum, loss_count, min_ms, max_ms, max_avg_ms
+                )
+                SELECT
+                    bucket_ts,
+                    isp_id,
+                    target,
+                    COUNT(*) AS sample_count,
+                    COALESCE(SUM(avg_ms), 0) AS avg_sum,
+                    SUM(CASE WHEN avg_ms IS NOT NULL THEN 1 ELSE 0 END) AS avg_count,
+                    COALESCE(SUM(loss), 0) AS loss_sum,
+                    SUM(CASE WHEN loss IS NOT NULL THEN 1 ELSE 0 END) AS loss_count,
+                    MIN(min_ms) AS min_ms,
+                    MAX(max_ms) AS max_ms,
+                    MAX(avg_ms) AS max_avg_ms
+                FROM (
+                    SELECT
+                        strftime(
+                            '%Y-%m-%dT%H:%M:%SZ',
+                            datetime(
+                                CAST(strftime('%s', replace(replace(timestamp,'T',' '),'Z','')) AS integer) / 60 * 60,
+                                'unixepoch'
+                            )
+                        ) AS bucket_ts,
+                        isp_id,
+                        target,
+                        loss,
+                        min_ms,
+                        avg_ms,
+                        max_ms
+                    FROM ping_results
+                    WHERE {where_clause}
+                ) t
+                GROUP BY bucket_ts, isp_id, target
+                """,
+                params,
+            )
     finally:
         conn.close()

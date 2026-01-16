@@ -90,6 +90,7 @@ ISP_PING_DEFAULTS = {
     "enabled": False,
     "telegram": {
         "bot_token": "",
+        "pulsewatch_bot_token": "",
         "command_bot_token": "",
         "chat_id": "",
         "command_chat_id": "",
@@ -104,6 +105,7 @@ ISP_PING_DEFAULTS = {
         "daemon_interval_seconds": 15,
         "include_up_icmp": False,
         "up_icmp_lines": 5,
+        "down_reminder_hours": 8,
     },
     "report": {
         "daily_time": "07:00",
@@ -115,7 +117,8 @@ ISP_PING_DEFAULTS = {
         "manage_address_lists": False,
         "reconcile_interval_minutes": 10,
         "store_raw_output": False,
-        "retention_days": 14,
+        "retention_days": 30,
+        "rollup_retention_days": 365,
         "list_presets": [],
         "mikrotik": {
             "cores": [],
@@ -132,6 +135,7 @@ ISP_PING_DEFAULTS = {
             "timeout_seconds": 1,
             "count": 5,
             "max_parallel": 8,
+            "interval_seconds": 1,
         },
         "isps": [
             {

@@ -28,6 +28,7 @@ class JobsManager:
             threading.Thread(target=self._optical_loop, daemon=True),
             threading.Thread(target=self._rto_loop, daemon=True),
             threading.Thread(target=self._isp_loop, daemon=True),
+            threading.Thread(target=self._pulsewatch_loop, daemon=True),
             threading.Thread(target=self._telegram_loop, daemon=True),
         ]
         for thread in self.threads:
@@ -100,7 +101,20 @@ class JobsManager:
                     "last_report_timezone": None,
                 })
                 state = isp_ping_notifier.run_check(cfg, state)
-                save_state("isp_ping_state", state)
+                latest = get_state("isp_ping_state", {})
+                for key in (
+                    "last_status",
+                    "last_report_date",
+                    "last_report_time",
+                    "last_report_timezone",
+                    "down_since",
+                    "down_reminder_at",
+                    "last_notified_status",
+                    "last_notified_at",
+                ):
+                    if key in state:
+                        latest[key] = state[key]
+                save_state("isp_ping_state", latest)
                 update_job_status("isp_ping", last_success_at=utc_now_iso(), last_error="", last_error_at="")
             except TelegramError as exc:
                 update_job_status("isp_ping", last_error=str(exc), last_error_at=utc_now_iso())
@@ -108,6 +122,39 @@ class JobsManager:
                 update_job_status("isp_ping", last_error=str(exc), last_error_at=utc_now_iso())
 
             interval_seconds = int(cfg["general"].get("daemon_interval_seconds", 15))
+            time_module.sleep(max(interval_seconds, 1))
+
+    def _pulsewatch_loop(self):
+        while not self.stop_event.is_set():
+            cfg = get_settings("isp_ping", ISP_PING_DEFAULTS)
+            pulse_cfg = cfg.get("pulsewatch", {})
+            if not pulse_cfg.get("enabled"):
+                time_module.sleep(5)
+                continue
+
+            try:
+                update_job_status("pulsewatch", last_run_at=utc_now_iso())
+                state = get_state("isp_ping_state", {
+                    "last_status": {},
+                    "last_report_date": None,
+                    "last_report_time": None,
+                    "last_report_timezone": None,
+                    "pulsewatch": {},
+                })
+                state, _ = isp_ping_notifier.run_pulsewatch_check(cfg, state)
+                latest = get_state("isp_ping_state", {})
+                if "pulsewatch" in state:
+                    latest["pulsewatch"] = state["pulsewatch"]
+                if "last_pulsewatch_prune_at" in state:
+                    latest["last_pulsewatch_prune_at"] = state["last_pulsewatch_prune_at"]
+                save_state("isp_ping_state", latest)
+                update_job_status("pulsewatch", last_success_at=utc_now_iso(), last_error="", last_error_at="")
+            except TelegramError as exc:
+                update_job_status("pulsewatch", last_error=str(exc), last_error_at=utc_now_iso())
+            except Exception as exc:
+                update_job_status("pulsewatch", last_error=str(exc), last_error_at=utc_now_iso())
+
+            interval_seconds = int(pulse_cfg.get("ping", {}).get("interval_seconds", 1))
             time_module.sleep(max(interval_seconds, 1))
 
     def _telegram_loop(self):

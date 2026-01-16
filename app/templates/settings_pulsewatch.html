@@ -86,6 +86,7 @@
                 <th data-sort="text" title="Which MikroTik router this preset belongs to." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">MikroTik</th>
                 <th data-sort="text" title="Address-list name pulled from the MikroTik firewall." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">List</th>
                 <th data-sort="text" title="Friendly identifier for this ISP/list." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Identifier</th>
+                <th data-sort="text" title="Custom color for this ISP line on the dashboard." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Color</th>
                 <th data-sort="text" title="Source IP to bind for this list (used by ping/speedtest)." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">IP Address</th>
                 <th data-sort="number" title="Latency threshold (ms) before a breach is counted." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Latency</th>
                 <th data-sort="number" title="Packet loss threshold (%) before a breach is counted." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Loss</th>
@@ -108,6 +109,9 @@
                   </td>
                   <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
                     <input type="text" name="preset_{{ loop.index0 }}_identifier" value="{{ row.identifier }}" />
+                  </td>
+                  <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
+                    <input type="color" name="preset_{{ loop.index0 }}_color" value="{{ row.color or '#1f77b4' }}" title="Pick chart color" />
                   </td>
                   <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
                     <input type="text" name="preset_{{ loop.index0 }}_address" value="{{ row.address or row.recommended_address }}" {% if row.recommended_address %}data-recommended="1"{% endif %} />
@@ -150,7 +154,7 @@
           <div class="card-body">
             <h4 class="mb-3">Pulsewatch Core Settings</h4>
             <div class="mb-3">
-              <label class="form-label">Enable ISP Pulsewatch</label>
+              <label class="form-label">Enable ISP Pulsewatch <span class="info" data-tip="Turns on continuous Pulsewatch ping monitoring.">i</span></label>
               <label class="form-check form-switch">
                 <input class="form-check-input" type="checkbox" name="pulsewatch_enabled" id="pulsewatch_enabled" {% if settings.pulsewatch.enabled %}checked{% endif %} />
                 <span class="form-check-label">Active</span>
@@ -177,8 +181,12 @@
                 </label>
               </div>
               <div>
-                <label>Retention Days <span class="info" data-tip="Auto-delete Pulsewatch results older than this many days.">i</span></label>
+                <label>Raw Data Retention Days <span class="info" data-tip="Auto-delete raw Pulsewatch results older than this many days.">i</span></label>
                 <input type="number" name="pulsewatch_retention_days" value="{{ settings.pulsewatch.retention_days }}" />
+              </div>
+              <div>
+                <label>Rollup Retention Days <span class="info" data-tip="Keeps aggregated latency rollups for long-term charts (spike-aware).">i</span></label>
+                <input type="number" name="pulsewatch_rollup_retention_days" value="{{ settings.pulsewatch.rollup_retention_days }}" />
               </div>
             </div>
             <div class="alert alert-info mt-3">
@@ -195,15 +203,19 @@
             <h4 class="mb-3">Ping</h4>
             <div class="form-grid">
               <div>
-                <label>Ping Timeout (seconds)</label>
+                <label>Ping Timeout (seconds) <span class="info" data-tip="Timeout per ping attempt for Pulsewatch checks.">i</span></label>
                 <input type="number" name="pulsewatch_ping_timeout_seconds" value="{{ settings.pulsewatch.ping.timeout_seconds }}" />
               </div>
               <div>
-                <label>Ping Count</label>
+                <label>Ping Count <span class="info" data-tip="How many ICMP packets to send per target per check.">i</span></label>
                 <input type="number" name="pulsewatch_ping_count" value="{{ settings.pulsewatch.ping.count }}" />
               </div>
               <div>
-                <label>Max Parallel Pings</label>
+                <label>Ping Interval (seconds) <span class="info" data-tip="How often Pulsewatch runs the ping cycle while enabled.">i</span></label>
+                <input type="number" name="pulsewatch_ping_interval_seconds" value="{{ settings.pulsewatch.ping.interval_seconds }}" />
+              </div>
+              <div>
+                <label>Max Parallel Pings <span class="info" data-tip="Limit concurrent ping tasks to reduce CPU load.">i</span></label>
                 <input type="number" name="pulsewatch_ping_max_parallel" value="{{ settings.pulsewatch.ping.max_parallel }}" />
               </div>
             </div>
@@ -215,33 +227,33 @@
             <h4 class="mb-3">Speedtest</h4>
             <div class="form-grid">
               <div>
-                <label>Enable Speedtest</label>
+                <label>Enable Speedtest <span class="info" data-tip="Allow manual or scheduled speedtests per ISP.">i</span></label>
                 <label class="form-check form-switch">
                   <input class="form-check-input" type="checkbox" name="speedtest_enabled" {% if settings.pulsewatch.speedtest.enabled %}checked{% endif %} />
                   <span class="form-check-label">Enabled</span>
                 </label>
               </div>
               <div>
-                <label>Min Interval (minutes)</label>
+                <label>Min Interval (minutes) <span class="info" data-tip="Minimum minutes between speedtests per ISP.">i</span></label>
                 <input type="number" name="speedtest_min_interval_minutes" value="{{ settings.pulsewatch.speedtest.min_interval_minutes }}" />
               </div>
               <div>
-                <label>Command</label>
+                <label>Command <span class="info" data-tip="Speedtest CLI command (e.g., speedtest).">i</span></label>
                 <input type="text" name="speedtest_command" value="{{ settings.pulsewatch.speedtest.command }}" />
               </div>
               <div>
-                <label>Args</label>
+                <label>Args <span class="info" data-tip="Arguments passed to the speedtest CLI.">i</span></label>
                 <input type="text" name="speedtest_args" value="{{ settings.pulsewatch.speedtest.args }}" />
               </div>
               <div>
-                <label>Use network namespaces</label>
+                <label>Use network namespaces <span class="info" data-tip="Run speedtests inside netns for interface-based routing.">i</span></label>
                 <label class="form-check form-switch">
                   <input class="form-check-input" type="checkbox" name="speedtest_use_netns" {% if settings.pulsewatch.speedtest.use_netns %}checked{% endif %} />
                   <span class="form-check-label">Enabled</span>
                 </label>
               </div>
               <div>
-                <label>Netns Prefix</label>
+                <label>Netns Prefix <span class="info" data-tip="Namespace prefix (e.g., isp) used to build per-ISP netns names.">i</span></label>
                 <input type="text" name="speedtest_netns_prefix" value="{{ settings.pulsewatch.speedtest.netns_prefix }}" />
               </div>
             </div>
@@ -259,8 +271,8 @@
             <h4 class="mb-3">Telegram</h4>
             <div class="form-grid">
               <div>
-                <label>Bot Token <span class="info" data-tip="Telegram bot token from BotFather.">i</span></label>
-                <input type="text" name="telegram_bot_token" value="{{ settings.telegram.bot_token }}" />
+                <label>Pulsewatch Bot Token <span class="info" data-tip="Dedicated bot token for Pulsewatch alerts and actions.">i</span></label>
+                <input type="text" name="pulsewatch_bot_token" value="{{ settings.telegram.pulsewatch_bot_token }}" />
               </div>
               <div>
                 <label>Alert Channel ID <span class="info" data-tip="Override channel ID for Pulsewatch alerts.">i</span></label>
