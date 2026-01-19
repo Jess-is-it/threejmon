@@ -54,25 +54,6 @@
     <div class="card">
       <div class="card-body">
         <div class="d-flex align-items-center">
-          <span class="avatar bg-cyan-lt me-3"><i class="ti ti-world"></i></span>
-          <div>
-            <div class="fw-semibold">ISP Ping Monitor</div>
-            {% set status = job_status.get('isp_ping') %}
-            <div class="text-muted">{{ 'attention' if status and status.last_error else 'ok' }}</div>
-          </div>
-        </div>
-        <div class="mt-3 text-muted small">
-          <div>Last run: {{ status.last_run_at_ph if status else 'never' }}</div>
-          <div>Last success: {{ status.last_success_at_ph if status else 'never' }}</div>
-          <div>Last error: {{ status.last_error if status and status.last_error else 'none' }}</div>
-        </div>
-      </div>
-    </div>
-  </div>
-  <div class="col-md-6 col-xl-3">
-    <div class="card">
-      <div class="card-body">
-        <div class="d-flex align-items-center">
           <span class="avatar bg-green-lt me-3"><i class="ti ti-activity"></i></span>
           <div>
             <div class="fw-semibold">ISP Pulsewatch</div>

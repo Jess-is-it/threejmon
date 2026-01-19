@@ -30,14 +30,14 @@ from .db import (
     clear_pulsewatch_data,
     utc_now_iso,
 )
-from .forms import parse_bool, parse_float, parse_int, parse_int_list, parse_lines, parse_targets
+from .forms import parse_bool, parse_float, parse_int, parse_int_list, parse_lines
 from .jobs import JobsManager
 from .notifiers import isp_ping as isp_ping_notifier
 from .mikrotik import RouterOSClient
 from .notifiers import optical as optical_notifier
 from .notifiers import rto as rto_notifier
 from .notifiers.telegram import TelegramError, send_telegram
-from .settings_defaults import ISP_PING_DEFAULTS, OPTICAL_DEFAULTS, RTO_DEFAULTS, WAN_PING_DEFAULTS
+from .settings_defaults import ISP_PING_DEFAULTS, OPTICAL_DEFAULTS, RTO_DEFAULTS, WAN_PING_DEFAULTS, WAN_MESSAGE_DEFAULTS
 from .settings_store import export_settings, get_settings, get_state, import_settings, save_settings, save_state
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -695,8 +695,11 @@ def build_wan_rows(pulsewatch_settings, wan_settings):
         core_id = preset.get("core_id")
         list_name = preset.get("list")
         identifier = (preset.get("identifier") or "").strip()
-        if core_id and list_name and identifier:
-            preset_map[(core_id, list_name)] = identifier
+        if core_id and list_name:
+            preset_map[(core_id, list_name)] = {
+                "identifier": identifier,
+                "address": (preset.get("address") or "").strip(),
+            }
     saved_wans = {
         (item.get("core_id"), item.get("list_name")): item
         for item in wan_settings.get("wans", [])
@@ -721,7 +724,8 @@ def build_wan_rows(pulsewatch_settings, wan_settings):
             mode = (saved.get("mode") or "routed").strip().lower()
             if mode not in ("routed", "bridged"):
                 mode = "routed"
-            identifier = (preset_map.get((core_id, list_name)) or "").strip()
+            preset_data = preset_map.get((core_id, list_name), {}) or {}
+            identifier = (preset_data.get("identifier") or "").strip()
             rows.append(
                 {
                     "wan_id": wan_row_id(core_id, list_name),
@@ -733,6 +737,7 @@ def build_wan_rows(pulsewatch_settings, wan_settings):
                     "mode": mode,
                     "local_ip": saved.get("local_ip", ""),
                     "gateway_ip": saved.get("gateway_ip", ""),
+                    "preset_address": preset_data.get("address", ""),
                     "pppoe_router_id": saved.get("pppoe_router_id", ""),
                     "enabled": bool(saved.get("enabled", True)),
                 }
@@ -1146,9 +1151,8 @@ def build_wan_latency_series(rows, state, hours=24, window_start=None, window_en
         if not wan_id:
             continue
         mode = (row.get("mode") or "routed").lower()
-        if mode == "routed":
-            if not (row.get("local_ip") and row.get("gateway_ip")):
-                continue
+        if not row.get("local_ip"):
+            continue
         if mode == "bridged":
             if not row.get("pppoe_router_id"):
                 continue
@@ -1452,9 +1456,8 @@ async def wan_status():
     for row in wan_rows:
         wan_id = row.get("wan_id")
         mode = (row.get("mode") or "routed").lower()
-        if mode == "routed":
-            if not (row.get("local_ip") and row.get("gateway_ip")):
-                continue
+        if not row.get("local_ip"):
+            continue
         if mode == "bridged":
             if not row.get("pppoe_router_id"):
                 continue
@@ -1797,52 +1800,6 @@ async def rto_settings_run(request: Request):
     )
 
 
-@app.get("/settings/isp", response_class=HTMLResponse)
-async def isp_settings(request: Request):
-    settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
-    return templates.TemplateResponse(
-        "settings_isp.html",
-        make_context(request, {"settings": settings, "message": ""}),
-    )
-
-
-@app.post("/settings/isp", response_class=HTMLResponse)
-async def isp_settings_save(request: Request):
-    form = await request.form()
-    targets = parse_targets(form.get("targets", ""))
-    up_icmp_lines = parse_int(form, "up_icmp_lines", 5)
-    if up_icmp_lines < 0:
-        up_icmp_lines = 0
-    if up_icmp_lines > 20:
-        up_icmp_lines = 20
-    current_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
-    telegram = dict(current_settings.get("telegram", ISP_PING_DEFAULTS.get("telegram", {})))
-    telegram["bot_token"] = form.get("telegram_bot_token", "")
-    telegram["chat_id"] = form.get("telegram_chat_id", "")
-    settings = {
-        "enabled": parse_bool(form, "enabled"),
-        "telegram": telegram,
-        "general": {
-            "ping_timeout_seconds": parse_int(form, "ping_timeout_seconds", 1),
-            "ping_count": parse_int(form, "ping_count", 5),
-            "max_parallel_pings": parse_int(form, "max_parallel_pings", 8),
-            "daemon_interval_seconds": parse_int(form, "daemon_interval_seconds", 15),
-            "include_up_icmp": parse_bool(form, "include_up_icmp"),
-            "up_icmp_lines": up_icmp_lines,
-            "down_reminder_hours": parse_int(form, "down_reminder_hours", 8),
-        },
-        "report": {
-            "daily_time": form.get("daily_time", "07:00"),
-            "timezone": form.get("timezone", "Asia/Manila"),
-        },
-        "targets": targets,
-        "pulsewatch": current_settings.get("pulsewatch", ISP_PING_DEFAULTS.get("pulsewatch", {})),
-    }
-    save_settings("isp_ping", settings)
-    return templates.TemplateResponse(
-        "settings_isp.html",
-        make_context(request, {"settings": settings, "message": "Saved."}),
-    )
 
 
 def render_wan_ping_response(request, pulse_settings, wan_settings, message, active_tab):
@@ -1863,6 +1820,7 @@ def render_wan_ping_response(request, pulse_settings, wan_settings, message, act
                 "wan_latency_series": wan_latency_series,
                 "wan_targets": wan_targets,
                 "wan_refresh_seconds": wan_refresh_seconds,
+                "wan_message_defaults": WAN_MESSAGE_DEFAULTS,
                 "message": message,
                 "active_tab": active_tab,
             },
@@ -1892,15 +1850,19 @@ async def wan_settings_save_wans(request: Request):
         mode = (form.get(f"wan_{idx}_mode") or "routed").strip().lower()
         if mode not in ("routed", "bridged"):
             mode = "routed"
+        local_ip = (form.get(f"wan_{idx}_local_ip") or "").strip()
+        enabled = parse_bool(form, f"wan_{idx}_enabled")
+        if not local_ip:
+            enabled = False
         wans.append(
             {
                 "id": wan_row_id(core_id, list_name),
                 "core_id": core_id,
                 "list_name": list_name,
-                "enabled": parse_bool(form, f"wan_{idx}_enabled"),
+                "enabled": enabled,
                 "mode": mode,
-                "local_ip": (form.get(f"wan_{idx}_local_ip") or "").strip(),
-                "gateway_ip": (form.get(f"wan_{idx}_gateway_ip") or "").strip(),
+                "local_ip": local_ip,
+                "gateway_ip": "",
                 "pppoe_router_id": (form.get(f"wan_{idx}_pppoe_router_id") or "").strip(),
             }
         )
@@ -2346,23 +2308,6 @@ async def pulsewatch_format_db(request: Request):
 
 
 
-@app.post("/settings/isp/test", response_class=HTMLResponse)
-async def isp_settings_test(request: Request):
-    settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
-    message = ""
-    try:
-        token = settings["telegram"].get("bot_token", "")
-        chat_id = settings["telegram"].get("chat_id", "")
-        send_telegram(token, chat_id, "ThreeJ ISP Ping test message.")
-        message = "Test message sent."
-    except TelegramError as exc:
-        message = str(exc)
-    return templates.TemplateResponse(
-        "settings_isp.html",
-        make_context(request, {"settings": settings, "message": message}),
-    )
-
-
 @app.post("/settings/pulsewatch/test", response_class=HTMLResponse)
 async def pulsewatch_settings_test(request: Request):
     settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
@@ -2375,33 +2320,6 @@ async def pulsewatch_settings_test(request: Request):
     except TelegramError as exc:
         message = str(exc)
     return render_pulsewatch_response(request, settings, message)
-
-
-@app.post("/settings/isp/run", response_class=HTMLResponse)
-async def isp_settings_run(request: Request):
-    settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
-    message = ""
-    try:
-        state = get_state(
-            "isp_ping_state",
-            {
-                "last_status": {},
-                "last_report_date": None,
-                "last_report_time": None,
-                "last_report_timezone": None,
-            },
-        )
-        state = isp_ping_notifier.run_check(settings, state, force_report=True)
-        save_state("isp_ping_state", state)
-        message = "Actual ISP ping check sent."
-    except TelegramError as exc:
-        message = str(exc)
-    except Exception as exc:
-        message = f"Run failed: {exc}"
-    return templates.TemplateResponse(
-        "settings_isp.html",
-        make_context(request, {"settings": settings, "message": message}),
-    )
 
 
 @app.post("/settings/isp/mikrotik/test", response_class=HTMLResponse)

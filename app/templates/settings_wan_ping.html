@@ -84,15 +84,17 @@
                 </thead>
                 <tbody id="wan-status-body">
                   {% for row in wan_rows %}
-                    {% set state = wan_state.get('wans', {}).get(row.wan_id, {}) %}
-                    <tr>
-                      <td>{{ row.core_label }} - {{ row.identifier or row.list_name }}</td>
-                      <td>{{ state.status or "n/a" }}</td>
-                      <td>{{ state.target or "n/a" }}</td>
-                      <td>{{ state.last_check or "n/a" }}</td>
-                      <td>{{ state.last_rtt_ms or "n/a" }}</td>
-                      <td>{{ state.last_error or "" }}</td>
-                    </tr>
+                    {% if row.local_ip and (row.mode != 'bridged' or row.pppoe_router_id) %}
+                      {% set state = wan_state.get('wans', {}).get(row.wan_id, {}) %}
+                      <tr>
+                        <td>{{ row.core_label }} - {{ row.identifier or row.list_name }}</td>
+                        <td>{{ state.status or "n/a" }}</td>
+                        <td>{{ state.target or "n/a" }}</td>
+                        <td>{{ state.last_check or "n/a" }}</td>
+                        <td>{{ state.last_rtt_ms or "n/a" }}</td>
+                        <td>{{ state.last_error or "" }}</td>
+                      </tr>
+                    {% endif %}
                   {% endfor %}
                 </tbody>
               </table>
@@ -130,7 +132,7 @@
                   <span class="me-2"><i class="ti ti-info-circle"></i></span>
                   <div>
                     WANs are prepopulated from each MikroTik core using TO-ISP lists. Add the missing fields below.
-                    <div class="mt-2">Note: In Pulsewatch Presets, ensure each TO-ISP list has at least one ping target. (That target is used when no gateway is provided.)</div>
+                    <div class="mt-2">Note: WAN checks use the Local IP as the target. If blank, the first target from Pulsewatch Presets is used.</div>
                   </div>
                 </div>
               </div>
@@ -143,8 +145,7 @@
                       <th title="Address-list name pulled from MikroTik.">TO-ISP List</th>
                       <th title="Auto from Pulsewatch identifier; update it in Pulsewatch Presets.">Identifier</th>
                       <th title="Routed = ping via core router; Bridged = ping via PPPoE router.">Mode</th>
-                      <th title="Source IP to bind for routed ping (required for Routed).">Local IP</th>
-                      <th title="ISP gateway or target IP for routed checks (required for Routed).">Gateway IP</th>
+                      <th title="Source IP to bind for server ping checks.">Local IP</th>
                       <th title="Select PPPoE router for Bridged mode.">PPPoE Router</th>
                       <th title="Disable to skip checks for this WAN.">Enabled</th>
                     </tr>
@@ -177,9 +178,6 @@
                           <input type="text" class="form-control wan-local-ip" name="wan_{{ loop.index0 }}_local_ip" value="{{ row.local_ip }}" data-row="{{ loop.index0 }}" />
                         </td>
                         <td>
-                          <input type="text" class="form-control wan-gateway-ip" name="wan_{{ loop.index0 }}_gateway_ip" value="{{ row.gateway_ip }}" data-row="{{ loop.index0 }}" />
-                        </td>
-                        <td>
                           <select name="wan_{{ loop.index0 }}_pppoe_router_id" class="form-select wan-router" data-row="{{ loop.index0 }}">
                             <option value="">Select router</option>
                             {% for router in settings.pppoe_routers %}
@@ -189,7 +187,7 @@
                         </td>
                         <td>
                           <label class="form-check form-switch">
-                            <input class="form-check-input" type="checkbox" name="wan_{{ loop.index0 }}_enabled" {% if row.enabled %}checked{% endif %} />
+                            <input class="form-check-input wan-enabled" type="checkbox" name="wan_{{ loop.index0 }}_enabled" data-row="{{ loop.index0 }}" {% if row.enabled %}checked{% endif %} {% if not row.local_ip %}disabled{% endif %} />
                           </label>
                         </td>
                       </tr>
@@ -339,7 +337,12 @@
         <form method="post" action="/settings/wan/messages">
           <div class="card mb-3">
             <div class="card-body">
-              <h4 class="mb-3">Per-ISP Messages</h4>
+              <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+                <h4 class="mb-0">Per-ISP Messages</h4>
+                <button type="button" class="stamp-note btn btn-sm btn-azure-lt" data-bs-toggle="modal" data-bs-target="#wan-stamps-modal">
+                  <i class="ti ti-notes"></i>Stamps
+                </button>
+              </div>
               <div class="alert alert-info">
                 <div class="d-flex align-items-start">
                   <span class="me-2"><i class="ti ti-info-circle"></i></span>
@@ -360,15 +363,15 @@
                   <div class="row g-3">
                     <div class="col-md-4">
                       <label class="form-label">Down Message <span class="info" data-tip="Sent when the WAN goes DOWN. Supports {label}.">i</span></label>
-                      <textarea class="form-control" name="message_{{ loop.index0 }}_down_msg" rows="3">{{ msg.down_msg or "" }}</textarea>
+                      <textarea class="form-control" name="message_{{ loop.index0 }}_down_msg" rows="3">{{ msg.down_msg or wan_message_defaults.down_msg }}</textarea>
                     </div>
                     <div class="col-md-4">
                       <label class="form-label">Up Message <span class="info" data-tip="Sent when the WAN comes UP again. Supports {label}.">i</span></label>
-                      <textarea class="form-control" name="message_{{ loop.index0 }}_up_msg" rows="3">{{ msg.up_msg or "" }}</textarea>
+                      <textarea class="form-control" name="message_{{ loop.index0 }}_up_msg" rows="3">{{ msg.up_msg or wan_message_defaults.up_msg }}</textarea>
                     </div>
                     <div class="col-md-4">
                       <label class="form-label">Still Down Message <span class="info" data-tip="Sent on a repeating interval while still down. Supports {label}.">i</span></label>
-                      <textarea class="form-control" name="message_{{ loop.index0 }}_still_down_msg" rows="3">{{ msg.still_down_msg or "" }}</textarea>
+                      <textarea class="form-control" name="message_{{ loop.index0 }}_still_down_msg" rows="3">{{ msg.still_down_msg or wan_message_defaults.still_down_msg }}</textarea>
                     </div>
                     <div class="col-md-4">
                       <label class="form-label">Send Down Message Once <span class="info" data-tip="If disabled, DOWN messages repeat every N minutes.">i</span></label>
@@ -404,25 +407,92 @@
   </div>
 </div>
 
+<div class="modal modal-blur fade" id="wan-stamps-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">WAN Message Stamps</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="text-muted mb-3">Use these placeholders in your WAN Telegram messages.</div>
+        <div class="row g-3">
+          <div class="col-md-6">
+            <div class="fw-semibold mb-1">Identity</div>
+            {% raw %}
+            <div class="small text-muted">{{label}} - WAN name</div>
+            <div class="small text-muted">{{target}} - ping target</div>
+            <div class="small text-muted">{{core}} - core label</div>
+            <div class="small text-muted">{{list}} - TO-ISP list</div>
+            <div class="small text-muted">{{mode}} - routed or bridged</div>
+            <div class="small text-muted">{{status}} - current status</div>
+            {% endraw %}
+          </div>
+          <div class="col-md-6">
+            <div class="fw-semibold mb-1">Time</div>
+            {% raw %}
+            <div class="small text-muted">{{date}} - 2025-01-20</div>
+            <div class="small text-muted">{{time}} - 08:15 PM</div>
+            <div class="small text-muted">{{datetime}} - 2025-01-20 08:15 PM</div>
+            <div class="small text-muted">{{down-sincedatetime}} - 2025-01-20 06:10 PM</div>
+            {% endraw %}
+          </div>
+          <div class="col-md-6">
+            <div class="fw-semibold mb-1">Network</div>
+            {% raw %}
+            <div class="small text-muted">{{local-ip}} - source IP</div>
+            {% endraw %}
+          </div>
+          <div class="col-md-6">
+            <div class="fw-semibold mb-1">Ping</div>
+            {% raw %}
+            <div class="small text-muted">{{ping5}} - 5 ping lines</div>
+            {% endraw %}
+            <div class="small text-muted">Target uses the Local IP when set; otherwise the first Pulsewatch preset target.</div>
+          </div>
+        </div>
+        <div class="mt-3 p-3 bg-light rounded">
+          <div class="fw-semibold mb-1">Example</div>
+          {% raw %}
+          <pre class="mb-0 small">🔴3J SME 500 PLDT (58.71.97.1) is still DOWN since {{down-sincedatetime}}
+{{ping5}}</pre>
+          {% endraw %}
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
   const toggleWanFields = (rowId) => {
     const mode = document.querySelector(`.wan-mode[data-row="${rowId}"]`);
     const localInput = document.querySelector(`.wan-local-ip[data-row="${rowId}"]`);
-    const gatewayInput = document.querySelector(`.wan-gateway-ip[data-row="${rowId}"]`);
     const routerSelect = document.querySelector(`.wan-router[data-row="${rowId}"]`);
-    if (!mode || !localInput || !gatewayInput || !routerSelect) return;
+    const enabledToggle = document.querySelector(`.wan-enabled[data-row="${rowId}"]`);
+    if (!mode || !localInput || !routerSelect || !enabledToggle) return;
     const isBridged = mode.value === "bridged";
-    localInput.disabled = isBridged;
-    gatewayInput.disabled = false;
+    localInput.disabled = false;
     routerSelect.disabled = !isBridged;
-    localInput.style.opacity = isBridged ? "0.6" : "1";
-    gatewayInput.style.opacity = "1";
+    localInput.style.opacity = "1";
     routerSelect.style.opacity = isBridged ? "1" : "0.6";
+    const hasLocal = Boolean(localInput.value.trim());
+    enabledToggle.disabled = !hasLocal;
+    if (!hasLocal) {
+      enabledToggle.checked = false;
+    }
   };
 
   document.querySelectorAll(".wan-mode").forEach((select) => {
     toggleWanFields(select.dataset.row);
     select.addEventListener("change", () => toggleWanFields(select.dataset.row));
+  });
+
+  document.querySelectorAll(".wan-local-ip").forEach((input) => {
+    toggleWanFields(input.dataset.row);
+    input.addEventListener("input", () => toggleWanFields(input.dataset.row));
   });
 
   const toggleRepeatField = (rowId) => {
@@ -508,6 +578,8 @@
     }
     return { start, end };
   };
+
+  const activeIds = new Set();
 
   const renderChart = (coreId, hours, target, fromTs, toTs) => {
     if (!chartEl) return;
@@ -747,7 +819,12 @@
 
     chartEl.appendChild(svg);
 
-    const activeIds = new Set();
+    const validIds = new Set(renderSeries.map((item) => item.id));
+    Array.from(activeIds).forEach((id) => {
+      if (!validIds.has(id)) {
+        activeIds.delete(id);
+      }
+    });
     const setOpacity = () => {
       const lines = svg.querySelectorAll("polyline[data-series-id]");
       const hasSelection = activeIds.size > 0;
@@ -775,6 +852,7 @@
         setOpacity();
       });
     });
+    setOpacity();
   };
 
   const getRangeHours = () => {

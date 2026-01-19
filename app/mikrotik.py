@@ -274,6 +274,33 @@ class RouterOSClient:
                 received += 1
         return received > 0, rtt_ms, received
 
+    def ping_times(self, address, count=3, src_address=None):
+        words = ["/ping", f"=address={address}", f"=count={count}"]
+        if src_address:
+            words.append(f"=src-address={src_address}")
+        replies = self.talk(words)
+        times = []
+        for sentence in replies:
+            if sentence[0] != "!re":
+                continue
+            data = {}
+            for word in sentence[1:]:
+                if not word:
+                    continue
+                if word.startswith("="):
+                    word = word[1:]
+                if "=" in word:
+                    key, value = word.split("=", 1)
+                    data[key] = value
+            time_value = data.get("time") or data.get("time-ms")
+            if time_value:
+                cleaned = str(time_value).replace("ms", "").strip()
+                try:
+                    times.append(float(cleaned))
+                except ValueError:
+                    continue
+        return times
+
 
 def reconcile_address_lists(client, desired_entries, comment_tag):
     existing = client.list_address_list()

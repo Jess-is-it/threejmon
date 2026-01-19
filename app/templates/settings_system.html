@@ -132,7 +132,7 @@
       <a href="/settings/export">Download settings backup</a>
     </div>
     <form method="post" action="/settings/import" enctype="multipart/form-data">
-      <label class="form-label">Restore from JSON file <span class="info" data-tip="Import a settings backup JSON (configuration only; runtime history is excluded). Includes WAN Ping settings.">i</span></label>
+      <label class="form-label">Restore from JSON file <span class="info" data-tip="Import a settings backup JSON (configuration only; runtime history is excluded). Includes WAN Ping and Pulsewatch settings.">i</span></label>
       <input class="form-control" type="file" name="settings_file" accept="application/json" />
       <div class="mt-3">
         <button type="submit" class="btn btn-primary">Import Settings</button>
@@ -150,7 +150,7 @@
       <a href="/settings/db/export">Download database backup</a>
     </div>
     <form method="post" action="/settings/db/import" enctype="multipart/form-data">
-      <label class="form-label">Restore from DB file <span class="info" data-tip="Import a full SQLite database backup.">i</span></label>
+      <label class="form-label">Restore from DB file <span class="info" data-tip="Import a full SQLite database backup (Pulsewatch + WAN history + system state).">i</span></label>
       <input class="form-control" type="file" name="db_file" accept=".db,application/octet-stream" />
       <div class="mt-3">
         <button type="submit" class="btn btn-primary">Import Database</button>

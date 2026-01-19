@@ -1,6 +1,10 @@
 from datetime import datetime, timezone, timedelta
 
+import re
+import subprocess
+
 from ..db import utc_now_iso
+from ..settings_defaults import WAN_MESSAGE_DEFAULTS
 from ..mikrotik import RouterOSClient
 from .telegram import send_telegram, TelegramError
 
@@ -13,6 +17,10 @@ ICON_MAP = {
     ":yellow_circle:": "🟡",
     ":green_circle:": "🟢",
 }
+
+RE_TIME = re.compile(r"time=([0-9.]+)\s*ms")
+RE_BYTES = re.compile(r"(\d+)\s+bytes from")
+RE_TTL = re.compile(r"ttl=(\d+)")
 
 
 def _replace_icons(text):
@@ -58,9 +66,9 @@ def _find_preset(pulse_settings, core_id, list_name):
 
 
 def _resolve_target(wan, pulse_settings):
-    gateway = (wan.get("gateway_ip") or "").strip()
-    if gateway:
-        return gateway
+    local_ip = (wan.get("local_ip") or "").strip()
+    if local_ip:
+        return local_ip
     preset = _find_preset(pulse_settings, wan.get("core_id"), wan.get("list_name"))
     targets = preset.get("ping_targets", []) if preset else []
     for target in targets:
@@ -105,20 +113,91 @@ def _send_message(settings, message):
 
 def _default_messages(label):
     return {
-        "down": f"{label} is DOWN",
-        "up": f"{label} is UP",
-        "still_down": f"{label} is still DOWN",
+        "down": WAN_MESSAGE_DEFAULTS["down_msg"],
+        "up": WAN_MESSAGE_DEFAULTS["up_msg"],
+        "still_down": WAN_MESSAGE_DEFAULTS["still_down_msg"],
     }
 
 
-def _apply_tokens(template, label):
+_STAMP_TZ = timezone(timedelta(hours=8))
+
+
+def _format_date(dt):
+    return dt.astimezone(_STAMP_TZ).strftime("%Y-%m-%d")
+
+
+def _format_time(dt):
+    return dt.astimezone(_STAMP_TZ).strftime("%I:%M %p").lstrip("0")
+
+
+def _format_datetime(dt):
+    return f"{_format_date(dt)} {_format_time(dt)}"
+
+
+def _format_ping_lines(lines, count):
+    count = max(min(int(count), 20), 1)
+    output = []
+    for idx in range(count):
+        if idx < len(lines):
+            output.append(lines[idx])
+        else:
+            output.append("Request timed out.")
+    return "\n".join(output)
+
+
+def _ping_from_server(target, source_ip, count=3, timeout_seconds=1):
+    cmd = ["ping", "-c", str(count), "-W", str(timeout_seconds)]
+    if source_ip:
+        cmd.extend(["-I", source_ip])
+    cmd.append(target)
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    replies = 0
+    times = []
+    reply_lines = []
+    for line in (result.stdout or "").splitlines():
+        if "bytes from" in line:
+            replies += 1
+            bytes_match = RE_BYTES.search(line)
+            ttl_match = RE_TTL.search(line.lower())
+            time_match = RE_TIME.search(line)
+            bytes_value = bytes_match.group(1) if bytes_match else "64"
+            ttl_value = ttl_match.group(1) if ttl_match else "0"
+            time_value = f"{float(time_match.group(1)):.0f}ms" if time_match else "0ms"
+            reply_lines.append(f"Reply from {target}: bytes={bytes_value} time={time_value} TTL={ttl_value}")
+        time_match = RE_TIME.search(line)
+        if time_match:
+            times.append(float(time_match.group(1)))
+    return replies, times, reply_lines
+
+
+def _apply_tokens(template, context, ping_provider=None):
     if not template:
         return ""
-    return (
-        str(template)
-        .replace("{label}", label)
-        .replace("{isp}", label)
-    )
+    text = str(template)
+    ping_cache = {}
+
+    def _replace_ping(match):
+        count = int(match.group(1))
+        if count in ping_cache:
+            return ping_cache[count]
+        if not ping_provider:
+            ping_cache[count] = ""
+            return ""
+        ping_cache[count] = ping_provider(count) or ""
+        return ping_cache[count]
+
+    text = re.sub(r"\{\{?ping(\d{1,2})\}\}?", _replace_ping, text, flags=re.IGNORECASE)
+    for key, value in context.items():
+        placeholder = f"{{{key}}}"
+        double = f"{{{{{key}}}}}"
+        text = text.replace(placeholder, value).replace(double, value)
+    return text
 
 
 def run_check(settings, pulse_settings, state):
@@ -130,6 +209,8 @@ def run_check(settings, pulse_settings, state):
     for wan in settings.get("wans", []):
         if not wan.get("enabled", True):
             continue
+        if not (wan.get("local_ip") or "").strip():
+            continue
         wan_id = wan.get("id") or f"{wan.get('core_id')}:{wan.get('list_name')}"
         mode = (wan.get("mode") or "routed").lower()
         target = _resolve_target(wan, pulse_settings)
@@ -138,8 +219,15 @@ def run_check(settings, pulse_settings, state):
         identifier = (preset.get("identifier") if preset else "") or ""
         if identifier:
             label = identifier
+        source_ip = ""
+        if preset:
+            source_ip = (preset.get("address") or "").strip()
+        if not source_ip:
+            source_ip = (wan.get("local_ip") or "").strip()
 
         result = {"status": "down", "error": "", "rtt_ms": None}
+        core = None
+        router = None
         try:
             if not target:
                 raise RuntimeError("No target available for ping.")
@@ -178,10 +266,12 @@ def run_check(settings, pulse_settings, state):
                 )
                 try:
                     client.connect()
-                    src = (wan.get("local_ip") or "").strip() or None
-                    ok, rtt_ms, _ = client.ping(target, count=3, src_address=src)
-                    result["status"] = "up" if ok else "down"
-                    result["rtt_ms"] = rtt_ms
+                    entry = _ensure_netwatch(client, wan_id, target, interval_seconds)
+                    status = (entry or {}).get("status", "").lower()
+                    if status in ("up", "down"):
+                        result["status"] = status
+                    else:
+                        result["status"] = "down"
                 finally:
                     client.close()
         except Exception as exc:
@@ -191,11 +281,52 @@ def run_check(settings, pulse_settings, state):
         prev = wan_state.get(wan_id, {})
         prev_status = prev.get("status")
         now_iso = utc_now_iso()
+        now_local = now.astimezone(_STAMP_TZ)
+        down_since_dt = _parse_ts(prev.get("down_since"))
+        if result["status"] == "down" and prev_status != "down":
+            down_since_dt = now
+        if down_since_dt:
+            down_since_local = down_since_dt.astimezone(_STAMP_TZ)
+        else:
+            down_since_local = None
         msg_cfg = settings.get("messages", {}).get(wan_id, {})
         defaults = _default_messages(label)
-        down_msg = _apply_tokens(msg_cfg.get("down_msg") or defaults["down"], label)
-        up_msg = _apply_tokens(msg_cfg.get("up_msg") or defaults["up"], label)
-        still_msg = _apply_tokens(msg_cfg.get("still_down_msg") or defaults["still_down"], label)
+        core_label = ""
+        if core and core.get("label"):
+            core_label = core.get("label")
+        else:
+            core_label = wan.get("core_id") or ""
+        token_context = {
+            "label": label,
+            "isp": label,
+            "wan-id": wan_id,
+            "core": core_label,
+            "list": wan.get("list_name") or "",
+            "mode": mode,
+            "status": result["status"],
+            "target": target or "",
+            "local-ip": source_ip or "",
+            "date": _format_date(now_local),
+            "time": _format_time(now_local),
+            "datetime": _format_datetime(now_local),
+            "down-sincedatetime": _format_datetime(down_since_local) if down_since_local else "n/a",
+            "down-since": _format_datetime(down_since_local) if down_since_local else "n/a",
+        }
+
+        def ping_provider(count):
+            if not target:
+                return "ping unavailable"
+            count = max(min(int(count), 20), 1)
+            try:
+                src = source_ip or None
+                _, _, lines = _ping_from_server(target, src, count=count, timeout_seconds=1)
+                return _format_ping_lines(lines, count)
+            except Exception:
+                return "ping unavailable"
+
+        down_msg = _apply_tokens(msg_cfg.get("down_msg") or defaults["down"], token_context, ping_provider)
+        up_msg = _apply_tokens(msg_cfg.get("up_msg") or defaults["up"], token_context, ping_provider)
+        still_msg = _apply_tokens(msg_cfg.get("still_down_msg") or defaults["still_down"], token_context, ping_provider)
         send_down_once = msg_cfg.get("send_down_once")
         if send_down_once is None:
             send_down_once = True
@@ -223,6 +354,7 @@ def run_check(settings, pulse_settings, state):
             else:
                 last_down_at = _parse_ts(prev.get("last_down_notified_at"))
                 last_still_at = _parse_ts(prev.get("last_still_notified_at"))
+                down_since_at = _parse_ts(prev.get("down_since"))
                 if not send_down_once:
                     if not last_down_at or now - last_down_at >= timedelta(minutes=repeat_minutes):
                         try:
@@ -231,12 +363,13 @@ def run_check(settings, pulse_settings, state):
                             pass
                         prev["last_down_notified_at"] = now_iso
                 if still_msg:
-                    if not last_still_at or now - last_still_at >= timedelta(hours=still_hours):
-                        try:
-                            _send_message(settings, still_msg)
-                        except TelegramError:
-                            pass
-                        prev["last_still_notified_at"] = now_iso
+                    if down_since_at and now - down_since_at >= timedelta(hours=still_hours):
+                        if not last_still_at or now - last_still_at >= timedelta(hours=still_hours):
+                            try:
+                                _send_message(settings, still_msg)
+                            except TelegramError:
+                                pass
+                            prev["last_still_notified_at"] = now_iso
 
         prev.update(
             {

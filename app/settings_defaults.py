@@ -251,3 +251,9 @@ WAN_PING_DEFAULTS = {
     "pppoe_routers": [],
     "messages": {},
 }
+
+WAN_MESSAGE_DEFAULTS = {
+    "down_msg": "🔴 {label} {target} is DOWN {{datetime}} 😢😤",
+    "up_msg": "🟢 {label} {target} is UP {{datetime}}\n  Target: {target}\n  Source: {local-ip}\n  {ping5}",
+    "still_down_msg": "🔴 {label} {target} is still DOWN {down-sincedatetime}",
+}
