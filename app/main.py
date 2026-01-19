@@ -2322,7 +2322,7 @@ async def pulsewatch_settings_test(request: Request):
     return render_pulsewatch_response(request, settings, message)
 
 
-@app.post("/settings/isp/mikrotik/test", response_class=HTMLResponse)
+@app.post("/settings/pulsewatch/mikrotik/test", response_class=HTMLResponse)
 async def isp_mikrotik_test(request: Request):
     settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
     message = ""
@@ -2357,7 +2357,7 @@ async def isp_mikrotik_test(request: Request):
     )
 
 
-@app.post("/settings/isp/mikrotik/sync", response_class=HTMLResponse)
+@app.post("/settings/pulsewatch/mikrotik/sync", response_class=HTMLResponse)
 async def isp_mikrotik_sync(request: Request):
     settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
     message = ""
