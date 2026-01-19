@@ -237,3 +237,17 @@ ISP_PING_DEFAULTS = {
         ],
     },
 }
+
+WAN_PING_DEFAULTS = {
+    "enabled": False,
+    "telegram": {
+        "bot_token": "",
+        "chat_id": "",
+    },
+    "general": {
+        "interval_seconds": 30,
+    },
+    "wans": [],
+    "pppoe_routers": [],
+    "messages": {},
+}

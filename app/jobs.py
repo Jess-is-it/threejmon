@@ -12,8 +12,9 @@ from .db import update_job_status, utc_now_iso
 from .notifiers import optical as optical_notifier
 from .notifiers import rto as rto_notifier
 from .notifiers import isp_ping as isp_ping_notifier
+from .notifiers import wan_ping as wan_ping_notifier
 from .notifiers.telegram import TelegramError, get_updates, send_telegram
-from .settings_defaults import ISP_PING_DEFAULTS, OPTICAL_DEFAULTS, RTO_DEFAULTS
+from .settings_defaults import ISP_PING_DEFAULTS, OPTICAL_DEFAULTS, RTO_DEFAULTS, WAN_PING_DEFAULTS
 from .settings_store import get_settings, get_state, save_state
 from .telegram_commands import handle_telegram_command
 
@@ -30,6 +31,7 @@ class JobsManager:
             threading.Thread(target=self._isp_loop, daemon=True),
             threading.Thread(target=self._pulsewatch_loop, daemon=True),
             threading.Thread(target=self._telegram_loop, daemon=True),
+            threading.Thread(target=self._wan_ping_loop, daemon=True),
         ]
         for thread in self.threads:
             thread.start()
@@ -240,6 +242,30 @@ class JobsManager:
                 save_state("telegram_state", state)
 
             time_module.sleep(2)
+
+    def _wan_ping_loop(self):
+        while not self.stop_event.is_set():
+            cfg = get_settings("wan_ping", WAN_PING_DEFAULTS)
+            if not cfg.get("wans"):
+                time_module.sleep(10)
+                continue
+            pulse_cfg = get_settings("isp_ping", ISP_PING_DEFAULTS)
+            try:
+                update_job_status("wan_ping", last_run_at=utc_now_iso())
+                state = get_state("wan_ping_state", {})
+                reset_at = state.get("reset_at")
+                state = wan_ping_notifier.run_check(cfg, pulse_cfg, state)
+                latest = get_state("wan_ping_state", {})
+                if latest.get("reset_at") and latest.get("reset_at") != reset_at:
+                    state = wan_ping_notifier.run_check(cfg, pulse_cfg, latest)
+                save_state("wan_ping_state", state)
+                update_job_status("wan_ping", last_success_at=utc_now_iso(), last_error="", last_error_at="")
+            except TelegramError as exc:
+                update_job_status("wan_ping", last_error=str(exc), last_error_at=utc_now_iso())
+            except Exception as exc:
+                update_job_status("wan_ping", last_error=str(exc), last_error_at=utc_now_iso())
+            interval_seconds = int(cfg.get("general", {}).get("interval_seconds", 30) or 30)
+            time_module.sleep(max(interval_seconds, 5))
 
 
 def parse_time(value):

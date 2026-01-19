@@ -28,6 +28,7 @@ from .db import (
     get_ping_stability_counts,
     init_db,
     clear_pulsewatch_data,
+    utc_now_iso,
 )
 from .forms import parse_bool, parse_float, parse_int, parse_int_list, parse_lines, parse_targets
 from .jobs import JobsManager
@@ -36,7 +37,7 @@ from .mikrotik import RouterOSClient
 from .notifiers import optical as optical_notifier
 from .notifiers import rto as rto_notifier
 from .notifiers.telegram import TelegramError, send_telegram
-from .settings_defaults import ISP_PING_DEFAULTS, OPTICAL_DEFAULTS, RTO_DEFAULTS
+from .settings_defaults import ISP_PING_DEFAULTS, OPTICAL_DEFAULTS, RTO_DEFAULTS, WAN_PING_DEFAULTS
 from .settings_store import export_settings, get_settings, get_state, import_settings, save_settings, save_state
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -664,6 +665,81 @@ def normalize_pulsewatch_settings(settings):
     return settings
 
 
+def normalize_wan_ping_settings(settings):
+    settings.setdefault("enabled", False)
+    telegram = settings.setdefault("telegram", {})
+    telegram.setdefault("bot_token", "")
+    telegram.setdefault("chat_id", "")
+    general = settings.setdefault("general", {})
+    general.setdefault("interval_seconds", 30)
+    settings.setdefault("wans", [])
+    settings.setdefault("pppoe_routers", [])
+    settings.setdefault("messages", {})
+    return settings
+
+
+def wan_row_id(core_id, list_name):
+    raw = f"{core_id}|{list_name}".encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def is_wan_list_name(list_name):
+    return "TO-ISP" in (list_name or "").upper()
+
+
+def build_wan_rows(pulsewatch_settings, wan_settings):
+    cores = pulsewatch_settings.get("pulsewatch", {}).get("mikrotik", {}).get("cores", [])
+    list_map = fetch_mikrotik_lists(cores)
+    preset_map = {}
+    for preset in pulsewatch_settings.get("pulsewatch", {}).get("list_presets", []):
+        core_id = preset.get("core_id")
+        list_name = preset.get("list")
+        identifier = (preset.get("identifier") or "").strip()
+        if core_id and list_name and identifier:
+            preset_map[(core_id, list_name)] = identifier
+    saved_wans = {
+        (item.get("core_id"), item.get("list_name")): item
+        for item in wan_settings.get("wans", [])
+        if item.get("core_id") and item.get("list_name")
+    }
+    rows = []
+    for core in cores:
+        core_id = core.get("id")
+        if not core_id:
+            continue
+        lists = [name for name in list_map.get(core_id, []) if is_wan_list_name(name)]
+        if not lists:
+            lists = sorted(
+                {
+                    list_name
+                    for (saved_core_id, list_name) in saved_wans.keys()
+                    if saved_core_id == core_id
+                }
+            )
+        for list_name in sorted(lists):
+            saved = saved_wans.get((core_id, list_name), {}) or {}
+            mode = (saved.get("mode") or "routed").strip().lower()
+            if mode not in ("routed", "bridged"):
+                mode = "routed"
+            identifier = (preset_map.get((core_id, list_name)) or "").strip()
+            rows.append(
+                {
+                    "wan_id": wan_row_id(core_id, list_name),
+                    "core_id": core_id,
+                    "core_label": core.get("label") or core_id,
+                    "list_name": list_name,
+                    "identifier": identifier,
+                    "identifier_missing": not identifier,
+                    "mode": mode,
+                    "local_ip": saved.get("local_ip", ""),
+                    "gateway_ip": saved.get("gateway_ip", ""),
+                    "pppoe_router_id": saved.get("pppoe_router_id", ""),
+                    "enabled": bool(saved.get("enabled", True)),
+                }
+            )
+    return rows
+
+
 def preset_row_id(core_id, list_name):
     raw = f"{core_id}|{list_name}".encode("utf-8")
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
@@ -1031,6 +1107,164 @@ def build_pulsewatch_latency_series(rows, history_map=None):
     return series
 
 
+def build_wan_latency_series(rows, state, hours=24, window_start=None, window_end=None):
+    palette = [
+        "#1f77b4",
+        "#ff7f0e",
+        "#2ca02c",
+        "#d62728",
+        "#9467bd",
+        "#8c564b",
+        "#e377c2",
+        "#7f7f7f",
+        "#bcbd22",
+        "#17becf",
+        "#e41a1c",
+        "#377eb8",
+        "#4daf4a",
+        "#984ea3",
+        "#ff7f00",
+        "#a65628",
+        "#f781bf",
+        "#999999",
+    ]
+    def _parse_ts(value):
+        if not value:
+            return None
+        raw = value.replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+
+    wan_state = (state or {}).get("wans", {})
+    series = []
+    all_times = []
+    row_points = {}
+    for idx, row in enumerate(rows):
+        wan_id = row.get("wan_id")
+        if not wan_id:
+            continue
+        mode = (row.get("mode") or "routed").lower()
+        if mode == "routed":
+            if not (row.get("local_ip") and row.get("gateway_ip")):
+                continue
+        if mode == "bridged":
+            if not row.get("pppoe_router_id"):
+                continue
+        state_row = wan_state.get(wan_id, {})
+        history = state_row.get("history", [])
+        target = state_row.get("target") or ""
+        label = row.get("identifier") or row.get("list_name") or wan_id
+        points = []
+        for item in history:
+            ts_raw = item.get("ts")
+            ts = _parse_ts(ts_raw)
+            if ts is None:
+                continue
+            points.append(
+                {
+                    "ts": ts,
+                    "status": item.get("status"),
+                }
+            )
+            all_times.append(ts)
+        row_points[wan_id] = points
+        series.append(
+            {
+                "id": wan_id,
+                "name": f"{row.get('core_label')} {label}".strip(),
+                "target": target,
+                "core_id": row.get("core_id"),
+                "core_label": row.get("core_label"),
+                "color": palette[idx % len(palette)],
+                "points": [],
+            }
+        )
+
+    if not all_times:
+        return []
+
+    min_all = min(all_times)
+    max_all = max(all_times)
+    if window_start or window_end:
+        if window_start is None:
+            window_start = min_all
+        if window_end is None:
+            window_end = max_all
+    else:
+        window_end = max_all
+        window_start = window_end - timedelta(hours=max(int(hours or 24), 1))
+    if window_start > window_end:
+        window_start, window_end = window_end, window_start
+
+    def _iso(dt):
+        return dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+    for item in series:
+        wan_id = item["id"]
+        points = row_points.get(wan_id, [])
+        if not points:
+            continue
+        points.sort(key=lambda entry: entry["ts"])
+        state = None
+        first_in_window = None
+        for point in points:
+            if point["ts"] <= window_start:
+                state = point.get("status") or state
+            elif first_in_window is None:
+                first_in_window = point
+                break
+        if state is None:
+            if first_in_window is not None:
+                state = first_in_window.get("status") or "down"
+            else:
+                state = points[-1].get("status") or "down"
+        uptime = 0.0
+        downtime = 0.0
+        cursor = window_start
+        render_points = []
+        initial_value = 0 if state == "down" else 100
+        render_points.append(
+            {"ts": _iso(window_start), "value": initial_value, "downtime_seconds": downtime}
+        )
+        for point in points:
+            ts = point["ts"]
+            if ts < window_start:
+                continue
+            if ts > window_end:
+                break
+            delta = (ts - cursor).total_seconds()
+            if delta > 0:
+                if state == "up":
+                    uptime += delta
+                else:
+                    downtime += delta
+            cursor = ts
+            state = point.get("status") or state
+            total = uptime + downtime
+            pct = (uptime / total * 100) if total > 0 else (100 if state == "up" else 0)
+            y_value = 0 if state == "down" else pct
+            render_points.append(
+                {"ts": _iso(ts), "value": y_value, "downtime_seconds": downtime}
+            )
+        if cursor < window_end:
+            delta = (window_end - cursor).total_seconds()
+            if delta > 0:
+                if state == "up":
+                    uptime += delta
+                else:
+                    downtime += delta
+            total = uptime + downtime
+            pct = (uptime / total * 100) if total > 0 else (100 if state == "up" else 0)
+            y_value = 0 if state == "down" else pct
+            render_points.append(
+                {"ts": _iso(window_end), "value": y_value, "downtime_seconds": downtime}
+            )
+        item["points"] = render_points
+    return series
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     job_status = {item["job_name"]: dict(item) for item in get_job_status()}
@@ -1149,6 +1383,95 @@ async def pulsewatch_latency_series(
     if target and target != "all":
         series = [item for item in series if item.get("target") == target]
     return JSONResponse({"series": series, "window": {"start": start_iso, "end": end_iso}})
+
+
+@app.get("/wan/latency-series")
+async def wan_latency_series(
+    core_id: str = "all",
+    target: str = "all",
+    hours: int = 24,
+    start: str | None = None,
+    end: str | None = None,
+):
+    def _parse_iso_utc(value):
+        if not value:
+            return None
+        raw = value.strip()
+        if raw.endswith("Z"):
+            raw = raw[:-1]
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt
+
+    start_dt = _parse_iso_utc(start)
+    end_dt = _parse_iso_utc(end)
+    if start_dt or end_dt:
+        if start_dt and end_dt:
+            window_start = start_dt
+            window_end = end_dt
+        elif start_dt:
+            window_start = start_dt
+            window_end = start_dt + timedelta(hours=max(int(hours), 1))
+        else:
+            window_end = end_dt
+            window_start = end_dt - timedelta(hours=max(int(hours), 1))
+    else:
+        window_end = datetime.now(timezone.utc)
+        window_start = window_end - timedelta(hours=max(int(hours), 1))
+    if window_start > window_end:
+        window_start, window_end = window_end, window_start
+    max_window = timedelta(days=14)
+    if window_end - window_start > max_window:
+        window_start = window_end - max_window
+
+    start_iso = window_start.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    end_iso = window_end.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+    pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    wan_rows = build_wan_rows(pulse_settings, wan_settings)
+    wan_state = get_state("wan_ping_state", {})
+    series = build_wan_latency_series(wan_rows, wan_state, hours=hours, window_start=window_start, window_end=window_end)
+    if core_id and core_id != "all":
+        series = [item for item in series if item.get("core_id") == core_id]
+    if target and target != "all":
+        series = [item for item in series if item.get("target") == target]
+    return JSONResponse({"series": series, "window": {"start": start_iso, "end": end_iso}})
+
+
+@app.get("/wan/status")
+async def wan_status():
+    pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    wan_rows = build_wan_rows(pulse_settings, wan_settings)
+    wan_state = get_state("wan_ping_state", {})
+    payload = []
+    for row in wan_rows:
+        wan_id = row.get("wan_id")
+        mode = (row.get("mode") or "routed").lower()
+        if mode == "routed":
+            if not (row.get("local_ip") and row.get("gateway_ip")):
+                continue
+        if mode == "bridged":
+            if not row.get("pppoe_router_id"):
+                continue
+        state = wan_state.get("wans", {}).get(wan_id, {})
+        label = f"{row.get('core_label')} - {(row.get('identifier') or row.get('list_name') or '')}".strip()
+        payload.append(
+            {
+                "id": wan_id,
+                "label": label,
+                "status": state.get("status"),
+                "target": state.get("target"),
+                "last_check": state.get("last_check"),
+                "last_rtt_ms": state.get("last_rtt_ms"),
+                "last_error": state.get("last_error"),
+            }
+        )
+    return JSONResponse({"rows": payload, "updated_at": utc_now_iso()})
 
 
 @app.get("/pulsewatch/summary")
@@ -1519,6 +1842,254 @@ async def isp_settings_save(request: Request):
     return templates.TemplateResponse(
         "settings_isp.html",
         make_context(request, {"settings": settings, "message": "Saved."}),
+    )
+
+
+def render_wan_ping_response(request, pulse_settings, wan_settings, message, active_tab):
+    wan_rows = build_wan_rows(pulse_settings, wan_settings)
+    wan_state = get_state("wan_ping_state", {})
+    wan_latency_series = build_wan_latency_series(wan_rows, wan_state, hours=24)
+    wan_targets = sorted({item.get("target") for item in wan_latency_series if item.get("target")})
+    wan_refresh_seconds = int(wan_settings.get("general", {}).get("interval_seconds", 30) or 30)
+    return templates.TemplateResponse(
+        "settings_wan_ping.html",
+        make_context(
+            request,
+            {
+                "pulsewatch_settings": pulse_settings,
+                "settings": wan_settings,
+                "wan_rows": wan_rows,
+                "wan_state": wan_state,
+                "wan_latency_series": wan_latency_series,
+                "wan_targets": wan_targets,
+                "wan_refresh_seconds": wan_refresh_seconds,
+                "message": message,
+                "active_tab": active_tab,
+            },
+        ),
+    )
+
+
+@app.get("/settings/wan", response_class=HTMLResponse)
+async def wan_settings(request: Request):
+    pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    return render_wan_ping_response(request, pulse_settings, wan_settings_data, "", "status")
+
+
+@app.post("/settings/wan/wans", response_class=HTMLResponse)
+async def wan_settings_save_wans(request: Request):
+    form = await request.form()
+    pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    count = parse_int(form, "wan_count", 0)
+    wans = []
+    for idx in range(count):
+        core_id = (form.get(f"wan_{idx}_core_id") or "").strip()
+        list_name = (form.get(f"wan_{idx}_list") or "").strip()
+        if not core_id or not list_name:
+            continue
+        mode = (form.get(f"wan_{idx}_mode") or "routed").strip().lower()
+        if mode not in ("routed", "bridged"):
+            mode = "routed"
+        wans.append(
+            {
+                "id": wan_row_id(core_id, list_name),
+                "core_id": core_id,
+                "list_name": list_name,
+                "enabled": parse_bool(form, f"wan_{idx}_enabled"),
+                "mode": mode,
+                "local_ip": (form.get(f"wan_{idx}_local_ip") or "").strip(),
+                "gateway_ip": (form.get(f"wan_{idx}_gateway_ip") or "").strip(),
+                "pppoe_router_id": (form.get(f"wan_{idx}_pppoe_router_id") or "").strip(),
+            }
+        )
+    wan_settings_data["wans"] = wans
+    save_settings("wan_ping", wan_settings_data)
+    return render_wan_ping_response(request, pulse_settings, wan_settings_data, "WAN list saved.", "add")
+
+
+@app.post("/settings/wan/routers", response_class=HTMLResponse)
+async def wan_settings_save_routers(request: Request):
+    form = await request.form()
+    pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    count = parse_int(form, "router_count", 0)
+    routers = []
+    removed_ids = set()
+    for idx in range(count):
+        router_id = (form.get(f"router_{idx}_id") or "").strip()
+        if not router_id:
+            continue
+        if parse_bool(form, f"router_{idx}_remove"):
+            removed_ids.add(router_id)
+            continue
+        routers.append(
+            {
+                "id": router_id,
+                "name": (form.get(f"router_{idx}_name") or "").strip(),
+                "host": (form.get(f"router_{idx}_host") or "").strip(),
+                "port": parse_int(form, f"router_{idx}_port", 8728),
+                "username": (form.get(f"router_{idx}_username") or "").strip(),
+                "password": (form.get(f"router_{idx}_password") or "").strip(),
+                "use_tls": parse_bool(form, f"router_{idx}_use_tls"),
+            }
+        )
+    wan_settings_data["pppoe_routers"] = routers
+    if removed_ids:
+        for wan in wan_settings_data.get("wans", []):
+            if wan.get("pppoe_router_id") in removed_ids:
+                wan["pppoe_router_id"] = ""
+    save_settings("wan_ping", wan_settings_data)
+    return render_wan_ping_response(request, pulse_settings, wan_settings_data, "PPPoE routers saved.", "routers")
+
+
+@app.post("/settings/wan/routers/add", response_class=HTMLResponse)
+async def wan_settings_add_router(request: Request):
+    pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    routers = wan_settings_data.get("pppoe_routers", [])
+    existing_ids = {router.get("id") for router in routers if router.get("id")}
+    next_idx = 1
+    while f"router{next_idx}" in existing_ids:
+        next_idx += 1
+    routers.append(
+        {
+            "id": f"router{next_idx}",
+            "name": f"Router {next_idx}",
+            "host": "",
+            "port": 8728,
+            "username": "",
+            "password": "",
+            "use_tls": False,
+        }
+    )
+    wan_settings_data["pppoe_routers"] = routers
+    save_settings("wan_ping", wan_settings_data)
+    return render_wan_ping_response(request, pulse_settings, wan_settings_data, "PPPoE router added.", "routers")
+
+
+@app.post("/settings/wan/routers/remove/{router_id}", response_class=HTMLResponse)
+async def wan_settings_remove_router(request: Request, router_id: str):
+    pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    routers = [router for router in wan_settings_data.get("pppoe_routers", []) if router.get("id") != router_id]
+    wan_settings_data["pppoe_routers"] = routers
+    for wan in wan_settings_data.get("wans", []):
+        if wan.get("pppoe_router_id") == router_id:
+            wan["pppoe_router_id"] = ""
+    save_settings("wan_ping", wan_settings_data)
+    return render_wan_ping_response(request, pulse_settings, wan_settings_data, "PPPoE router removed.", "routers")
+
+
+@app.post("/settings/wan/routers/test/{router_id}", response_class=HTMLResponse)
+async def wan_settings_test_router(request: Request, router_id: str):
+    pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    router = next(
+        (item for item in wan_settings_data.get("pppoe_routers", []) if item.get("id") == router_id),
+        None,
+    )
+    if not router:
+        return render_wan_ping_response(request, pulse_settings, wan_settings_data, "Router not found.", "routers")
+    if router.get("use_tls"):
+        return render_wan_ping_response(
+            request,
+            pulse_settings,
+            wan_settings_data,
+            "TLS test not supported yet. Disable TLS or use port 8728.",
+            "routers",
+        )
+    host = (router.get("host") or "").strip()
+    if not host:
+        return render_wan_ping_response(request, pulse_settings, wan_settings_data, "Router host is required.", "routers")
+    client = RouterOSClient(
+        host,
+        int(router.get("port", 8728)),
+        router.get("username", ""),
+        router.get("password", ""),
+    )
+    try:
+        client.connect()
+        message = f"Router {router.get('name') or router_id} connected successfully."
+    except Exception as exc:
+        message = f"Router test failed: {exc}"
+    finally:
+        client.close()
+    return render_wan_ping_response(request, pulse_settings, wan_settings_data, message, "routers")
+
+
+@app.post("/settings/wan/telegram", response_class=HTMLResponse)
+async def wan_settings_save_telegram(request: Request):
+    form = await request.form()
+    pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    wan_settings_data["telegram"] = {
+        "bot_token": form.get("telegram_bot_token", ""),
+        "chat_id": form.get("telegram_chat_id", ""),
+    }
+    save_settings("wan_ping", wan_settings_data)
+    return render_wan_ping_response(request, pulse_settings, wan_settings_data, "Telegram settings saved.", "settings")
+
+
+@app.post("/settings/wan/messages", response_class=HTMLResponse)
+async def wan_settings_save_messages(request: Request):
+    form = await request.form()
+    pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    count = parse_int(form, "message_count", 0)
+    messages = {}
+    for idx in range(count):
+        wan_id = (form.get(f"message_{idx}_id") or "").strip()
+        if not wan_id:
+            continue
+        send_down_once = parse_bool(form, f"message_{idx}_send_down_once")
+        messages[wan_id] = {
+            "down_msg": form.get(f"message_{idx}_down_msg", ""),
+            "up_msg": form.get(f"message_{idx}_up_msg", ""),
+            "still_down_msg": form.get(f"message_{idx}_still_down_msg", ""),
+            "send_down_once": send_down_once,
+            "repeat_down_interval_minutes": parse_int(form, f"message_{idx}_repeat_minutes", 30),
+            "still_down_interval_hours": parse_int(form, f"message_{idx}_still_hours", 8),
+        }
+    wan_settings_data["messages"] = messages
+    save_settings("wan_ping", wan_settings_data)
+    return render_wan_ping_response(request, pulse_settings, wan_settings_data, "Messages saved.", "messages")
+
+
+@app.post("/settings/wan/interval", response_class=HTMLResponse)
+async def wan_settings_save_interval(request: Request):
+    form = await request.form()
+    pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    interval = parse_int(form, "wan_interval_seconds", 30)
+    wan_settings_data.setdefault("general", {})["interval_seconds"] = max(interval, 5)
+    save_settings("wan_ping", wan_settings_data)
+    return render_wan_ping_response(request, pulse_settings, wan_settings_data, "Interval saved.", "settings")
+
+
+@app.post("/settings/wan/format", response_class=HTMLResponse)
+async def wan_format_db(request: Request):
+    form = await request.form()
+    if not parse_bool(form, "confirm_format"):
+        pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+        wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+        return render_wan_ping_response(
+            request,
+            pulse_settings,
+            wan_settings_data,
+            "Format canceled. Please confirm before formatting.",
+            "settings",
+        )
+    save_state("wan_ping_state", {"reset_at": utc_now_iso(), "wans": {}})
+    pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    return render_wan_ping_response(
+        request,
+        pulse_settings,
+        wan_settings_data,
+        "WAN status database cleared. History removed. Settings preserved.",
+        "settings",
     )
 
 

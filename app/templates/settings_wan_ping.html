@@ -1,0 +1,960 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header d-print-none">
+  <div class="row align-items-center">
+    <div class="col">
+      <h2 class="page-title">WAN Ping</h2>
+    </div>
+  </div>
+</div>
+
+{% if message %}
+  <div class="alert alert-info">{{ message }}</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-body">
+    <ul class="nav nav-tabs" data-bs-toggle="tabs">
+      <li class="nav-item">
+        <a href="#wan-status" class="nav-link {% if active_tab == 'status' %}active{% endif %}" data-bs-toggle="tab">WAN Status</a>
+      </li>
+      <li class="nav-item">
+        <a href="#wan-settings" class="nav-link {% if active_tab != 'status' %}active{% endif %}" data-bs-toggle="tab">WAN Settings</a>
+      </li>
+    </ul>
+    <div class="tab-content pt-4">
+      <div class="tab-pane {% if active_tab == 'status' %}active{% endif %}" id="wan-status">
+        <div class="card mb-3">
+          <div class="card-header">
+            <div class="row g-2 align-items-center w-100">
+              <div class="col-12 col-lg-4">
+                <h4 class="mb-0">WAN Status Overview</h4>
+              </div>
+              <div class="col-12 col-lg-8">
+                <div class="d-flex align-items-center gap-2 flex-nowrap justify-content-lg-end">
+                  <span class="text-muted small">Filter core</span>
+                  <select class="form-select form-select-sm" id="wan-core-filter" style="min-width: 160px;">
+                    <option value="all">All cores</option>
+                    {% for core in pulsewatch_settings.pulsewatch.mikrotik.cores %}
+                      <option value="{{ core.id }}">{{ core.label }}</option>
+                    {% endfor %}
+                  </select>
+                  <span class="text-muted small">Range</span>
+                  <select class="form-select form-select-sm" id="wan-range-filter" style="min-width: 120px;">
+                    <option value="6">Last 6h</option>
+                    <option value="12">Last 12h</option>
+                    <option value="24" selected>Last 24h</option>
+                  </select>
+                  <span class="text-muted small">Target</span>
+                  <select class="form-select form-select-sm" id="wan-target-filter" style="min-width: 140px;">
+                    <option value="all">All targets</option>
+                    {% for target in wan_targets %}
+                      <option value="{{ target }}">{{ target }}</option>
+                    {% endfor %}
+                  </select>
+                  <span class="text-muted small">From</span>
+                  <input class="form-control form-control-sm" id="wan-from-filter" type="datetime-local" style="min-width: 190px;">
+                  <span class="text-muted small">To</span>
+                  <input class="form-control form-control-sm" id="wan-to-filter" type="datetime-local" style="min-width: 190px;">
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="text-muted small mb-2">Vertical: up-time percentage (0-100%) · Horizontal: time (PHT)</div>
+            <div id="wan-latency-chart" style="width: 100%; height: 260px; position: relative;"></div>
+            <div id="wan-latency-legend" class="mt-3 d-flex flex-wrap gap-3"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-body">
+            <h4 class="mb-3">WAN Status</h4>
+            <div class="text-muted mb-3">Latest check results from WAN Ping.</div>
+            <div style="overflow-x: auto;">
+              <table class="table table-vcenter">
+                <thead>
+                  <tr>
+                    <th>WAN</th>
+                    <th>Status</th>
+                    <th>Target</th>
+                    <th>Last Check</th>
+                    <th>Last RTT (ms)</th>
+                    <th>Error</th>
+                  </tr>
+                </thead>
+                <tbody id="wan-status-body">
+                  {% for row in wan_rows %}
+                    {% set state = wan_state.get('wans', {}).get(row.wan_id, {}) %}
+                    <tr>
+                      <td>{{ row.core_label }} - {{ row.identifier or row.list_name }}</td>
+                      <td>{{ state.status or "n/a" }}</td>
+                      <td>{{ state.target or "n/a" }}</td>
+                      <td>{{ state.last_check or "n/a" }}</td>
+                      <td>{{ state.last_rtt_ms or "n/a" }}</td>
+                      <td>{{ state.last_error or "" }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            {% if not wan_rows %}
+              <div class="text-muted">No WAN entries detected yet.</div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+
+      <div class="tab-pane {% if active_tab != 'status' %}active{% endif %}" id="wan-settings">
+        <ul class="nav nav-tabs" data-bs-toggle="tabs">
+          <li class="nav-item">
+            <a href="#wan-add" class="nav-link {% if active_tab == 'add' or active_tab == 'status' %}active{% endif %}" data-bs-toggle="tab">Add WAN</a>
+          </li>
+          <li class="nav-item">
+            <a href="#wan-routers" class="nav-link {% if active_tab == 'routers' %}active{% endif %}" data-bs-toggle="tab">Add PPPoE MikroTik (Bridge)</a>
+          </li>
+          <li class="nav-item">
+            <a href="#wan-settings-tab" class="nav-link {% if active_tab == 'settings' %}active{% endif %}" data-bs-toggle="tab">Settings</a>
+          </li>
+          <li class="nav-item">
+            <a href="#wan-messages" class="nav-link {% if active_tab == 'messages' %}active{% endif %}" data-bs-toggle="tab">Messages</a>
+          </li>
+        </ul>
+        <div class="tab-content pt-4">
+          <div class="tab-pane {% if active_tab == 'add' or active_tab == 'status' %}active{% endif %}" id="wan-add">
+        <form method="post" action="/settings/wan/wans">
+          <div class="card mb-3">
+            <div class="card-body">
+              <h4 class="mb-3">Detected WAN Entries</h4>
+              <div class="alert alert-info">
+                <div class="d-flex align-items-start">
+                  <span class="me-2"><i class="ti ti-info-circle"></i></span>
+                  <div>
+                    WANs are prepopulated from each MikroTik core using TO-ISP lists. Add the missing fields below.
+                    <div class="mt-2">Note: In Pulsewatch Presets, ensure each TO-ISP list has at least one ping target. (That target is used when no gateway is provided.)</div>
+                  </div>
+                </div>
+              </div>
+              <input type="hidden" name="wan_count" value="{{ wan_rows|length }}" />
+              <div style="overflow-x: auto;">
+                <table class="table table-vcenter">
+                  <thead>
+                    <tr>
+                      <th title="MikroTik core where this TO-ISP list is found.">Core</th>
+                      <th title="Address-list name pulled from MikroTik.">TO-ISP List</th>
+                      <th title="Auto from Pulsewatch identifier; update it in Pulsewatch Presets.">Identifier</th>
+                      <th title="Routed = ping via core router; Bridged = ping via PPPoE router.">Mode</th>
+                      <th title="Source IP to bind for routed ping (required for Routed).">Local IP</th>
+                      <th title="ISP gateway or target IP for routed checks (required for Routed).">Gateway IP</th>
+                      <th title="Select PPPoE router for Bridged mode.">PPPoE Router</th>
+                      <th title="Disable to skip checks for this WAN.">Enabled</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for row in wan_rows %}
+                      <tr>
+                        <td>
+                          {{ row.core_label }}
+                          <input type="hidden" name="wan_{{ loop.index0 }}_core_id" value="{{ row.core_id }}" />
+                        </td>
+                        <td>
+                          {{ row.list_name }}
+                          <input type="hidden" name="wan_{{ loop.index0 }}_list" value="{{ row.list_name }}" />
+                        </td>
+                        <td>
+                          {% if row.identifier_missing %}
+                            <span class="text-muted">add identifier name in pulsewatch</span>
+                          {% else %}
+                            {{ row.identifier }}
+                          {% endif %}
+                        </td>
+                        <td>
+                          <select name="wan_{{ loop.index0 }}_mode" class="form-select wan-mode" data-row="{{ loop.index0 }}">
+                            <option value="routed" {% if row.mode == 'routed' %}selected{% endif %}>Routed</option>
+                            <option value="bridged" {% if row.mode == 'bridged' %}selected{% endif %}>Bridged</option>
+                          </select>
+                        </td>
+                        <td>
+                          <input type="text" class="form-control wan-local-ip" name="wan_{{ loop.index0 }}_local_ip" value="{{ row.local_ip }}" data-row="{{ loop.index0 }}" />
+                        </td>
+                        <td>
+                          <input type="text" class="form-control wan-gateway-ip" name="wan_{{ loop.index0 }}_gateway_ip" value="{{ row.gateway_ip }}" data-row="{{ loop.index0 }}" />
+                        </td>
+                        <td>
+                          <select name="wan_{{ loop.index0 }}_pppoe_router_id" class="form-select wan-router" data-row="{{ loop.index0 }}">
+                            <option value="">Select router</option>
+                            {% for router in settings.pppoe_routers %}
+                              <option value="{{ router.id }}" {% if row.pppoe_router_id == router.id %}selected{% endif %}>{{ router.name or router.id }}</option>
+                            {% endfor %}
+                          </select>
+                        </td>
+                        <td>
+                          <label class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" name="wan_{{ loop.index0 }}_enabled" {% if row.enabled %}checked{% endif %} />
+                          </label>
+                        </td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+              {% if not wan_rows %}
+                <div class="text-muted">No TO-ISP lists detected. Check System Settings or MikroTik API connectivity.</div>
+              {% endif %}
+            </div>
+            <div class="card-footer d-flex justify-content-end">
+              <button type="submit" class="btn btn-primary">Save WAN List</button>
+            </div>
+          </div>
+        </form>
+        <div class="card">
+          <div class="card-body">
+            <div class="text-muted">Use this tab to manage WAN list settings.</div>
+          </div>
+        </div>
+          </div>
+
+          <div class="tab-pane {% if active_tab == 'routers' %}active{% endif %}" id="wan-routers">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h4 class="mb-0">PPPoE MikroTik Routers</h4>
+          <form method="post" action="/settings/wan/routers/add">
+            <button type="submit" class="btn btn-outline-primary">Add Router</button>
+          </form>
+        </div>
+        <form method="post" action="/settings/wan/routers">
+          <input type="hidden" name="router_count" value="{{ settings.pppoe_routers|length }}" />
+          <div style="overflow-x: auto;">
+            <table class="table table-vcenter">
+              <thead>
+                <tr>
+                  <th title="Friendly label for the PPPoE router.">Name</th>
+                  <th title="Router IP or hostname for RouterOS API.">Host</th>
+                  <th title="API port (8728) or API-SSL port (8729).">Port</th>
+                  <th title="RouterOS API username.">Username</th>
+                  <th title="RouterOS API password.">Password</th>
+                  <th title="Enable only if api-ssl is configured on the router.">TLS</th>
+                  <th title="Try connecting to the RouterOS API.">Test</th>
+                  <th title="Mark for removal on save.">Remove</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for router in settings.pppoe_routers %}
+                  <tr>
+                    <td>
+                      <input type="hidden" name="router_{{ loop.index0 }}_id" value="{{ router.id }}" />
+                      <input class="form-control" type="text" name="router_{{ loop.index0 }}_name" value="{{ router.name }}" />
+                    </td>
+                    <td><input class="form-control" type="text" name="router_{{ loop.index0 }}_host" value="{{ router.host }}" /></td>
+                    <td><input class="form-control" type="number" name="router_{{ loop.index0 }}_port" value="{{ router.port or 8728 }}" /></td>
+                    <td><input class="form-control" type="text" name="router_{{ loop.index0 }}_username" value="{{ router.username }}" /></td>
+                    <td><input class="form-control" type="password" name="router_{{ loop.index0 }}_password" value="{{ router.password }}" /></td>
+                    <td>
+                      <label class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" name="router_{{ loop.index0 }}_use_tls" {% if router.use_tls %}checked{% endif %} />
+                      </label>
+                    </td>
+                    <td>
+                      <button type="submit" class="btn btn-outline-primary btn-sm" formaction="/settings/wan/routers/test/{{ router.id }}" formmethod="post">Test</button>
+                    </td>
+                    <td>
+                      <label class="form-check">
+                        <input class="form-check-input" type="checkbox" name="router_{{ loop.index0 }}_remove" />
+                        <span class="form-check-label text-muted">Remove</span>
+                      </label>
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% if not settings.pppoe_routers %}
+            <div class="text-muted">No PPPoE routers added.</div>
+          {% endif %}
+          <div class="d-flex justify-content-end mt-3">
+            <button type="submit" class="btn btn-primary">Save PPPoE Routers</button>
+          </div>
+        </form>
+          </div>
+
+          <div class="tab-pane {% if active_tab == 'settings' %}active{% endif %}" id="wan-settings-tab">
+        <form method="post" action="/settings/wan/telegram">
+          <div class="card mb-3">
+            <div class="card-body">
+              <h4 class="mb-3">Telegram</h4>
+              <div class="row g-3">
+                <div class="col-md-6">
+                  <label class="form-label">Bot Token <span class="info" data-tip="Telegram bot token from BotFather.">i</span></label>
+                  <input class="form-control" type="text" name="telegram_bot_token" value="{{ settings.telegram.bot_token }}" />
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label">Chat ID <span class="info" data-tip="Target Telegram chat ID where alerts should be sent.">i</span></label>
+                  <input class="form-control" type="text" name="telegram_chat_id" value="{{ settings.telegram.chat_id }}" />
+                </div>
+              </div>
+            </div>
+            <div class="card-footer d-flex justify-content-end">
+              <button type="submit" class="btn btn-primary">Save Telegram Settings</button>
+            </div>
+          </div>
+        </form>
+        <div class="card mb-3">
+          <div class="card-body">
+            <h4 class="mb-3">WAN Ping Interval</h4>
+            <div class="row g-3">
+              <div class="col-md-4">
+                <label class="form-label">Interval (seconds)</label>
+                <input class="form-control" type="number" name="wan_interval_seconds" value="{{ settings.general.interval_seconds }}" form="wan-interval-form" />
+                <div class="help">How often to poll WAN status and refresh Netwatch entries.</div>
+              </div>
+            </div>
+          </div>
+          <div class="card-footer d-flex justify-content-end">
+            <form id="wan-interval-form" method="post" action="/settings/wan/interval">
+              <button type="submit" class="btn btn-primary">Save Interval</button>
+            </form>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-body">
+            <h4 class="mb-2">Format WAN Status Database</h4>
+            <div class="alert alert-warning">
+              <div class="d-flex align-items-center">
+                <span class="me-2"><i class="ti ti-alert-triangle"></i></span>
+                <div>Formatting removes WAN status history. Settings are preserved.</div>
+              </div>
+            </div>
+            <form method="post" action="/settings/wan/format">
+              <label class="form-check">
+                <input class="form-check-input" type="checkbox" name="confirm_format" />
+                <span class="form-check-label">I understand this will erase WAN status data.</span>
+              </label>
+              <div class="mt-3">
+                <button type="submit" class="btn btn-danger">Format WAN Status Database</button>
+              </div>
+            </form>
+          </div>
+        </div>
+          </div>
+
+          <div class="tab-pane {% if active_tab == 'messages' %}active{% endif %}" id="wan-messages">
+        <form method="post" action="/settings/wan/messages">
+          <div class="card mb-3">
+            <div class="card-body">
+              <h4 class="mb-3">Per-ISP Messages</h4>
+              <div class="alert alert-info">
+                <div class="d-flex align-items-start">
+                  <span class="me-2"><i class="ti ti-info-circle"></i></span>
+                  <div>Use emojis or Telegram icon codes in the messages. Multi-line text is supported.</div>
+                </div>
+              </div>
+              <input type="hidden" name="message_count" value="{{ wan_rows|length }}" />
+              {% for row in wan_rows %}
+                {% set msg = settings.messages.get(row.wan_id, {}) %}
+                <div class="border rounded p-3 mb-3">
+                  <div class="fw-semibold mb-2">
+                    {{ row.core_label }} - {{ row.identifier or row.list_name }}
+                    {% if row.identifier_missing %}
+                      <span class="text-muted">(add identifier name in pulsewatch)</span>
+                    {% endif %}
+                  </div>
+                  <input type="hidden" name="message_{{ loop.index0 }}_id" value="{{ row.wan_id }}" />
+                  <div class="row g-3">
+                    <div class="col-md-4">
+                      <label class="form-label">Down Message <span class="info" data-tip="Sent when the WAN goes DOWN. Supports {label}.">i</span></label>
+                      <textarea class="form-control" name="message_{{ loop.index0 }}_down_msg" rows="3">{{ msg.down_msg or "" }}</textarea>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Up Message <span class="info" data-tip="Sent when the WAN comes UP again. Supports {label}.">i</span></label>
+                      <textarea class="form-control" name="message_{{ loop.index0 }}_up_msg" rows="3">{{ msg.up_msg or "" }}</textarea>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Still Down Message <span class="info" data-tip="Sent on a repeating interval while still down. Supports {label}.">i</span></label>
+                      <textarea class="form-control" name="message_{{ loop.index0 }}_still_down_msg" rows="3">{{ msg.still_down_msg or "" }}</textarea>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Send Down Message Once <span class="info" data-tip="If disabled, DOWN messages repeat every N minutes.">i</span></label>
+                      <label class="form-check form-switch">
+                        <input class="form-check-input wan-send-once" type="checkbox" name="message_{{ loop.index0 }}_send_down_once" data-row="{{ loop.index0 }}" {% if msg.send_down_once is not defined or msg.send_down_once %}checked{% endif %} />
+                        <span class="form-check-label">Enabled</span>
+                      </label>
+                    </div>
+                    <div class="col-md-4 wan-repeat-field" data-row="{{ loop.index0 }}">
+                      <label class="form-label">Repeat Down Message (minutes) <span class="info" data-tip="How often to resend DOWN messages when Send Once is disabled.">i</span></label>
+                      <input class="form-control" type="number" name="message_{{ loop.index0 }}_repeat_minutes" value="{{ msg.repeat_down_interval_minutes or 30 }}" />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Still Down Interval (hours) <span class="info" data-tip="How often to send the Still Down message.">i</span></label>
+                      <input class="form-control" type="number" name="message_{{ loop.index0 }}_still_hours" value="{{ msg.still_down_interval_hours or 8 }}" />
+                    </div>
+                  </div>
+                </div>
+              {% endfor %}
+              {% if not wan_rows %}
+                <div class="text-muted">No WAN entries detected yet.</div>
+              {% endif %}
+            </div>
+            <div class="card-footer d-flex justify-content-end">
+              <button type="submit" class="btn btn-primary">Save Messages</button>
+            </div>
+          </div>
+        </form>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const toggleWanFields = (rowId) => {
+    const mode = document.querySelector(`.wan-mode[data-row="${rowId}"]`);
+    const localInput = document.querySelector(`.wan-local-ip[data-row="${rowId}"]`);
+    const gatewayInput = document.querySelector(`.wan-gateway-ip[data-row="${rowId}"]`);
+    const routerSelect = document.querySelector(`.wan-router[data-row="${rowId}"]`);
+    if (!mode || !localInput || !gatewayInput || !routerSelect) return;
+    const isBridged = mode.value === "bridged";
+    localInput.disabled = isBridged;
+    gatewayInput.disabled = false;
+    routerSelect.disabled = !isBridged;
+    localInput.style.opacity = isBridged ? "0.6" : "1";
+    gatewayInput.style.opacity = "1";
+    routerSelect.style.opacity = isBridged ? "1" : "0.6";
+  };
+
+  document.querySelectorAll(".wan-mode").forEach((select) => {
+    toggleWanFields(select.dataset.row);
+    select.addEventListener("change", () => toggleWanFields(select.dataset.row));
+  });
+
+  const toggleRepeatField = (rowId) => {
+    const checkbox = document.querySelector(`.wan-send-once[data-row="${rowId}"]`);
+    const repeatField = document.querySelector(`.wan-repeat-field[data-row="${rowId}"]`);
+    if (!checkbox || !repeatField) return;
+    const hidden = checkbox.checked;
+    repeatField.style.opacity = hidden ? "0.5" : "1";
+    repeatField.querySelector("input").disabled = hidden;
+  };
+
+  document.querySelectorAll(".wan-send-once").forEach((checkbox) => {
+    toggleRepeatField(checkbox.dataset.row);
+    checkbox.addEventListener("change", () => toggleRepeatField(checkbox.dataset.row));
+  });
+
+  let wanLatencySeries = {{ wan_latency_series | tojson }};
+  const chartEl = document.getElementById("wan-latency-chart");
+  const legendEl = document.getElementById("wan-latency-legend");
+  const filterEl = document.getElementById("wan-core-filter");
+  const rangeEl = document.getElementById("wan-range-filter");
+  const targetEl = document.getElementById("wan-target-filter");
+  const fromEl = document.getElementById("wan-from-filter");
+  const toEl = document.getElementById("wan-to-filter");
+  const statusBody = document.getElementById("wan-status-body");
+  const wanRefreshSeconds = 2;
+
+  const escapeHtml = (value) => String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
+  const tooltip = document.createElement("div");
+  tooltip.style.position = "absolute";
+  tooltip.style.background = "transparent";
+  tooltip.style.color = "#111827";
+  tooltip.style.padding = "6px 8px";
+  tooltip.style.borderRadius = "6px";
+  tooltip.style.fontSize = "12px";
+  tooltip.style.textShadow = "0 0 2px #fff, 0 0 4px #fff";
+  tooltip.style.pointerEvents = "none";
+  tooltip.style.display = "none";
+  tooltip.style.zIndex = "10";
+  if (chartEl) {
+    chartEl.appendChild(tooltip);
+  }
+
+  const toEpoch = (value) => {
+    if (!value) return null;
+    const raw = value.endsWith("Z") ? value : `${value}Z`;
+    const parsed = Date.parse(raw);
+    return Number.isNaN(parsed) ? null : parsed;
+  };
+
+  const toLocalEpoch = (value) => {
+    if (!value) return null;
+    const parsed = new Date(value).getTime();
+    if (!Number.isNaN(parsed)) return parsed;
+    const fallback = Date.parse(value);
+    return Number.isNaN(fallback) ? null : fallback;
+  };
+
+  const resolveWindow = (series, hours, fromTs, toTs) => {
+    const allTimes = series.flatMap((item) => item.points.map((point) => toEpoch(point.ts))).filter(Boolean);
+    if (!allTimes.length) return null;
+    const minAll = Math.min(...allTimes);
+    const maxAll = Math.max(...allTimes);
+    let start;
+    let end;
+    if (fromTs || toTs) {
+      start = fromTs ?? minAll;
+      end = toTs ?? maxAll;
+    } else {
+      end = maxAll;
+      start = end - hours * 60 * 60 * 1000;
+    }
+    if (start > end) {
+      const temp = start;
+      start = end;
+      end = temp;
+    }
+    return { start, end };
+  };
+
+  const renderChart = (coreId, hours, target, fromTs, toTs) => {
+    if (!chartEl) return;
+    const filtered = wanLatencySeries.filter((item) => {
+      if (coreId !== "all" && item.core_id !== coreId) return false;
+      if (target !== "all" && item.target !== target) return false;
+      return true;
+    });
+    const window = resolveWindow(filtered, hours, fromTs, toTs);
+    if (!window) {
+      chartEl.innerHTML = "<div class='text-muted'>No latency data available.</div>";
+      return;
+    }
+    const series = filtered.map((item) => ({
+      ...item,
+      points: item.points.filter((point) => {
+        const ts = toEpoch(point.ts);
+        return ts !== null && ts >= window.start && ts <= window.end;
+      }),
+    }));
+    chartEl.innerHTML = "";
+    legendEl.innerHTML = "";
+    chartEl.appendChild(tooltip);
+    if (!series.length) {
+      chartEl.innerHTML = "<div class='text-muted'>No data for selected core.</div>";
+      return;
+    }
+
+    const minX = window.start;
+    const maxX = window.end;
+
+    const formatDuration = (seconds) => {
+      const total = Math.max(Math.round(seconds), 0);
+      const hrs = Math.floor(total / 3600);
+      const mins = Math.floor((total % 3600) / 60);
+      const secs = total % 60;
+      const pad = (n) => String(n).padStart(2, "0");
+      return `${pad(hrs)}:${pad(mins)}:${pad(secs)}s`;
+    };
+
+    const renderSeries = series.map((item) => {
+      const points = item.points
+        .map((point) => ({
+          x: toEpoch(point.ts),
+          y: point.value,
+          downtime: formatDuration(point.downtime_seconds || 0),
+        }))
+        .filter((point) => point.x !== null && point.y !== null)
+        .sort((a, b) => a.x - b.x);
+      if (!points.length) return { ...item, renderPoints: [], rawPoints: [] };
+      const stepPoints = [];
+      for (let i = 0; i < points.length; i += 1) {
+        stepPoints.push(points[i]);
+        if (i < points.length - 1) {
+          stepPoints.push({ x: points[i + 1].x, y: points[i].y, downtime: points[i].downtime });
+        }
+      }
+      return { ...item, renderPoints: stepPoints, rawPoints: points };
+    });
+
+    const rawPoints = renderSeries.flatMap((item) =>
+      item.renderPoints.map((point) => ({ x: point.x, y: point.y }))
+    ).filter((point) => point.x !== null && point.y !== null);
+    if (!rawPoints.length) {
+      chartEl.innerHTML = "<div class='text-muted'>No latency data available.</div>";
+      return;
+    }
+
+    const allPoints = renderSeries.flatMap((item) => item.renderPoints);
+    const minY = 0;
+    const maxY = 100;
+    const width = chartEl.clientWidth || 600;
+    const height = 240;
+    const pad = 24;
+    const spanX = Math.max(maxX - minX, 1);
+    const spanY = Math.max(maxY - minY, 1);
+
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("width", "100%");
+    svg.setAttribute("height", height + pad * 1.5);
+    svg.setAttribute("viewBox", `0 0 ${width} ${height + pad * 1.5}`);
+
+    const axis = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    axis.setAttribute("x1", pad);
+    axis.setAttribute("x2", width - pad);
+    axis.setAttribute("y1", height);
+    axis.setAttribute("y2", height);
+    axis.setAttribute("stroke", "#e5e7eb");
+    axis.setAttribute("stroke-width", "1");
+    svg.appendChild(axis);
+
+    const niceStep = (range) => {
+      const rough = range / 5;
+      const power = Math.pow(10, Math.floor(Math.log10(Math.max(rough, 1))));
+      const scaled = rough / power;
+      if (scaled <= 1) return 1 * power;
+      if (scaled <= 2) return 2 * power;
+      if (scaled <= 5) return 5 * power;
+      return 10 * power;
+    };
+
+    const yStep = niceStep(maxY - minY);
+    const yStart = Math.floor(minY / yStep) * yStep;
+    const yEnd = Math.ceil(maxY / yStep) * yStep;
+    for (let y = yStart; y <= yEnd; y += yStep) {
+      const yPos = height - ((y - minY) / spanY) * (height - pad);
+      const grid = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      grid.setAttribute("x1", pad);
+      grid.setAttribute("x2", width - pad);
+      grid.setAttribute("y1", yPos.toFixed(1));
+      grid.setAttribute("y2", yPos.toFixed(1));
+      grid.setAttribute("stroke", "#f3f4f6");
+      grid.setAttribute("stroke-width", "1");
+      svg.appendChild(grid);
+
+      const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      label.setAttribute("x", 4);
+      label.setAttribute("y", yPos + 4);
+      label.setAttribute("fill", "#6b7280");
+      label.setAttribute("font-size", "10");
+      label.textContent = y.toFixed(0);
+      svg.appendChild(label);
+    }
+
+    const gapThresholdMs = 30 * 60 * 1000;
+    renderSeries.forEach((item) => {
+      if (!item.renderPoints.length) return;
+      const sorted = item.renderPoints.sort((a, b) => a.x - b.x);
+      let segment = [];
+      const flushSegment = () => {
+        if (!segment.length) return;
+        const path = segment
+          .map((point) => {
+            const x = pad + ((point.x - minX) / spanX) * (width - pad * 2);
+            const y = height - ((point.y - minY) / spanY) * (height - pad);
+            return `${x.toFixed(1)},${y.toFixed(1)}`;
+          })
+          .join(" ");
+        const polyline = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+        polyline.setAttribute("points", path);
+        polyline.setAttribute("fill", "none");
+        polyline.setAttribute("stroke", item.color);
+        polyline.setAttribute("stroke-width", "2");
+        polyline.setAttribute("opacity", "0.9");
+        polyline.setAttribute("data-series-id", item.id);
+        svg.appendChild(polyline);
+        segment = [];
+      };
+      let lastPoint = null;
+      sorted.forEach((point) => {
+        if (lastPoint && point.x - lastPoint.x > gapThresholdMs) {
+          flushSegment();
+        }
+        segment.push(point);
+        lastPoint = point;
+      });
+      flushSegment();
+
+      const legend = document.createElement("div");
+      legend.className = "d-flex align-items-center gap-2";
+      legend.setAttribute("data-series-id", item.id);
+      legend.innerHTML = `<span style="width:12px;height:12px;border-radius:50%;background:${item.color};display:inline-block;"></span><span class="small text-muted">${item.name}</span>`;
+      legendEl.appendChild(legend);
+    });
+
+    const overlay = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    overlay.setAttribute("x", pad);
+    overlay.setAttribute("y", 0);
+    overlay.setAttribute("width", width - pad * 2);
+    overlay.setAttribute("height", height);
+    overlay.setAttribute("fill", "transparent");
+    overlay.style.cursor = "default";
+    svg.appendChild(overlay);
+
+    overlay.addEventListener("mousemove", (event) => {
+      const rect = svg.getBoundingClientRect();
+      const x = event.clientX - rect.left;
+      const rel = Math.min(Math.max(x - pad, 0), width - pad * 2);
+      const targetTs = minX + (rel / (width - pad * 2)) * spanX;
+      const details = [];
+      const maxGapMs = Math.max(spanX * 0.03, 10 * 60 * 1000);
+      const activeList = activeIds.size ? Array.from(activeIds) : null;
+      renderSeries.forEach((item) => {
+        if (activeList && !activeIds.has(item.id)) {
+          return;
+        }
+        const points = item.renderPoints
+          .map((point) => ({ x: point.x, y: point.y, downtime: point.downtime }))
+          .filter((point) => point.x !== null && point.y !== null);
+        if (!points.length) return;
+        let nearest = points[0];
+        let best = Math.abs(points[0].x - targetTs);
+        for (const point of points) {
+          const diff = Math.abs(point.x - targetTs);
+          if (diff < best) {
+            best = diff;
+            nearest = point;
+          }
+        }
+        if (Math.abs(nearest.x - targetTs) <= maxGapMs) {
+          details.push({ name: item.name, color: item.color, value: nearest.y, downtime: nearest.downtime || "00:00:00s" });
+        }
+      });
+      if (!details.length) {
+        tooltip.style.display = "none";
+        return;
+      }
+      const timeLabel = new Date(targetTs).toLocaleString("en-PH", { hour12: true });
+      tooltip.innerHTML = `<div class="fw-semibold mb-1">${timeLabel}</div>` +
+        details.map((item) => `<div style="display:flex;gap:6px;align-items:center;"><span style="width:8px;height:8px;border-radius:50%;background:${item.color};display:inline-block;"></span><span>${item.name}: ${item.value.toFixed(0)}% uptime · ${item.downtime} downtime</span></div>`).join("");
+      tooltip.style.left = `${Math.min(x + 12, rect.width - 220)}px`;
+      tooltip.style.top = `${Math.max(8, event.clientY - rect.top - 60)}px`;
+      tooltip.style.display = "block";
+    });
+
+    overlay.addEventListener("mouseleave", () => {
+      tooltip.style.display = "none";
+    });
+
+    overlay.addEventListener("wheel", (event) => {
+      if (!event.ctrlKey) return;
+      event.preventDefault();
+      const rect = svg.getBoundingClientRect();
+      const x = Math.min(Math.max(event.clientX - rect.left, pad), width - pad);
+      const rel = Math.min(Math.max(x - pad, 0), width - pad * 2);
+      const anchorTs = minX + (rel / (width - pad * 2)) * spanX;
+      const { fromTs, toTs } = syncRangeState();
+      const window = resolveZoomWindow(getRangeHours(), fromTs, toTs);
+      const currentStart = window.start;
+      const currentEnd = window.end;
+      const scale = event.deltaY < 0 ? 0.8 : 1.25;
+      const newStart = anchorTs - (anchorTs - currentStart) * scale;
+      const newEnd = anchorTs + (currentEnd - anchorTs) * scale;
+      setWindow(newStart, newEnd);
+      updateChart();
+    }, { passive: false });
+
+    chartEl.appendChild(svg);
+
+    const activeIds = new Set();
+    const setOpacity = () => {
+      const lines = svg.querySelectorAll("polyline[data-series-id]");
+      const hasSelection = activeIds.size > 0;
+      lines.forEach((line) => {
+        const id = line.getAttribute("data-series-id");
+        line.setAttribute("opacity", hasSelection && !activeIds.has(id) ? "0.2" : "0.95");
+      });
+      const labels = legendEl.querySelectorAll("[data-series-id]");
+      labels.forEach((label) => {
+        const id = label.getAttribute("data-series-id");
+        label.style.opacity = hasSelection && !activeIds.has(id) ? "0.4" : "1";
+        label.style.fontWeight = activeIds.has(id) ? "600" : "400";
+      });
+    };
+
+    legendEl.querySelectorAll("[data-series-id]").forEach((label) => {
+      const seriesId = label.getAttribute("data-series-id");
+      label.style.cursor = "pointer";
+      label.addEventListener("click", () => {
+        if (activeIds.has(seriesId)) {
+          activeIds.delete(seriesId);
+        } else {
+          activeIds.add(seriesId);
+        }
+        setOpacity();
+      });
+    });
+  };
+
+  const getRangeHours = () => {
+    const parsed = parseInt(rangeEl.value, 10);
+    return Number.isNaN(parsed) ? 24 : parsed;
+  };
+
+  const formatLocalInput = (ts) => {
+    const dt = new Date(ts);
+    if (Number.isNaN(dt.getTime())) return "";
+    const pad = (n) => String(n).padStart(2, "0");
+    const yyyy = dt.getFullYear();
+    const mm = pad(dt.getMonth() + 1);
+    const dd = pad(dt.getDate());
+    const hh = pad(dt.getHours());
+    const min = pad(dt.getMinutes());
+    return `${yyyy}-${mm}-${dd}T${hh}:${min}`;
+  };
+
+  const resolveZoomWindow = (hours, fromTs, toTs) => {
+    let start;
+    let end;
+    if (fromTs || toTs) {
+      start = fromTs ?? toTs;
+      end = toTs ?? fromTs;
+    } else {
+      end = Date.now();
+      start = end - hours * 60 * 60 * 1000;
+    }
+    if (start > end) {
+      const temp = start;
+      start = end;
+      end = temp;
+    }
+    return { start, end };
+  };
+
+  const toIsoString = (value) => {
+    if (!value) return null;
+    const dt = new Date(value);
+    if (Number.isNaN(dt.getTime())) return null;
+    return dt.toISOString();
+  };
+
+  const syncRangeState = () => {
+    const fromTs = toLocalEpoch(fromEl.value);
+    const toTs = toLocalEpoch(toEl.value);
+    const hasWindow = Boolean(fromTs || toTs);
+    rangeEl.disabled = hasWindow;
+    return { fromTs, toTs };
+  };
+
+  const fetchSeries = async (hours, fromIso, toIso) => {
+    const params = new URLSearchParams();
+    params.set("core_id", filterEl.value);
+    params.set("target", targetEl.value);
+    params.set("hours", String(hours));
+    if (fromIso) params.set("start", fromIso);
+    if (toIso) params.set("end", toIso);
+    const response = await fetch(`/wan/latency-series?${params.toString()}`, {
+      headers: { "Accept": "application/json" },
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      throw new Error("Failed to load WAN latency series");
+    }
+    const payload = await response.json();
+    wanLatencySeries = payload.series || [];
+    if (legendEl) {
+      legendEl.style.display = wanLatencySeries.length ? "flex" : "none";
+    }
+  };
+
+  const updateChart = async () => {
+    const { fromTs, toTs } = syncRangeState();
+    const hours = getRangeHours();
+    const fromIso = toIsoString(fromEl.value);
+    const toIso = toIsoString(toEl.value);
+    try {
+      await fetchSeries(hours, fromIso, toIso);
+    } catch (err) {
+      console.error(err);
+    }
+    renderChart(filterEl.value, hours, targetEl.value, fromTs, toTs);
+  };
+
+  const renderStatusTable = (rows) => {
+    if (!statusBody) return;
+    if (!rows.length) {
+      statusBody.innerHTML = "<tr><td colspan='6' class='text-muted'>No WAN entries configured yet.</td></tr>";
+      return;
+    }
+    statusBody.innerHTML = rows.map((row) => `
+      <tr>
+        <td>${escapeHtml(row.label || "n/a")}</td>
+        <td>${escapeHtml(row.status || "n/a")}</td>
+        <td>${escapeHtml(row.target || "n/a")}</td>
+        <td>${escapeHtml(row.last_check || "n/a")}</td>
+        <td>${escapeHtml(row.last_rtt_ms ?? "n/a")}</td>
+        <td>${escapeHtml(row.last_error || "")}</td>
+      </tr>
+    `).join("");
+  };
+
+  const fetchStatus = async () => {
+    try {
+      const response = await fetch("/wan/status", {
+        headers: { "Accept": "application/json" },
+        cache: "no-store",
+      });
+      if (!response.ok) return;
+      const payload = await response.json();
+      renderStatusTable(payload.rows || []);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  if (filterEl) {
+    filterEl.addEventListener("change", () => {
+      updateChart();
+    });
+  }
+  if (rangeEl) {
+    rangeEl.addEventListener("change", () => {
+      if (fromEl) fromEl.value = "";
+      if (toEl) toEl.value = "";
+      rangeEl.disabled = false;
+      updateChart();
+    });
+  }
+  if (targetEl) {
+    targetEl.addEventListener("change", () => {
+      updateChart();
+    });
+  }
+  if (fromEl) {
+    fromEl.addEventListener("change", () => {
+      updateChart();
+    });
+  }
+  if (toEl) {
+    toEl.addEventListener("change", () => {
+      updateChart();
+    });
+  }
+  const setWindow = (start, end) => {
+    fromEl.value = formatLocalInput(start);
+    toEl.value = formatLocalInput(end);
+  };
+
+  window.addEventListener("resize", () => {
+    const { fromTs, toTs } = syncRangeState();
+    renderChart(filterEl ? filterEl.value : "all", getRangeHours(), targetEl.value, fromTs, toTs);
+  });
+
+  updateChart();
+  fetchStatus();
+  setInterval(() => {
+    fetchStatus();
+    updateChart();
+  }, wanRefreshSeconds * 1000);
+
+  setTimeout(() => {
+    updateChart();
+  }, 500);
+
+  const statusTab = document.querySelector('a[href="#wan-status"]');
+  if (statusTab) {
+    statusTab.addEventListener("shown.bs.tab", () => {
+      updateChart();
+      fetchStatus();
+    });
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      fetchStatus();
+      updateChart();
+    }
+  });
+</script>
+{% endblock %}

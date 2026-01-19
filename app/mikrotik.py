@@ -201,6 +201,79 @@ class RouterOSClient:
             entries.append(data)
         return entries
 
+    def list_netwatch(self):
+        replies = self.talk(["/tool/netwatch/print"])
+        entries = []
+        for sentence in replies:
+            if sentence[0] != "!re":
+                continue
+            data = {}
+            for word in sentence[1:]:
+                if not word:
+                    continue
+                if word.startswith("="):
+                    word = word[1:]
+                if "=" in word:
+                    key, value = word.split("=", 1)
+                    data[key] = value
+            entries.append(data)
+        return entries
+
+    def add_netwatch(self, host, interval, timeout, comment):
+        words = [
+            "/tool/netwatch/add",
+            f"=host={host}",
+            f"=interval={interval}",
+            f"=timeout={timeout}",
+            f"=comment={comment}",
+        ]
+        replies = self.talk(words)
+        for sentence in replies:
+            if sentence[0] == "!trap":
+                raise RuntimeError(f"RouterOS netwatch add failed: {sentence}")
+
+    def set_netwatch(self, entry_id, host, interval, timeout, comment):
+        words = [
+            "/tool/netwatch/set",
+            f"=.id={entry_id}",
+            f"=host={host}",
+            f"=interval={interval}",
+            f"=timeout={timeout}",
+            f"=comment={comment}",
+        ]
+        replies = self.talk(words)
+        for sentence in replies:
+            if sentence[0] == "!trap":
+                raise RuntimeError(f"RouterOS netwatch set failed: {sentence}")
+
+    def ping(self, address, count=3, src_address=None):
+        words = ["/ping", f"=address={address}", f"=count={count}"]
+        if src_address:
+            words.append(f"=src-address={src_address}")
+        replies = self.talk(words)
+        rtt_ms = None
+        received = 0
+        for sentence in replies:
+            if sentence[0] == "!re":
+                data = {}
+                for word in sentence[1:]:
+                    if not word:
+                        continue
+                    if word.startswith("="):
+                        word = word[1:]
+                    if "=" in word:
+                        key, value = word.split("=", 1)
+                        data[key] = value
+                time_value = data.get("time") or data.get("time-ms")
+                if time_value:
+                    cleaned = str(time_value).replace("ms", "").strip()
+                    try:
+                        rtt_ms = float(cleaned)
+                    except ValueError:
+                        rtt_ms = None
+                received += 1
+        return received > 0, rtt_ms, received
+
 
 def reconcile_address_lists(client, desired_entries, comment_tag):
     existing = client.list_address_list()
