@@ -147,6 +147,8 @@ class JobsManager:
                     latest["pulsewatch"] = state["pulsewatch"]
                 if "last_pulsewatch_prune_at" in state:
                     latest["last_pulsewatch_prune_at"] = state["last_pulsewatch_prune_at"]
+                if "last_mikrotik_reconcile_at" in state:
+                    latest["last_mikrotik_reconcile_at"] = state["last_mikrotik_reconcile_at"]
                 save_state("isp_ping_state", latest)
                 update_job_status("pulsewatch", last_success_at=utc_now_iso(), last_error="", last_error_at="")
             except TelegramError as exc:

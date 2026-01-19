@@ -463,6 +463,64 @@ def get_ping_latency_trend_window(isp_ids, start_iso, end_iso):
         conn.close()
 
 
+def get_ping_rollup_history_map(isp_ids, since_iso, target=None):
+    if not isp_ids:
+        return {}
+    conn = get_conn()
+    try:
+        history = {}
+        for isp_id in isp_ids:
+            params = [isp_id, since_iso]
+            target_clause = ""
+            if target:
+                target_clause = "AND target = ?"
+                params.append(target)
+            rows = conn.execute(
+                f"""
+                SELECT
+                  bucket_ts AS timestamp,
+                  target,
+                  CASE WHEN avg_count > 0 THEN (avg_sum / avg_count) ELSE NULL END AS avg_ms,
+                  CASE WHEN loss_count > 0 THEN (loss_sum / loss_count) ELSE NULL END AS loss
+                FROM ping_rollups
+                WHERE isp_id = ? AND bucket_ts >= ? {target_clause}
+                ORDER BY bucket_ts ASC
+                """,
+                params,
+            ).fetchall()
+            history[isp_id] = [dict(row) for row in rows]
+        return history
+    finally:
+        conn.close()
+
+
+def get_ping_stability_counts(isp_ids, since_iso):
+    if not isp_ids:
+        return {}
+    placeholders = ",".join("?" for _ in isp_ids)
+    params = list(isp_ids) + [since_iso]
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT
+              isp_id,
+              SUM(CASE WHEN loss >= 100 OR avg_ms IS NULL THEN 1 ELSE 0 END) AS outage,
+              SUM(CASE WHEN loss < 100 AND avg_ms IS NOT NULL AND avg_ms <= 80 THEN 1 ELSE 0 END) AS healthy,
+              SUM(CASE WHEN loss < 100 AND avg_ms IS NOT NULL AND avg_ms BETWEEN 81 AND 150 THEN 1 ELSE 0 END) AS degraded,
+              SUM(CASE WHEN loss < 100 AND avg_ms IS NOT NULL AND avg_ms > 150 THEN 1 ELSE 0 END) AS poor,
+              COUNT(*) AS total
+            FROM ping_results
+            WHERE isp_id IN ({placeholders}) AND timestamp >= ?
+            GROUP BY isp_id
+            """,
+            params,
+        ).fetchall()
+        return {row["isp_id"]: dict(row) for row in rows}
+    finally:
+        conn.close()
+
+
 def delete_pulsewatch_raw_older_than(cutoff_iso):
     conn = get_conn()
     try:

@@ -8,6 +8,7 @@ import os
 import base64
 import shlex
 import shutil
+import time
 import subprocess
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
@@ -23,6 +24,8 @@ from .db import (
     get_ping_history_map,
     get_ping_latency_trend_map,
     get_ping_latency_trend_window,
+    get_ping_rollup_history_map,
+    get_ping_stability_counts,
     init_db,
     clear_pulsewatch_data,
 )
@@ -44,6 +47,7 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="stat
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 jobs_manager = JobsManager()
+_cpu_sample = {"total": None, "idle": None}
 
 
 @app.on_event("startup")
@@ -595,6 +599,11 @@ def normalize_pulsewatch_settings(settings):
     pulse = settings.setdefault("pulsewatch", {})
     pulse.setdefault("retention_days", 30)
     pulse.setdefault("rollup_retention_days", 365)
+    dashboard = pulse.setdefault("dashboard", {})
+    dashboard.setdefault("default_target", "all")
+    dashboard.setdefault("refresh_seconds", 2)
+    dashboard.setdefault("loss_history_minutes", 120)
+    dashboard.setdefault("pie_default_days", 7)
     mikrotik = pulse.setdefault("mikrotik", {})
     cores = mikrotik.get("cores")
     if cores is None:
@@ -764,6 +773,11 @@ def build_pulsewatch_rows(settings):
 
 def render_pulsewatch_response(request, settings, message):
     preset_rows, show_recommendation = build_pulsewatch_rows(settings)
+    targets = []
+    for row in preset_rows:
+        for target in row.get("ping_targets", []) or []:
+            if target and target not in targets:
+                targets.append(target)
     return templates.TemplateResponse(
         "settings_pulsewatch.html",
         make_context(
@@ -773,6 +787,7 @@ def render_pulsewatch_response(request, settings, message):
                 "message": message,
                 "preset_rows": preset_rows,
                 "show_preset_recommendation": show_recommendation,
+                "pulsewatch_targets": targets,
             },
         ),
     )
@@ -819,6 +834,76 @@ def format_pulsewatch_speedtest_summary(settings, results):
         summary = ", ".join(parts) if parts else "speedtest completed"
         messages.append(f"{label} {summary}")
     return messages
+
+
+def _read_cpu_times():
+    try:
+        with open("/proc/stat", "r", encoding="utf-8") as handle:
+            line = handle.readline()
+        parts = line.split()
+        if len(parts) < 5 or parts[0] != "cpu":
+            return None
+        values = [int(value) for value in parts[1:]]
+        idle = values[3] + (values[4] if len(values) > 4 else 0)
+        total = sum(values)
+        return total, idle
+    except Exception:
+        return None
+
+
+def _cpu_percent():
+    sample = _read_cpu_times()
+    if not sample:
+        return 0.0
+    total, idle = sample
+    last_total = _cpu_sample.get("total")
+    last_idle = _cpu_sample.get("idle")
+    _cpu_sample["total"] = total
+    _cpu_sample["idle"] = idle
+    if last_total is None or last_idle is None:
+        return 0.0
+    total_delta = total - last_total
+    idle_delta = idle - last_idle
+    if total_delta <= 0:
+        return 0.0
+    return max(0.0, min(100.0, 100.0 * (total_delta - idle_delta) / total_delta))
+
+
+def _memory_percent():
+    try:
+        mem_total = 0
+        mem_available = 0
+        with open("/proc/meminfo", "r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("MemTotal:"):
+                    mem_total = int(line.split()[1])
+                elif line.startswith("MemAvailable:"):
+                    mem_available = int(line.split()[1])
+        if mem_total <= 0:
+            return 0.0
+        used = mem_total - mem_available
+        return max(0.0, min(100.0, 100.0 * used / mem_total))
+    except Exception:
+        return 0.0
+
+
+def _disk_percent():
+    try:
+        usage = shutil.disk_usage("/")
+        if usage.total <= 0:
+            return 0.0
+        return max(0.0, min(100.0, 100.0 * usage.used / usage.total))
+    except Exception:
+        return 0.0
+
+
+def _uptime_seconds():
+    try:
+        with open("/proc/uptime", "r", encoding="utf-8") as handle:
+            value = handle.read().split()[0]
+        return int(float(value))
+    except Exception:
+        return 0
 
 
 def _get_first_target(ping_targets):
@@ -967,7 +1052,12 @@ async def dashboard(request: Request):
     pulse_rows, _ = build_pulsewatch_rows(isp_settings)
     pulse_ids = [row.get("row_id") for row in pulse_rows if row.get("row_id")]
     speedtests = get_latest_speedtest_map(pulse_ids)
-    ping_history = get_ping_history_map(pulse_ids, limit_per_isp=30)
+    dashboard_cfg = isp_settings.get("pulsewatch", {}).get("dashboard", {})
+    summary_target = (dashboard_cfg.get("default_target") or "all").strip() or "all"
+    summary_minutes = int(dashboard_cfg.get("loss_history_minutes", 120) or 120)
+    summary_since = (datetime.now(timezone.utc) - timedelta(minutes=summary_minutes)).isoformat().replace("+00:00", "Z")
+    target_filter = None if summary_target == "all" else summary_target
+    ping_history = get_ping_rollup_history_map(pulse_ids, summary_since, target=target_filter)
     latency_since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat().replace("+00:00", "Z")
     latency_history = get_ping_latency_trend_map(pulse_ids, latency_since)
     pulse_dashboard_rows = build_pulsewatch_dashboard_rows(isp_settings, isp_state, speedtests, ping_history)
@@ -978,9 +1068,7 @@ async def dashboard(request: Request):
     pulse_state = isp_state.get("pulsewatch", {})
     pulse_last_reconcile = format_ts_ph(pulse_state.get("last_mikrotik_reconcile_at"))
     pulse_last_check = format_ts_ph(pulse_state.get("last_check_at"))
-    pulse_total = len(pulse_dashboard_rows)
-    pulse_with_ip = sum(1 for row in pulse_dashboard_rows if (row.get("source_ip") or "").strip())
-    pulse_missing_ip = pulse_total - pulse_with_ip
+    pulse_total = len(pulse_display_rows)
     return templates.TemplateResponse(
         "dashboard.html",
         make_context(
@@ -997,8 +1085,9 @@ async def dashboard(request: Request):
                 "pulse_last_reconcile": pulse_last_reconcile,
                 "pulse_last_check": pulse_last_check,
                 "pulse_total": pulse_total,
-                "pulse_with_ip": pulse_with_ip,
-                "pulse_missing_ip": pulse_missing_ip,
+                "pulse_summary_target": summary_target,
+                "pulse_summary_refresh": int(dashboard_cfg.get("refresh_seconds", 2) or 2),
+                "pulse_summary_loss_minutes": summary_minutes,
             },
         ),
     )
@@ -1060,6 +1149,72 @@ async def pulsewatch_latency_series(
     if target and target != "all":
         series = [item for item in series if item.get("target") == target]
     return JSONResponse({"series": series, "window": {"start": start_iso, "end": end_iso}})
+
+
+@app.get("/pulsewatch/summary")
+async def pulsewatch_summary(target: str = "all", loss_minutes: int = 120):
+    isp_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    isp_state = get_state(
+        "isp_ping_state",
+        {
+            "last_status": {},
+            "last_report_date": None,
+            "last_report_time": None,
+            "last_report_timezone": None,
+            "pulsewatch": {},
+        },
+    )
+    pulse_rows, _ = build_pulsewatch_rows(isp_settings)
+    pulse_ids = [row.get("row_id") for row in pulse_rows if row.get("row_id")]
+    speedtests = get_latest_speedtest_map(pulse_ids)
+    minutes = max(int(loss_minutes or 120), 1)
+    since = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat().replace("+00:00", "Z")
+    target_filter = None if target == "all" else target
+    rollup_history = get_ping_rollup_history_map(pulse_ids, since, target=target_filter)
+    pulse_dashboard_rows = build_pulsewatch_dashboard_rows(isp_settings, isp_state, speedtests, rollup_history)
+    pulse_display_rows = [row for row in pulse_dashboard_rows if (row.get("source_ip") or "").strip()]
+    return JSONResponse(
+        {
+            "total": len(pulse_display_rows),
+            "last_check": format_ts_ph(isp_state.get("pulsewatch", {}).get("last_check_at")),
+            "rows": pulse_display_rows,
+        }
+    )
+
+
+@app.get("/pulsewatch/stability")
+async def pulsewatch_stability(days: int = 7, hours: int | None = None):
+    days = max(int(days or 7), 1)
+    hours = int(hours) if hours is not None else None
+    isp_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    pulse_rows, _ = build_pulsewatch_rows(isp_settings)
+    pulse_display_rows = [row for row in pulse_rows if (row.get("address") or "").strip()]
+    isp_ids = [row.get("row_id") for row in pulse_display_rows if row.get("row_id")]
+    if hours:
+        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat().replace("+00:00", "Z")
+    else:
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat().replace("+00:00", "Z")
+    counts = get_ping_stability_counts(isp_ids, since)
+    payload = []
+    for row in pulse_display_rows:
+        isp_id = row.get("row_id")
+        stats = counts.get(isp_id, {"healthy": 0, "degraded": 0, "poor": 0, "outage": 0, "total": 0})
+        label_value = (row.get("identifier") or row.get("list_name") or "").strip()
+        label_value = label_value or pulsewatch_row_label(row)
+        payload.append(
+            {
+                "id": isp_id,
+                "label": label_value,
+                "full_label": pulsewatch_row_label(row),
+                "source_ip": row.get("address"),
+                "healthy": stats.get("healthy", 0) or 0,
+                "degraded": stats.get("degraded", 0) or 0,
+                "poor": stats.get("poor", 0) or 0,
+                "outage": stats.get("outage", 0) or 0,
+                "total": stats.get("total", 0) or 0,
+            }
+        )
+    return JSONResponse({"days": days, "rows": payload})
 
 
 @app.get("/settings/export")
@@ -1373,6 +1528,18 @@ async def pulsewatch_settings(request: Request):
     return render_pulsewatch_response(request, settings, "")
 
 
+@app.get("/system/resources")
+async def system_resources():
+    return JSONResponse(
+        {
+            "cpu_pct": round(_cpu_percent(), 1),
+            "ram_pct": round(_memory_percent(), 1),
+            "disk_pct": round(_disk_percent(), 1),
+            "uptime_seconds": _uptime_seconds(),
+        }
+    )
+
+
 @app.post("/settings/pulsewatch", response_class=HTMLResponse)
 async def pulsewatch_settings_save(request: Request):
     form = await request.form()
@@ -1446,6 +1613,12 @@ async def pulsewatch_settings_save(request: Request):
             "store_raw_output": parse_bool(form, "pulsewatch_store_raw_output"),
             "retention_days": parse_int(form, "pulsewatch_retention_days", 30),
             "rollup_retention_days": parse_int(form, "pulsewatch_rollup_retention_days", 365),
+            "dashboard": {
+                "default_target": (form.get("pulsewatch_dashboard_default_target") or "all").strip() or "all",
+                "refresh_seconds": parse_int(form, "pulsewatch_dashboard_refresh_seconds", 2),
+                "loss_history_minutes": parse_int(form, "pulsewatch_dashboard_loss_history_minutes", 120),
+                "pie_default_days": parse_int(form, "pulsewatch_dashboard_pie_days", 7),
+            },
             "list_presets": presets,
             "speedtest": {
                 "enabled": parse_bool(form, "speedtest_enabled"),

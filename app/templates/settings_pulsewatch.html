@@ -282,6 +282,35 @@
           </div>
         </div>
 
+        <div class="card mb-3">
+          <div class="card-body">
+            <h4 class="mb-3">Pulsewatch ISP Summary Dashboard Settings</h4>
+            <div class="form-grid">
+              <div>
+                <label>Default Target <span class="info" data-tip="Default target used by the Pulsewatch ISP Summary on the dashboard.">i</span></label>
+                <select name="pulsewatch_dashboard_default_target">
+                  <option value="all" {% if settings.pulsewatch.dashboard.default_target == "all" %}selected{% endif %}>All targets</option>
+                  {% for target in pulsewatch_targets %}
+                    <option value="{{ target }}" {% if settings.pulsewatch.dashboard.default_target == target %}selected{% endif %}>{{ target }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div>
+                <label>Table refresh (seconds) <span class="info" data-tip="How often the ISP Summary table refreshes.">i</span></label>
+                <input type="number" name="pulsewatch_dashboard_refresh_seconds" value="{{ settings.pulsewatch.dashboard.refresh_seconds }}" />
+              </div>
+              <div>
+                <label>Loss history (minutes) <span class="info" data-tip="Minutes of loss history to show in the summary sparkline.">i</span></label>
+                <input type="number" name="pulsewatch_dashboard_loss_history_minutes" value="{{ settings.pulsewatch.dashboard.loss_history_minutes }}" />
+              </div>
+              <div>
+                <label>Pie chart default days <span class="info" data-tip="Default range for the Pulsewatch stability pie charts.">i</span></label>
+                <input type="number" name="pulsewatch_dashboard_pie_days" value="{{ settings.pulsewatch.dashboard.pie_default_days }}" />
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div style="margin-top: 16px;">
           <button type="submit" class="btn btn-primary">Save ISP Pulsewatch Settings</button>
         </div>

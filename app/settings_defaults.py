@@ -137,6 +137,12 @@ ISP_PING_DEFAULTS = {
             "max_parallel": 8,
             "interval_seconds": 1,
         },
+        "dashboard": {
+            "default_target": "all",
+            "refresh_seconds": 2,
+            "loss_history_minutes": 120,
+            "pie_default_days": 7,
+        },
         "isps": [
             {
                 "id": "isp1",

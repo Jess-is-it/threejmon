@@ -61,11 +61,23 @@
       </div>
     </aside>
     <div class="page-wrapper">
-      <header class="navbar navbar-expand-md navbar-light d-print-none">
+      <header class="navbar navbar-expand-md navbar-light d-print-none sticky-top">
         <div class="container-xl">
-          <div class="navbar-nav flex-row order-md-last">
-            <div class="nav-item d-none d-md-flex">
-              <div class="text-muted">ThreeJ Notifier Suite</div>
+          <div class="d-flex w-100 align-items-center">
+            <div class="text-muted fw-semibold">ThreeJ Notifier Suite</div>
+            <div class="sys-metrics d-none d-lg-flex ms-auto gap-4">
+              <div class="sys-metric text-muted">
+                <i class="ti ti-cpu"></i><span id="sys-cpu">CPU 0%</span>
+              </div>
+              <div class="sys-metric text-muted">
+                <i class="ti ti-ram"></i><span id="sys-ram">RAM 0%</span>
+              </div>
+              <div class="sys-metric text-muted">
+                <i class="ti ti-database"></i><span id="sys-disk">DISK 0%</span>
+              </div>
+              <div class="sys-metric text-muted">
+                <i class="ti ti-clock"></i><span id="sys-uptime">UPTIME 0m</span>
+              </div>
             </div>
           </div>
         </div>
@@ -78,6 +90,7 @@
     </div>
   </div>
   <script src="/static/tabler/js/tabler.min.js"></script>
+  <script src="/static/vendor/apexcharts.min.js"></script>
   <script>
     document.addEventListener("submit", (event) => {
       const form = event.target;
@@ -101,6 +114,36 @@
       }
       button.innerHTML = `${button.dataset.originalText} <span class="spinner-border spinner-border-sm ms-2" role="status" aria-hidden="true"></span>`;
     });
+
+    const formatUptime = (seconds) => {
+      const days = Math.floor(seconds / 86400);
+      const hours = Math.floor((seconds % 86400) / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+      if (days > 0) return `${days}d ${hours}h`;
+      if (hours > 0) return `${hours}h ${minutes}m`;
+      return `${minutes}m`;
+    };
+
+    const updateResources = async () => {
+      try {
+        const res = await fetch("/system/resources", { headers: { "Accept": "application/json" } });
+        if (!res.ok) return;
+        const data = await res.json();
+        const cpuEl = document.getElementById("sys-cpu");
+        const ramEl = document.getElementById("sys-ram");
+        const diskEl = document.getElementById("sys-disk");
+        const uptimeEl = document.getElementById("sys-uptime");
+        if (cpuEl) cpuEl.textContent = `CPU ${data.cpu_pct ?? 0}%`;
+        if (ramEl) ramEl.textContent = `RAM ${data.ram_pct ?? 0}%`;
+        if (diskEl) diskEl.textContent = `DISK ${data.disk_pct ?? 0}%`;
+        if (uptimeEl) uptimeEl.textContent = `UPTIME ${formatUptime(data.uptime_seconds ?? 0)}`;
+      } catch (err) {
+        // ignore
+      }
+    };
+
+    updateResources();
+    setInterval(updateResources, 15000);
   </script>
 </body>
 </html>

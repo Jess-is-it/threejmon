@@ -93,6 +93,49 @@
 <div class="row row-cards mt-3">
   <div class="col-12">
     <div class="card">
+      <div class="card-header d-flex align-items-center">
+        <h3 class="card-title">Pulsewatch Stability Overview</h3>
+        <div class="ms-auto">
+          <select class="form-select form-select-sm" id="pulsewatch-stability-days" style="min-width: 140px;">
+            {% set pie_days = isp_settings.pulsewatch.dashboard.pie_default_days %}
+            <option value="1h">Last 1h</option>
+            <option value="6h">Last 6h</option>
+            <option value="12h">Last 12h</option>
+            <option value="1d" {% if pie_days == 1 %}selected{% endif %}>Last 1 day</option>
+            <option value="7d" {% if pie_days == 7 %}selected{% endif %}>Last 7 days</option>
+            <option value="15d" {% if pie_days == 15 %}selected{% endif %}>Last 15 days</option>
+            <option value="30d" {% if pie_days == 30 %}selected{% endif %}>Last 30 days</option>
+          </select>
+        </div>
+      </div>
+      <div class="card-body">
+        <div id="pulsewatch-stability-grid" class="d-grid" style="gap: 6px; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); justify-items: start;"></div>
+        <div class="pulsewatch-stability-legend mt-3 justify-content-end">
+          <div class="d-flex align-items-center gap-2 small text-muted">
+            <span style="width:10px;height:10px;border-radius:50%;background:#2fb344;display:inline-block;"></span>
+            <span>Stable</span>
+          </div>
+          <div class="d-flex align-items-center gap-2 small text-muted">
+            <span style="width:10px;height:10px;border-radius:50%;background:#f59f00;display:inline-block;"></span>
+            <span>Unstable</span>
+          </div>
+          <div class="d-flex align-items-center gap-2 small text-muted">
+            <span style="width:10px;height:10px;border-radius:50%;background:#e03131;display:inline-block;"></span>
+            <span>Critical</span>
+          </div>
+          <div class="d-flex align-items-center gap-2 small text-muted">
+            <span style="width:10px;height:10px;border-radius:50%;background:#f76707;display:inline-block;"></span>
+            <span>Down</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row row-cards mt-3">
+  <div class="col-12">
+    <div class="card">
       <div class="card-header">
         <div class="row g-2 align-items-center w-100">
           <div class="col-12 col-lg-4">
@@ -140,36 +183,32 @@
 <div class="row row-cards mt-3">
   <div class="col-12">
     <div class="card">
-      <div class="card-header">
+      <div class="card-header d-flex align-items-center">
         <h3 class="card-title">Pulsewatch ISP Summary</h3>
+        <div class="ms-auto">
+          <select class="form-select form-select-sm" id="pulsewatch-summary-target" style="min-width: 180px;">
+            <option value="all" {% if pulse_summary_target == "all" %}selected{% endif %}>Target: All</option>
+            {% for target in pulse_targets %}
+              <option value="{{ target }}" {% if pulse_summary_target == target %}selected{% endif %}>Target: {{ target }}</option>
+            {% endfor %}
+          </select>
+        </div>
       </div>
       <div class="card-body">
-        <div class="row mb-4">
-          <div class="col-sm-6 col-xl-3 mb-3">
-            <div class="border rounded p-3 h-100">
-              <div class="text-muted small">Total ISPs</div>
-              <div class="fs-3 fw-semibold">{{ pulse_total }}</div>
+          <div class="row mb-4">
+            <div class="col-sm-6 col-xl-3 mb-3">
+              <div class="border rounded p-3 h-100">
+                <div class="text-muted small">Total ISPs</div>
+                <div class="fs-3 fw-semibold" id="pulsewatch-summary-total">{{ pulse_total }}</div>
+              </div>
+            </div>
+            <div class="col-sm-6 col-xl-3 mb-3">
+              <div class="border rounded p-3 h-100">
+                <div class="text-muted small">Last Pulsewatch Check</div>
+                <div class="fs-4 fw-semibold" id="pulsewatch-summary-last">{{ pulse_last_check or 'n/a' }}</div>
+              </div>
             </div>
           </div>
-          <div class="col-sm-6 col-xl-3 mb-3">
-            <div class="border rounded p-3 h-100">
-              <div class="text-muted small">With Source IP</div>
-              <div class="fs-3 fw-semibold">{{ pulse_with_ip }}</div>
-            </div>
-          </div>
-          <div class="col-sm-6 col-xl-3 mb-3">
-            <div class="border rounded p-3 h-100">
-              <div class="text-muted small">Missing IP</div>
-              <div class="fs-3 fw-semibold">{{ pulse_missing_ip }}</div>
-            </div>
-          </div>
-          <div class="col-sm-6 col-xl-3 mb-3">
-            <div class="border rounded p-3 h-100">
-              <div class="text-muted small">Last Pulsewatch Check</div>
-              <div class="fs-4 fw-semibold">{{ pulse_last_check or 'n/a' }}</div>
-            </div>
-          </div>
-        </div>
 
         {% if pulse_rows %}
           <div style="overflow-x:auto;">
@@ -186,7 +225,7 @@
                   <th>Last Speedtest</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody id="pulsewatch-summary-body" data-loss-minutes="{{ pulse_summary_loss_minutes }}" data-refresh="{{ pulse_summary_refresh }}">
                 {% for row in pulse_rows %}
                   <tr>
                     <td class="fw-semibold">{{ row.label }}</td>
@@ -727,5 +766,198 @@
   });
 
   updateChart();
+</script>
+<script>
+  const stabilityGridEl = document.getElementById("pulsewatch-stability-grid");
+  const stabilityDaysEl = document.getElementById("pulsewatch-stability-days");
+  const stabilityColors = ["#2fb344", "#f59f00", "#e03131", "#f76707"];
+  const stabilityCharts = new Map();
+
+  const escapeHtml = (value) => String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
+  const renderStabilityGrid = (rows) => {
+    if (!stabilityGridEl) return;
+    stabilityCharts.forEach((chart) => chart.destroy());
+    stabilityCharts.clear();
+    if (!rows.length) {
+      stabilityGridEl.innerHTML = "<div class='text-muted'>No Pulsewatch presets with IPs.</div>";
+      return;
+    }
+    stabilityGridEl.innerHTML = rows.map((row) => {
+      const chartId = `pulsewatch-stability-${row.id}`;
+      return `
+        <div class="pulsewatch-stability-item">
+          <div class="pulsewatch-stability-chart-wrap">
+            <div id="${chartId}" class="pulsewatch-stability-chart"></div>
+            <div class="pulsewatch-stability-label">${escapeHtml(row.label || "Unnamed ISP")}</div>
+          </div>
+        </div>
+      `;
+    }).join("");
+
+    rows.forEach((row) => {
+      const chartId = `pulsewatch-stability-${row.id}`;
+      const el = document.getElementById(chartId);
+      if (!el || !window.ApexCharts) return;
+      const series = [row.healthy || 0, row.degraded || 0, row.poor || 0, row.outage || 0];
+      const total = series.reduce((sum, value) => sum + value, 0);
+      if (!total) {
+        el.innerHTML = "<div class='text-muted'>No data in range.</div>";
+        return;
+      }
+      const rangeLabel = (stabilityDaysEl ? stabilityDaysEl.selectedOptions[0]?.textContent : "Last 7 days") || "Last 7 days";
+      const fullLabel = row.full_label || row.label || "Unnamed ISP";
+      const chart = new ApexCharts(el, {
+        chart: {
+          type: "donut",
+          height: 90,
+          sparkline: { enabled: true },
+        },
+        labels: ["Stable", "Unstable", "Critical", "Down"],
+        colors: stabilityColors,
+        series,
+        dataLabels: { enabled: false },
+        legend: { show: false },
+        stroke: { width: 1 },
+        tooltip: {
+          enabled: true,
+          custom: ({ series, seriesIndex, w }) => {
+            const legendRows = w.globals.labels.map((label, idx) => {
+              const value = series[idx] || 0;
+              const percent = total ? Math.round((value / total) * 100) : 0;
+              const color = stabilityColors[idx];
+              return `<div class="d-flex align-items-center gap-2">
+                <span style="width:8px;height:8px;border-radius:50%;background:${color};display:inline-block;"></span>
+                <span>${label} ${percent}%</span>
+              </div>`;
+            }).join("");
+            return `
+              <div class="apexcharts-tooltip-title small text-muted ms-1">${rangeLabel}</div>
+              <div class="fw-semibold mb-2 ms-1">${escapeHtml(fullLabel)}</div>
+              <div class="d-flex flex-column gap-1 small ms-1">${legendRows}</div>
+            `;
+          },
+        },
+        plotOptions: {
+          pie: {
+            donut: {
+              size: "70%",
+              labels: { show: false },
+            },
+          },
+        },
+      });
+      chart.render();
+      stabilityCharts.set(row.id, chart);
+    });
+  };
+
+  const fetchStability = async () => {
+    if (!stabilityGridEl) return;
+    const window = (() => {
+      const raw = stabilityDaysEl ? stabilityDaysEl.value : "7d";
+      if (raw.endsWith("h")) {
+        const hours = parseInt(raw.slice(0, -1), 10);
+        return { hours: Number.isNaN(hours) ? 1 : hours };
+      }
+      if (raw.endsWith("d")) {
+        const days = parseInt(raw.slice(0, -1), 10);
+        return { days: Number.isNaN(days) ? 7 : days };
+      }
+      const days = parseInt(raw, 10);
+      return { days: Number.isNaN(days) ? 7 : days };
+    })();
+    const params = new URLSearchParams();
+    if (window.hours) {
+      params.set("hours", String(window.hours));
+    } else {
+      params.set("days", String(window.days || 7));
+    }
+    try {
+      const res = await fetch(`/pulsewatch/stability?${params.toString()}`, {
+        headers: { "Accept": "application/json" },
+      });
+      if (!res.ok) {
+        throw new Error("Failed to load stability data");
+      }
+      const data = await res.json();
+      renderStabilityGrid(data.rows || []);
+    } catch (err) {
+      stabilityGridEl.innerHTML = "<div class='text-muted'>Unable to load stability overview.</div>";
+    }
+  };
+
+  if (stabilityDaysEl) {
+    stabilityDaysEl.addEventListener("change", fetchStability);
+  }
+  fetchStability();
+</script>
+<script>
+  const summaryTargetEl = document.getElementById("pulsewatch-summary-target");
+  const summaryBodyEl = document.getElementById("pulsewatch-summary-body");
+  const summaryTotalEl = document.getElementById("pulsewatch-summary-total");
+  const summaryLastEl = document.getElementById("pulsewatch-summary-last");
+  const summaryRefresh = summaryBodyEl ? parseInt(summaryBodyEl.dataset.refresh || "2", 10) : 2;
+  const summaryLossMinutes = summaryBodyEl ? parseInt(summaryBodyEl.dataset.lossMinutes || "120", 10) : 120;
+
+  const renderLossSparkline = (points) => {
+    if (!points) return "<span class='text-muted'>n/a</span>";
+    return `<svg width=\"120\" height=\"30\" viewBox=\"0 0 120 30\"><polyline points=\"${points}\" fill=\"none\" stroke=\"#2fb344\" stroke-width=\"2\" /></svg>`;
+  };
+
+  const renderSummaryRows = (rows) => {
+    if (!summaryBodyEl) return;
+    summaryBodyEl.innerHTML = rows.map((row) => {
+      const speed = row.speed || {};
+      const lossMax = row.loss_max === null || row.loss_max === undefined ? "n/a" : `${row.loss_max}%`;
+      const avgMax = row.avg_max === null || row.avg_max === undefined ? "n/a" : `${row.avg_max}ms`;
+      const speedText = speed.download_mbps !== undefined && speed.download_mbps !== null
+        ? `${speed.download_mbps} / ${speed.upload_mbps ?? "n/a"} Mbps, ${speed.latency_ms ?? "n/a"} ms`
+        : "n/a";
+      const downtime = row.total_samples ? `${row.down_samples}/${row.total_samples}` : "n/a";
+      return `
+        <tr>
+          <td class="fw-semibold">${row.label}</td>
+          <td>${row.source_ip || "n/a"}</td>
+          <td>${row.last_check || "n/a"}</td>
+          <td>${lossMax}</td>
+          <td>${avgMax}</td>
+          <td>${renderLossSparkline(row.loss_points)}</td>
+          <td>${downtime}</td>
+          <td class="text-muted">${speedText}</td>
+        </tr>
+      `;
+    }).join("");
+  };
+
+  const fetchSummary = async () => {
+    if (!summaryBodyEl) return;
+    const target = summaryTargetEl ? summaryTargetEl.value : "all";
+    const params = new URLSearchParams({
+      target,
+      loss_minutes: String(summaryLossMinutes),
+    });
+    try {
+      const res = await fetch(`/pulsewatch/summary?${params.toString()}`, { headers: { "Accept": "application/json" } });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (summaryTotalEl) summaryTotalEl.textContent = data.total ?? "0";
+      if (summaryLastEl) summaryLastEl.textContent = data.last_check || "n/a";
+      renderSummaryRows(data.rows || []);
+    } catch (err) {
+      // ignore
+    }
+  };
+
+  if (summaryTargetEl) {
+    summaryTargetEl.addEventListener("change", fetchSummary);
+  }
+  fetchSummary();
+  setInterval(fetchSummary, Math.max(summaryRefresh, 2) * 1000);
 </script>
 {% endblock %}

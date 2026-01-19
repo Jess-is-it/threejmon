@@ -68,6 +68,76 @@ body,
   gap: 1rem;
 }
 
+.sys-metrics {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+.sys-metric {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.pulsewatch-stability-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 120px;
+  align-items: center;
+}
+
+.pulsewatch-stability-chart {
+  height: 90px;
+}
+
+.pulsewatch-stability-chart-wrap {
+  position: relative;
+  width: 90px;
+  height: 90px;
+}
+
+.pulsewatch-stability-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-weight: 600;
+  font-size: 10px;
+  color: #4b5563;
+  padding: 0 10px;
+  pointer-events: none;
+}
+
+.pulsewatch-stability-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.apexcharts-tooltip {
+  background: #111827 !important;
+  color: #f9fafb !important;
+  border: none !important;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.35);
+  padding: 8px 10px !important;
+  font-size: 12px !important;
+  line-height: 1.4;
+}
+
+.apexcharts-tooltip-title {
+  background: transparent !important;
+  color: #e5e7eb !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  font-weight: 600;
+  margin-bottom: 6px !important;
+}
+
 input[type="text"]:not(.form-control):not(.form-check-input),
 input[type="password"]:not(.form-control):not(.form-check-input),
 input[type="number"]:not(.form-control):not(.form-check-input),
