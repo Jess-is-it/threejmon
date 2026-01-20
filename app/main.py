@@ -37,7 +37,7 @@ from .mikrotik import RouterOSClient
 from .notifiers import optical as optical_notifier
 from .notifiers import rto as rto_notifier
 from .notifiers.telegram import TelegramError, send_telegram
-from .settings_defaults import ISP_PING_DEFAULTS, OPTICAL_DEFAULTS, RTO_DEFAULTS, WAN_PING_DEFAULTS, WAN_MESSAGE_DEFAULTS
+from .settings_defaults import ISP_PING_DEFAULTS, OPTICAL_DEFAULTS, RTO_DEFAULTS, WAN_PING_DEFAULTS, WAN_MESSAGE_DEFAULTS, WAN_SUMMARY_DEFAULTS
 from .settings_store import export_settings, get_settings, get_state, import_settings, save_settings, save_state
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -605,6 +605,10 @@ def normalize_pulsewatch_settings(settings):
     dashboard.setdefault("refresh_seconds", 2)
     dashboard.setdefault("loss_history_minutes", 120)
     dashboard.setdefault("pie_default_days", 7)
+    stability = pulse.setdefault("stability", {})
+    stability.setdefault("stable_max_ms", 80)
+    stability.setdefault("unstable_max_ms", 150)
+    stability.setdefault("down_source", "wan")
     mikrotik = pulse.setdefault("mikrotik", {})
     cores = mikrotik.get("cores")
     if cores is None:
@@ -675,6 +679,12 @@ def normalize_wan_ping_settings(settings):
     settings.setdefault("wans", [])
     settings.setdefault("pppoe_routers", [])
     settings.setdefault("messages", {})
+    summary = settings.setdefault("summary", {})
+    summary.setdefault("enabled", WAN_SUMMARY_DEFAULTS["enabled"])
+    summary.setdefault("daily_time", WAN_SUMMARY_DEFAULTS["daily_time"])
+    summary.setdefault("all_up_msg", WAN_SUMMARY_DEFAULTS["all_up_msg"])
+    summary.setdefault("partial_msg", WAN_SUMMARY_DEFAULTS["partial_msg"])
+    summary.setdefault("line_template", WAN_SUMMARY_DEFAULTS["line_template"])
     return settings
 
 
@@ -1520,11 +1530,27 @@ async def pulsewatch_stability(days: int = 7, hours: int | None = None):
         since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat().replace("+00:00", "Z")
     else:
         since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat().replace("+00:00", "Z")
-    counts = get_ping_stability_counts(isp_ids, since)
+    stability_cfg = isp_settings.get("pulsewatch", {}).get("stability", {})
+    stable_max_ms = stability_cfg.get("stable_max_ms", 80)
+    unstable_max_ms = stability_cfg.get("unstable_max_ms", 150)
+    counts = get_ping_stability_counts(isp_ids, since, stable_max_ms, unstable_max_ms)
+    wan_state = get_state("wan_ping_state", {})
     payload = []
     for row in pulse_display_rows:
         isp_id = row.get("row_id")
         stats = counts.get(isp_id, {"healthy": 0, "degraded": 0, "poor": 0, "outage": 0, "total": 0})
+        wan_id = wan_row_id(row.get("core_id"), row.get("list_name"))
+        wan_status = (wan_state.get("wans", {}).get(wan_id, {}).get("status") or "").lower()
+        if wan_status == "down":
+            total = stats.get("total", 0) or 0
+            outage = total if total > 0 else 1
+            stats = {
+                "healthy": 0,
+                "degraded": 0,
+                "poor": 0,
+                "outage": outage,
+                "total": outage,
+            }
         label_value = (row.get("identifier") or row.get("list_name") or "").strip()
         label_value = label_value or pulsewatch_row_label(row)
         payload.append(
@@ -1821,6 +1847,7 @@ def render_wan_ping_response(request, pulse_settings, wan_settings, message, act
                 "wan_targets": wan_targets,
                 "wan_refresh_seconds": wan_refresh_seconds,
                 "wan_message_defaults": WAN_MESSAGE_DEFAULTS,
+                "wan_summary_defaults": WAN_SUMMARY_DEFAULTS,
                 "message": message,
                 "active_tab": active_tab,
             },
@@ -1999,6 +2026,12 @@ async def wan_settings_save_messages(request: Request):
     form = await request.form()
     pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
     wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    summary = wan_settings_data.setdefault("summary", {})
+    summary["enabled"] = parse_bool(form, "summary_enabled")
+    summary["daily_time"] = (form.get("summary_daily_time") or WAN_SUMMARY_DEFAULTS["daily_time"]).strip()
+    summary["all_up_msg"] = form.get("summary_all_up_msg") or WAN_SUMMARY_DEFAULTS["all_up_msg"]
+    summary["partial_msg"] = form.get("summary_partial_msg") or WAN_SUMMARY_DEFAULTS["partial_msg"]
+    summary["line_template"] = form.get("summary_line_template") or WAN_SUMMARY_DEFAULTS["line_template"]
     count = parse_int(form, "message_count", 0)
     messages = {}
     for idx in range(count):
@@ -2151,6 +2184,11 @@ async def pulsewatch_settings_save(request: Request):
                 "refresh_seconds": parse_int(form, "pulsewatch_dashboard_refresh_seconds", 2),
                 "loss_history_minutes": parse_int(form, "pulsewatch_dashboard_loss_history_minutes", 120),
                 "pie_default_days": parse_int(form, "pulsewatch_dashboard_pie_days", 7),
+            },
+            "stability": {
+                "stable_max_ms": parse_int(form, "pulsewatch_stability_stable_max_ms", 80),
+                "unstable_max_ms": parse_int(form, "pulsewatch_stability_unstable_max_ms", 150),
+                "down_source": "wan",
             },
             "list_presets": presets,
             "speedtest": {

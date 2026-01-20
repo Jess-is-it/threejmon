@@ -143,6 +143,11 @@ ISP_PING_DEFAULTS = {
             "loss_history_minutes": 120,
             "pie_default_days": 7,
         },
+        "stability": {
+            "stable_max_ms": 80,
+            "unstable_max_ms": 150,
+            "down_source": "wan",
+        },
         "isps": [
             {
                 "id": "isp1",
@@ -256,4 +261,12 @@ WAN_MESSAGE_DEFAULTS = {
     "down_msg": "🔴 {label} {target} is DOWN {{datetime}} 😢😤",
     "up_msg": "🟢 {label} {target} is UP {{datetime}}\n  Target: {target}\n  Source: {local-ip}\n  {ping5}",
     "still_down_msg": "🔴 {label} {target} is still DOWN {down-sincedatetime}",
+}
+
+WAN_SUMMARY_DEFAULTS = {
+    "enabled": False,
+    "daily_time": "07:00",
+    "all_up_msg": "All ISP UP {up}/{total}",
+    "partial_msg": "Partial ISP down {up}/{total}",
+    "line_template": "{label} Status {status}!",
 }

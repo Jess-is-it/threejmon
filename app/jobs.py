@@ -218,6 +218,16 @@ class JobsManager:
                 latest = get_state("wan_ping_state", {})
                 if latest.get("reset_at") and latest.get("reset_at") != reset_at:
                     state = wan_ping_notifier.run_check(cfg, pulse_cfg, latest)
+                summary_cfg = cfg.get("summary", {})
+                if summary_cfg.get("enabled"):
+                    summary_state = {"last_run_date": state.get("summary_last_run_date")}
+                    general_cfg = {
+                        "schedule_time_ph": summary_cfg.get("daily_time", "07:00"),
+                        "timezone": summary_cfg.get("timezone", "Asia/Manila"),
+                    }
+                    if should_run_daily(general_cfg, summary_state):
+                        wan_ping_notifier.send_daily_summary(cfg, pulse_cfg, state)
+                        state["summary_last_run_date"] = current_date(general_cfg).isoformat()
                 save_state("wan_ping_state", state)
                 update_job_status("wan_ping", last_success_at=utc_now_iso(), last_error="", last_error_at="")
             except TelegramError as exc:

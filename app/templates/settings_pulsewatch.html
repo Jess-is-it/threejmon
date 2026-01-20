@@ -311,6 +311,27 @@
           </div>
         </div>
 
+        <div class="card mb-3">
+          <div class="card-body">
+            <h4 class="mb-3">Pulsewatch Stability Overview</h4>
+            <div class="form-grid">
+              <div>
+                <label>Stable max (ms) <span class="info" data-tip="Average latency at or below this value is counted as Stable.">i</span></label>
+                <input type="number" name="pulsewatch_stability_stable_max_ms" value="{{ settings.pulsewatch.stability.stable_max_ms }}" />
+              </div>
+              <div>
+                <label>Unstable max (ms) <span class="info" data-tip="Average latency between Stable max and this value is counted as Unstable. Critical is above this.">i</span></label>
+                <input type="number" name="pulsewatch_stability_unstable_max_ms" value="{{ settings.pulsewatch.stability.unstable_max_ms }}" />
+              </div>
+              <div>
+                <label>Down source <span class="info" data-tip="Down slice is driven by WAN Ping status (current down/up).">i</span></label>
+                <input type="text" value="WAN Ping status" disabled />
+              </div>
+            </div>
+            <div class="help">These thresholds affect the Pulsewatch Stability Overview on the dashboard.</div>
+          </div>
+        </div>
+
         <div style="margin-top: 16px;">
           <button type="submit" class="btn btn-primary">Save ISP Pulsewatch Settings</button>
         </div>

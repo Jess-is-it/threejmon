@@ -4,7 +4,7 @@ import re
 import subprocess
 
 from ..db import utc_now_iso
-from ..settings_defaults import WAN_MESSAGE_DEFAULTS
+from ..settings_defaults import WAN_MESSAGE_DEFAULTS, WAN_SUMMARY_DEFAULTS
 from ..mikrotik import RouterOSClient
 from .telegram import send_telegram, TelegramError
 
@@ -398,4 +398,67 @@ def run_check(settings, pulse_settings, state):
 
     state["wans"] = wan_state
     state["last_run_at"] = utc_now_iso()
+    return state
+
+
+def send_daily_summary(settings, pulse_settings, state):
+    summary_cfg = settings.get("summary", {})
+    if not summary_cfg.get("enabled"):
+        return state
+    now = datetime.now(timezone.utc)
+    now_local = now.astimezone(_STAMP_TZ)
+    wan_state = (state or {}).get("wans", {})
+    lines = []
+    total = 0
+    up_count = 0
+    for wan in settings.get("wans", []):
+        if not wan.get("enabled", True):
+            continue
+        local_ip = (wan.get("local_ip") or "").strip()
+        if not local_ip:
+            continue
+        mode = (wan.get("mode") or "routed").lower()
+        if mode == "bridged" and not wan.get("pppoe_router_id"):
+            continue
+        wan_id = wan.get("id") or f"{wan.get('core_id')}:{wan.get('list_name')}"
+        preset = _find_preset(pulse_settings, wan.get("core_id"), wan.get("list_name"))
+        label = (preset.get("identifier") if preset else "") or wan.get("list_name") or wan_id
+        status = (wan_state.get(wan_id, {}).get("status") or "down").upper()
+        total += 1
+        if status == "UP":
+            up_count += 1
+        target = _resolve_target(wan, pulse_settings) or ""
+        context = {
+            "label": label,
+            "status": status,
+            "target": target,
+            "local-ip": local_ip,
+            "date": _format_date(now_local),
+            "time": _format_time(now_local),
+            "datetime": _format_datetime(now_local),
+        }
+        line_template = summary_cfg.get("line_template") or WAN_SUMMARY_DEFAULTS["line_template"]
+        lines.append(_apply_tokens(line_template, context))
+
+    if total == 0:
+        return state
+    context = {
+        "up": str(up_count),
+        "total": str(total),
+        "down": str(max(total - up_count, 0)),
+        "date": _format_date(now_local),
+        "time": _format_time(now_local),
+        "datetime": _format_datetime(now_local),
+    }
+    if up_count == total:
+        header = summary_cfg.get("all_up_msg") or WAN_SUMMARY_DEFAULTS["all_up_msg"]
+    else:
+        header = summary_cfg.get("partial_msg") or WAN_SUMMARY_DEFAULTS["partial_msg"]
+    message = _apply_tokens(header, context)
+    if lines:
+        message = f"{message}\n" + "\n".join(lines)
+    try:
+        _send_message(settings, message)
+    except TelegramError:
+        pass
     return state

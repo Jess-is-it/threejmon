@@ -494,11 +494,13 @@ def get_ping_rollup_history_map(isp_ids, since_iso, target=None):
         conn.close()
 
 
-def get_ping_stability_counts(isp_ids, since_iso):
+def get_ping_stability_counts(isp_ids, since_iso, stable_max_ms=80, unstable_max_ms=150):
     if not isp_ids:
         return {}
+    stable_max_ms = int(stable_max_ms)
+    unstable_max_ms = int(unstable_max_ms)
     placeholders = ",".join("?" for _ in isp_ids)
-    params = list(isp_ids) + [since_iso]
+    params = [stable_max_ms, stable_max_ms + 1, unstable_max_ms, unstable_max_ms] + list(isp_ids) + [since_iso]
     conn = get_conn()
     try:
         rows = conn.execute(
@@ -506,9 +508,9 @@ def get_ping_stability_counts(isp_ids, since_iso):
             SELECT
               isp_id,
               SUM(CASE WHEN loss >= 100 OR avg_ms IS NULL THEN 1 ELSE 0 END) AS outage,
-              SUM(CASE WHEN loss < 100 AND avg_ms IS NOT NULL AND avg_ms <= 80 THEN 1 ELSE 0 END) AS healthy,
-              SUM(CASE WHEN loss < 100 AND avg_ms IS NOT NULL AND avg_ms BETWEEN 81 AND 150 THEN 1 ELSE 0 END) AS degraded,
-              SUM(CASE WHEN loss < 100 AND avg_ms IS NOT NULL AND avg_ms > 150 THEN 1 ELSE 0 END) AS poor,
+              SUM(CASE WHEN loss < 100 AND avg_ms IS NOT NULL AND avg_ms <= ? THEN 1 ELSE 0 END) AS healthy,
+              SUM(CASE WHEN loss < 100 AND avg_ms IS NOT NULL AND avg_ms BETWEEN ? AND ? THEN 1 ELSE 0 END) AS degraded,
+              SUM(CASE WHEN loss < 100 AND avg_ms IS NOT NULL AND avg_ms > ? THEN 1 ELSE 0 END) AS poor,
               COUNT(*) AS total
             FROM ping_results
             WHERE isp_id IN ({placeholders}) AND timestamp >= ?

@@ -338,10 +338,40 @@
           <div class="card mb-3">
             <div class="card-body">
               <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
-                <h4 class="mb-0">Per-ISP Messages</h4>
+                <h4 class="mb-0">Daily Summary Message</h4>
                 <button type="button" class="stamp-note btn btn-sm btn-azure-lt" data-bs-toggle="modal" data-bs-target="#wan-stamps-modal">
                   <i class="ti ti-notes"></i>Stamps
                 </button>
+              </div>
+              <div class="row g-3 mb-3">
+                <div class="col-md-3">
+                  <label class="form-label">Enable Daily Summary</label>
+                  <label class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" name="summary_enabled" {% if settings.summary.enabled %}checked{% endif %} />
+                    <span class="form-check-label">Enabled</span>
+                  </label>
+                </div>
+                <div class="col-md-3">
+                  <label class="form-label">Daily Time (HH:MM)</label>
+                  <input class="form-control" type="text" name="summary_daily_time" value="{{ settings.summary.daily_time }}" />
+                </div>
+                <div class="col-md-3">
+                  <label class="form-label">All Up Message</label>
+                  <textarea class="form-control" name="summary_all_up_msg" rows="2">{{ settings.summary.all_up_msg or wan_summary_defaults.all_up_msg }}</textarea>
+                </div>
+                <div class="col-md-3">
+                  <label class="form-label">Partial Down Message</label>
+                  <textarea class="form-control" name="summary_partial_msg" rows="2">{{ settings.summary.partial_msg or wan_summary_defaults.partial_msg }}</textarea>
+                </div>
+                <div class="col-12">
+                  <label class="form-label">Per-ISP Line Template</label>
+                  <textarea class="form-control" name="summary_line_template" rows="2">{{ settings.summary.line_template or wan_summary_defaults.line_template }}</textarea>
+                  <div class="help">Example line: {label} Status {status}!</div>
+                </div>
+              </div>
+              <hr class="my-3" />
+              <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+                <h4 class="mb-0">Per-ISP Messages</h4>
               </div>
               <div class="alert alert-info">
                 <div class="d-flex align-items-start">
