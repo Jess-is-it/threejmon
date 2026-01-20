@@ -3,7 +3,7 @@
 <div class="page-header d-print-none">
   <div class="row align-items-center">
     <div class="col">
-      <h2 class="page-title">RTO Settings</h2>
+      <h2 class="page-title">Request Timeout Customers</h2>
     </div>
   </div>
 </div>
@@ -14,166 +14,449 @@
 
 <div class="card">
   <div class="card-body">
-    <form method="post">
-      <div class="card mb-3">
-        <div class="card-body">
-          <h4 class="mb-3">General</h4>
-          <label class="form-label">Enable RTO notifier <span class="info" data-tip="Turns on the RTO polling job.">i</span></label>
-          <label class="form-check form-switch">
-            <input class="form-check-input" type="checkbox" name="enabled" {% if settings.enabled %}checked{% endif %} />
-            <span class="form-check-label">Active</span>
-          </label>
+    <ul class="nav nav-tabs" data-bs-toggle="tabs">
+      <li class="nav-item">
+        <a href="#rto-status" class="nav-link {% if active_tab == 'status' %}active{% endif %}" data-bs-toggle="tab">RTO Status</a>
+      </li>
+      <li class="nav-item">
+        <a href="#rto-settings" class="nav-link {% if active_tab != 'status' %}active{% endif %}" data-bs-toggle="tab">Settings</a>
+      </li>
+    </ul>
+
+    <div class="tab-content pt-4">
+      <div class="tab-pane {% if active_tab == 'status' %}active{% endif %}" id="rto-status">
+        <div class="d-flex flex-wrap align-items-center justify-content-between mb-3 gap-2">
+          <div>
+            <h4 class="mb-1">RTO Status</h4>
+            <div class="text-muted small">
+              Last run: {{ rto_job.last_run_at or 'n/a' }} · Last success: {{ rto_job.last_success_at or 'n/a' }}
+            </div>
+          </div>
+          <div class="d-flex gap-2">
+            <span class="badge bg-blue-lt">Total: {{ rto_status.total }}</span>
+            <span class="badge bg-red-lt">Issues: {{ rto_status.issue_total }}</span>
+            <span class="badge bg-green-lt">Stable: {{ rto_status.stable_total }}</span>
+          </div>
+        </div>
+
+        <div class="alert alert-info">
+          <div class="d-flex align-items-start">
+            <span class="me-2"><i class="ti ti-info-circle"></i></span>
+            <div>
+              Connection issues are shown when a customer is currently down, RTO is at least {{ rto_status.rules.issue_rto_pct }}%, or the down streak is {{ rto_status.rules.issue_streak }}+ checks.
+              Stable connections are shown when status is up and RTO is {{ rto_status.rules.stable_rto_pct }}% or lower.
+            </div>
+          </div>
+        </div>
+
+        <ul class="nav nav-tabs" data-bs-toggle="tabs">
+          <li class="nav-item">
+            <a href="#rto-issues" class="nav-link active" data-bs-toggle="tab">Connection Issues</a>
+          </li>
+          <li class="nav-item">
+            <a href="#rto-stable" class="nav-link" data-bs-toggle="tab">Stable Connections</a>
+          </li>
+        </ul>
+        <div class="tab-content pt-3">
+          <div class="tab-pane active" id="rto-issues">
+            <div class="rto-table-shell">
+              <div class="rto-table-wrap" id="rto-issues-table">
+              <table class="table table-vcenter rto-table">
+                <thead>
+                  <tr>
+                    <th class="rto-tip" title="Customer or circuit name pulled from the CSV (Circuit Name, Device Name, Circuit ID). Use this to identify the subscriber." data-tip="Customer or circuit name pulled from the CSV (Circuit Name, Device Name, Circuit ID). Use this to identify the subscriber.">Customer</th>
+                    <th class="rto-tip" title="IPv4 address that the system pings for this subscriber." data-tip="IPv4 address that the system pings for this subscriber.">IPv4</th>
+                    <th class="rto-tip" title="Latest ping result. Up means the last check replied, Down means it failed, and Monitor means it is up now but still exceeds the issue thresholds." data-tip="Latest ping result. Up means the last check replied, Down means it failed, and Monitor means it is up now but still exceeds the issue thresholds.">Status</th>
+                    <th class="rto-tip" title="Request Timeout percentage within the current history window. Higher means more failed checks." data-tip="Request Timeout percentage within the current history window. Higher means more failed checks.">RTO %</th>
+                    <th class="rto-tip" title="Uptime percentage within the same window. It is 100 minus RTO %." data-tip="Uptime percentage within the same window. It is 100 minus RTO %.">Uptime %</th>
+                    <th class="rto-tip" title="Number of consecutive failed checks at the end of the window. Helps spot persistent outages." data-tip="Number of consecutive failed checks at the end of the window. Helps spot persistent outages.">Down Streak</th>
+                    <th class="rto-tip" title="Number of recent checks stored in the history window. More checks means more reliable percentages." data-tip="Number of recent checks stored in the history window. More checks means more reliable percentages.">Total Checks</th>
+                    <th class="rto-tip" title="Timestamp of the most recent check recorded for this subscriber." data-tip="Timestamp of the most recent check recorded for this subscriber.">Last Check</th>
+                    <th class="rto-tip" title="Why this subscriber appears in Connection Issues, based on the configured thresholds." data-tip="Why this subscriber appears in Connection Issues, based on the configured thresholds.">Reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for row in rto_status.issue_rows %}
+                    <tr>
+                      <td>{{ row.name }}</td>
+                      <td>{{ row.ip }}</td>
+                      <td>
+                        {% if row.last_status == 'down' %}
+                          <span class="badge bg-red-lt">Down</span>
+                        {% else %}
+                          <span class="badge bg-yellow-lt">Monitor</span>
+                        {% endif %}
+                      </td>
+                      <td>{{ "%.1f"|format(row.rto_pct) }}</td>
+                      <td>{{ "%.1f"|format(row.uptime_pct) }}</td>
+                      <td>{{ row.streak }}</td>
+                      <td>{{ row.total }}</td>
+                      <td>{{ row.last_check or 'n/a' }}</td>
+                      <td>{{ row.reasons|join(', ') }}</td>
+                    </tr>
+                  {% else %}
+                    <tr>
+                      <td colspan="9" class="text-muted">No connection issues detected yet.</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+              </div>
+              <div class="rto-resize-handle" data-target="rto-issues-table"></div>
+            </div>
+          </div>
+
+          <div class="tab-pane" id="rto-stable">
+            <div class="rto-table-shell">
+              <div class="rto-table-wrap" id="rto-stable-table">
+              <table class="table table-vcenter rto-table">
+                <thead>
+                  <tr>
+                    <th class="rto-tip" title="Customer or circuit name pulled from the CSV (Circuit Name, Device Name, Circuit ID)." data-tip="Customer or circuit name pulled from the CSV (Circuit Name, Device Name, Circuit ID).">Customer</th>
+                    <th class="rto-tip" title="IPv4 address that the system pings for this subscriber." data-tip="IPv4 address that the system pings for this subscriber.">IPv4</th>
+                    <th class="rto-tip" title="Latest ping result for this subscriber in the current window." data-tip="Latest ping result for this subscriber in the current window.">Status</th>
+                    <th class="rto-tip" title="Uptime percentage within the history window. Higher means more reliable connectivity." data-tip="Uptime percentage within the history window. Higher means more reliable connectivity.">Uptime %</th>
+                    <th class="rto-tip" title="Request Timeout percentage within the current window. Lower values indicate stable connections." data-tip="Request Timeout percentage within the current window. Lower values indicate stable connections.">RTO %</th>
+                    <th class="rto-tip" title="Number of recent checks stored in the history window." data-tip="Number of recent checks stored in the history window.">Total Checks</th>
+                    <th class="rto-tip" title="Timestamp of the most recent check recorded for this subscriber." data-tip="Timestamp of the most recent check recorded for this subscriber.">Last Check</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for row in rto_status.stable_rows %}
+                    <tr>
+                      <td>{{ row.name }}</td>
+                      <td>{{ row.ip }}</td>
+                      <td><span class="badge bg-green-lt">Up</span></td>
+                      <td>{{ "%.1f"|format(row.uptime_pct) }}</td>
+                      <td>{{ "%.1f"|format(row.rto_pct) }}</td>
+                      <td>{{ row.total }}</td>
+                      <td>{{ row.last_check or 'n/a' }}</td>
+                    </tr>
+                  {% else %}
+                    <tr>
+                      <td colspan="7" class="text-muted">No stable connections listed yet.</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+              </div>
+              <div class="rto-resize-handle" data-target="rto-stable-table"></div>
+            </div>
+          </div>
         </div>
       </div>
 
-      <div class="card mb-3">
-        <div class="card-body">
-          <h4 class="mb-3">SSH</h4>
-          <div class="row g-3">
-            <div class="col-md-6">
-              <label class="form-label">Host <span class="info" data-tip="SSH host that contains the ShapedDevices CSV.">i</span></label>
-              <input class="form-control" type="text" name="ssh_host" value="{{ settings.ssh.host }}" />
+      <div class="tab-pane {% if active_tab != 'status' %}active{% endif %}" id="rto-settings">
+        <form method="post">
+          <input type="hidden" name="active_tab" value="settings" />
+          <input type="hidden" name="settings_tab" id="rto-settings-tab" value="{{ settings_tab or 'general' }}" />
+
+          <div class="card mb-3">
+            <div class="card-body">
+              <div class="d-flex flex-wrap align-items-center justify-content-between mb-2 gap-2">
+                <h4 class="mb-0">RTO Settings</h4>
+                <span class="text-muted small">Configure how RTO data is collected, classified, and reported.</span>
+              </div>
+
+              <ul class="nav nav-tabs" data-bs-toggle="tabs">
+                <li class="nav-item">
+                  <a href="#rto-general" class="nav-link {% if settings_tab == 'general' %}active{% endif %}" data-bs-toggle="tab">General</a>
+                </li>
+                <li class="nav-item">
+                  <a href="#rto-data" class="nav-link {% if settings_tab == 'data' %}active{% endif %}" data-bs-toggle="tab">Data Source</a>
+                </li>
+                <li class="nav-item">
+                  <a href="#rto-notifications" class="nav-link {% if settings_tab == 'notifications' %}active{% endif %}" data-bs-toggle="tab">Notifications</a>
+                </li>
+                <li class="nav-item">
+                  <a href="#rto-classification" class="nav-link {% if settings_tab == 'classification' %}active{% endif %}" data-bs-toggle="tab">Classification</a>
+                </li>
+              </ul>
+
+              <div class="tab-content pt-4">
+                <div class="tab-pane {% if settings_tab == 'general' %}active{% endif %}" id="rto-general">
+                  <div class="alert alert-info">
+                    <div class="d-flex align-items-start">
+                      <span class="me-2"><i class="ti ti-info-circle"></i></span>
+                      <div>Enable the RTO job and set the schedule that triggers daily checks.</div>
+                    </div>
+                  </div>
+                  <div class="row g-3">
+                    <div class="col-md-4">
+                      <label class="form-label">Enable RTO notifier</label>
+                      <label class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" name="enabled" {% if settings.enabled %}checked{% endif %} />
+                        <span class="form-check-label">Active</span>
+                      </label>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Schedule Time (HH:MM)</label>
+                      <input class="form-control" type="text" name="schedule_time_ph" value="{{ settings.general.schedule_time_ph }}" />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Timezone</label>
+                      <input class="form-control" type="text" name="timezone" value="{{ settings.general.timezone }}" />
+                    </div>
+                  </div>
+                </div>
+
+                <div class="tab-pane {% if settings_tab == 'data' %}active{% endif %}" id="rto-data">
+                  <div class="alert alert-info">
+                    <div class="d-flex align-items-start">
+                      <span class="me-2"><i class="ti ti-info-circle"></i></span>
+                      <div>RTO uses SSH to pull the ShapedDevices CSV and pings each IPv4 entry.</div>
+                    </div>
+                  </div>
+                  <h5 class="mb-3">SSH Source</h5>
+                  <div class="row g-3 mb-4">
+                    <div class="col-md-6">
+                      <label class="form-label">Host</label>
+                      <input class="form-control" type="text" name="ssh_host" value="{{ settings.ssh.host }}" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Port</label>
+                      <input class="form-control" type="number" name="ssh_port" value="{{ settings.ssh.port }}" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">User</label>
+                      <input class="form-control" type="text" name="ssh_user" value="{{ settings.ssh.user }}" />
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label">Password</label>
+                      <input class="form-control" type="password" name="ssh_password" value="{{ settings.ssh.password }}" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Use SSH Key</label>
+                      <label class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" name="ssh_use_key" {% if settings.ssh.use_key %}checked{% endif %} />
+                        <span class="form-check-label">Enabled</span>
+                      </label>
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Key Path</label>
+                      <input class="form-control" type="text" name="ssh_key_path" value="{{ settings.ssh.key_path }}" />
+                    </div>
+                    <div class="col-md-12">
+                      <label class="form-label">Remote CSV Path</label>
+                      <input class="form-control" type="text" name="ssh_remote_csv_path" value="{{ settings.ssh.remote_csv_path }}" />
+                    </div>
+                  </div>
+
+                  <h5 class="mb-3">Ping Settings</h5>
+                  <div class="row g-3">
+                    <div class="col-md-4">
+                      <label class="form-label">Count</label>
+                      <input class="form-control" type="number" name="ping_count" value="{{ settings.ping.count }}" />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Timeout (seconds)</label>
+                      <input class="form-control" type="number" name="per_ping_timeout_sec" value="{{ settings.ping.per_ping_timeout_sec }}" />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Max Workers</label>
+                      <input class="form-control" type="number" name="max_workers" value="{{ settings.ping.max_workers }}" />
+                    </div>
+                  </div>
+                </div>
+
+                <div class="tab-pane {% if settings_tab == 'notifications' %}active{% endif %}" id="rto-notifications">
+                  <div class="alert alert-info">
+                    <div class="d-flex align-items-start">
+                      <span class="me-2"><i class="ti ti-info-circle"></i></span>
+                      <div>Telegram notifications send the RTO list to your chat once per schedule.</div>
+                    </div>
+                  </div>
+                  <div class="row g-3 mb-4">
+                    <div class="col-md-6">
+                      <label class="form-label">Bot Token</label>
+                      <input class="form-control" type="text" name="telegram_bot_token" value="{{ settings.telegram.bot_token }}" />
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label">Chat ID</label>
+                      <input class="form-control" type="text" name="telegram_chat_id" value="{{ settings.telegram.chat_id }}" />
+                    </div>
+                  </div>
+
+                  <h5 class="mb-3">Message Format</h5>
+                  <div class="row g-3">
+                    <div class="col-md-4">
+                      <label class="form-label">Message Title</label>
+                      <input class="form-control" type="text" name="message_title" value="{{ settings.general.message_title }}" />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Include Header</label>
+                      <label class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" name="include_header" {% if settings.general.include_header %}checked{% endif %} />
+                        <span class="form-check-label">Enabled</span>
+                      </label>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Output Mode</label>
+                      <select class="form-select" name="output_mode">
+                        {% for option in ['split', 'truncate', 'summary_top'] %}
+                          <option value="{{ option }}" {% if settings.general.output_mode == option %}selected{% endif %}>{{ option }}</option>
+                        {% endfor %}
+                      </select>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Max Characters</label>
+                      <input class="form-control" type="number" name="max_chars" value="{{ settings.general.max_chars }}" />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Max Lines</label>
+                      <input class="form-control" type="number" name="max_lines" value="{{ settings.general.max_lines }}" />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Top N</label>
+                      <input class="form-control" type="number" name="top_n" value="{{ settings.general.top_n }}" />
+                    </div>
+                  </div>
+
+                </div>
+
+                <div class="tab-pane {% if settings_tab == 'classification' %}active{% endif %}" id="rto-classification">
+                  <div class="alert alert-info">
+                    <div class="d-flex align-items-start">
+                      <span class="me-2"><i class="ti ti-info-circle"></i></span>
+                      <div>Set the thresholds that separate connection issues from stable customers.</div>
+                    </div>
+                  </div>
+                  <div class="row g-3">
+                    <div class="col-md-4">
+                      <label class="form-label">Issue RTO % (min)</label>
+                      <input class="form-control" type="number" step="0.1" name="issue_rto_pct" value="{{ settings.classification.issue_rto_pct }}" />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Issue Down Streak (min)</label>
+                      <input class="form-control" type="number" name="issue_streak" value="{{ settings.classification.issue_streak }}" />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Stable RTO % (max)</label>
+                      <input class="form-control" type="number" step="0.1" name="stable_rto_pct" value="{{ settings.classification.stable_rto_pct }}" />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">History Window Size</label>
+                      <input class="form-control" type="number" name="window_size" value="{{ settings.history.window_size }}" />
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
-            <div class="col-md-3">
-              <label class="form-label">Port <span class="info" data-tip="SSH port, usually 22.">i</span></label>
-              <input class="form-control" type="number" name="ssh_port" value="{{ settings.ssh.port }}" />
+            <div class="card-footer d-flex justify-content-end gap-2">
+              <button type="submit" class="btn btn-primary">Save RTO Settings</button>
+              <button type="submit" class="btn" formaction="/settings/rto/test" formmethod="post">Send Test Telegram</button>
+              <button type="submit" class="btn btn-outline-primary" formaction="/settings/rto/run" formmethod="post">Run RTO Now</button>
             </div>
-            <div class="col-md-3">
-              <label class="form-label">User <span class="info" data-tip="SSH username for the remote host.">i</span></label>
-              <input class="form-control" type="text" name="ssh_user" value="{{ settings.ssh.user }}" />
+          </div>
+        </form>
+
+        <div class="card">
+          <div class="card-body">
+            <h4 class="mb-2">Format RTO Database</h4>
+            <div class="alert alert-warning">
+              <div class="d-flex align-items-center">
+                <span class="me-2"><i class="ti ti-alert-triangle"></i></span>
+                <div>Formatting removes stored RTO status history so the next run starts fresh.</div>
+              </div>
             </div>
-            <div class="col-md-6">
-              <label class="form-label">Password <span class="info" data-tip="SSH password (leave blank if using a key).">i</span></label>
-              <input class="form-control" type="password" name="ssh_password" value="{{ settings.ssh.password }}" />
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Use SSH Key <span class="info" data-tip="Enable when authenticating with a private key file.">i</span></label>
-              <label class="form-check form-switch">
-                <input class="form-check-input" type="checkbox" name="ssh_use_key" {% if settings.ssh.use_key %}checked{% endif %} />
-                <span class="form-check-label">Enabled</span>
+            <form method="post" action="/settings/rto/format">
+              <label class="form-check">
+                <input class="form-check-input" type="checkbox" name="confirm_format" />
+                <span class="form-check-label">I understand this will erase RTO history data.</span>
               </label>
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Key Path <span class="info" data-tip="Path to the private key inside the container.">i</span></label>
-              <input class="form-control" type="text" name="ssh_key_path" value="{{ settings.ssh.key_path }}" />
-            </div>
-            <div class="col-md-12">
-              <label class="form-label">Remote CSV Path <span class="info" data-tip="Absolute path to ShapedDevices.csv on the remote host.">i</span></label>
-              <input class="form-control" type="text" name="ssh_remote_csv_path" value="{{ settings.ssh.remote_csv_path }}" />
-            </div>
+              <div class="mt-3">
+                <button type="submit" class="btn btn-danger">Format RTO Database</button>
+              </div>
+            </form>
           </div>
         </div>
       </div>
-
-      <div class="card mb-3">
-        <div class="card-body">
-          <h4 class="mb-3">Telegram</h4>
-          <div class="row g-3">
-            <div class="col-md-6">
-              <label class="form-label">Bot Token <span class="info" data-tip="Telegram bot token from BotFather.">i</span></label>
-              <input class="form-control" type="text" name="telegram_bot_token" value="{{ settings.telegram.bot_token }}" />
-            </div>
-            <div class="col-md-6">
-              <label class="form-label">Chat ID <span class="info" data-tip="Target Telegram chat ID where alerts should be sent.">i</span></label>
-              <input class="form-control" type="text" name="telegram_chat_id" value="{{ settings.telegram.chat_id }}" />
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="card mb-3">
-        <div class="card-body">
-          <h4 class="mb-3">Ping</h4>
-          <div class="row g-3">
-            <div class="col-md-4">
-              <label class="form-label">Count <span class="info" data-tip="How many ping attempts per device.">i</span></label>
-              <input class="form-control" type="number" name="ping_count" value="{{ settings.ping.count }}" />
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Timeout (seconds) <span class="info" data-tip="Timeout per ping attempt.">i</span></label>
-              <input class="form-control" type="number" name="per_ping_timeout_sec" value="{{ settings.ping.per_ping_timeout_sec }}" />
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Max Workers <span class="info" data-tip="Parallel pings during each run.">i</span></label>
-              <input class="form-control" type="number" name="max_workers" value="{{ settings.ping.max_workers }}" />
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="card mb-3">
-        <div class="card-body">
-          <h4 class="mb-3">Schedule</h4>
-          <div class="row g-3">
-            <div class="col-md-4">
-              <label class="form-label">Message Title <span class="info" data-tip="Title shown at the top of each Telegram message.">i</span></label>
-              <input class="form-control" type="text" name="message_title" value="{{ settings.general.message_title }}" />
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Include Header <span class="info" data-tip="Adds a column header row to the message.">i</span></label>
-              <label class="form-check form-switch">
-                <input class="form-check-input" type="checkbox" name="include_header" {% if settings.general.include_header %}checked{% endif %} />
-                <span class="form-check-label">Enabled</span>
-              </label>
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Output Mode <span class="info" data-tip="split sends multiple messages; truncate limits lines; summary_top shows worst offenders.">i</span></label>
-              <select class="form-select" name="output_mode">
-                {% for option in ['split', 'truncate', 'summary_top'] %}
-                  <option value="{{ option }}" {% if settings.general.output_mode == option %}selected{% endif %}>{{ option }}</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Max Characters <span class="info" data-tip="Split or truncate messages beyond this size.">i</span></label>
-              <input class="form-control" type="number" name="max_chars" value="{{ settings.general.max_chars }}" />
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Max Lines <span class="info" data-tip="Maximum lines in truncate mode.">i</span></label>
-              <input class="form-control" type="number" name="max_lines" value="{{ settings.general.max_lines }}" />
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Top N <span class="info" data-tip="Number of devices shown in summary_top mode.">i</span></label>
-              <input class="form-control" type="number" name="top_n" value="{{ settings.general.top_n }}" />
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Schedule Time (HH:MM) <span class="info" data-tip="Daily time to run the RTO check.">i</span></label>
-              <input class="form-control" type="text" name="schedule_time_ph" value="{{ settings.general.schedule_time_ph }}" />
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Timezone <span class="info" data-tip="Timezone for the schedule (example: Asia/Manila).">i</span></label>
-              <input class="form-control" type="text" name="timezone" value="{{ settings.general.timezone }}" />
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="card mb-3">
-        <div class="card-body">
-          <h4 class="mb-3">History</h4>
-          <div class="row g-3">
-            <div class="col-md-4">
-              <label class="form-label">Window Size <span class="info" data-tip="Number of recent ping cycles used for RTO calculation.">i</span></label>
-              <input class="form-control" type="number" name="window_size" value="{{ settings.history.window_size }}" />
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="d-flex gap-2">
-        <button type="submit" class="btn btn-primary">Save RTO Settings</button>
-      </div>
-    </form>
-  </div>
-  <div class="card-footer">
-    <div class="d-flex flex-wrap gap-2">
-      <form method="post" action="/settings/rto/test">
-        <button type="submit" class="btn">Send Test Telegram</button>
-      </form>
-      <form method="post" action="/settings/rto/run">
-        <button type="submit" class="btn btn-outline-primary">Send Actual Test</button>
-      </form>
     </div>
   </div>
 </div>
+
+<script>
+  document.addEventListener("DOMContentLoaded", () => {
+    const settingsInput = document.getElementById("rto-settings-tab");
+    if (settingsInput) {
+      const settingsTabs = document.querySelectorAll('#rto-settings [data-bs-toggle="tabs"] .nav-link');
+      settingsTabs.forEach((tab) => {
+        tab.addEventListener("shown.bs.tab", (event) => {
+          const target = event.target.getAttribute("href") || "";
+          if (target.startsWith("#rto-")) {
+            settingsInput.value = target.replace("#rto-", "");
+          }
+        });
+      });
+    }
+
+    const rtoWraps = document.querySelectorAll(".rto-table-wrap");
+    rtoWraps.forEach((wrap) => {
+      const head = wrap.querySelector("thead");
+      if (head) {
+        head.style.position = "sticky";
+        head.style.top = "0";
+        head.style.zIndex = "2";
+      }
+    });
+
+    const handles = document.querySelectorAll(".rto-resize-handle");
+    handles.forEach((handle) => {
+      const targetId = handle.getAttribute("data-target");
+      const wrap = targetId ? document.getElementById(targetId) : null;
+      if (!wrap) return;
+
+      let dragging = false;
+      let startY = 0;
+      let startHeight = 0;
+
+      const onMove = (event) => {
+        if (!dragging) return;
+        const clientY = event.touches ? event.touches[0].clientY : event.clientY;
+        const delta = clientY - startY;
+        const newHeight = Math.max(260, startHeight + delta);
+        wrap.style.height = `${newHeight}px`;
+
+        const edge = 80;
+        if (clientY > window.innerHeight - edge) {
+          const distance = Math.max(0, clientY - (window.innerHeight - edge));
+          const speed = 40 + distance * 3.5;
+          window.scrollBy({ top: speed, behavior: "auto" });
+        } else if (clientY < edge) {
+          const distance = Math.max(0, edge - clientY);
+          const speed = 40 + distance * 3.5;
+          window.scrollBy({ top: -speed, behavior: "auto" });
+        }
+        event.preventDefault();
+      };
+
+      const stop = () => {
+        dragging = false;
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("touchmove", onMove, { passive: false });
+        window.removeEventListener("mouseup", stop);
+        window.removeEventListener("touchend", stop);
+      };
+
+      const start = (event) => {
+        dragging = true;
+        const clientY = event.touches ? event.touches[0].clientY : event.clientY;
+        startY = clientY;
+        startHeight = wrap.getBoundingClientRect().height;
+        document.body.style.cursor = "row-resize";
+        document.body.style.userSelect = "none";
+        window.addEventListener("mousemove", onMove);
+        window.addEventListener("touchmove", onMove, { passive: false });
+        window.addEventListener("mouseup", stop);
+        window.addEventListener("touchend", stop);
+        event.preventDefault();
+      };
+
+      handle.addEventListener("mousedown", start);
+      handle.addEventListener("touchstart", start, { passive: false });
+    });
+  });
+</script>
 {% endblock %}

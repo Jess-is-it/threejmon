@@ -1740,9 +1740,70 @@ async def optical_settings_run(request: Request):
 @app.get("/settings/rto", response_class=HTMLResponse)
 async def rto_settings(request: Request):
     settings = get_settings("rto", RTO_DEFAULTS)
+    return render_rto_response(request, settings, "", "status", "general")
+
+
+def build_rto_status(settings):
+    history = get_state("rto_history", {})
+    rows = rto_notifier.summarize_history(history)
+    issue_rto_pct = float(settings.get("classification", {}).get("issue_rto_pct", 5.0))
+    issue_streak = int(settings.get("classification", {}).get("issue_streak", 2))
+    stable_rto_pct = float(settings.get("classification", {}).get("stable_rto_pct", 1.0))
+
+    issue_rows = []
+    stable_rows = []
+    for row in rows:
+        reasons = []
+        if row["last_status"] == "down":
+            reasons.append("Currently down")
+        if row["rto_pct"] >= issue_rto_pct:
+            reasons.append(f"RTO >= {issue_rto_pct:g}%")
+        if row["streak"] >= issue_streak:
+            reasons.append(f"Down streak >= {issue_streak}")
+
+        if reasons:
+            row["reasons"] = reasons
+            issue_rows.append(row)
+        elif row["last_status"] == "up" and row["rto_pct"] <= stable_rto_pct:
+            stable_rows.append(row)
+        else:
+            row["reasons"] = [f"RTO > {stable_rto_pct:g}%"]
+            issue_rows.append(row)
+
+    issue_rows = sorted(issue_rows, key=lambda x: (-x["rto_pct"], -x["streak"], x["name"].lower()))
+    stable_rows = sorted(stable_rows, key=lambda x: x["name"].lower())
+
+    return {
+        "total": len(rows),
+        "issue_total": len(issue_rows),
+        "stable_total": len(stable_rows),
+        "issue_rows": issue_rows,
+        "stable_rows": stable_rows,
+        "rules": {
+            "issue_rto_pct": issue_rto_pct,
+            "issue_streak": issue_streak,
+            "stable_rto_pct": stable_rto_pct,
+        },
+    }
+
+
+def render_rto_response(request, settings, message, active_tab, settings_tab):
+    status_map = {item["job_name"]: dict(item) for item in get_job_status()}
+    job_status = status_map.get("rto", {})
+    status = build_rto_status(settings)
     return templates.TemplateResponse(
         "settings_rto.html",
-        make_context(request, {"settings": settings, "message": ""}),
+        make_context(
+            request,
+            {
+                "settings": settings,
+                "message": message,
+                "active_tab": active_tab,
+                "settings_tab": settings_tab,
+                "rto_status": status,
+                "rto_job": job_status,
+            },
+        ),
     )
 
 
@@ -1782,12 +1843,16 @@ async def rto_settings_save(request: Request):
         "history": {
             "window_size": parse_int(form, "window_size", 30),
         },
+        "classification": {
+            "issue_rto_pct": parse_float(form, "issue_rto_pct", 5.0),
+            "issue_streak": parse_int(form, "issue_streak", 2),
+            "stable_rto_pct": parse_float(form, "stable_rto_pct", 1.0),
+        },
     }
     save_settings("rto", settings)
-    return templates.TemplateResponse(
-        "settings_rto.html",
-        make_context(request, {"settings": settings, "message": "Saved."}),
-    )
+    active_tab = form.get("active_tab", "settings")
+    settings_tab = form.get("settings_tab", "general")
+    return render_rto_response(request, settings, "Saved.", active_tab, settings_tab)
 
 
 @app.post("/settings/rto/test", response_class=HTMLResponse)
@@ -1801,10 +1866,7 @@ async def rto_settings_test(request: Request):
         message = "Test message sent."
     except TelegramError as exc:
         message = str(exc)
-    return templates.TemplateResponse(
-        "settings_rto.html",
-        make_context(request, {"settings": settings, "message": message}),
-    )
+    return render_rto_response(request, settings, message, "settings", "notifications")
 
 
 @app.post("/settings/rto/run", response_class=HTMLResponse)
@@ -1820,10 +1882,20 @@ async def rto_settings_run(request: Request):
         message = str(exc)
     except Exception as exc:
         message = f"Run failed: {exc}"
-    return templates.TemplateResponse(
-        "settings_rto.html",
-        make_context(request, {"settings": settings, "message": message}),
-    )
+    return render_rto_response(request, settings, message, "status", "general")
+
+
+@app.post("/settings/rto/format", response_class=HTMLResponse)
+async def rto_settings_format(request: Request):
+    form = await request.form()
+    settings = get_settings("rto", RTO_DEFAULTS)
+    message = ""
+    if parse_bool(form, "confirm_format"):
+        save_state("rto_history", {})
+        message = "RTO database formatted."
+    else:
+        message = "Please confirm format before proceeding."
+    return render_rto_response(request, settings, message, "settings", "general")
 
 
 

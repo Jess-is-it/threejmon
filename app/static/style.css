@@ -56,6 +56,81 @@ body,
   opacity: 1;
 }
 
+.rto-tip {
+  position: relative;
+  cursor: help;
+}
+
+.rto-tip::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 50%;
+  bottom: 130%;
+  transform: translateX(-50%);
+  background: var(--threej-info-bg);
+  color: #f5f7fb;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  width: 280px;
+  max-width: 320px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+  text-transform: none;
+  letter-spacing: 0;
+  z-index: 1000;
+}
+
+.rto-tip:hover::after {
+  opacity: 1;
+}
+
+.rto-table thead th {
+  position: sticky;
+  top: 0;
+  background: #ffffff;
+  z-index: 2;
+}
+
+.rto-table-wrap {
+  height: 520px;
+  overflow: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  min-height: 260px;
+}
+
+.rto-table-wrap .rto-table {
+  margin-bottom: 0;
+}
+
+.rto-table-wrap thead th {
+  position: sticky;
+  top: 0;
+  background: #ffffff;
+  z-index: 2;
+}
+
+.rto-resize-handle {
+  height: 10px;
+  cursor: row-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #6b7280;
+  user-select: none;
+}
+
+.rto-resize-handle::after {
+  content: "";
+  width: 60px;
+  height: 4px;
+  border-radius: 999px;
+  background: #e5e7eb;
+}
+
+
 .stamp-note {
   display: inline-flex;
   align-items: center;

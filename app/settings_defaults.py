@@ -84,6 +84,11 @@ RTO_DEFAULTS = {
     "history": {
         "window_size": 30,
     },
+    "classification": {
+        "issue_rto_pct": 5.0,
+        "issue_streak": 2,
+        "stable_rto_pct": 1.0,
+    },
 }
 
 ISP_PING_DEFAULTS = {

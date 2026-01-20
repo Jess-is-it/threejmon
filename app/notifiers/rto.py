@@ -123,6 +123,7 @@ def ping_all(devices, count, timeout_sec, max_workers):
 
 def update_history(history, devices, results, window_size):
     by_ip = {d["ip"]: d for d in devices}
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     for ip, ok in results.items():
         entry = history.get(ip, {})
         statuses = entry.get("statuses", [])
@@ -131,6 +132,8 @@ def update_history(history, devices, results, window_size):
             statuses = statuses[-window_size:]
         entry["statuses"] = statuses
         entry["name"] = by_ip.get(ip, {}).get("name", ip)
+        entry["last_check"] = timestamp
+        entry["last_status"] = 1 if ok else 0
         history[ip] = entry
     return history
 
@@ -161,6 +164,38 @@ def compute_rto_stats(history, results):
                 }
             )
     return rto_list
+
+
+def summarize_history(history):
+    rows = []
+    for ip, entry in history.items():
+        statuses = entry.get("statuses", [])
+        if not statuses:
+            continue
+        total = len(statuses)
+        failures = total - sum(statuses)
+        rto_pct = (failures / total) * 100.0
+        streak = 0
+        for value in reversed(statuses):
+            if value == 0:
+                streak += 1
+            else:
+                break
+        last_value = statuses[-1]
+        rows.append(
+            {
+                "name": entry.get("name", ip),
+                "ip": ip,
+                "total": total,
+                "failures": failures,
+                "rto_pct": rto_pct,
+                "uptime_pct": 100.0 - rto_pct,
+                "streak": streak,
+                "last_status": "down" if last_value == 0 else "up",
+                "last_check": entry.get("last_check", ""),
+            }
+        )
+    return rows
 
 
 def format_truncate(lines, max_lines, max_chars):
