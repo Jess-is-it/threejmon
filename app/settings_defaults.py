@@ -78,11 +78,15 @@ RTO_DEFAULTS = {
         "max_chars": 3800,
         "max_lines": 200,
         "top_n": 20,
+        "ping_interval_minutes": 5,
         "schedule_time_ph": "07:00",
         "timezone": "Asia/Manila",
     },
     "history": {
         "window_size": 30,
+    },
+    "storage": {
+        "raw_retention_days": 30,
     },
     "classification": {
         "issue_rto_pct": 5.0,

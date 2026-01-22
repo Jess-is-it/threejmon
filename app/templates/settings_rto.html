@@ -25,17 +25,33 @@
 
     <div class="tab-content pt-4">
       <div class="tab-pane {% if active_tab == 'status' %}active{% endif %}" id="rto-status">
+        <div id="rto-loading-overlay" style="display: none; position: fixed; inset: 0; background: rgba(255,255,255,0.75); z-index: 1050; align-items: center; justify-content: center;">
+          <div class="spinner-border text-primary" role="status" aria-hidden="true"></div>
+        </div>
         <div class="d-flex flex-wrap align-items-center justify-content-between mb-3 gap-2">
           <div>
-            <h4 class="mb-1">RTO Status</h4>
+            <h4 class="mb-1">RTO Status <span class="badge bg-azure-lt" id="rto-status-window">{{ rto_status.window_label }}</span></h4>
             <div class="text-muted small">
-              Last run: {{ rto_job.last_run_at or 'n/a' }} · Last success: {{ rto_job.last_success_at or 'n/a' }}
+              Last run: {{ rto_job.last_run_at_ph or 'n/a' }} · Last success: {{ rto_job.last_success_at_ph or 'n/a' }}
             </div>
           </div>
-          <div class="d-flex gap-2">
+          <div class="d-flex gap-2 align-items-center">
             <span class="badge bg-blue-lt">Total: {{ rto_status.total }}</span>
             <span class="badge bg-red-lt">Issues: {{ rto_status.issue_total }}</span>
             <span class="badge bg-green-lt">Stable: {{ rto_status.stable_total }}</span>
+            <div class="dropdown">
+              <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" id="rto-window-button">Filter</button>
+              <div class="dropdown-menu dropdown-menu-end" id="rto-window-menu">
+                {% for label, hours in rto_window_options %}
+                  <div class="dropdown-item d-flex align-items-center justify-content-between rto-window-row" data-hours="{{ hours }}" data-label="{{ label }}">
+                    <span>{{ label }}</span>
+                    <button class="btn btn-sm btn-link p-0 rto-window-star-btn" data-hours="{{ hours }}" title="Set default filter">
+                      <i class="ti ti-star text-muted"></i>
+                    </button>
+                  </div>
+                {% endfor %}
+              </div>
+            </div>
           </div>
         </div>
 
@@ -64,15 +80,16 @@
               <table class="table table-vcenter rto-table">
                 <thead>
                   <tr>
-                    <th class="rto-tip" title="Customer or circuit name pulled from the CSV (Circuit Name, Device Name, Circuit ID). Use this to identify the subscriber." data-tip="Customer or circuit name pulled from the CSV (Circuit Name, Device Name, Circuit ID). Use this to identify the subscriber.">Customer</th>
-                    <th class="rto-tip" title="IPv4 address that the system pings for this subscriber." data-tip="IPv4 address that the system pings for this subscriber.">IPv4</th>
-                    <th class="rto-tip" title="Latest ping result. Up means the last check replied, Down means it failed, and Monitor means it is up now but still exceeds the issue thresholds." data-tip="Latest ping result. Up means the last check replied, Down means it failed, and Monitor means it is up now but still exceeds the issue thresholds.">Status</th>
-                    <th class="rto-tip" title="Request Timeout percentage within the current history window. Higher means more failed checks." data-tip="Request Timeout percentage within the current history window. Higher means more failed checks.">RTO %</th>
-                    <th class="rto-tip" title="Uptime percentage within the same window. It is 100 minus RTO %." data-tip="Uptime percentage within the same window. It is 100 minus RTO %.">Uptime %</th>
-                    <th class="rto-tip" title="Number of consecutive failed checks at the end of the window. Helps spot persistent outages." data-tip="Number of consecutive failed checks at the end of the window. Helps spot persistent outages.">Down Streak</th>
-                    <th class="rto-tip" title="Number of recent checks stored in the history window. More checks means more reliable percentages." data-tip="Number of recent checks stored in the history window. More checks means more reliable percentages.">Total Checks</th>
-                    <th class="rto-tip" title="Timestamp of the most recent check recorded for this subscriber." data-tip="Timestamp of the most recent check recorded for this subscriber.">Last Check</th>
-                    <th class="rto-tip" title="Why this subscriber appears in Connection Issues, based on the configured thresholds." data-tip="Why this subscriber appears in Connection Issues, based on the configured thresholds.">Reason</th>
+                    <th class="rto-tip rto-sort" data-sort="text" aria-sort="none" title="Customer or circuit name pulled from the CSV (Circuit Name, Device Name, Circuit ID). Use this to identify the subscriber." data-tip="Customer or circuit name pulled from the CSV (Circuit Name, Device Name, Circuit ID). Use this to identify the subscriber.">Customer <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort" data-sort="text" aria-sort="none" title="IPv4 address that the system pings for this subscriber." data-tip="IPv4 address that the system pings for this subscriber.">IPv4 <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort" data-sort="text" aria-sort="none" title="Latest ping result. Up means the last check replied, Down means it failed, and Monitor means it is up now but still exceeds the issue thresholds." data-tip="Latest ping result. Up means the last check replied, Down means it failed, and Monitor means it is up now but still exceeds the issue thresholds.">Status <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort" data-sort="number" aria-sort="none" title="Request Timeout percentage within the current history window. Higher means more failed checks." data-tip="Request Timeout percentage within the current history window. Higher means more failed checks.">RTO % <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort" data-sort="number" aria-sort="none" title="Uptime percentage within the same window. It is 100 minus RTO %." data-tip="Uptime percentage within the same window. It is 100 minus RTO %.">Uptime % <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort" data-sort="number" aria-sort="none" title="Number of consecutive failed checks at the end of the window. Helps spot persistent outages." data-tip="Number of consecutive failed checks at the end of the window. Helps spot persistent outages.">Down Streak <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort" data-sort="number" aria-sort="none" title="Number of recent checks stored in the history window. More checks means more reliable percentages." data-tip="Number of recent checks stored in the history window. More checks means more reliable percentages.">Total Checks <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort" data-sort="date" aria-sort="none" title="Timestamp of the most recent check recorded for this subscriber." data-tip="Timestamp of the most recent check recorded for this subscriber.">Last Check <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-trend-header" title="Up/down history for this subscriber based on raw ping results." data-tip="Up/down history for this subscriber based on raw ping results. Click to expand.">{{ rto_status.window_label }} Trend</th>
+                    <th class="rto-tip rto-sort" data-sort="text" aria-sort="none" title="Why this subscriber appears in Connection Issues, based on the configured thresholds." data-tip="Why this subscriber appears in Connection Issues, based on the configured thresholds.">Reason <span class="rto-sort-indicator" aria-hidden="true"></span></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -92,11 +109,31 @@
                       <td>{{ row.streak }}</td>
                       <td>{{ row.total }}</td>
                       <td>{{ row.last_check or 'n/a' }}</td>
+                      <td>
+                        {% if row.spark_points_window %}
+                          <button type="button"
+                                  class="btn btn-link p-0 rto-spark-btn"
+                                  data-name="{{ row.name }}"
+                                  data-ip="{{ row.ip }}"
+                                  data-status="{% if row.last_status == 'down' %}down{% else %}monitor{% endif %}"
+                                  data-points="{{ row.spark_points_window_large }}"
+                                  data-width="640"
+                                  data-height="200"
+                                  data-bs-toggle="modal"
+                                  data-bs-target="#rto-spark-modal">
+                            <svg class="rto-sparkline" width="120" height="30" viewBox="0 0 120 30" preserveAspectRatio="none">
+                              <polyline points="{{ row.spark_points_window }}" fill="none" stroke="{% if row.last_status == 'down' %}#d63939{% else %}#f59f00{% endif %}" stroke-width="2"></polyline>
+                            </svg>
+                          </button>
+                        {% else %}
+                          <span class="text-muted small">n/a</span>
+                        {% endif %}
+                      </td>
                       <td>{{ row.reasons|join(', ') }}</td>
                     </tr>
                   {% else %}
                     <tr>
-                      <td colspan="9" class="text-muted">No connection issues detected yet.</td>
+                      <td colspan="10" class="text-muted">No connection issues detected yet.</td>
                     </tr>
                   {% endfor %}
                 </tbody>
@@ -112,13 +149,14 @@
               <table class="table table-vcenter rto-table">
                 <thead>
                   <tr>
-                    <th class="rto-tip" title="Customer or circuit name pulled from the CSV (Circuit Name, Device Name, Circuit ID)." data-tip="Customer or circuit name pulled from the CSV (Circuit Name, Device Name, Circuit ID).">Customer</th>
-                    <th class="rto-tip" title="IPv4 address that the system pings for this subscriber." data-tip="IPv4 address that the system pings for this subscriber.">IPv4</th>
-                    <th class="rto-tip" title="Latest ping result for this subscriber in the current window." data-tip="Latest ping result for this subscriber in the current window.">Status</th>
-                    <th class="rto-tip" title="Uptime percentage within the history window. Higher means more reliable connectivity." data-tip="Uptime percentage within the history window. Higher means more reliable connectivity.">Uptime %</th>
-                    <th class="rto-tip" title="Request Timeout percentage within the current window. Lower values indicate stable connections." data-tip="Request Timeout percentage within the current window. Lower values indicate stable connections.">RTO %</th>
-                    <th class="rto-tip" title="Number of recent checks stored in the history window." data-tip="Number of recent checks stored in the history window.">Total Checks</th>
-                    <th class="rto-tip" title="Timestamp of the most recent check recorded for this subscriber." data-tip="Timestamp of the most recent check recorded for this subscriber.">Last Check</th>
+                    <th class="rto-tip rto-sort" data-sort="text" aria-sort="none" title="Customer or circuit name pulled from the CSV (Circuit Name, Device Name, Circuit ID)." data-tip="Customer or circuit name pulled from the CSV (Circuit Name, Device Name, Circuit ID).">Customer <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort" data-sort="text" aria-sort="none" title="IPv4 address that the system pings for this subscriber." data-tip="IPv4 address that the system pings for this subscriber.">IPv4 <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort" data-sort="text" aria-sort="none" title="Latest ping result for this subscriber in the current window." data-tip="Latest ping result for this subscriber in the current window.">Status <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort" data-sort="number" aria-sort="none" title="Uptime percentage within the history window. Higher means more reliable connectivity." data-tip="Uptime percentage within the history window. Higher means more reliable connectivity.">Uptime % <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort" data-sort="number" aria-sort="none" title="Request Timeout percentage within the current window. Lower values indicate stable connections." data-tip="Request Timeout percentage within the current window. Lower values indicate stable connections.">RTO % <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort" data-sort="number" aria-sort="none" title="Number of recent checks stored in the history window." data-tip="Number of recent checks stored in the history window.">Total Checks <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort" data-sort="date" aria-sort="none" title="Timestamp of the most recent check recorded for this subscriber." data-tip="Timestamp of the most recent check recorded for this subscriber.">Last Check <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-trend-header" title="Up/down history for this subscriber based on raw ping results." data-tip="Up/down history for this subscriber based on raw ping results. Click to expand.">{{ rto_status.window_label }} Trend</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -131,10 +169,30 @@
                       <td>{{ "%.1f"|format(row.rto_pct) }}</td>
                       <td>{{ row.total }}</td>
                       <td>{{ row.last_check or 'n/a' }}</td>
+                      <td>
+                        {% if row.spark_points_window %}
+                          <button type="button"
+                                  class="btn btn-link p-0 rto-spark-btn"
+                                  data-name="{{ row.name }}"
+                                  data-ip="{{ row.ip }}"
+                                  data-status="up"
+                                  data-points="{{ row.spark_points_window_large }}"
+                                  data-width="640"
+                                  data-height="200"
+                                  data-bs-toggle="modal"
+                                  data-bs-target="#rto-spark-modal">
+                            <svg class="rto-sparkline" width="120" height="30" viewBox="0 0 120 30" preserveAspectRatio="none">
+                              <polyline points="{{ row.spark_points_window }}" fill="none" stroke="#2fb344" stroke-width="2"></polyline>
+                            </svg>
+                          </button>
+                        {% else %}
+                          <span class="text-muted small">n/a</span>
+                        {% endif %}
+                      </td>
                     </tr>
                   {% else %}
                     <tr>
-                      <td colspan="7" class="text-muted">No stable connections listed yet.</td>
+                      <td colspan="8" class="text-muted">No stable connections listed yet.</td>
                     </tr>
                   {% endfor %}
                 </tbody>
@@ -151,30 +209,33 @@
           <input type="hidden" name="active_tab" value="settings" />
           <input type="hidden" name="settings_tab" id="rto-settings-tab" value="{{ settings_tab or 'general' }}" />
 
-          <div class="card mb-3">
-            <div class="card-body">
-              <div class="d-flex flex-wrap align-items-center justify-content-between mb-2 gap-2">
-                <h4 class="mb-0">RTO Settings</h4>
-                <span class="text-muted small">Configure how RTO data is collected, classified, and reported.</span>
-              </div>
+          <div class="d-flex flex-wrap align-items-center justify-content-between mb-2 gap-2">
+            <h4 class="mb-0">RTO Settings</h4>
+            <span class="text-muted small">Configure how RTO data is collected, classified, and reported.</span>
+          </div>
 
-              <ul class="nav nav-tabs" data-bs-toggle="tabs">
-                <li class="nav-item">
-                  <a href="#rto-general" class="nav-link {% if settings_tab == 'general' %}active{% endif %}" data-bs-toggle="tab">General</a>
-                </li>
-                <li class="nav-item">
-                  <a href="#rto-data" class="nav-link {% if settings_tab == 'data' %}active{% endif %}" data-bs-toggle="tab">Data Source</a>
-                </li>
-                <li class="nav-item">
-                  <a href="#rto-notifications" class="nav-link {% if settings_tab == 'notifications' %}active{% endif %}" data-bs-toggle="tab">Notifications</a>
-                </li>
-                <li class="nav-item">
-                  <a href="#rto-classification" class="nav-link {% if settings_tab == 'classification' %}active{% endif %}" data-bs-toggle="tab">Classification</a>
-                </li>
-              </ul>
+          <ul class="nav nav-tabs" data-bs-toggle="tabs">
+            <li class="nav-item">
+              <a href="#rto-general" class="nav-link {% if settings_tab == 'general' %}active{% endif %}" data-bs-toggle="tab">General</a>
+            </li>
+            <li class="nav-item">
+              <a href="#rto-data" class="nav-link {% if settings_tab == 'data' %}active{% endif %}" data-bs-toggle="tab">Data Source</a>
+            </li>
+            <li class="nav-item">
+              <a href="#rto-notifications" class="nav-link {% if settings_tab == 'notifications' %}active{% endif %}" data-bs-toggle="tab">Notifications</a>
+            </li>
+            <li class="nav-item">
+              <a href="#rto-classification" class="nav-link {% if settings_tab == 'classification' %}active{% endif %}" data-bs-toggle="tab">Classification</a>
+            </li>
+            <li class="nav-item">
+              <a href="#rto-danger" class="nav-link {% if settings_tab == 'danger' %}active{% endif %}" data-bs-toggle="tab">Danger</a>
+            </li>
+          </ul>
 
-              <div class="tab-content pt-4">
-                <div class="tab-pane {% if settings_tab == 'general' %}active{% endif %}" id="rto-general">
+          <div class="tab-content pt-4">
+            <div class="tab-pane {% if settings_tab == 'general' %}active{% endif %}" id="rto-general">
+              <div class="card mb-3">
+                <div class="card-body">
                   <div class="alert alert-info">
                     <div class="d-flex align-items-start">
                       <span class="me-2"><i class="ti ti-info-circle"></i></span>
@@ -183,24 +244,344 @@
                   </div>
                   <div class="row g-3">
                     <div class="col-md-4">
-                      <label class="form-label">Enable RTO notifier</label>
+                      <label class="form-label">Enable RTO notifier <span class="info" data-tip="Turns on the scheduled RTO job that pulls the CSV and pings all customer IPs.">i</span></label>
                       <label class="form-check form-switch">
                         <input class="form-check-input" type="checkbox" name="enabled" {% if settings.enabled %}checked{% endif %} />
                         <span class="form-check-label">Active</span>
                       </label>
                     </div>
                     <div class="col-md-4">
-                      <label class="form-label">Schedule Time (HH:MM)</label>
-                      <input class="form-control" type="text" name="schedule_time_ph" value="{{ settings.general.schedule_time_ph }}" />
+                      <label class="form-label">Ping Interval (minutes) <span class="info" data-tip="How often the server runs RTO pings and stores results.">i</span></label>
+                      <input class="form-control" type="number" name="ping_interval_minutes" value="{{ settings.general.ping_interval_minutes }}" />
                     </div>
                     <div class="col-md-4">
-                      <label class="form-label">Timezone</label>
-                      <input class="form-control" type="text" name="timezone" value="{{ settings.general.timezone }}" />
-                    </div>
-                  </div>
-                </div>
+                      <label class="form-label">History Window Size <span class="info" data-tip="Number of recent checks stored per customer for RTO calculations.">i</span></label>
+                      <input class="form-control" type="number" name="window_size" value="{{ settings.history.window_size }}" />
+      </div>
+    </div>
+  </div>
+</div>
 
-                <div class="tab-pane {% if settings_tab == 'data' %}active{% endif %}" id="rto-data">
+<div class="modal modal-blur fade" id="rto-spark-modal" tabindex="-1" role="dialog" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-centered" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="rto-spark-title">RTO Trend</h5>
+        <div class="dropdown ms-auto">
+          <button class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" id="rto-modal-window-button">Filter</button>
+          <div class="dropdown-menu dropdown-menu-end" id="rto-modal-window-menu">
+            {% for label, hours in rto_window_options %}
+              <button class="dropdown-item rto-modal-window-option" data-hours="{{ hours }}" data-label="{{ label }}">{{ label }}</button>
+            {% endfor %}
+          </div>
+        </div>
+        <button type="button" class="btn-close ms-2" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div id="rto-spark-modal-chart" class="rto-spark-modal-chart"></div>
+        <div class="text-muted small mt-2">Up/down history based on raw ping results for the selected window.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  document.addEventListener("DOMContentLoaded", () => {
+    const tabLinks = document.querySelectorAll('a[data-bs-toggle="tab"]');
+    const tabKey = "rto_status_active_tab";
+    const storedTab = localStorage.getItem(tabKey);
+    if (window.location.hash) {
+      const target = document.querySelector(`a[href="${window.location.hash}"]`);
+      if (target && window.bootstrap?.Tab) {
+        new window.bootstrap.Tab(target).show();
+      }
+    } else if (storedTab) {
+      const target = document.querySelector(`a[href="${storedTab}"]`);
+      if (target && window.bootstrap?.Tab) {
+        new window.bootstrap.Tab(target).show();
+      }
+    }
+    tabLinks.forEach((link) => {
+      link.addEventListener("shown.bs.tab", (event) => {
+        const href = event.target.getAttribute("href");
+        if (href) {
+          localStorage.setItem(tabKey, href);
+          history.replaceState(null, "", href);
+        }
+      });
+    });
+
+    const windowBadge = document.getElementById("rto-status-window");
+    const windowButton = document.getElementById("rto-window-button");
+    const windowOptions = document.querySelectorAll(".rto-window-row");
+    const windowStars = document.querySelectorAll(".rto-window-star-btn");
+    const windowParam = new URLSearchParams(window.location.search).get("window");
+    let defaultWindow = localStorage.getItem("rto_status_default_window");
+    if (!defaultWindow) {
+      defaultWindow = "24";
+      localStorage.setItem("rto_status_default_window", defaultWindow);
+    }
+    let currentWindow = windowParam || defaultWindow;
+    if (!windowParam && windowBadge) {
+      const url = new URL(window.location.href);
+      url.searchParams.set("window", currentWindow);
+      window.location.replace(url.toString());
+      return;
+    }
+    const loadingOverlay = document.getElementById("rto-loading-overlay");
+    const showLoading = () => {
+      if (loadingOverlay) {
+        loadingOverlay.style.display = "flex";
+      }
+    };
+    const hideLoading = () => {
+      if (loadingOverlay) {
+        loadingOverlay.style.display = "none";
+      }
+    };
+    showLoading();
+    window.addEventListener("load", () => {
+      hideLoading();
+    });
+    const updateStars = () => {
+      windowStars.forEach((btn) => {
+        const icon = btn.querySelector("i");
+        if (!icon) return;
+        if (btn.dataset.hours === defaultWindow) {
+          icon.classList.remove("ti-star");
+          icon.classList.add("ti-star-filled", "text-warning");
+        } else {
+          icon.classList.remove("ti-star-filled", "text-warning");
+          icon.classList.add("ti-star");
+        }
+      });
+    };
+    const updateButtonLabel = () => {
+      const label = windowBadge ? windowBadge.textContent.trim() : "1D";
+      const isDefault = currentWindow === defaultWindow;
+      if (windowButton) {
+        windowButton.textContent = isDefault ? `Filter: ${label} ⭐` : `Filter: ${label}`;
+      }
+      document.querySelectorAll(".rto-trend-header").forEach((el) => {
+        el.textContent = `${label} Trend`;
+      });
+    };
+    updateStars();
+    updateButtonLabel();
+    windowOptions.forEach((row) => {
+      row.addEventListener("click", () => {
+        currentWindow = row.dataset.hours;
+        updateStars();
+        updateButtonLabel();
+        const url = new URL(window.location.href);
+        url.searchParams.set("window", currentWindow);
+        const tabHash = localStorage.getItem(tabKey) || window.location.hash;
+        if (tabHash) {
+          url.hash = tabHash;
+        }
+        showLoading();
+        window.location.href = url.toString();
+      });
+    });
+    windowStars.forEach((btn) => {
+      btn.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        defaultWindow = btn.dataset.hours;
+        localStorage.setItem("rto_status_default_window", defaultWindow);
+        updateStars();
+        updateButtonLabel();
+      });
+    });
+
+    const parseSortValue = (value, type) => {
+      if (type === "number") {
+        const cleaned = value.replace(/[^0-9.-]/g, "");
+        const parsed = parseFloat(cleaned);
+        return Number.isNaN(parsed) ? -Infinity : parsed;
+      }
+      if (type === "date") {
+        const parsed = Date.parse(value);
+        return Number.isNaN(parsed) ? -Infinity : parsed;
+      }
+      return value.toLowerCase();
+    };
+
+    const setupSortableTable = (table) => {
+      if (!table) return;
+      const headers = Array.from(table.querySelectorAll("th.rto-sort"));
+      if (!headers.length) return;
+      const tbody = table.querySelector("tbody");
+      table.addEventListener("click", (event) => {
+        const header = event.target.closest("th.rto-sort");
+        if (!header || !table.contains(header)) return;
+        if (!tbody) return;
+        const index = headers.indexOf(header);
+        if (index < 0) return;
+        const rows = Array.from(tbody.querySelectorAll("tr"));
+        if (rows.length <= 1 && rows[0]?.querySelector("td[colspan]")) {
+          return;
+        }
+        const currentDir = header.dataset.sortDir === "asc" ? "asc" : "desc";
+        const nextDir = currentDir === "asc" ? "desc" : "asc";
+        headers.forEach((th) => {
+          delete th.dataset.sortDir;
+          th.classList.remove("rto-sorted-asc", "rto-sorted-desc");
+          th.setAttribute("aria-sort", "none");
+          const indicator = th.querySelector(".rto-sort-indicator");
+          if (indicator) {
+            indicator.textContent = "";
+          }
+        });
+        header.dataset.sortDir = nextDir;
+        header.classList.add(nextDir === "asc" ? "rto-sorted-asc" : "rto-sorted-desc");
+        header.setAttribute("aria-sort", nextDir === "asc" ? "ascending" : "descending");
+        const indicator = header.querySelector(".rto-sort-indicator");
+        if (indicator) {
+          indicator.textContent = nextDir === "asc" ? "▲" : "▼";
+        }
+        let sortType = header.dataset.sort || "text";
+        let sortIndex = index;
+        if (sortType === "trend") {
+          const rtoHeader = headers.find((item) =>
+            (item.textContent || "").trim().toLowerCase().startsWith("rto %")
+          );
+          if (rtoHeader) {
+            sortIndex = headers.indexOf(rtoHeader);
+            sortType = rtoHeader.dataset.sort || "number";
+          }
+        }
+        rows.sort((a, b) => {
+          const aCell = a.children[sortIndex]?.textContent.trim() || "";
+          const bCell = b.children[sortIndex]?.textContent.trim() || "";
+          const aValue = parseSortValue(aCell, sortType);
+          const bValue = parseSortValue(bCell, sortType);
+          let result = 0;
+          if (typeof aValue === "number" && typeof bValue === "number") {
+            result = aValue - bValue;
+          } else {
+            result = String(aValue).localeCompare(String(bValue), undefined, { numeric: true, sensitivity: "base" });
+          }
+          return nextDir === "asc" ? result : -result;
+        });
+        rows.forEach((row) => tbody.appendChild(row));
+      });
+    };
+
+    document.querySelectorAll(".rto-table").forEach((table) => {
+      setupSortableTable(table);
+    });
+
+    const modalTitle = document.getElementById("rto-spark-title");
+    const modalChart = document.getElementById("rto-spark-modal-chart");
+    const modalWindowButton = document.getElementById("rto-modal-window-button");
+    const modalWindowOptions = document.querySelectorAll(".rto-modal-window-option");
+    let modalChartInstance = null;
+    const modalEl = document.getElementById("rto-spark-modal");
+    let modalIp = "";
+    let modalStatus = "up";
+    if (modalEl && modalEl.parentElement !== document.body) {
+      document.body.appendChild(modalEl);
+    }
+
+    const renderModalChart = async (name, ip, status, hours) => {
+      const colorMap = { up: "#2fb344", down: "#d63939", monitor: "#f59f00" };
+      const stroke = colorMap[status] || "#2fb344";
+      const label = hours >= 24 ? `${Math.floor(hours / 24)}D` : `${hours}H`;
+      modalTitle.textContent = `${name} (${ip}) · ${label} Trend`;
+      if (modalWindowButton) {
+        modalWindowButton.textContent = `Filter: ${label}`;
+      }
+      if (modalChartInstance) {
+        modalChartInstance.destroy();
+        modalChartInstance = null;
+      }
+      modalChart.innerHTML = "<div class='text-muted'>Loading chart...</div>";
+      try {
+        const params = new URLSearchParams({ ip, window: String(hours) });
+        const res = await fetch(`/rto/series?${params.toString()}`, { headers: { "Accept": "application/json" } });
+        if (!res.ok) {
+          modalChart.innerHTML = "<div class='text-muted'>No data available.</div>";
+          return;
+        }
+        const payload = await res.json();
+        const series = (payload.series || []).map((item) => ({
+          x: item.ts,
+          y: item.value,
+        }));
+        if (!series.length) {
+          modalChart.innerHTML = "<div class='text-muted'>No data available.</div>";
+          return;
+        }
+        modalChart.innerHTML = "";
+        const formatTime = (value) =>
+          new Date(value).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+        const formatDate = (value) =>
+          new Date(value).toLocaleDateString("en-US", { month: "short", day: "2-digit" });
+        const labelFormatter = hours <= 24 ? formatTime : formatDate;
+        const options = {
+          chart: {
+            type: "line",
+            height: 220,
+            toolbar: { show: false },
+            zoom: { enabled: false },
+          },
+          stroke: { curve: "straight", width: 2 },
+          colors: [stroke],
+          markers: { size: 0 },
+          series: [{ name: "Uptime", data: series }],
+          xaxis: {
+            type: "datetime",
+            labels: { formatter: labelFormatter },
+          },
+          yaxis: {
+            min: 0,
+            max: 100,
+            tickAmount: 2,
+            labels: { formatter: (val) => `${val}%` },
+          },
+          tooltip: {
+            x: { formatter: (val) => new Date(val).toLocaleString("en-US") },
+            y: { formatter: (val) => `${val}%` },
+          },
+          grid: { strokeDashArray: 4 },
+        };
+        modalChartInstance = new ApexCharts(modalChart, options);
+        modalChartInstance.render();
+      } catch (err) {
+        modalChart.innerHTML = "<div class='text-muted'>No data available.</div>";
+      }
+    };
+
+    document.querySelectorAll(".rto-spark-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const name = btn.getAttribute("data-name") || "";
+        modalIp = btn.getAttribute("data-ip") || "";
+        modalStatus = btn.getAttribute("data-status") || "up";
+        const windowText = windowBadge ? windowBadge.textContent.trim() : "1D";
+        const hours = windowText.endsWith("H")
+          ? parseInt(windowText.replace("H", ""), 10)
+          : windowText.endsWith("D")
+            ? parseInt(windowText.replace("D", ""), 10) * 24
+            : 24;
+        await renderModalChart(name, modalIp, modalStatus, hours);
+      });
+    });
+
+    modalWindowOptions.forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const hours = parseInt(btn.dataset.hours || "24", 10);
+        const name = modalTitle.textContent.split(" (")[0] || "RTO";
+        await renderModalChart(name, modalIp, modalStatus, hours);
+      });
+    });
+  });
+</script>
+            </div>
+
+            <div class="tab-pane {% if settings_tab == 'data' %}active{% endif %}" id="rto-data">
+              <div class="card mb-3">
+                <div class="card-body">
                   <div class="alert alert-info">
                     <div class="d-flex align-items-start">
                       <span class="me-2"><i class="ti ti-info-circle"></i></span>
@@ -210,56 +591,85 @@
                   <h5 class="mb-3">SSH Source</h5>
                   <div class="row g-3 mb-4">
                     <div class="col-md-6">
-                      <label class="form-label">Host</label>
+                      <label class="form-label">Host <span class="info" data-tip="SSH host that contains the ShapedDevices CSV file.">i</span></label>
                       <input class="form-control" type="text" name="ssh_host" value="{{ settings.ssh.host }}" />
                     </div>
                     <div class="col-md-3">
-                      <label class="form-label">Port</label>
+                      <label class="form-label">Port <span class="info" data-tip="SSH port (usually 22).">i</span></label>
                       <input class="form-control" type="number" name="ssh_port" value="{{ settings.ssh.port }}" />
                     </div>
                     <div class="col-md-3">
-                      <label class="form-label">User</label>
+                      <label class="form-label">User <span class="info" data-tip="SSH username for the remote host.">i</span></label>
                       <input class="form-control" type="text" name="ssh_user" value="{{ settings.ssh.user }}" />
                     </div>
                     <div class="col-md-6">
-                      <label class="form-label">Password</label>
+                      <label class="form-label">Password <span class="info" data-tip="SSH password (leave blank if using a private key).">i</span></label>
                       <input class="form-control" type="password" name="ssh_password" value="{{ settings.ssh.password }}" />
                     </div>
                     <div class="col-md-3">
-                      <label class="form-label">Use SSH Key</label>
+                      <label class="form-label">Use SSH Key <span class="info" data-tip="Enable when authenticating with a private key file.">i</span></label>
                       <label class="form-check form-switch">
                         <input class="form-check-input" type="checkbox" name="ssh_use_key" {% if settings.ssh.use_key %}checked{% endif %} />
                         <span class="form-check-label">Enabled</span>
                       </label>
                     </div>
                     <div class="col-md-3">
-                      <label class="form-label">Key Path</label>
+                      <label class="form-label">Key Path <span class="info" data-tip="Path to the private key inside the container.">i</span></label>
                       <input class="form-control" type="text" name="ssh_key_path" value="{{ settings.ssh.key_path }}" />
                     </div>
                     <div class="col-md-12">
-                      <label class="form-label">Remote CSV Path</label>
+                      <label class="form-label">Remote CSV Path <span class="info" data-tip="Absolute path to ShapedDevices.csv on the remote host.">i</span></label>
                       <input class="form-control" type="text" name="ssh_remote_csv_path" value="{{ settings.ssh.remote_csv_path }}" />
                     </div>
                   </div>
+                </div>
+              </div>
 
+              <div class="card mb-3">
+                <div class="card-body">
                   <h5 class="mb-3">Ping Settings</h5>
+                  <div class="alert alert-info">
+                    <div class="d-flex align-items-start">
+                      <span class="me-2"><i class="ti ti-info-circle"></i></span>
+                      <div>
+                        Sample sizing: on a 4-core / 6GB server, 64 workers is a safe starting point for 800 IPs.
+                        Each worker runs one ping task per IP, then moves to the next.
+                      </div>
+                    </div>
+                  </div>
                   <div class="row g-3">
                     <div class="col-md-4">
-                      <label class="form-label">Count</label>
+                      <label class="form-label">Count <span class="info" data-tip="How many ICMP packets to send per IP per run (example: 5). More packets increase accuracy but take longer.">i</span></label>
                       <input class="form-control" type="number" name="ping_count" value="{{ settings.ping.count }}" />
                     </div>
                     <div class="col-md-4">
-                      <label class="form-label">Timeout (seconds)</label>
+                      <label class="form-label">Timeout (seconds) <span class="info" data-tip="Per-packet timeout. If each packet takes longer than this, it counts as a failure. Lower values are faster but stricter.">i</span></label>
                       <input class="form-control" type="number" name="per_ping_timeout_sec" value="{{ settings.ping.per_ping_timeout_sec }}" />
                     </div>
                     <div class="col-md-4">
-                      <label class="form-label">Max Workers</label>
+                      <label class="form-label">Max Workers <span class="info" data-tip="Parallel ping tasks. 1 worker = 1 IP at a time. Higher values finish faster but use more CPU and ICMP bandwidth.">i</span></label>
                       <input class="form-control" type="number" name="max_workers" value="{{ settings.ping.max_workers }}" />
                     </div>
                   </div>
                 </div>
+              </div>
 
-                <div class="tab-pane {% if settings_tab == 'notifications' %}active{% endif %}" id="rto-notifications">
+              <div class="card mb-3">
+                <div class="card-body">
+                  <h5 class="mb-3">Storage</h5>
+                  <div class="row g-3">
+                    <div class="col-md-4">
+                      <label class="form-label">Raw Retention Days <span class="info" data-tip="How long to keep per-check RTO history in the database. Older records are pruned daily.">i</span></label>
+                      <input class="form-control" type="number" name="rto_raw_retention_days" value="{{ settings.storage.raw_retention_days }}" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="tab-pane {% if settings_tab == 'notifications' %}active{% endif %}" id="rto-notifications">
+              <div class="card mb-3">
+                <div class="card-body">
                   <div class="alert alert-info">
                     <div class="d-flex align-items-start">
                       <span class="me-2"><i class="ti ti-info-circle"></i></span>
@@ -268,30 +678,50 @@
                   </div>
                   <div class="row g-3 mb-4">
                     <div class="col-md-6">
-                      <label class="form-label">Bot Token</label>
+                      <label class="form-label">Bot Token <span class="info" data-tip="Telegram bot token from BotFather.">i</span></label>
                       <input class="form-control" type="text" name="telegram_bot_token" value="{{ settings.telegram.bot_token }}" />
                     </div>
                     <div class="col-md-6">
-                      <label class="form-label">Chat ID</label>
+                      <label class="form-label">Chat ID <span class="info" data-tip="Telegram chat ID where RTO alerts should be sent.">i</span></label>
                       <input class="form-control" type="text" name="telegram_chat_id" value="{{ settings.telegram.chat_id }}" />
                     </div>
                   </div>
+                </div>
+              </div>
 
+              <div class="card mb-3">
+                <div class="card-body">
+                  <h5 class="mb-3">Daily Report Schedule</h5>
+                  <div class="row g-3">
+                    <div class="col-md-4">
+                      <label class="form-label">Schedule Time (HH:MM) <span class="info" data-tip="Daily time to send the Telegram report (24-hour format).">i</span></label>
+                      <input class="form-control" type="text" name="schedule_time_ph" value="{{ settings.general.schedule_time_ph }}" />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Timezone <span class="info" data-tip="Timezone used for the daily report schedule, e.g., Asia/Manila.">i</span></label>
+                      <input class="form-control" type="text" name="timezone" value="{{ settings.general.timezone }}" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card mb-3">
+                <div class="card-body">
                   <h5 class="mb-3">Message Format</h5>
                   <div class="row g-3">
                     <div class="col-md-4">
-                      <label class="form-label">Message Title</label>
+                      <label class="form-label">Message Title <span class="info" data-tip="Title shown at the top of each Telegram message.">i</span></label>
                       <input class="form-control" type="text" name="message_title" value="{{ settings.general.message_title }}" />
                     </div>
                     <div class="col-md-4">
-                      <label class="form-label">Include Header</label>
+                      <label class="form-label">Include Header <span class="info" data-tip="Adds a column header row inside the Telegram message.">i</span></label>
                       <label class="form-check form-switch">
                         <input class="form-check-input" type="checkbox" name="include_header" {% if settings.general.include_header %}checked{% endif %} />
                         <span class="form-check-label">Enabled</span>
                       </label>
                     </div>
                     <div class="col-md-4">
-                      <label class="form-label">Output Mode</label>
+                      <label class="form-label">Output Mode <span class="info" data-tip="split sends multiple messages, truncate limits lines, summary_top shows worst offenders only.">i</span></label>
                       <select class="form-select" name="output_mode">
                         {% for option in ['split', 'truncate', 'summary_top'] %}
                           <option value="{{ option }}" {% if settings.general.output_mode == option %}selected{% endif %}>{{ option }}</option>
@@ -299,22 +729,25 @@
                       </select>
                     </div>
                     <div class="col-md-4">
-                      <label class="form-label">Max Characters</label>
+                      <label class="form-label">Max Characters <span class="info" data-tip="Split or truncate messages beyond this size.">i</span></label>
                       <input class="form-control" type="number" name="max_chars" value="{{ settings.general.max_chars }}" />
                     </div>
                     <div class="col-md-4">
-                      <label class="form-label">Max Lines</label>
+                      <label class="form-label">Max Lines <span class="info" data-tip="Maximum lines for truncate mode.">i</span></label>
                       <input class="form-control" type="number" name="max_lines" value="{{ settings.general.max_lines }}" />
                     </div>
                     <div class="col-md-4">
-                      <label class="form-label">Top N</label>
+                      <label class="form-label">Top N <span class="info" data-tip="Number of devices shown in summary_top mode.">i</span></label>
                       <input class="form-control" type="number" name="top_n" value="{{ settings.general.top_n }}" />
                     </div>
                   </div>
-
                 </div>
+              </div>
+            </div>
 
-                <div class="tab-pane {% if settings_tab == 'classification' %}active{% endif %}" id="rto-classification">
+            <div class="tab-pane {% if settings_tab == 'classification' %}active{% endif %}" id="rto-classification">
+              <div class="card mb-3">
+                <div class="card-body">
                   <div class="alert alert-info">
                     <div class="d-flex align-items-start">
                       <span class="me-2"><i class="ti ti-info-circle"></i></span>
@@ -323,54 +756,52 @@
                   </div>
                   <div class="row g-3">
                     <div class="col-md-4">
-                      <label class="form-label">Issue RTO % (min)</label>
+                      <label class="form-label">Issue RTO % (min) <span class="info" data-tip="Minimum RTO percentage required to classify a customer as having issues.">i</span></label>
                       <input class="form-control" type="number" step="0.1" name="issue_rto_pct" value="{{ settings.classification.issue_rto_pct }}" />
                     </div>
                     <div class="col-md-4">
-                      <label class="form-label">Issue Down Streak (min)</label>
+                      <label class="form-label">Issue Down Streak (min) <span class="info" data-tip="Minimum consecutive failures required to flag a customer as an issue.">i</span></label>
                       <input class="form-control" type="number" name="issue_streak" value="{{ settings.classification.issue_streak }}" />
                     </div>
                     <div class="col-md-4">
-                      <label class="form-label">Stable RTO % (max)</label>
+                      <label class="form-label">Stable RTO % (max) <span class="info" data-tip="Maximum RTO percentage to classify a customer as stable.">i</span></label>
                       <input class="form-control" type="number" step="0.1" name="stable_rto_pct" value="{{ settings.classification.stable_rto_pct }}" />
-                    </div>
-                    <div class="col-md-4">
-                      <label class="form-label">History Window Size</label>
-                      <input class="form-control" type="number" name="window_size" value="{{ settings.history.window_size }}" />
                     </div>
                   </div>
                 </div>
               </div>
             </div>
-            <div class="card-footer d-flex justify-content-end gap-2">
-              <button type="submit" class="btn btn-primary">Save RTO Settings</button>
-              <button type="submit" class="btn" formaction="/settings/rto/test" formmethod="post">Send Test Telegram</button>
-              <button type="submit" class="btn btn-outline-primary" formaction="/settings/rto/run" formmethod="post">Run RTO Now</button>
+            <div class="tab-pane {% if settings_tab == 'danger' %}active{% endif %}" id="rto-danger">
+              <div class="card mb-3">
+                <div class="card-body">
+                  <h4 class="mb-2">Format RTO Database</h4>
+                  <div class="alert alert-warning">
+                    <div class="d-flex align-items-center">
+                      <span class="me-2"><i class="ti ti-alert-triangle"></i></span>
+                      <div>Formatting removes stored RTO status history so the next run starts fresh.</div>
+                    </div>
+                  </div>
+                  <label class="form-check">
+                    <input class="form-check-input" type="checkbox" name="confirm_format" form="rto-format-form" />
+                    <span class="form-check-label">I understand this will erase RTO history data.</span>
+                  </label>
+                  <div class="mt-3">
+                    <button type="submit" class="btn btn-danger" form="rto-format-form">Format RTO Database</button>
+                  </div>
+                </div>
+              </div>
             </div>
+          </div>
+
+          <div class="d-flex justify-content-end gap-2">
+            <button type="submit" class="btn btn-primary">Save RTO Settings</button>
+            <button type="submit" class="btn" formaction="/settings/rto/test" formmethod="post">Send Test Telegram</button>
+            <button type="submit" class="btn btn-outline-primary" formaction="/settings/rto/run" formmethod="post">Run RTO Now</button>
           </div>
         </form>
+        <form id="rto-format-form" method="post" action="/settings/rto/format"></form>
 
-        <div class="card">
-          <div class="card-body">
-            <h4 class="mb-2">Format RTO Database</h4>
-            <div class="alert alert-warning">
-              <div class="d-flex align-items-center">
-                <span class="me-2"><i class="ti ti-alert-triangle"></i></span>
-                <div>Formatting removes stored RTO status history so the next run starts fresh.</div>
-              </div>
-            </div>
-            <form method="post" action="/settings/rto/format">
-              <label class="form-check">
-                <input class="form-check-input" type="checkbox" name="confirm_format" />
-                <span class="form-check-label">I understand this will erase RTO history data.</span>
-              </label>
-              <div class="mt-3">
-                <button type="submit" class="btn btn-danger">Format RTO Database</button>
-              </div>
-            </form>
-          </div>
-        </div>
-      </div>
+      </div></div>
     </div>
   </div>
 </div>

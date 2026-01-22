@@ -5,6 +5,7 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
+from ..db import insert_rto_result, utc_now_iso
 from .telegram import send_telegram
 
 
@@ -280,18 +281,24 @@ def format_messages(cfg, lines, output_mode):
     return [format_truncate(lines, max_lines, max_chars)]
 
 
-def run(cfg, history_state):
-    csv_text = fetch_csv_text(cfg)
-    devices = parse_devices(csv_text)
+def build_results_from_history(history):
+    results = {}
+    for ip, entry in history.items():
+        statuses = entry.get("statuses", [])
+        if not statuses:
+            continue
+        results[ip] = bool(statuses[-1])
+    return results
 
-    count = int(cfg["ping"].get("count", 1))
-    timeout_sec = int(cfg["ping"].get("per_ping_timeout_sec", 1))
-    max_workers = int(cfg["ping"].get("max_workers", 32))
-    history_window = int(cfg["history"].get("window_size", 0))
 
-    results = ping_all(devices, count, timeout_sec, max_workers)
-    history = update_history(history_state or {}, devices, results, history_window)
+def build_devices_from_history(history):
+    devices = []
+    for ip, entry in history.items():
+        devices.append({"name": entry.get("name", ip), "ip": ip})
+    return devices
 
+
+def format_report(cfg, history, results, devices):
     rto_list = compute_rto_stats(history, results)
     output_mode = (cfg["general"].get("output_mode", "truncate").strip().lower())
 
@@ -305,10 +312,40 @@ def run(cfg, history_state):
         rto_list = sorted(rto_list, key=lambda x: x["name"].lower())
 
     lines = build_lines(cfg, rto_list, len(devices), output_mode)
-    messages = format_messages(cfg, lines, output_mode)
+    return format_messages(cfg, lines, output_mode)
 
+
+def send_report(cfg, history, results, devices):
+    messages = format_report(cfg, history, results, devices)
     token = cfg["telegram"].get("bot_token", "")
     chat_id = cfg["telegram"].get("chat_id", "")
     for message in messages:
         send_telegram(token, chat_id, message)
-    return history
+
+
+def run_check(cfg, history_state, devices=None):
+    if devices is None:
+        csv_text = fetch_csv_text(cfg)
+        devices = parse_devices(csv_text)
+
+    count = int(cfg["ping"].get("count", 1))
+    timeout_sec = int(cfg["ping"].get("per_ping_timeout_sec", 1))
+    max_workers = int(cfg["ping"].get("max_workers", 32))
+    history_window = int(cfg["history"].get("window_size", 0))
+
+    results = ping_all(devices, count, timeout_sec, max_workers)
+    retention_days = int(cfg.get("storage", {}).get("raw_retention_days", 0) or 0)
+    if retention_days > 0:
+        stamp = utc_now_iso()
+        for device in devices:
+            ip = device["ip"]
+            ok = results.get(ip, False)
+            insert_rto_result(ip, device.get("name"), ok, timestamp=stamp)
+    history = update_history(history_state or {}, devices, results, history_window)
+    return {"history": history, "results": results, "devices": devices}
+
+
+def run(cfg, history_state):
+    payload = run_check(cfg, history_state)
+    send_report(cfg, payload["history"], payload["results"], payload["devices"])
+    return payload["history"]

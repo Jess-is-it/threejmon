@@ -50,6 +50,34 @@ def _netwatch_interval(seconds):
     return f"00:{minutes:02d}:{sec:02d}"
 
 
+def _parse_netwatch_seconds(value):
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    if raw.endswith("s"):
+        try:
+            return int(float(raw[:-1]))
+        except ValueError:
+            return None
+    if ":" in raw:
+        parts = raw.split(":")
+        if len(parts) != 3:
+            return None
+        try:
+            hours = int(parts[0])
+            minutes = int(parts[1])
+            seconds = int(parts[2])
+        except ValueError:
+            return None
+        return hours * 3600 + minutes * 60 + seconds
+    try:
+        return int(float(raw))
+    except ValueError:
+        return None
+
+
 def _find_core(pulse_settings, core_id):
     cores = pulse_settings.get("pulsewatch", {}).get("mikrotik", {}).get("cores", [])
     for core in cores:
@@ -82,20 +110,39 @@ def _ensure_netwatch(client, wan_id, host, interval_seconds):
     comment = f"threejnotif_wan:{wan_id}"
     entries = client.list_netwatch()
     desired_interval = _netwatch_interval(interval_seconds)
+    desired_interval_seconds = _parse_netwatch_seconds(desired_interval)
+    desired_timeout_seconds = _parse_netwatch_seconds("1s")
     for entry in entries:
         if (entry.get("comment") or "") == comment:
             entry_id = entry.get(".id")
             needs_update = False
             if entry.get("host") != host:
                 needs_update = True
-            if entry.get("interval") != desired_interval:
+            entry_interval_seconds = _parse_netwatch_seconds(entry.get("interval"))
+            if desired_interval_seconds is None or entry_interval_seconds is None:
+                if entry.get("interval") != desired_interval:
+                    needs_update = True
+            elif entry_interval_seconds != desired_interval_seconds:
                 needs_update = True
-            if entry.get("timeout") != "1s":
+            entry_timeout_seconds = _parse_netwatch_seconds(entry.get("timeout"))
+            if desired_timeout_seconds is None or entry_timeout_seconds is None:
+                if entry.get("timeout") != "1s":
+                    needs_update = True
+            elif entry_timeout_seconds != desired_timeout_seconds:
                 needs_update = True
             if entry_id and needs_update:
                 client.set_netwatch(entry_id, host, desired_interval, "1s", comment)
             return entry
     client.add_netwatch(host, _netwatch_interval(interval_seconds), "1s", comment)
+    entries = client.list_netwatch()
+    for entry in entries:
+        if (entry.get("comment") or "") == comment:
+            return entry
+    return None
+
+
+def _find_netwatch_entry(client, wan_id):
+    comment = f"threejnotif_wan:{wan_id}"
     entries = client.list_netwatch()
     for entry in entries:
         if (entry.get("comment") or "") == comment:
@@ -246,7 +293,7 @@ def run_check(settings, pulse_settings, state):
                 )
                 try:
                     client.connect()
-                    entry = _ensure_netwatch(client, wan_id, target, interval_seconds)
+                    entry = _find_netwatch_entry(client, wan_id)
                     status = (entry or {}).get("status", "").lower()
                     if status in ("up", "down"):
                         result["status"] = status
@@ -266,7 +313,7 @@ def run_check(settings, pulse_settings, state):
                 )
                 try:
                     client.connect()
-                    entry = _ensure_netwatch(client, wan_id, target, interval_seconds)
+                    entry = _find_netwatch_entry(client, wan_id)
                     status = (entry or {}).get("status", "").lower()
                     if status in ("up", "down"):
                         result["status"] = status
@@ -399,6 +446,62 @@ def run_check(settings, pulse_settings, state):
     state["wans"] = wan_state
     state["last_run_at"] = utc_now_iso()
     return state
+
+
+def sync_netwatch(settings, pulse_settings):
+    interval_seconds = int(settings.get("general", {}).get("interval_seconds", 30) or 30)
+    errors = []
+    for wan in settings.get("wans", []):
+        if not wan.get("enabled", True):
+            continue
+        if not (wan.get("local_ip") or "").strip():
+            continue
+        wan_id = wan.get("id") or f"{wan.get('core_id')}:{wan.get('list_name')}"
+        target = _resolve_target(wan, pulse_settings)
+        if not target:
+            errors.append(f"{wan_id}: no target available for ping")
+            continue
+        mode = (wan.get("mode") or "routed").lower()
+        try:
+            if mode == "bridged":
+                router_id = (wan.get("pppoe_router_id") or "").strip()
+                router = next((item for item in settings.get("pppoe_routers", []) if item.get("id") == router_id), None)
+                if not router:
+                    errors.append(f"{wan_id}: PPPoE router not configured")
+                    continue
+                if router.get("use_tls"):
+                    errors.append(f"{wan_id}: TLS RouterOS API is not supported yet")
+                    continue
+                client = RouterOSClient(
+                    router.get("host", ""),
+                    int(router.get("port", 8728)),
+                    router.get("username", ""),
+                    router.get("password", ""),
+                )
+                try:
+                    client.connect()
+                    _ensure_netwatch(client, wan_id, target, interval_seconds)
+                finally:
+                    client.close()
+            else:
+                core = _find_core(pulse_settings, wan.get("core_id"))
+                if not core or not core.get("host"):
+                    errors.append(f"{wan_id}: core router not configured")
+                    continue
+                client = RouterOSClient(
+                    core.get("host", ""),
+                    int(core.get("port", 8728)),
+                    core.get("username", ""),
+                    core.get("password", ""),
+                )
+                try:
+                    client.connect()
+                    _ensure_netwatch(client, wan_id, target, interval_seconds)
+                finally:
+                    client.close()
+        except Exception as exc:
+            errors.append(f"{wan_id}: {exc}")
+    return errors
 
 
 def send_daily_summary(settings, pulse_settings, state):

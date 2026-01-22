@@ -103,6 +103,17 @@ def init_db():
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS rto_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                ip TEXT NOT NULL,
+                name TEXT,
+                ok INTEGER NOT NULL
+            )
+            """
+        )
     conn.close()
 
 
@@ -319,6 +330,64 @@ def insert_speedtest_result(
                     raw_output,
                 ),
             )
+    finally:
+        conn.close()
+
+
+def insert_rto_result(ip, name, ok, timestamp=None):
+    stamp = timestamp or utc_now_iso()
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO rto_results (timestamp, ip, name, ok)
+                VALUES (?, ?, ?, ?)
+                """,
+                (stamp, ip, name, 1 if ok else 0),
+            )
+    finally:
+        conn.close()
+
+
+def delete_rto_results_older_than(cutoff_iso):
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM rto_results WHERE timestamp < ?", (cutoff_iso,))
+    finally:
+        conn.close()
+
+
+def clear_rto_results():
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM rto_results")
+    finally:
+        conn.close()
+
+
+def get_rto_results_since(since_iso):
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT timestamp, ip, name, ok FROM rto_results WHERE timestamp >= ? ORDER BY timestamp ASC",
+            (since_iso,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_rto_results_for_ip_since(ip, since_iso):
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT timestamp, ok FROM rto_results WHERE ip = ? AND timestamp >= ? ORDER BY timestamp ASC",
+            (ip, since_iso),
+        ).fetchall()
+        return [dict(row) for row in rows]
     finally:
         conn.close()
 

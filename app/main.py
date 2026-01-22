@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .db import (
+    clear_rto_results,
     get_job_status,
     get_latest_speedtest_map,
     get_ping_history_map,
@@ -26,6 +27,8 @@ from .db import (
     get_ping_latency_trend_window,
     get_ping_rollup_history_map,
     get_ping_stability_counts,
+    get_rto_results_since,
+    get_rto_results_for_ip_since,
     init_db,
     clear_pulsewatch_data,
     utc_now_iso,
@@ -36,6 +39,7 @@ from .notifiers import isp_ping as isp_ping_notifier
 from .mikrotik import RouterOSClient
 from .notifiers import optical as optical_notifier
 from .notifiers import rto as rto_notifier
+from .notifiers import wan_ping as wan_ping_notifier
 from .notifiers.telegram import TelegramError, send_telegram
 from .settings_defaults import ISP_PING_DEFAULTS, OPTICAL_DEFAULTS, RTO_DEFAULTS, WAN_PING_DEFAULTS, WAN_MESSAGE_DEFAULTS, WAN_SUMMARY_DEFAULTS
 from .settings_store import export_settings, get_settings, get_state, import_settings, save_settings, save_state
@@ -596,6 +600,146 @@ def apply_netplan(interface_map, route_specs):
     return True, "Netplan applied."
 
 
+def run_host_command(script, timeout_seconds=60):
+    def run_cmd(cmd, timeout_seconds=30):
+        try:
+            return subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            return None
+
+    docker_path = None
+    for candidate in ("/usr/bin/docker", "/usr/local/bin/docker"):
+        if os.path.exists(candidate):
+            docker_path = candidate
+            break
+    if docker_path is None:
+        docker_path = shutil.which("docker")
+    if docker_path:
+        command = (
+            f"{docker_path} run --rm --privileged --pid=host "
+            "-v /:/host "
+            "ubuntu bash -c "
+            f"\"chroot /host bash -c {shlex.quote(script)}\""
+        )
+        result = run_cmd(["/bin/sh", "-c", command], timeout_seconds=timeout_seconds)
+        if result is None:
+            return False, "Host command timed out."
+        if result.returncode != 0:
+            stderr = (result.stderr or result.stdout or "").strip()
+            return False, f"Host command failed: {stderr}"
+        return True, (result.stdout or "").strip()
+
+    sock = "/var/run/docker.sock"
+    if not os.path.exists(sock):
+        return False, "Host command skipped (docker socket not available)."
+    if not shutil.which("curl"):
+        return False, "Host command skipped (curl not available in container)."
+
+    pull_cmd = [
+        "curl",
+        "-sS",
+        "--unix-socket",
+        sock,
+        "-X",
+        "POST",
+        "http://localhost/images/create?fromImage=ubuntu&tag=latest",
+    ]
+    pulled = run_cmd(pull_cmd, timeout_seconds=timeout_seconds)
+    if pulled is None:
+        return False, "Host command timed out."
+    if pulled.returncode != 0:
+        return False, f"Host command failed: {pulled.stderr.strip() or pulled.stdout.strip()}"
+
+    payload = {
+        "Image": "ubuntu",
+        "Cmd": [
+            "bash",
+            "-c",
+            f"chroot /host bash -c {shlex.quote(script)} 2>&1",
+        ],
+        "HostConfig": {
+            "Privileged": True,
+            "Binds": ["/:/host"],
+            "AutoRemove": False,
+            "PidMode": "host",
+        },
+    }
+    create_cmd = [
+        "curl",
+        "-sS",
+        "--unix-socket",
+        sock,
+        "-H",
+        "Content-Type: application/json",
+        "-X",
+        "POST",
+        "-d",
+        json.dumps(payload),
+        "http://localhost/containers/create",
+    ]
+    created = run_cmd(create_cmd, timeout_seconds=timeout_seconds)
+    if created is None or created.returncode != 0:
+        return False, f"Host command failed: {created.stderr.strip() if created else 'timeout'}"
+    try:
+        container_id = json.loads(created.stdout).get("Id")
+    except json.JSONDecodeError:
+        container_id = None
+    if not container_id:
+        return False, f"Host command failed: {created.stdout.strip()}"
+
+    start_cmd = [
+        "curl",
+        "-sS",
+        "--unix-socket",
+        sock,
+        "-X",
+        "POST",
+        f"http://localhost/containers/{container_id}/start",
+    ]
+    started = run_cmd(start_cmd, timeout_seconds=timeout_seconds)
+    if started is None or started.returncode != 0:
+        return False, f"Host command failed: {started.stderr.strip() if started else 'timeout'}"
+
+    wait_cmd = [
+        "curl",
+        "-sS",
+        "--unix-socket",
+        sock,
+        "-X",
+        "POST",
+        f"http://localhost/containers/{container_id}/wait",
+    ]
+    waited = run_cmd(wait_cmd, timeout_seconds=timeout_seconds)
+    status = 1
+    if waited and waited.returncode == 0:
+        try:
+            status = json.loads(waited.stdout).get("StatusCode", 1)
+        except json.JSONDecodeError:
+            status = 1
+
+    delete_cmd = [
+        "curl",
+        "-sS",
+        "--unix-socket",
+        sock,
+        "-X",
+        "DELETE",
+        f"http://localhost/containers/{container_id}?force=1",
+    ]
+    run_cmd(delete_cmd)
+
+    if status != 0:
+        return False, f"Host command failed: container exit {status}"
+    return True, "Host command completed."
+
+
 def normalize_pulsewatch_settings(settings):
     pulse = settings.setdefault("pulsewatch", {})
     pulse.setdefault("retention_days", 30)
@@ -864,8 +1008,20 @@ def build_pulsewatch_rows(settings):
 
 def render_pulsewatch_response(request, settings, message):
     preset_rows, show_recommendation = build_pulsewatch_rows(settings)
+    state = get_state("isp_ping_state", {})
+    reach_map = state.get("pulsewatch_reachability", {})
+    reach_checked_at = state.get("pulsewatch_reachability_checked_at")
     targets = []
     for row in preset_rows:
+        reach = reach_map.get(row.get("row_id"), {})
+        if not (row.get("address") or "").strip():
+            reach = {"status": "missing", "target": "", "source_ip": "", "last_check": None}
+        row["reachability"] = {
+            "status": reach.get("status", "unknown"),
+            "target": reach.get("target", ""),
+            "source_ip": reach.get("source_ip", ""),
+            "last_check": format_ts_ph(reach.get("last_check")),
+        }
         for target in row.get("ping_targets", []) or []:
             if target and target not in targets:
                 targets.append(target)
@@ -879,6 +1035,7 @@ def render_pulsewatch_response(request, settings, message):
                 "preset_rows": preset_rows,
                 "show_preset_recommendation": show_recommendation,
                 "pulsewatch_targets": targets,
+                "pulsewatch_reachability_checked_at": format_ts_ph(reach_checked_at),
             },
         ),
     )
@@ -1018,6 +1175,49 @@ def _sparkline_points(values, width=120, height=30):
         y = height - ((value - min_val) / span) * height
         points.append(f"{x:.1f},{y:.1f}")
     return " ".join(points)
+
+
+def _sparkline_points_fixed(values, min_val, max_val, width=120, height=30):
+    if not values:
+        return ""
+    span = max(max_val - min_val, 1)
+    step = width / max(len(values) - 1, 1)
+    points = []
+    for idx, value in enumerate(values):
+        value = max(min_val, min(max_val, value))
+        x = idx * step
+        y = height - ((value - min_val) / span) * height
+        points.append(f"{x:.1f},{y:.1f}")
+    return " ".join(points)
+
+
+RTO_WINDOW_OPTIONS = [
+    ("3H", 3),
+    ("6H", 6),
+    ("12H", 12),
+    ("1D", 24),
+    ("7D", 168),
+    ("15D", 360),
+    ("30D", 720),
+]
+
+
+def _normalize_rto_window(value):
+    if value is None:
+        return 24
+    raw = str(value).strip().lower()
+    if not raw:
+        return 24
+    for label, hours in RTO_WINDOW_OPTIONS:
+        if raw == label.lower():
+            return hours
+    try:
+        hours = int(raw)
+        if hours in {opt[1] for opt in RTO_WINDOW_OPTIONS}:
+            return hours
+    except ValueError:
+        pass
+    return 24
 
 
 def format_ts_ph(value):
@@ -1740,19 +1940,78 @@ async def optical_settings_run(request: Request):
 @app.get("/settings/rto", response_class=HTMLResponse)
 async def rto_settings(request: Request):
     settings = get_settings("rto", RTO_DEFAULTS)
-    return render_rto_response(request, settings, "", "status", "general")
+    window_hours = _normalize_rto_window(request.query_params.get("window"))
+    return render_rto_response(request, settings, "", "status", "general", window_hours)
 
 
-def build_rto_status(settings):
+@app.get("/rto/series", response_class=JSONResponse)
+async def rto_series(ip: str, window: int = 24):
+    hours = _normalize_rto_window(window)
+    since_iso = (datetime.utcnow() - timedelta(hours=hours)).replace(microsecond=0).isoformat() + "Z"
+    rows = get_rto_results_for_ip_since(ip, since_iso)
+    series = [{"ts": row.get("timestamp"), "value": 100 if row.get("ok") else 0} for row in rows]
+    return JSONResponse({"hours": hours, "series": series})
+
+
+def build_rto_status(settings, window_hours=24):
     history = get_state("rto_history", {})
-    rows = rto_notifier.summarize_history(history)
+    since_iso = (datetime.utcnow() - timedelta(hours=window_hours)).replace(microsecond=0).isoformat() + "Z"
+    raw_results = get_rto_results_since(since_iso)
+    rows = []
+    by_ip = {}
+    for row in raw_results:
+        ip = row.get("ip")
+        if not ip:
+            continue
+        by_ip.setdefault(ip, []).append(row)
+    for ip, items in by_ip.items():
+        items = sorted(items, key=lambda x: x.get("timestamp") or "")
+        total = len(items)
+        failures = sum(1 for item in items if not item.get("ok"))
+        rto_pct = (failures / total) * 100.0 if total else 0.0
+        streak = 0
+        for item in reversed(items):
+            if not item.get("ok"):
+                streak += 1
+            else:
+                break
+        last_ok = items[-1].get("ok")
+        name = items[-1].get("name") or ip
+        last_check = format_ts_ph(items[-1].get("timestamp"))
+        spark_values = [100 if item.get("ok") else 0 for item in items]
+        rows.append(
+            {
+                "name": name,
+                "ip": ip,
+                "total": total,
+                "failures": failures,
+                "rto_pct": rto_pct,
+                "uptime_pct": 100.0 - rto_pct,
+                "streak": streak,
+                "last_status": "down" if not last_ok else "up",
+                "last_check": last_check,
+                "spark_points_window": _sparkline_points_fixed(spark_values, 0, 100, width=120, height=30),
+                "spark_points_window_large": _sparkline_points_fixed(spark_values, 0, 100, width=640, height=200),
+            }
+        )
     issue_rto_pct = float(settings.get("classification", {}).get("issue_rto_pct", 5.0))
     issue_streak = int(settings.get("classification", {}).get("issue_streak", 2))
     stable_rto_pct = float(settings.get("classification", {}).get("stable_rto_pct", 1.0))
+    since_iso = (datetime.utcnow() - timedelta(hours=24)).replace(microsecond=0).isoformat() + "Z"
+    raw_results = get_rto_results_since(since_iso)
+    spark_map = {}
+    for row in raw_results:
+        ip = row.get("ip")
+        if not ip:
+            continue
+        spark_map.setdefault(ip, []).append(100 if row.get("ok") else 0)
 
     issue_rows = []
     stable_rows = []
     for row in rows:
+        spark_values = spark_map.get(row["ip"], [])
+        row["spark_points_24h"] = _sparkline_points_fixed(spark_values, 0, 100, width=140, height=28)
+        row["spark_points_24h_large"] = _sparkline_points_fixed(spark_values, 0, 100, width=640, height=200)
         reasons = []
         if row["last_status"] == "down":
             reasons.append("Currently down")
@@ -1773,12 +2032,15 @@ def build_rto_status(settings):
     issue_rows = sorted(issue_rows, key=lambda x: (-x["rto_pct"], -x["streak"], x["name"].lower()))
     stable_rows = sorted(stable_rows, key=lambda x: x["name"].lower())
 
+    window_label = next((label for label, hours in RTO_WINDOW_OPTIONS if hours == window_hours), "1D")
     return {
         "total": len(rows),
         "issue_total": len(issue_rows),
         "stable_total": len(stable_rows),
         "issue_rows": issue_rows,
         "stable_rows": stable_rows,
+        "window_hours": window_hours,
+        "window_label": window_label,
         "rules": {
             "issue_rto_pct": issue_rto_pct,
             "issue_streak": issue_streak,
@@ -1787,10 +2049,12 @@ def build_rto_status(settings):
     }
 
 
-def render_rto_response(request, settings, message, active_tab, settings_tab):
+def render_rto_response(request, settings, message, active_tab, settings_tab, window_hours=24):
     status_map = {item["job_name"]: dict(item) for item in get_job_status()}
     job_status = status_map.get("rto", {})
-    status = build_rto_status(settings)
+    job_status["last_run_at_ph"] = format_ts_ph(job_status.get("last_run_at"))
+    job_status["last_success_at_ph"] = format_ts_ph(job_status.get("last_success_at"))
+    status = build_rto_status(settings, window_hours)
     return templates.TemplateResponse(
         "settings_rto.html",
         make_context(
@@ -1802,6 +2066,7 @@ def render_rto_response(request, settings, message, active_tab, settings_tab):
                 "settings_tab": settings_tab,
                 "rto_status": status,
                 "rto_job": job_status,
+                "rto_window_options": RTO_WINDOW_OPTIONS,
             },
         ),
     )
@@ -1837,11 +2102,15 @@ async def rto_settings_save(request: Request):
             "max_chars": parse_int(form, "max_chars", 3800),
             "max_lines": parse_int(form, "max_lines", 200),
             "top_n": parse_int(form, "top_n", 20),
+            "ping_interval_minutes": parse_int(form, "ping_interval_minutes", 5),
             "schedule_time_ph": form.get("schedule_time_ph", "07:00"),
             "timezone": form.get("timezone", "Asia/Manila"),
         },
         "history": {
             "window_size": parse_int(form, "window_size", 30),
+        },
+        "storage": {
+            "raw_retention_days": parse_int(form, "rto_raw_retention_days", 30),
         },
         "classification": {
             "issue_rto_pct": parse_float(form, "issue_rto_pct", 5.0),
@@ -1892,6 +2161,20 @@ async def rto_settings_format(request: Request):
     message = ""
     if parse_bool(form, "confirm_format"):
         save_state("rto_history", {})
+        clear_rto_results()
+        pause_minutes = int(settings.get("general", {}).get("ping_interval_minutes", 5) or 5)
+        pause_until = datetime.utcnow() + timedelta(minutes=max(pause_minutes, 1))
+        save_state(
+            "rto_state",
+            {
+                "last_run_date": None,
+                "last_ping_at": utc_now_iso(),
+                "last_report_date": None,
+                "last_prune_at": None,
+                "devices_cache": [],
+                "pause_until": pause_until.replace(microsecond=0).isoformat() + "Z",
+            },
+        )
         message = "RTO database formatted."
     else:
         message = "Please confirm format before proceeding."
@@ -1967,7 +2250,12 @@ async def wan_settings_save_wans(request: Request):
         )
     wan_settings_data["wans"] = wans
     save_settings("wan_ping", wan_settings_data)
-    return render_wan_ping_response(request, pulse_settings, wan_settings_data, "WAN list saved.", "add")
+    sync_errors = wan_ping_notifier.sync_netwatch(wan_settings_data, pulse_settings)
+    if sync_errors:
+        message = "WAN list saved with Netwatch warnings: " + "; ".join(sync_errors)
+    else:
+        message = "WAN list saved and Netwatch synced."
+    return render_wan_ping_response(request, pulse_settings, wan_settings_data, message, "add")
 
 
 @app.post("/settings/wan/routers", response_class=HTMLResponse)
@@ -2243,39 +2531,46 @@ async def pulsewatch_settings_save(request: Request):
                     }
                 )
     pulsewatch = current_settings.get("pulsewatch", {})
+    def _form_has(name):
+        return name in form
+    current_pulse = current_settings.get("pulsewatch", {})
+    current_dashboard = current_pulse.get("dashboard", {})
+    current_stability = current_pulse.get("stability", {})
+    current_speedtest = current_pulse.get("speedtest", {})
+    current_ping = current_pulse.get("ping", {})
     pulsewatch.update(
         {
-            "enabled": parse_bool(form, "pulsewatch_enabled"),
-            "manage_address_lists": parse_bool(form, "pulsewatch_manage_address_lists"),
-            "reconcile_interval_minutes": parse_int(form, "pulsewatch_reconcile_interval_minutes", 10),
-            "store_raw_output": parse_bool(form, "pulsewatch_store_raw_output"),
-            "retention_days": parse_int(form, "pulsewatch_retention_days", 30),
-            "rollup_retention_days": parse_int(form, "pulsewatch_rollup_retention_days", 365),
+            "enabled": parse_bool(form, "pulsewatch_enabled") if _form_has("pulsewatch_enabled") else current_pulse.get("enabled", False),
+            "manage_address_lists": parse_bool(form, "pulsewatch_manage_address_lists") if _form_has("pulsewatch_manage_address_lists") else current_pulse.get("manage_address_lists", False),
+            "reconcile_interval_minutes": parse_int(form, "pulsewatch_reconcile_interval_minutes", 10) if _form_has("pulsewatch_reconcile_interval_minutes") else current_pulse.get("reconcile_interval_minutes", 10),
+            "store_raw_output": parse_bool(form, "pulsewatch_store_raw_output") if _form_has("pulsewatch_store_raw_output") else current_pulse.get("store_raw_output", False),
+            "retention_days": parse_int(form, "pulsewatch_retention_days", 30) if _form_has("pulsewatch_retention_days") else current_pulse.get("retention_days", 30),
+            "rollup_retention_days": parse_int(form, "pulsewatch_rollup_retention_days", 365) if _form_has("pulsewatch_rollup_retention_days") else current_pulse.get("rollup_retention_days", 365),
             "dashboard": {
-                "default_target": (form.get("pulsewatch_dashboard_default_target") or "all").strip() or "all",
-                "refresh_seconds": parse_int(form, "pulsewatch_dashboard_refresh_seconds", 2),
-                "loss_history_minutes": parse_int(form, "pulsewatch_dashboard_loss_history_minutes", 120),
-                "pie_default_days": parse_int(form, "pulsewatch_dashboard_pie_days", 7),
+                "default_target": (form.get("pulsewatch_dashboard_default_target") or current_dashboard.get("default_target") or "all").strip() or "all",
+                "refresh_seconds": parse_int(form, "pulsewatch_dashboard_refresh_seconds", 2) if _form_has("pulsewatch_dashboard_refresh_seconds") else current_dashboard.get("refresh_seconds", 2),
+                "loss_history_minutes": parse_int(form, "pulsewatch_dashboard_loss_history_minutes", 120) if _form_has("pulsewatch_dashboard_loss_history_minutes") else current_dashboard.get("loss_history_minutes", 120),
+                "pie_default_days": parse_int(form, "pulsewatch_dashboard_pie_days", 7) if _form_has("pulsewatch_dashboard_pie_days") else current_dashboard.get("pie_default_days", 7),
             },
             "stability": {
-                "stable_max_ms": parse_int(form, "pulsewatch_stability_stable_max_ms", 80),
-                "unstable_max_ms": parse_int(form, "pulsewatch_stability_unstable_max_ms", 150),
+                "stable_max_ms": parse_int(form, "pulsewatch_stability_stable_max_ms", 80) if _form_has("pulsewatch_stability_stable_max_ms") else current_stability.get("stable_max_ms", 80),
+                "unstable_max_ms": parse_int(form, "pulsewatch_stability_unstable_max_ms", 150) if _form_has("pulsewatch_stability_unstable_max_ms") else current_stability.get("unstable_max_ms", 150),
                 "down_source": "wan",
             },
             "list_presets": presets,
             "speedtest": {
-                "enabled": parse_bool(form, "speedtest_enabled"),
-                "min_interval_minutes": parse_int(form, "speedtest_min_interval_minutes", 60),
-                "command": form.get("speedtest_command", "speedtest"),
-                "args": form.get("speedtest_args", "--format=json"),
-                "use_netns": parse_bool(form, "speedtest_use_netns"),
-                "netns_prefix": form.get("speedtest_netns_prefix", "isp"),
+                "enabled": parse_bool(form, "speedtest_enabled") if _form_has("speedtest_enabled") else current_speedtest.get("enabled", False),
+                "min_interval_minutes": parse_int(form, "speedtest_min_interval_minutes", 60) if _form_has("speedtest_min_interval_minutes") else current_speedtest.get("min_interval_minutes", 60),
+                "command": form.get("speedtest_command", "speedtest") if _form_has("speedtest_command") else current_speedtest.get("command", "speedtest"),
+                "args": form.get("speedtest_args", "--format=json") if _form_has("speedtest_args") else current_speedtest.get("args", "--format=json"),
+                "use_netns": parse_bool(form, "speedtest_use_netns") if _form_has("speedtest_use_netns") else current_speedtest.get("use_netns", False),
+                "netns_prefix": form.get("speedtest_netns_prefix", "isp") if _form_has("speedtest_netns_prefix") else current_speedtest.get("netns_prefix", "isp"),
             },
             "ping": {
-                "timeout_seconds": parse_int(form, "pulsewatch_ping_timeout_seconds", 1),
-                "count": parse_int(form, "pulsewatch_ping_count", 5),
-                "max_parallel": parse_int(form, "pulsewatch_ping_max_parallel", 8),
-                "interval_seconds": parse_int(form, "pulsewatch_ping_interval_seconds", 1),
+                "timeout_seconds": parse_int(form, "pulsewatch_ping_timeout_seconds", 1) if _form_has("pulsewatch_ping_timeout_seconds") else current_ping.get("timeout_seconds", 1),
+                "count": parse_int(form, "pulsewatch_ping_count", 5) if _form_has("pulsewatch_ping_count") else current_ping.get("count", 5),
+                "max_parallel": parse_int(form, "pulsewatch_ping_max_parallel", 8) if _form_has("pulsewatch_ping_max_parallel") else current_ping.get("max_parallel", 8),
+                "interval_seconds": parse_int(form, "pulsewatch_ping_interval_seconds", 1) if _form_has("pulsewatch_ping_interval_seconds") else current_ping.get("interval_seconds", 1),
             },
             "isps": pulse_isps,
         }
@@ -2283,7 +2578,8 @@ async def pulsewatch_settings_save(request: Request):
     telegram = dict(current_settings.get("telegram", ISP_PING_DEFAULTS.get("telegram", {})))
     if "telegram_bot_token" in form:
         telegram["bot_token"] = form.get("telegram_bot_token", "")
-    telegram["pulsewatch_bot_token"] = form.get("pulsewatch_bot_token", "")
+    if "pulsewatch_bot_token" in form:
+        telegram["pulsewatch_bot_token"] = form.get("pulsewatch_bot_token", "")
     if "telegram_alert_channel_id" in form:
         telegram["alert_channel_id"] = form.get("telegram_alert_channel_id", "")
     settings = {
@@ -2366,7 +2662,7 @@ async def pulsewatch_settings_save(request: Request):
             apply_msg = f"Netplan update failed: {exc}"
     presets_with_address = any((item.get("address") or "").strip() for item in presets_after)
     manage_enabled = bool(pulsewatch.get("manage_address_lists"))
-    if presets_with_address and (manage_enabled or presets_changed):
+    if manage_enabled and (presets_changed or presets_with_address):
         try:
             state = get_state("isp_ping_state", {})
             isp_ping_notifier.sync_mikrotik_lists(settings, state)
@@ -2397,6 +2693,12 @@ async def pulsewatch_settings_save(request: Request):
             message_lines.append("MikroTik address-lists synced.")
         else:
             message_lines.append(sync_msg)
+    try:
+        state = get_state("isp_ping_state", {})
+        state = isp_ping_notifier.check_preset_reachability(settings, state)
+        save_state("isp_ping_state", state)
+    except Exception:
+        pass
     message = "\n".join(message_lines)
     return render_pulsewatch_response(request, settings, message)
 
@@ -2408,11 +2710,69 @@ async def pulsewatch_format_db(request: Request):
         settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
         return render_pulsewatch_response(request, settings, "Format canceled. Please confirm before formatting.")
     clear_pulsewatch_data()
+    save_state(
+        "isp_ping_state",
+        {
+            "last_status": {},
+            "last_report_date": None,
+            "last_report_time": None,
+            "last_report_timezone": None,
+            "pulsewatch": {"isps": {}, "last_check_at": None, "speedtest_last": {}},
+            "pulsewatch_pause_until": (datetime.utcnow() + timedelta(minutes=2)).replace(microsecond=0).isoformat()
+            + "Z",
+        },
+    )
     settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
     return render_pulsewatch_response(
         request,
         settings,
         "Pulsewatch database cleared. Ping, speedtest, alerts, and rollups removed. Settings preserved.",
+    )
+
+
+@app.get("/pulsewatch/reachability", response_class=JSONResponse)
+async def pulsewatch_reachability(refresh: int = 0):
+    settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    state = get_state("isp_ping_state", {})
+    if refresh:
+        state = isp_ping_notifier.check_preset_reachability(settings, state)
+        save_state("isp_ping_state", state)
+    reach_map = state.get("pulsewatch_reachability", {})
+    payload = {}
+    for row_id, item in reach_map.items():
+        payload[row_id] = {
+            "status": item.get("status", "unknown"),
+            "target": item.get("target", ""),
+            "source_ip": item.get("source_ip", ""),
+            "last_check": format_ts_ph(item.get("last_check")),
+        }
+    return JSONResponse(
+        {
+            "checked_at": format_ts_ph(state.get("pulsewatch_reachability_checked_at")),
+            "items": payload,
+        }
+    )
+
+
+@app.post("/settings/pulsewatch/reachability/fix", response_class=JSONResponse)
+async def pulsewatch_reachability_fix():
+    settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    netplan_path, _, interface_map, route_specs = build_pulsewatch_netplan(settings)
+    netplan_msg = "Netplan file not found."
+    if netplan_path:
+        ok, netplan_msg = apply_netplan(interface_map, route_specs)
+        if ok:
+            netplan_msg = "Netplan applied."
+    restart_ok, restart_msg = run_host_command(
+        "systemctl restart systemd-networkd || systemctl restart networking || true"
+    )
+    status = "ok" if restart_ok else "error"
+    return JSONResponse(
+        {
+            "status": status,
+            "netplan": netplan_msg,
+            "restart": restart_msg,
+        }
     )
 
 

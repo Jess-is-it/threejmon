@@ -130,6 +130,65 @@ body,
   background: #e5e7eb;
 }
 
+.rto-spark-btn {
+  padding: 0;
+  line-height: 1;
+  text-decoration: none;
+}
+
+.rto-sparkline {
+  display: block;
+}
+
+.rto-sort {
+  cursor: pointer;
+  user-select: none;
+}
+
+.rto-sort-indicator {
+  margin-left: 6px;
+  font-size: 0.75rem;
+  color: #206bc4;
+  display: inline-block;
+  min-width: 12px;
+  text-align: center;
+}
+
+.rto-sorted-asc .rto-sort-icon,
+.rto-sorted-desc .rto-sort-icon {
+  color: #206bc4;
+}
+
+.rto-spark-modal-chart {
+  width: 100%;
+  min-height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.rto-spark-modal-wrap {
+  width: 100%;
+}
+
+.rto-spark-axis {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: #6b7280;
+  align-items: center;
+  width: 100%;
+}
+
+.rto-spark-axis span {
+  min-width: 0;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 
 .stamp-note {
   display: inline-flex;

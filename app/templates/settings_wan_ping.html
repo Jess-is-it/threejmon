@@ -274,6 +274,19 @@
           </div>
 
           <div class="tab-pane {% if active_tab == 'settings' %}active{% endif %}" id="wan-settings-tab">
+        <ul class="nav nav-tabs" data-bs-toggle="tabs">
+          <li class="nav-item">
+            <a href="#wan-settings-telegram" class="nav-link active" data-bs-toggle="tab">Telegram</a>
+          </li>
+          <li class="nav-item">
+            <a href="#wan-settings-interval" class="nav-link" data-bs-toggle="tab">Interval</a>
+          </li>
+          <li class="nav-item">
+            <a href="#wan-settings-danger" class="nav-link" data-bs-toggle="tab">Danger</a>
+          </li>
+        </ul>
+        <div class="tab-content pt-4">
+          <div class="tab-pane active" id="wan-settings-telegram">
         <form method="post" action="/settings/wan/telegram">
           <div class="card mb-3">
             <div class="card-body">
@@ -294,6 +307,9 @@
             </div>
           </div>
         </form>
+          </div>
+
+          <div class="tab-pane" id="wan-settings-interval">
         <div class="card mb-3">
           <div class="card-body">
             <h4 class="mb-3">WAN Ping Interval</h4>
@@ -311,6 +327,9 @@
             </form>
           </div>
         </div>
+          </div>
+
+          <div class="tab-pane" id="wan-settings-danger">
         <div class="card">
           <div class="card-body">
             <h4 class="mb-2">Format WAN Status Database</h4>
@@ -332,8 +351,9 @@
           </div>
         </div>
           </div>
-
-          <div class="tab-pane {% if active_tab == 'messages' %}active{% endif %}" id="wan-messages">
+        </div>
+          </div>
+<div class="tab-pane {% if active_tab == 'messages' %}active{% endif %}" id="wan-messages">
         <form method="post" action="/settings/wan/messages">
           <div class="card mb-3">
             <div class="card-body">

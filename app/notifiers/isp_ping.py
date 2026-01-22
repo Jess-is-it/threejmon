@@ -104,6 +104,11 @@ def parse_list(values):
     return [line.strip() for line in values if line and line.strip()]
 
 
+def preset_row_id(core_id, list_name):
+    raw = f"{core_id}|{list_name}".encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
 def ping_ip(ip, timeout_seconds, count):
     cmd = ["ping", "-c", str(count), "-W", str(timeout_seconds), ip]
     result = subprocess.run(
@@ -170,6 +175,49 @@ def ping_with_source(ip, source_ip, timeout_seconds, count):
         "raw_output": output,
         "replies": replies,
     }
+
+
+def check_preset_reachability(cfg, state):
+    pulse_cfg = cfg.get("pulsewatch", {})
+    presets = pulse_cfg.get("list_presets", [])
+    timeout_seconds = int(pulse_cfg.get("ping", {}).get("timeout_seconds", 1) or 1)
+    results = {}
+    for preset in presets:
+        core_id = preset.get("core_id")
+        list_name = preset.get("list")
+        if not core_id or not list_name:
+            continue
+        row_id = preset_row_id(core_id, list_name)
+        source_ip = (preset.get("address") or "").strip()
+        targets = parse_list(preset.get("ping_targets", []))
+        target = targets[0] if targets else ""
+        if not source_ip or not target:
+            results[row_id] = {
+                "status": "missing",
+                "target": target,
+                "source_ip": source_ip,
+                "last_check": utc_now_iso(),
+            }
+            continue
+        try:
+            res = ping_with_source(target, source_ip, timeout_seconds, 1)
+            ok = bool(res.get("replies"))
+            results[row_id] = {
+                "status": "reachable" if ok else "unreachable",
+                "target": target,
+                "source_ip": source_ip,
+                "last_check": utc_now_iso(),
+            }
+        except Exception:
+            results[row_id] = {
+                "status": "unreachable",
+                "target": target,
+                "source_ip": source_ip,
+                "last_check": utc_now_iso(),
+            }
+    state["pulsewatch_reachability"] = results
+    state["pulsewatch_reachability_checked_at"] = utc_now_iso()
+    return state
 
 
 def parse_daily_time(value):

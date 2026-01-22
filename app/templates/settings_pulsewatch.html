@@ -44,7 +44,12 @@
                 <button type="submit" class="btn" formaction="/settings/pulsewatch/test" formmethod="post">Send Test Telegram</button>
                 <button type="button" class="btn btn-primary" id="pulsewatch_ping_all">Run Ping All</button>
                 <button type="button" class="btn btn-outline-primary" id="pulsewatch_speedtest_all">Run Speedtest All</button>
+                <button type="button" class="btn btn-warning" id="pulsewatch_reachability_fix" data-bs-toggle="modal" data-bs-target="#pulsewatch-reachability-modal">Fix Reachability</button>
               </div>
+            </div>
+            <div class="text-muted small mt-1">
+              Reachability checks run every 10 minutes using the first target for each preset.
+              <span id="pulsewatch_reachability_last">Last check: {{ pulsewatch_reachability_checked_at or 'n/a' }}</span>
             </div>
 
             <div class="alert alert-info mt-3 mb-3">
@@ -88,6 +93,7 @@
                 <th data-sort="text" title="Friendly identifier for this ISP/list." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Identifier</th>
                 <th data-sort="text" title="Custom color for this ISP line on the dashboard." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Color</th>
                 <th data-sort="text" title="Source IP to bind for this list (used by ping/speedtest)." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">IP Address</th>
+                <th data-sort="text" title="Reachability of the source IP to its first ping target." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Reachability</th>
                 <th data-sort="number" title="Latency threshold (ms) before a breach is counted." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Latency</th>
                 <th data-sort="number" title="Packet loss threshold (%) before a breach is counted." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Loss</th>
                 <th data-sort="number" title="How many consecutive breaches trigger an alert." style="text-align: left; padding: 8px; border-bottom: 1px solid #d6d6cf; cursor: pointer;">Breaches</th>
@@ -115,6 +121,21 @@
                   </td>
                   <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
                     <input type="text" name="preset_{{ loop.index0 }}_address" value="{{ row.address or row.recommended_address }}" {% if row.recommended_address %}data-recommended="1"{% endif %} />
+                  </td>
+                  <td class="pulsewatch-reach-cell" data-row-id="{{ row.row_id }}" style="padding: 8px; border-bottom: 1px solid #efefe7;">
+                    {% set reach = row.reachability %}
+                    {% if reach.status == 'reachable' %}
+                      <span class="badge bg-green-lt">Reachable</span>
+                    {% elif reach.status == 'unreachable' %}
+                      <span class="badge bg-red-lt">Unreachable</span>
+                    {% elif reach.status == 'missing' %}
+                      <span class="badge bg-gray-lt">Missing</span>
+                    {% else %}
+                      <span class="badge bg-yellow-lt">Unknown</span>
+                    {% endif %}
+                    <div class="text-muted small mt-1">
+                      {{ reach.last_check or 'n/a' }}
+                    </div>
                   </td>
                   <td style="padding: 8px; border-bottom: 1px solid #efefe7;">
                     <input type="number" name="preset_{{ loop.index0 }}_latency_ms" value="{{ row.latency_ms }}" style="max-width: 90px;" />
@@ -150,217 +171,248 @@
     </div>
     <div class="tab-pane" id="pulsewatch-settings">
       <form method="post">
-        <div class="card mb-3">
-          <div class="card-body">
-            <h4 class="mb-3">Pulsewatch Core Settings</h4>
-            <div class="mb-3">
-              <label class="form-label">Enable ISP Pulsewatch <span class="info" data-tip="Turns on continuous Pulsewatch ping monitoring.">i</span></label>
-              <label class="form-check form-switch">
-                <input class="form-check-input" type="checkbox" name="pulsewatch_enabled" id="pulsewatch_enabled" {% if settings.pulsewatch.enabled %}checked{% endif %} />
-                <span class="form-check-label">Active</span>
-              </label>
+        <ul class="nav nav-tabs" data-bs-toggle="tabs">
+          <li class="nav-item">
+            <a href="#pulsewatch-core" class="nav-link active" data-bs-toggle="tab">Core</a>
+          </li>
+          <li class="nav-item">
+            <a href="#pulsewatch-monitoring" class="nav-link" data-bs-toggle="tab">Monitoring & Alerts</a>
+          </li>
+          <li class="nav-item">
+            <a href="#pulsewatch-dashboard" class="nav-link" data-bs-toggle="tab">Dashboard</a>
+          </li>
+          <li class="nav-item">
+            <a href="#pulsewatch-danger" class="nav-link" data-bs-toggle="tab">Danger</a>
+          </li>
+        </ul>
+
+        <div class="tab-content pt-4">
+          <div class="tab-pane active" id="pulsewatch-core">
+            <div class="card mb-3">
+              <div class="card-body">
+                <h4 class="mb-3">Pulsewatch Core Settings</h4>
+                <div class="mb-3">
+                  <label class="form-label">Enable ISP Pulsewatch <span class="info" data-tip="Turns on continuous Pulsewatch ping monitoring.">i</span></label>
+                  <label class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" name="pulsewatch_enabled" id="pulsewatch_enabled" {% if settings.pulsewatch.enabled %}checked{% endif %} />
+                    <span class="form-check-label">Active</span>
+                  </label>
+                </div>
+
+                <div class="form-grid">
+                  <div>
+                    <label>Auto-manage MikroTik address-lists <span class="info" data-tip="Keeps TO-ISP# address-lists in sync for Pulsewatch source IPs.">i</span></label>
+                    <label class="form-check form-switch">
+                      <input class="form-check-input" type="checkbox" name="pulsewatch_manage_address_lists" {% if settings.pulsewatch.manage_address_lists %}checked{% endif %} />
+                      <span class="form-check-label">Enabled</span>
+                    </label>
+                  </div>
+                  <div>
+                    <label>Reconcile Interval (minutes) <span class="info" data-tip="How often to reconcile MikroTik address-lists.">i</span></label>
+                    <input type="number" name="pulsewatch_reconcile_interval_minutes" value="{{ settings.pulsewatch.reconcile_interval_minutes }}" />
+                  </div>
+                  <div>
+                    <label>Store raw output <span class="info" data-tip="Persist raw ping/speedtest output in the database.">i</span></label>
+                    <label class="form-check form-switch">
+                      <input class="form-check-input" type="checkbox" name="pulsewatch_store_raw_output" {% if settings.pulsewatch.store_raw_output %}checked{% endif %} />
+                      <span class="form-check-label">Enabled</span>
+                    </label>
+                  </div>
+                  <div>
+                    <label>Raw Data Retention Days <span class="info" data-tip="Auto-delete raw Pulsewatch results older than this many days.">i</span></label>
+                    <input type="number" name="pulsewatch_retention_days" value="{{ settings.pulsewatch.retention_days }}" />
+                  </div>
+                  <div>
+                    <label>Rollup Retention Days <span class="info" data-tip="Keeps aggregated latency rollups for long-term charts (spike-aware).">i</span></label>
+                    <input type="number" name="pulsewatch_rollup_retention_days" value="{{ settings.pulsewatch.rollup_retention_days }}" />
+                  </div>
+                </div>
+                <div class="alert alert-info mt-3">
+                  <div class="d-flex align-items-center">
+                    <span class="me-2"><i class="ti ti-info-circle"></i></span>
+                    <div>MikroTik API credentials are managed under System Settings.</div>
+                  </div>
+                </div>
+              </div>
+              <div class="card-footer d-flex justify-content-end">
+                <button type="submit" class="btn btn-primary">Save Core Settings</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="tab-pane" id="pulsewatch-monitoring">
+            <div class="card mb-3">
+              <div class="card-body">
+                <h4 class="mb-3">Ping</h4>
+                <div class="form-grid">
+                  <div>
+                    <label>Ping Timeout (seconds) <span class="info" data-tip="Timeout per ping attempt for Pulsewatch checks.">i</span></label>
+                    <input type="number" name="pulsewatch_ping_timeout_seconds" value="{{ settings.pulsewatch.ping.timeout_seconds }}" />
+                  </div>
+                  <div>
+                    <label>Ping Count <span class="info" data-tip="How many ICMP packets to send per target per check.">i</span></label>
+                    <input type="number" name="pulsewatch_ping_count" value="{{ settings.pulsewatch.ping.count }}" />
+                  </div>
+                  <div>
+                    <label>Ping Interval (seconds) <span class="info" data-tip="How often Pulsewatch runs the ping cycle while enabled.">i</span></label>
+                    <input type="number" name="pulsewatch_ping_interval_seconds" value="{{ settings.pulsewatch.ping.interval_seconds }}" />
+                  </div>
+                  <div>
+                    <label>Max Parallel Pings <span class="info" data-tip="Limit concurrent ping tasks to reduce CPU load.">i</span></label>
+                    <input type="number" name="pulsewatch_ping_max_parallel" value="{{ settings.pulsewatch.ping.max_parallel }}" />
+                  </div>
+                </div>
+              </div>
             </div>
 
-            <div class="form-grid">
-              <div>
-                <label>Auto-manage MikroTik address-lists <span class="info" data-tip="Keeps TO-ISP# address-lists in sync for Pulsewatch source IPs.">i</span></label>
-                <label class="form-check form-switch">
-                  <input class="form-check-input" type="checkbox" name="pulsewatch_manage_address_lists" {% if settings.pulsewatch.manage_address_lists %}checked{% endif %} />
-                  <span class="form-check-label">Enabled</span>
+            <div class="card mb-3">
+              <div class="card-body">
+                <h4 class="mb-3">Speedtest</h4>
+                <div class="form-grid">
+                  <div>
+                    <label>Enable Speedtest <span class="info" data-tip="Allow manual or scheduled speedtests per ISP.">i</span></label>
+                    <label class="form-check form-switch">
+                      <input class="form-check-input" type="checkbox" name="speedtest_enabled" {% if settings.pulsewatch.speedtest.enabled %}checked{% endif %} />
+                      <span class="form-check-label">Enabled</span>
+                    </label>
+                  </div>
+                  <div>
+                    <label>Min Interval (minutes) <span class="info" data-tip="Minimum minutes between speedtests per ISP.">i</span></label>
+                    <input type="number" name="speedtest_min_interval_minutes" value="{{ settings.pulsewatch.speedtest.min_interval_minutes }}" />
+                  </div>
+                  <div>
+                    <label>Command <span class="info" data-tip="Speedtest CLI command (e.g., speedtest).">i</span></label>
+                    <input type="text" name="speedtest_command" value="{{ settings.pulsewatch.speedtest.command }}" />
+                  </div>
+                  <div>
+                    <label>Args <span class="info" data-tip="Arguments passed to the speedtest CLI.">i</span></label>
+                    <input type="text" name="speedtest_args" value="{{ settings.pulsewatch.speedtest.args }}" />
+                  </div>
+                  <div>
+                    <label>Use network namespaces <span class="info" data-tip="Run speedtests inside netns for interface-based routing.">i</span></label>
+                    <label class="form-check form-switch">
+                      <input class="form-check-input" type="checkbox" name="speedtest_use_netns" {% if settings.pulsewatch.speedtest.use_netns %}checked{% endif %} />
+                      <span class="form-check-label">Enabled</span>
+                    </label>
+                  </div>
+                  <div>
+                    <label>Netns Prefix <span class="info" data-tip="Namespace prefix (e.g., isp) used to build per-ISP netns names.">i</span></label>
+                    <input type="text" name="speedtest_netns_prefix" value="{{ settings.pulsewatch.speedtest.netns_prefix }}" />
+                  </div>
+                </div>
+                <div class="alert alert-info mt-3">
+                  <div class="d-flex align-items-center">
+                    <span class="me-2"><i class="ti ti-info-circle"></i></span>
+                    <div>Speedtest All runs sequentially to avoid saturating a single 1G LAN uplink.</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card mb-3">
+              <div class="card-body">
+                <h4 class="mb-3">Telegram</h4>
+                <div class="form-grid">
+                  <div>
+                    <label>Pulsewatch Bot Token <span class="info" data-tip="Dedicated bot token for Pulsewatch alerts and actions.">i</span></label>
+                    <input type="text" name="pulsewatch_bot_token" value="{{ settings.telegram.pulsewatch_bot_token }}" />
+                  </div>
+                  <div>
+                    <label>Alert Channel ID <span class="info" data-tip="Override channel ID for Pulsewatch alerts.">i</span></label>
+                    <input type="text" name="telegram_alert_channel_id" value="{{ settings.telegram.alert_channel_id }}" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="d-flex justify-content-end">
+              <button type="submit" class="btn btn-primary">Save Monitoring & Alerts</button>
+            </div>
+          </div>
+
+          <div class="tab-pane" id="pulsewatch-dashboard">
+            <div class="card mb-3">
+              <div class="card-body">
+                <h4 class="mb-3">Pulsewatch ISP Summary Dashboard Settings</h4>
+                <div class="form-grid">
+                  <div>
+                    <label>Default Target <span class="info" data-tip="Default target used by the Pulsewatch ISP Summary on the dashboard.">i</span></label>
+                    <select name="pulsewatch_dashboard_default_target">
+                      <option value="all" {% if settings.pulsewatch.dashboard.default_target == "all" %}selected{% endif %}>All targets</option>
+                      {% for target in pulsewatch_targets %}
+                        <option value="{{ target }}" {% if settings.pulsewatch.dashboard.default_target == target %}selected{% endif %}>{{ target }}</option>
+                      {% endfor %}
+                    </select>
+                  </div>
+                  <div>
+                    <label>Table refresh (seconds) <span class="info" data-tip="How often the ISP Summary table refreshes.">i</span></label>
+                    <input type="number" name="pulsewatch_dashboard_refresh_seconds" value="{{ settings.pulsewatch.dashboard.refresh_seconds }}" />
+                  </div>
+                  <div>
+                    <label>Loss history (minutes) <span class="info" data-tip="Minutes of loss history to show in the summary sparkline.">i</span></label>
+                    <input type="number" name="pulsewatch_dashboard_loss_history_minutes" value="{{ settings.pulsewatch.dashboard.loss_history_minutes }}" />
+                  </div>
+                  <div>
+                    <label>Pie chart default days <span class="info" data-tip="Default range for the Pulsewatch stability pie charts.">i</span></label>
+                    <input type="number" name="pulsewatch_dashboard_pie_days" value="{{ settings.pulsewatch.dashboard.pie_default_days }}" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card mb-3">
+              <div class="card-body">
+                <h4 class="mb-3">Pulsewatch Stability Overview</h4>
+                <div class="form-grid">
+                  <div>
+                    <label>Stable max (ms) <span class="info" data-tip="Average latency at or below this value is counted as Stable.">i</span></label>
+                    <input type="number" name="pulsewatch_stability_stable_max_ms" value="{{ settings.pulsewatch.stability.stable_max_ms }}" />
+                  </div>
+                  <div>
+                    <label>Unstable max (ms) <span class="info" data-tip="Average latency between Stable max and this value is counted as Unstable. Critical is above this.">i</span></label>
+                    <input type="number" name="pulsewatch_stability_unstable_max_ms" value="{{ settings.pulsewatch.stability.unstable_max_ms }}" />
+                  </div>
+                  <div>
+                    <label>Down source <span class="info" data-tip="Down slice is driven by WAN Ping status (current down/up).">i</span></label>
+                    <input type="text" value="WAN Ping status" disabled />
+                  </div>
+                </div>
+                <div class="help">These thresholds affect the Pulsewatch Stability Overview on the dashboard.</div>
+              </div>
+            </div>
+
+            <div class="d-flex justify-content-end">
+              <button type="submit" class="btn btn-primary">Save Dashboard Settings</button>
+            </div>
+          </div>
+
+          <div class="tab-pane" id="pulsewatch-danger">
+            <div class="card mb-3">
+              <div class="card-body">
+                <h4 class="mb-2">Format Pulsewatch Database</h4>
+                <div class="alert alert-warning">
+                  <div class="d-flex align-items-center">
+                    <span class="me-2"><i class="ti ti-alert-triangle"></i></span>
+                    <div>Formatting removes Pulsewatch ping, speedtest, alerts, and rollup data. Settings are preserved.</div>
+                  </div>
+                </div>
+                <label class="form-check">
+                  <input class="form-check-input" type="checkbox" name="confirm_format" form="pulsewatch-format-form" />
+                  <span class="form-check-label">I understand this will erase Pulsewatch data.</span>
                 </label>
-              </div>
-              <div>
-                <label>Reconcile Interval (minutes) <span class="info" data-tip="How often to reconcile MikroTik address-lists.">i</span></label>
-                <input type="number" name="pulsewatch_reconcile_interval_minutes" value="{{ settings.pulsewatch.reconcile_interval_minutes }}" />
-              </div>
-              <div>
-                <label>Store raw output <span class="info" data-tip="Persist raw ping/speedtest output in the database.">i</span></label>
-                <label class="form-check form-switch">
-                  <input class="form-check-input" type="checkbox" name="pulsewatch_store_raw_output" {% if settings.pulsewatch.store_raw_output %}checked{% endif %} />
-                  <span class="form-check-label">Enabled</span>
-                </label>
-              </div>
-              <div>
-                <label>Raw Data Retention Days <span class="info" data-tip="Auto-delete raw Pulsewatch results older than this many days.">i</span></label>
-                <input type="number" name="pulsewatch_retention_days" value="{{ settings.pulsewatch.retention_days }}" />
-              </div>
-              <div>
-                <label>Rollup Retention Days <span class="info" data-tip="Keeps aggregated latency rollups for long-term charts (spike-aware).">i</span></label>
-                <input type="number" name="pulsewatch_rollup_retention_days" value="{{ settings.pulsewatch.rollup_retention_days }}" />
-              </div>
-            </div>
-            <div class="alert alert-info mt-3">
-              <div class="d-flex align-items-center">
-                <span class="me-2"><i class="ti ti-info-circle"></i></span>
-                <div>MikroTik API credentials are managed under System Settings.</div>
+                <div class="mt-3">
+                  <button type="submit" class="btn btn-danger" form="pulsewatch-format-form">Format Pulsewatch Database</button>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-
-        <div class="card mb-3">
-          <div class="card-body">
-            <h4 class="mb-3">Ping</h4>
-            <div class="form-grid">
-              <div>
-                <label>Ping Timeout (seconds) <span class="info" data-tip="Timeout per ping attempt for Pulsewatch checks.">i</span></label>
-                <input type="number" name="pulsewatch_ping_timeout_seconds" value="{{ settings.pulsewatch.ping.timeout_seconds }}" />
-              </div>
-              <div>
-                <label>Ping Count <span class="info" data-tip="How many ICMP packets to send per target per check.">i</span></label>
-                <input type="number" name="pulsewatch_ping_count" value="{{ settings.pulsewatch.ping.count }}" />
-              </div>
-              <div>
-                <label>Ping Interval (seconds) <span class="info" data-tip="How often Pulsewatch runs the ping cycle while enabled.">i</span></label>
-                <input type="number" name="pulsewatch_ping_interval_seconds" value="{{ settings.pulsewatch.ping.interval_seconds }}" />
-              </div>
-              <div>
-                <label>Max Parallel Pings <span class="info" data-tip="Limit concurrent ping tasks to reduce CPU load.">i</span></label>
-                <input type="number" name="pulsewatch_ping_max_parallel" value="{{ settings.pulsewatch.ping.max_parallel }}" />
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="card mb-3">
-          <div class="card-body">
-            <h4 class="mb-3">Speedtest</h4>
-            <div class="form-grid">
-              <div>
-                <label>Enable Speedtest <span class="info" data-tip="Allow manual or scheduled speedtests per ISP.">i</span></label>
-                <label class="form-check form-switch">
-                  <input class="form-check-input" type="checkbox" name="speedtest_enabled" {% if settings.pulsewatch.speedtest.enabled %}checked{% endif %} />
-                  <span class="form-check-label">Enabled</span>
-                </label>
-              </div>
-              <div>
-                <label>Min Interval (minutes) <span class="info" data-tip="Minimum minutes between speedtests per ISP.">i</span></label>
-                <input type="number" name="speedtest_min_interval_minutes" value="{{ settings.pulsewatch.speedtest.min_interval_minutes }}" />
-              </div>
-              <div>
-                <label>Command <span class="info" data-tip="Speedtest CLI command (e.g., speedtest).">i</span></label>
-                <input type="text" name="speedtest_command" value="{{ settings.pulsewatch.speedtest.command }}" />
-              </div>
-              <div>
-                <label>Args <span class="info" data-tip="Arguments passed to the speedtest CLI.">i</span></label>
-                <input type="text" name="speedtest_args" value="{{ settings.pulsewatch.speedtest.args }}" />
-              </div>
-              <div>
-                <label>Use network namespaces <span class="info" data-tip="Run speedtests inside netns for interface-based routing.">i</span></label>
-                <label class="form-check form-switch">
-                  <input class="form-check-input" type="checkbox" name="speedtest_use_netns" {% if settings.pulsewatch.speedtest.use_netns %}checked{% endif %} />
-                  <span class="form-check-label">Enabled</span>
-                </label>
-              </div>
-              <div>
-                <label>Netns Prefix <span class="info" data-tip="Namespace prefix (e.g., isp) used to build per-ISP netns names.">i</span></label>
-                <input type="text" name="speedtest_netns_prefix" value="{{ settings.pulsewatch.speedtest.netns_prefix }}" />
-              </div>
-            </div>
-            <div class="alert alert-info mt-3">
-              <div class="d-flex align-items-center">
-                <span class="me-2"><i class="ti ti-info-circle"></i></span>
-                <div>Speedtest All runs sequentially to avoid saturating a single 1G LAN uplink.</div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="card mb-3">
-          <div class="card-body">
-            <h4 class="mb-3">Telegram</h4>
-            <div class="form-grid">
-              <div>
-                <label>Pulsewatch Bot Token <span class="info" data-tip="Dedicated bot token for Pulsewatch alerts and actions.">i</span></label>
-                <input type="text" name="pulsewatch_bot_token" value="{{ settings.telegram.pulsewatch_bot_token }}" />
-              </div>
-              <div>
-                <label>Alert Channel ID <span class="info" data-tip="Override channel ID for Pulsewatch alerts.">i</span></label>
-                <input type="text" name="telegram_alert_channel_id" value="{{ settings.telegram.alert_channel_id }}" />
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="card mb-3">
-          <div class="card-body">
-            <h4 class="mb-3">Pulsewatch ISP Summary Dashboard Settings</h4>
-            <div class="form-grid">
-              <div>
-                <label>Default Target <span class="info" data-tip="Default target used by the Pulsewatch ISP Summary on the dashboard.">i</span></label>
-                <select name="pulsewatch_dashboard_default_target">
-                  <option value="all" {% if settings.pulsewatch.dashboard.default_target == "all" %}selected{% endif %}>All targets</option>
-                  {% for target in pulsewatch_targets %}
-                    <option value="{{ target }}" {% if settings.pulsewatch.dashboard.default_target == target %}selected{% endif %}>{{ target }}</option>
-                  {% endfor %}
-                </select>
-              </div>
-              <div>
-                <label>Table refresh (seconds) <span class="info" data-tip="How often the ISP Summary table refreshes.">i</span></label>
-                <input type="number" name="pulsewatch_dashboard_refresh_seconds" value="{{ settings.pulsewatch.dashboard.refresh_seconds }}" />
-              </div>
-              <div>
-                <label>Loss history (minutes) <span class="info" data-tip="Minutes of loss history to show in the summary sparkline.">i</span></label>
-                <input type="number" name="pulsewatch_dashboard_loss_history_minutes" value="{{ settings.pulsewatch.dashboard.loss_history_minutes }}" />
-              </div>
-              <div>
-                <label>Pie chart default days <span class="info" data-tip="Default range for the Pulsewatch stability pie charts.">i</span></label>
-                <input type="number" name="pulsewatch_dashboard_pie_days" value="{{ settings.pulsewatch.dashboard.pie_default_days }}" />
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="card mb-3">
-          <div class="card-body">
-            <h4 class="mb-3">Pulsewatch Stability Overview</h4>
-            <div class="form-grid">
-              <div>
-                <label>Stable max (ms) <span class="info" data-tip="Average latency at or below this value is counted as Stable.">i</span></label>
-                <input type="number" name="pulsewatch_stability_stable_max_ms" value="{{ settings.pulsewatch.stability.stable_max_ms }}" />
-              </div>
-              <div>
-                <label>Unstable max (ms) <span class="info" data-tip="Average latency between Stable max and this value is counted as Unstable. Critical is above this.">i</span></label>
-                <input type="number" name="pulsewatch_stability_unstable_max_ms" value="{{ settings.pulsewatch.stability.unstable_max_ms }}" />
-              </div>
-              <div>
-                <label>Down source <span class="info" data-tip="Down slice is driven by WAN Ping status (current down/up).">i</span></label>
-                <input type="text" value="WAN Ping status" disabled />
-              </div>
-            </div>
-            <div class="help">These thresholds affect the Pulsewatch Stability Overview on the dashboard.</div>
-          </div>
-        </div>
-
-        <div style="margin-top: 16px;">
-          <button type="submit" class="btn btn-primary">Save ISP Pulsewatch Settings</button>
         </div>
       </form>
     </div>
-  </div>
-
-  <div class="card mt-4">
-    <div class="card-body">
-      <h4 class="mb-2">Format Pulsewatch Database</h4>
-      <div class="alert alert-warning">
-        <div class="d-flex align-items-center">
-          <span class="me-2"><i class="ti ti-alert-triangle"></i></span>
-          <div>Formatting removes Pulsewatch ping, speedtest, alerts, and rollup data. Settings are preserved.</div>
-        </div>
-      </div>
-      <form method="post" action="/settings/pulsewatch/format">
-        <label class="form-check">
-          <input class="form-check-input" type="checkbox" name="confirm_format" />
-          <span class="form-check-label">I understand this will erase Pulsewatch data.</span>
-        </label>
-        <div class="mt-3">
-          <button type="submit" class="btn btn-danger">Format Pulsewatch Database</button>
-        </div>
-      </form>
-    </div>
-  </div>
   </div>
 </div>
+
+<form id="pulsewatch-format-form" method="post" action="/settings/pulsewatch/format"></form>
 
   <div id="pulsewatch_stream_modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55); align-items: center; justify-content: center; z-index: 1000;">
   <div style="background: #0f172a; color: #e2e8f0; border: 1px solid #1f2937; padding: 16px; border-radius: 10px; width: 95vw; max-width: 1400px; max-height: 90vh; display: flex; flex-direction: column;">
@@ -466,6 +518,39 @@
   </div>
 </div>
 
+<div class="modal modal-blur fade" id="pulsewatch-reachability-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Fix Reachability (Source IP to Target)</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="text-muted mb-3">
+          This action tries to recover when a source IP on the server cannot reach its first ping target.
+          It re-applies netplan and restarts the host network service. Use this if reachability shows
+          <strong>Unreachable</strong> even though the IPs are already assigned.
+        </div>
+        <div class="alert alert-info">
+          This helper was added to recover when IP bindings stop working after netplan changes.
+          VM environments sometimes need a network restart before source-bound pings succeed.
+        </div>
+        <ul class="text-muted small mb-3">
+          <li>Step 1: Re-apply netplan for Pulsewatch IP bindings.</li>
+          <li>Step 2: Restart host networking (systemd-networkd or networking).</li>
+          <li>Step 3: Re-check reachability status.</li>
+        </ul>
+        <div class="text-muted small">Note: If the VM bridge or upstream router is down, this will not restore connectivity.</div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" id="pulsewatch_reachability_refresh">Refresh Reachability</button>
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-warning" id="pulsewatch_reachability_run" disabled>Fix Reachability</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <style>
   @keyframes spin {
     from { transform: rotate(0deg); }
@@ -482,6 +567,8 @@
   const modal = document.getElementById("pulsewatch_modal");
   const closeBtn = document.getElementById("pulsewatch_modal_close");
   const okBtn = document.getElementById("pulsewatch_modal_ok");
+  const reachModal = document.getElementById("pulsewatch-reachability-modal");
+  const reachRun = document.getElementById("pulsewatch_reachability_run");
 
   const closeModal = () => {
     if (modal) {
@@ -493,7 +580,79 @@
     closeBtn.addEventListener("click", closeModal);
   }
   if (okBtn) {
-    okBtn.addEventListener("click", closeModal);
+  okBtn.addEventListener("click", closeModal);
+
+  const reachRefreshBtn = document.getElementById("pulsewatch_reachability_refresh");
+  const reachFixBtn = document.getElementById("pulsewatch_reachability_fix");
+  const reachLastEl = document.getElementById("pulsewatch_reachability_last");
+  let hasUnreachable = false;
+
+  const reachBadgeHtml = (status) => {
+    if (status === "reachable") {
+      return '<span class="badge bg-green-lt">Reachable</span>';
+    }
+    if (status === "unreachable") {
+      return '<span class="badge bg-red-lt">Unreachable</span>';
+    }
+    if (status === "missing") {
+      return '<span class="badge bg-gray-lt">Missing</span>';
+    }
+    return '<span class="badge bg-yellow-lt">Unknown</span>';
+  };
+
+  const updateReachability = (payload) => {
+    if (!payload || !payload.items) return;
+    hasUnreachable = false;
+    const checkedAt = payload.checked_at || "n/a";
+    if (reachLastEl) {
+      reachLastEl.textContent = `Last check: ${checkedAt}`;
+    }
+    Object.entries(payload.items).forEach(([rowId, info]) => {
+      const cell = document.querySelector(`.pulsewatch-reach-cell[data-row-id="${rowId}"]`);
+      if (!cell) return;
+      const lastCheck = info.last_check || "n/a";
+      cell.innerHTML = `${reachBadgeHtml(info.status)}<div class="text-muted small mt-1">${lastCheck}</div>`;
+      const hasSource = (info.source_ip || "").trim().length > 0;
+      if (info.status === "unreachable" || (info.status === "missing" && hasSource)) {
+        hasUnreachable = true;
+      }
+    });
+    if (reachRun) {
+      reachRun.disabled = !hasUnreachable;
+    }
+  };
+
+  const fetchReachability = async (refresh = false) => {
+    const params = new URLSearchParams();
+    if (refresh) params.set("refresh", "1");
+    const res = await fetch(`/pulsewatch/reachability?${params.toString()}`, {
+      headers: { "Accept": "application/json" },
+    });
+    if (!res.ok) return;
+    const payload = await res.json();
+    updateReachability(payload);
+  };
+
+  if (reachRefreshBtn) {
+    reachRefreshBtn.addEventListener("click", () => fetchReachability(true));
+  }
+  if (reachRun) {
+    reachRun.addEventListener("click", async () => {
+      reachRun.disabled = true;
+      try {
+        await fetch("/settings/pulsewatch/reachability/fix", { method: "POST" });
+        await fetchReachability(true);
+      } finally {
+        reachRun.disabled = !hasUnreachable;
+        if (reachModal) {
+          const modalInstance = window.bootstrap?.Modal.getInstance(reachModal);
+          if (modalInstance) modalInstance.hide();
+        }
+      }
+    });
+  }
+  fetchReachability(false);
+  setInterval(() => fetchReachability(false), 10 * 60 * 1000);
   }
   if (modal) {
     modal.addEventListener("click", (event) => {
