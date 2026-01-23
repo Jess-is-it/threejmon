@@ -8,7 +8,7 @@ try:
 except Exception:
     ZoneInfo = None
 
-from .db import delete_rto_results_older_than, update_job_status, utc_now_iso
+from .db import delete_rto_results_older_than, delete_optical_results_older_than, update_job_status, utc_now_iso
 from .notifiers import optical as optical_notifier
 from .notifiers import rto as rto_notifier
 from .notifiers import isp_ping as isp_ping_notifier
@@ -48,11 +48,44 @@ class JobsManager:
                 continue
 
             try:
-                if should_run_daily(cfg["general"], get_state("optical_state", {"last_run_date": None})):
+                state = get_state("optical_state", {"last_run_date": None, "last_run_at": None})
+                pause_until = state.get("pause_until")
+                if pause_until:
+                    pause_dt = datetime.fromisoformat(pause_until.replace("Z", ""))
+                    if datetime.utcnow() < pause_dt:
+                        time_module.sleep(5)
+                        continue
+                retention_days = int(cfg.get("storage", {}).get("raw_retention_days", 0) or 0)
+                if retention_days > 0:
+                    last_prune = state.get("last_prune_at")
+                    if not last_prune:
+                        last_prune_dt = None
+                    else:
+                        last_prune_dt = datetime.fromisoformat(last_prune.replace("Z", ""))
+                    if not last_prune_dt or last_prune_dt + timedelta(hours=24) < datetime.utcnow():
+                        cutoff = datetime.utcnow() - timedelta(days=retention_days)
+                        delete_optical_results_older_than(cutoff.replace(microsecond=0).isoformat() + "Z")
+                        state["last_prune_at"] = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+                        save_state("optical_state", state)
+                interval_minutes = int(cfg.get("general", {}).get("check_interval_minutes", 0) or 0)
+                now = datetime.utcnow()
+                last_run_at = state.get("last_run_at")
+                last_run_dt = datetime.fromisoformat(last_run_at.replace("Z", "")) if last_run_at else None
+                due_interval = interval_minutes > 0 and (not last_run_dt or now - last_run_dt >= timedelta(minutes=interval_minutes))
+                daily_cfg = dict(cfg.get("general", {}))
+                daily_cfg["timezone"] = "Asia/Manila"
+                due_daily = should_run_daily_on_minute(daily_cfg, state)
+                if due_daily:
                     update_job_status("optical", last_run_at=utc_now_iso())
-                    optical_notifier.run(cfg)
-                    state = get_state("optical_state", {"last_run_date": None})
-                    state["last_run_date"] = current_date(cfg["general"]).isoformat()
+                    optical_notifier.run(cfg, send_alerts=True)
+                    state["last_run_date"] = current_date(daily_cfg).isoformat()
+                    state["last_run_at"] = now.replace(microsecond=0).isoformat() + "Z"
+                    save_state("optical_state", state)
+                    update_job_status("optical", last_success_at=utc_now_iso(), last_error="", last_error_at="")
+                elif due_interval:
+                    update_job_status("optical", last_run_at=utc_now_iso())
+                    optical_notifier.run(cfg, send_alerts=False)
+                    state["last_run_at"] = now.replace(microsecond=0).isoformat() + "Z"
                     save_state("optical_state", state)
                     update_job_status("optical", last_success_at=utc_now_iso(), last_error="", last_error_at="")
             except TelegramError as exc:
@@ -297,8 +330,11 @@ class JobsManager:
 def parse_time(value):
     parts = (value or "").strip().split(":")
     if len(parts) != 2:
-        raise ValueError("schedule_time_ph must be HH:MM")
-    return time(hour=int(parts[0]), minute=int(parts[1]))
+        return time(hour=7, minute=0)
+    try:
+        return time(hour=int(parts[0]), minute=int(parts[1]))
+    except (TypeError, ValueError):
+        return time(hour=7, minute=0)
 
 
 def current_date(general_cfg):
@@ -318,3 +354,15 @@ def should_run_daily(general_cfg, state):
     if state.get("last_run_date") == now.date().isoformat():
         return False
     return now.time() >= schedule_time
+
+
+def should_run_daily_on_minute(general_cfg, state):
+    schedule_time = parse_time(general_cfg.get("schedule_time_ph", "07:00"))
+    timezone = general_cfg.get("timezone", "Asia/Manila")
+    if ZoneInfo is not None:
+        now = datetime.now(ZoneInfo(timezone))
+    else:
+        now = datetime.now()
+    if state.get("last_run_date") == now.date().isoformat():
+        return False
+    return now.hour == schedule_time.hour and now.minute == schedule_time.minute

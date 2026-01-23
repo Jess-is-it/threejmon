@@ -300,3 +300,59 @@ select:not(.form-select) {
   background: #fff;
   color: #1f2b3a;
 }
+
+.optical-popover {
+  position: fixed;
+  z-index: 1080;
+  max-width: 280px;
+  background: #ffffff;
+  border: 1px solid #dee2e6;
+  border-radius: 0.5rem;
+  padding: 0.65rem 0.75rem;
+  font-size: 0.875rem;
+  color: #182433;
+  box-shadow: 0 8px 24px rgba(24, 36, 51, 0.15);
+  display: none;
+}
+
+.optical-popover .btn {
+  margin-top: 0.5rem;
+}
+
+.optical-missing-btn {
+  width: 18px !important;
+  height: 18px !important;
+  min-width: 18px !important;
+  min-height: 18px !important;
+  padding: 0 !important;
+  border-radius: 4px !important;
+  background: #f1f3f5 !important;
+  border: 1px solid #ced4da !important;
+  color: #6c757d !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  line-height: 1 !important;
+}
+
+.optical-missing-btn:hover,
+.optical-missing-btn:focus {
+  background: #e9ecef;
+  border-color: #adb5bd;
+  color: #495057;
+}
+
+.header-icon-badge {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: 0.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.header-icon-badge i {
+  font-size: 22px;
+  line-height: 1;
+}

@@ -1,12 +1,10 @@
 {% extends "base.html" %}
+{% block title %}ISP Pulsewatch{% endblock %}
+{% block header_title %}ISP Pulsewatch{% endblock %}
+{% block header_badge %}
+  <span class="badge bg-green-lt text-green header-icon-badge"><i class="ti ti-activity"></i></span>
+{% endblock %}
 {% block content %}
-<div class="page-header d-print-none">
-  <div class="row align-items-center">
-    <div class="col">
-      <h2 class="page-title">ISP Pulsewatch</h2>
-    </div>
-  </div>
-</div>
 <div class="card">
   <div class="card-body">
   {% if message %}

@@ -1,13 +1,10 @@
 {% extends "base.html" %}
+{% block title %}WAN Ping{% endblock %}
+{% block header_title %}WAN Ping{% endblock %}
+{% block header_badge %}
+  <span class="badge bg-orange-lt text-orange header-icon-badge"><i class="ti ti-world"></i></span>
+{% endblock %}
 {% block content %}
-<div class="page-header d-print-none">
-  <div class="row align-items-center">
-    <div class="col">
-      <h2 class="page-title">WAN Ping</h2>
-    </div>
-  </div>
-</div>
-
 {% if message %}
   <div class="alert alert-info">{{ message }}</div>
 {% endif %}

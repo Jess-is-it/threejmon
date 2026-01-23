@@ -1,13 +1,10 @@
 {% extends "base.html" %}
+{% block title %}Request Timeout Customers{% endblock %}
+{% block header_title %}Request Timeout Customers{% endblock %}
+{% block header_badge %}
+  <span class="badge bg-purple-lt text-purple header-icon-badge"><i class="ti ti-tower"></i></span>
+{% endblock %}
 {% block content %}
-<div class="page-header d-print-none">
-  <div class="row align-items-center">
-    <div class="col">
-      <h2 class="page-title">Request Timeout Customers</h2>
-    </div>
-  </div>
-</div>
-
 {% if message %}
   <div class="alert alert-info">{{ message }}</div>
 {% endif %}

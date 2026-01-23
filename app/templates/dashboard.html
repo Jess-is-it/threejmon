@@ -1,15 +1,13 @@
 {% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block header_title %}Dashboard{% endblock %}
+{% block header_badge %}
+  <span class="badge bg-blue-lt text-blue header-icon-badge"><i class="ti ti-dashboard"></i></span>
+{% endblock %}
 {% block content %}
 {% if message %}
   <div class="alert alert-info">{{ message }}</div>
 {% endif %}
-<div class="page-header d-print-none">
-  <div class="row align-items-center">
-    <div class="col">
-      <h2 class="page-title">Dashboard</h2>
-    </div>
-  </div>
-</div>
 
 <div class="row row-cards">
   <div class="col-md-6 col-xl-3">

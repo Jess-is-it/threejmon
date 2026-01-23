@@ -114,6 +114,20 @@ def init_db():
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS optical_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                pppoe TEXT,
+                ip TEXT,
+                rx REAL,
+                tx REAL,
+                priority INTEGER NOT NULL
+            )
+            """
+        )
     conn.close()
 
 
@@ -350,6 +364,30 @@ def insert_rto_result(ip, name, ok, timestamp=None):
         conn.close()
 
 
+def insert_optical_result(device_id, pppoe, ip, rx, tx, priority, timestamp=None):
+    stamp = timestamp or utc_now_iso()
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO optical_results (timestamp, device_id, pppoe, ip, rx, tx, priority)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    stamp,
+                    device_id,
+                    pppoe,
+                    ip,
+                    rx,
+                    tx,
+                    1 if priority else 0,
+                ),
+            )
+    finally:
+        conn.close()
+
+
 def delete_rto_results_older_than(cutoff_iso):
     conn = get_conn()
     try:
@@ -359,11 +397,29 @@ def delete_rto_results_older_than(cutoff_iso):
         conn.close()
 
 
+def delete_optical_results_older_than(cutoff_iso):
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM optical_results WHERE timestamp < ?", (cutoff_iso,))
+    finally:
+        conn.close()
+
+
 def clear_rto_results():
     conn = get_conn()
     try:
         with conn:
             conn.execute("DELETE FROM rto_results")
+    finally:
+        conn.close()
+
+
+def clear_optical_results():
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM optical_results")
     finally:
         conn.close()
 
@@ -380,12 +436,46 @@ def get_rto_results_since(since_iso):
         conn.close()
 
 
+def get_optical_results_since(since_iso):
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT timestamp, device_id, pppoe, ip, rx, tx, priority
+            FROM optical_results
+            WHERE timestamp >= ?
+            ORDER BY timestamp ASC
+            """,
+            (since_iso,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
 def get_rto_results_for_ip_since(ip, since_iso):
     conn = get_conn()
     try:
         rows = conn.execute(
             "SELECT timestamp, ok FROM rto_results WHERE ip = ? AND timestamp >= ? ORDER BY timestamp ASC",
             (ip, since_iso),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_optical_results_for_device_since(device_id, since_iso):
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT timestamp, rx, tx
+            FROM optical_results
+            WHERE device_id = ? AND timestamp >= ?
+            ORDER BY timestamp ASC
+            """,
+            (device_id, since_iso),
         ).fetchall()
         return [dict(row) for row in rows]
     finally:

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>ThreeJ Notifier Suite</title>
+  <title>{% block title %}ThreeJ Notifier Suite{% endblock %}</title>
   <link rel="stylesheet" href="/static/tabler/css/tabler.min.css" />
   <link rel="stylesheet" href="/static/tabler/css/tabler-icons.min.css" />
   <link rel="stylesheet" href="/static/style.css?v=tabler2" />
@@ -60,15 +60,18 @@
         </div>
       </div>
     </aside>
-    <div class="page-wrapper">
-      <header class="navbar navbar-expand-md navbar-light d-print-none sticky-top">
-        <div class="container-xl">
-          <div class="d-flex w-100 align-items-center">
-            <div class="text-muted fw-semibold">ThreeJ Notifier Suite</div>
-            <div class="sys-metrics d-none d-lg-flex ms-auto gap-4">
-              <div class="sys-metric text-muted">
-                <i class="ti ti-cpu"></i><span id="sys-cpu">CPU 0%</span>
-              </div>
+	    <div class="page-wrapper">
+	      <header class="navbar navbar-expand-md navbar-light d-print-none sticky-top">
+	        <div class="container-xl">
+	          <div class="d-flex w-100 align-items-center">
+	            <div class="d-flex align-items-center gap-2">
+	              {% block header_badge %}{% endblock %}
+	              <div class="h3 m-0">{% block header_title %}ThreeJ Notifier Suite{% endblock %}</div>
+	            </div>
+	            <div class="sys-metrics d-none d-lg-flex ms-auto gap-4">
+	              <div class="sys-metric text-muted">
+	                <i class="ti ti-cpu"></i><span id="sys-cpu">CPU 0%</span>
+	              </div>
               <div class="sys-metric text-muted">
                 <i class="ti ti-ram"></i><span id="sys-ram">RAM 0%</span>
               </div>

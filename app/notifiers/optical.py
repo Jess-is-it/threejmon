@@ -6,8 +6,11 @@ import urllib.request
 from datetime import datetime
 
 from .telegram import send_telegram
+from ..db import insert_optical_result, utc_now_iso
 
 FLOAT_RE = re.compile(r"-?\d+(?:\.\d+)?")
+REALISTIC_RX_MIN = -40.0
+REALISTIC_RX_MAX = 5.0
 
 
 def parse_list(values):
@@ -84,6 +87,27 @@ def pick_param(device, paths):
         if parsed is not None:
             return parsed
     return None
+
+
+def pick_param_with_bounds(device, paths, min_value, max_value):
+    first_value = None
+    first_within = None
+    for path in paths:
+        raw = get_nested(device, path)
+        value = extract_value(raw)
+        parsed = parse_float(value)
+        if parsed is None:
+            continue
+        if first_value is None:
+            first_value = parsed
+        if min_value <= parsed <= max_value:
+            if first_within is None:
+                first_within = parsed
+            if parsed < 0:
+                return parsed
+    if first_within is not None:
+        return first_within
+    return first_value
 
 
 def pick_text(device, paths):
@@ -173,7 +197,7 @@ def build_messages(cfg, rows, total_devices):
     return format_split(lines, max_chars)
 
 
-def run(cfg):
+def run(cfg, send_alerts=True):
     rx_paths = parse_list(cfg["optical"].get("rx_paths", []))
     tx_paths = parse_list(cfg["optical"].get("tx_paths", []))
     pppoe_paths = parse_list(cfg["optical"].get("pppoe_paths", []))
@@ -183,28 +207,42 @@ def run(cfg):
     threshold = float(cfg["optical"].get("rx_threshold_dbm", -26.0))
     tx_low = float(cfg["optical"].get("tx_low_threshold_dbm", -1.0))
     priority_threshold = float(cfg["optical"].get("priority_rx_threshold_dbm", -29.0))
+    timestamp = utc_now_iso()
+
+    realistic_min = float(cfg.get("classification", {}).get("rx_realistic_min_dbm", REALISTIC_RX_MIN))
+    realistic_max = float(cfg.get("classification", {}).get("rx_realistic_max_dbm", REALISTIC_RX_MAX))
+    tx_min = float(cfg.get("classification", {}).get("tx_realistic_min_dbm", -10.0))
+    tx_max = float(cfg.get("classification", {}).get("tx_realistic_max_dbm", 10.0))
 
     rows = []
     for device in devices:
-        rx = pick_param(device, rx_paths)
-        tx = pick_param(device, tx_paths)
+        rx = pick_param_with_bounds(device, rx_paths, realistic_min, realistic_max)
+        tx = pick_param_with_bounds(device, tx_paths, tx_min, tx_max)
         if rx is None:
             continue
+        pppoe = pick_text(device, pppoe_paths) or device_label(device)
+        ip_address = pick_text(device, ip_paths)
+        device_id = device.get("_id") if isinstance(device, dict) else None
+        if not device_id:
+            device_id = pppoe
+        priority = rx <= priority_threshold
+        insert_optical_result(device_id, pppoe, ip_address, rx, tx, priority, timestamp=timestamp)
         tx_alert = tx is not None and tx <= tx_low
         if rx <= threshold or tx_alert:
             rows.append(
                 {
-                    "pppoe": pick_text(device, pppoe_paths) or device_label(device),
-                    "ip": pick_text(device, ip_paths),
+                    "pppoe": pppoe,
+                    "ip": ip_address,
                     "rx": rx,
                     "tx": tx,
-                    "priority": rx <= priority_threshold,
+                    "priority": priority,
                 }
             )
 
     rows.sort(key=lambda x: x["rx"])
     messages = build_messages(cfg, rows, len(devices))
-    token = cfg["telegram"].get("bot_token", "")
-    chat_id = cfg["telegram"].get("chat_id", "")
-    for message in messages:
-        send_telegram(token, chat_id, message)
+    if send_alerts:
+        token = cfg["telegram"].get("bot_token", "")
+        chat_id = cfg["telegram"].get("chat_id", "")
+        for message in messages:
+            send_telegram(token, chat_id, message)

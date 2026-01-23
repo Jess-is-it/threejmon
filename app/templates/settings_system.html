@@ -1,13 +1,10 @@
 {% extends "base.html" %}
+{% block title %}System Settings{% endblock %}
+{% block header_title %}System Settings{% endblock %}
+{% block header_badge %}
+  <span class="badge bg-secondary-lt text-secondary header-icon-badge"><i class="ti ti-settings"></i></span>
+{% endblock %}
 {% block content %}
-<div class="page-header d-print-none">
-  <div class="row align-items-center">
-    <div class="col">
-      <h2 class="page-title">System Settings</h2>
-    </div>
-  </div>
-</div>
-
 {% if message %}
   <div class="alert alert-info">{{ message }}</div>
 {% endif %}

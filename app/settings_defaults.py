@@ -46,8 +46,24 @@ OPTICAL_DEFAULTS = {
         "message_title": "Optical Power Alert",
         "include_header": True,
         "max_chars": 3800,
+        "check_interval_minutes": 60,
         "schedule_time_ph": "07:00",
         "timezone": "Asia/Manila",
+    },
+    "storage": {
+        "raw_retention_days": 30,
+    },
+    "classification": {
+        "issue_rx_dbm": -27.0,
+        "issue_tx_dbm": -2.0,
+        "stable_rx_dbm": -24.0,
+        "stable_tx_dbm": -1.0,
+        "chart_min_dbm": -35.0,
+        "chart_max_dbm": -10.0,
+        "rx_realistic_min_dbm": -40.0,
+        "rx_realistic_max_dbm": 5.0,
+        "tx_realistic_min_dbm": -10.0,
+        "tx_realistic_max_dbm": 10.0,
     },
 }
 
