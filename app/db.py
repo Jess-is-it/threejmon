@@ -1,7 +1,7 @@
 import json
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 DB_PATH = os.environ.get("THREEJ_DB_PATH", "/data/threejnotif.db")
 
@@ -126,6 +126,26 @@ def init_db():
                 tx REAL,
                 priority INTEGER NOT NULL
             )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS wan_status_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                wan_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                up_pct REAL,
+                target TEXT,
+                core_id TEXT,
+                label TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_wan_status_history_wan_ts
+            ON wan_status_history (wan_id, timestamp)
             """
         )
     conn.close()
@@ -306,6 +326,76 @@ def insert_ping_result(isp_id, target, loss, min_ms, avg_ms, max_ms, raw_output=
                     avg_ms,
                 ),
             )
+    finally:
+        conn.close()
+
+
+def insert_wan_history_row(
+    wan_id,
+    status,
+    timestamp=None,
+    target=None,
+    core_id=None,
+    label=None,
+    up_pct=None,
+    retention_days=400,
+):
+    stamp = timestamp or utc_now_iso()
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO wan_status_history (timestamp, wan_id, status, up_pct, target, core_id, label)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (stamp, wan_id, status, up_pct, target, core_id, label),
+            )
+            # retain roughly ~400 days of history
+            conn.execute(
+                """
+                DELETE FROM wan_status_history
+                WHERE timestamp < datetime('now', ?)
+                """
+                ,
+                (f"-{max(int(retention_days or 1), 1)} days",),
+            )
+    finally:
+        conn.close()
+
+
+def fetch_wan_history_map(wan_ids, start_iso, end_iso):
+    if not wan_ids:
+        return {}
+    conn = get_conn()
+    try:
+        placeholders = ",".join("?" for _ in wan_ids)
+        params = [start_iso, end_iso] + list(wan_ids)
+        rows = conn.execute(
+            f"""
+            SELECT wan_id, timestamp, status
+            FROM wan_status_history
+            WHERE timestamp BETWEEN ? AND ?
+              AND wan_id IN ({placeholders})
+            ORDER BY timestamp ASC
+            """,
+            params,
+        ).fetchall()
+        history = {}
+        for row in rows:
+            history.setdefault(row["wan_id"], []).append(
+                {"ts": row["timestamp"], "status": row["status"]}
+            )
+        return history
+    finally:
+        conn.close()
+
+
+def clear_wan_history():
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM wan_status_history")
     finally:
         conn.close()
 

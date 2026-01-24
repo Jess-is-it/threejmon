@@ -156,7 +156,7 @@
                         {% endif %}
                       </td>
                       <td>
-                        {% if row.tx_invalid %}
+                        {% if row.tx_invalid or row.tx_missing %}
                           {% set tx_raw = row.tx_raw if row.tx_raw is not none else 'n/a' %}
                           <div class="dropdown">
                             <button type="button" class="btn btn-icon optical-missing-btn" data-bs-toggle="dropdown" aria-label="Missing TX">
@@ -260,7 +260,7 @@
                         {% endif %}
                       </td>
                       <td>
-                        {% if row.tx_invalid %}
+                        {% if row.tx_invalid or row.tx_missing %}
                           {% set tx_raw = row.tx_raw if row.tx_raw is not none else 'n/a' %}
                           <div class="dropdown">
                             <button type="button" class="btn btn-icon optical-missing-btn" data-bs-toggle="dropdown" aria-label="Missing TX">

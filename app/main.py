@@ -10,8 +10,8 @@ import shlex
 import shutil
 import time
 import subprocess
+import urllib.parse
 from datetime import datetime, timezone, timedelta
-from urllib.parse import quote, urlparse
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Request
@@ -21,7 +21,6 @@ from fastapi.templating import Jinja2Templates
 
 from .db import (
     clear_rto_results,
-    clear_optical_results,
     get_job_status,
     get_latest_speedtest_map,
     get_ping_history_map,
@@ -29,13 +28,15 @@ from .db import (
     get_ping_latency_trend_window,
     get_ping_rollup_history_map,
     get_ping_stability_counts,
-    get_optical_results_since,
-    get_optical_results_for_device_since,
     get_rto_results_since,
     get_rto_results_for_ip_since,
+    get_optical_results_since,
+    get_optical_results_for_device_since,
     init_db,
     clear_pulsewatch_data,
     utc_now_iso,
+    fetch_wan_history_map,
+    clear_wan_history,
 )
 from .forms import parse_bool, parse_float, parse_int, parse_int_list, parse_lines
 from .jobs import JobsManager
@@ -824,6 +825,7 @@ def normalize_wan_ping_settings(settings):
     telegram.setdefault("chat_id", "")
     general = settings.setdefault("general", {})
     general.setdefault("interval_seconds", 30)
+    general.setdefault("history_retention_days", 400)
     settings.setdefault("wans", [])
     settings.setdefault("pppoe_routers", [])
     settings.setdefault("messages", {})
@@ -834,6 +836,138 @@ def normalize_wan_ping_settings(settings):
     summary.setdefault("partial_msg", WAN_SUMMARY_DEFAULTS["partial_msg"])
     summary.setdefault("line_template", WAN_SUMMARY_DEFAULTS["line_template"])
     return settings
+
+
+WAN_STATUS_WINDOW_OPTIONS = [
+    ("6H", 6),
+    ("12H", 12),
+    ("1D", 24),
+    ("7D", 168),
+    ("15D", 360),
+    ("30D", 720),
+]
+
+
+def _normalize_wan_window(value):
+    if value is None:
+        return 24
+    raw = str(value).strip().lower()
+    if not raw:
+        return 24
+    for label, hours in WAN_STATUS_WINDOW_OPTIONS:
+        if raw == label.lower():
+            return hours
+    try:
+        hours = int(raw)
+        if hours in {opt[1] for opt in WAN_STATUS_WINDOW_OPTIONS}:
+            return hours
+    except ValueError:
+        pass
+    return 24
+
+
+WAN_STATUS_WINDOW_OPTIONS = [
+    ("6H", 6),
+    ("12H", 12),
+    ("1D", 24),
+    ("7D", 168),
+    ("15D", 360),
+    ("30D", 720),
+]
+
+
+def _normalize_wan_window(value):
+    if value is None:
+        return 24
+    raw = str(value).strip().lower()
+    if not raw:
+        return 24
+    for label, hours in WAN_STATUS_WINDOW_OPTIONS:
+        if raw == label.lower():
+            return hours
+    try:
+        hours = int(raw)
+        if hours in {opt[1] for opt in WAN_STATUS_WINDOW_OPTIONS}:
+            return hours
+    except ValueError:
+        pass
+    return 24
+
+
+def build_wan_status_summary(wan_rows, wan_state, history_map, window_hours=24):
+    history_map = history_map or {}
+    now = datetime.now(timezone.utc)
+    window_start = now - timedelta(hours=max(int(window_hours or 24), 1))
+    window_label = next((label for label, hours in WAN_STATUS_WINDOW_OPTIONS if hours == window_hours), "1D")
+    rows = []
+    total = 0
+    down_total = 0
+    for row in wan_rows:
+        if not row.get("local_ip"):
+            continue
+        if (row.get("mode") or "routed").lower() == "bridged" and not row.get("pppoe_router_id"):
+            continue
+        wan_id = row.get("wan_id")
+        total += 1
+        state_row = wan_state.get("wans", {}).get(wan_id, {})
+        history = history_map.get(wan_id, [])
+        values = []
+        for item in history:
+            ts_raw = item.get("ts")
+            try:
+                ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                else:
+                    ts = ts.astimezone(timezone.utc)
+            except Exception:
+                continue
+            if ts < window_start:
+                continue
+            status = (item.get("status") or "").lower()
+            values.append(100 if status == "up" else 0)
+        if not values:
+            state_hist = state_row.get("history", [])
+            for item in state_hist:
+                ts_raw = item.get("ts")
+                try:
+                    ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    else:
+                        ts = ts.astimezone(timezone.utc)
+                except Exception:
+                    continue
+                if ts < window_start:
+                    continue
+                status = (item.get("status") or "").lower()
+                values.append(100 if status == "up" else 0)
+        uptime_pct = sum(values) / len(values) if values else None
+        spark_points = _sparkline_points_fixed(values or [0], 0, 100, width=120, height=28)
+        last_status = (history[-1].get("status") if history else state_row.get("status")) or "n/a"
+        if str(last_status).lower() == "down":
+            down_total += 1
+        rows.append(
+            {
+                "label": f"{row.get('core_label')} - {(row.get('identifier') or row.get('list_name') or '')}".strip(),
+                "status": last_status,
+                "target": state_row.get("target") or "",
+                "last_check": format_ts_ph(state_row.get("last_check")),
+                "last_rtt_ms": state_row.get("last_rtt_ms"),
+                "last_error": state_row.get("last_error") or "",
+                "uptime_pct": uptime_pct,
+                "spark_points": spark_points,
+            }
+        )
+    up_total = max(total - down_total, 0)
+    return {
+        "total": total,
+        "up_total": up_total,
+        "down_total": down_total,
+        "rows": rows,
+        "window_hours": window_hours,
+        "window_label": window_label,
+    }
 
 
 def wan_row_id(core_id, list_name):
@@ -1012,7 +1146,16 @@ def build_pulsewatch_rows(settings):
 
 def render_pulsewatch_response(request, settings, message):
     preset_rows, show_recommendation = build_pulsewatch_rows(settings)
-    state = get_state("isp_ping_state", {})
+    state = get_state(
+        "isp_ping_state",
+        {
+            "last_status": {},
+            "last_report_date": None,
+            "last_report_time": None,
+            "last_report_timezone": None,
+            "pulsewatch": {},
+        },
+    )
     reach_map = state.get("pulsewatch_reachability", {})
     reach_checked_at = state.get("pulsewatch_reachability_checked_at")
     targets = []
@@ -1029,6 +1172,26 @@ def render_pulsewatch_response(request, settings, message):
         for target in row.get("ping_targets", []) or []:
             if target and target not in targets:
                 targets.append(target)
+    pulse_rows, _ = build_pulsewatch_rows(settings)
+    pulse_ids = [row.get("row_id") for row in pulse_rows if row.get("row_id")]
+    speedtests = get_latest_speedtest_map(pulse_ids)
+    dashboard_cfg = settings.get("pulsewatch", {}).get("dashboard", {})
+    summary_target = (dashboard_cfg.get("default_target") or "all").strip() or "all"
+    summary_minutes = int(dashboard_cfg.get("loss_history_minutes", 120) or 120)
+    summary_since = (datetime.now(timezone.utc) - timedelta(minutes=summary_minutes)).isoformat().replace("+00:00", "Z")
+    target_filter = None if summary_target == "all" else summary_target
+    ping_history = get_ping_rollup_history_map(pulse_ids, summary_since, target=target_filter)
+    latency_since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat().replace("+00:00", "Z")
+    latency_history = get_ping_latency_trend_map(pulse_ids, latency_since)
+    pulse_dashboard_rows = build_pulsewatch_dashboard_rows(settings, state, speedtests, ping_history)
+    pulse_display_rows = [row for row in pulse_dashboard_rows if (row.get("source_ip") or "").strip()]
+    pulse_latency_series = build_pulsewatch_latency_series(pulse_display_rows, latency_history)
+    pulse_targets = sorted({item.get("target") for item in pulse_latency_series if item.get("target")})
+    pulse_enabled = bool(settings.get("pulsewatch", {}).get("enabled"))
+    pulse_state = state.get("pulsewatch", {})
+    pulse_last_reconcile = format_ts_ph(pulse_state.get("last_mikrotik_reconcile_at"))
+    pulse_last_check = format_ts_ph(pulse_state.get("last_check_at"))
+    pulse_total = len(pulse_display_rows)
     return templates.TemplateResponse(
         "settings_pulsewatch.html",
         make_context(
@@ -1040,6 +1203,17 @@ def render_pulsewatch_response(request, settings, message):
                 "show_preset_recommendation": show_recommendation,
                 "pulsewatch_targets": targets,
                 "pulsewatch_reachability_checked_at": format_ts_ph(reach_checked_at),
+                "pulse_latency_series": pulse_latency_series,
+                "pulse_targets": pulse_targets,
+                "pulse_summary_target": summary_target,
+                "pulse_summary_refresh": int(dashboard_cfg.get("refresh_seconds", 2) or 2),
+                "pulse_summary_loss_minutes": summary_minutes,
+                "pulse_rows": pulse_display_rows,
+                "pulse_last_check": pulse_last_check,
+                "pulse_last_reconcile": pulse_last_reconcile,
+                "pulse_total": pulse_total,
+                "pulse_enabled": pulse_enabled,
+                "isp_state": state,
             },
         ),
     )
@@ -1224,29 +1398,6 @@ def _normalize_rto_window(value):
     return 24
 
 
-def _normalize_optical_window(value):
-    return _normalize_rto_window(value)
-
-
-def _genieacs_ui_base(base_url):
-    parsed = urlparse(base_url or "")
-    scheme = parsed.scheme or "http"
-    host = parsed.hostname
-    if not host:
-        return ""
-    port = parsed.port
-    if port in (None, 7557):
-        port = 3000
-    netloc = f"{host}:{port}" if port else host
-    return f"{scheme}://{netloc}"
-
-
-def _encode_genieacs_device_id(device_id):
-    if not device_id:
-        return ""
-    return quote(str(device_id), safe="")
-
-
 def format_ts_ph(value):
     if not value:
         return "n/a"
@@ -1349,7 +1500,7 @@ def build_pulsewatch_latency_series(rows, history_map=None):
     return series
 
 
-def build_wan_latency_series(rows, state, hours=24, window_start=None, window_end=None):
+def build_wan_latency_series(rows, state, hours=24, window_start=None, window_end=None, history_map=None):
     palette = [
         "#1f77b4",
         "#ff7f0e",
@@ -1394,7 +1545,10 @@ def build_wan_latency_series(rows, state, hours=24, window_start=None, window_en
             if not row.get("pppoe_router_id"):
                 continue
         state_row = wan_state.get(wan_id, {})
-        history = state_row.get("history", [])
+        if history_map and wan_id in history_map:
+            history = history_map.get(wan_id, [])
+        else:
+            history = state_row.get("history", [])
         target = state_row.get("target") or ""
         label = row.get("identifier") or row.get("list_name") or wan_id
         points = []
@@ -1664,18 +1818,28 @@ async def wan_latency_series(
         window_start = window_end - timedelta(hours=max(int(hours), 1))
     if window_start > window_end:
         window_start, window_end = window_end, window_start
-    max_window = timedelta(days=14)
+    max_window = timedelta(days=370)
     if window_end - window_start > max_window:
         window_start = window_end - max_window
 
     start_iso = window_start.replace(microsecond=0).isoformat().replace("+00:00", "Z")
     end_iso = window_end.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    history_start_iso = (window_start - timedelta(days=1)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
     pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
     wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
     wan_rows = build_wan_rows(pulse_settings, wan_settings)
     wan_state = get_state("wan_ping_state", {})
-    series = build_wan_latency_series(wan_rows, wan_state, hours=hours, window_start=window_start, window_end=window_end)
+    wan_ids = [row.get("wan_id") for row in wan_rows if row.get("wan_id")]
+    history_map = fetch_wan_history_map(wan_ids, history_start_iso, end_iso)
+    series = build_wan_latency_series(
+        wan_rows,
+        wan_state,
+        hours=hours,
+        window_start=window_start,
+        window_end=window_end,
+        history_map=history_map,
+    )
     if core_id and core_id != "all":
         series = [item for item in series if item.get("core_id") == core_id]
     if target and target != "all":
@@ -1882,23 +2046,172 @@ async def import_db_route(request: Request):
     )
 
 
+OPTICAL_WINDOW_OPTIONS = WAN_STATUS_WINDOW_OPTIONS
+
+
+def build_optical_status(settings, window_hours=24):
+    window_hours = max(int(window_hours or 24), 1)
+    optical_cfg = settings.get("optical", {})
+    classification = settings.get("classification", {})
+    window_label = next((label for label, hours in OPTICAL_WINDOW_OPTIONS if hours == window_hours), "1D")
+    issue_rx = float(classification.get("issue_rx_dbm", OPTICAL_DEFAULTS["classification"]["issue_rx_dbm"]))
+    issue_tx = float(classification.get("issue_tx_dbm", OPTICAL_DEFAULTS["classification"]["issue_tx_dbm"]))
+    priority_rx = float(optical_cfg.get("priority_rx_threshold_dbm", OPTICAL_DEFAULTS["optical"]["priority_rx_threshold_dbm"]))
+    stable_rx = float(classification.get("stable_rx_dbm", OPTICAL_DEFAULTS["classification"]["stable_rx_dbm"]))
+    stable_tx = float(classification.get("stable_tx_dbm", OPTICAL_DEFAULTS["classification"]["stable_tx_dbm"]))
+    rx_realistic_min = float(classification.get("rx_realistic_min_dbm", OPTICAL_DEFAULTS["classification"]["rx_realistic_min_dbm"]))
+    rx_realistic_max = float(classification.get("rx_realistic_max_dbm", OPTICAL_DEFAULTS["classification"]["rx_realistic_max_dbm"]))
+    tx_realistic_min = float(classification.get("tx_realistic_min_dbm", OPTICAL_DEFAULTS["classification"]["tx_realistic_min_dbm"]))
+    tx_realistic_max = float(classification.get("tx_realistic_max_dbm", OPTICAL_DEFAULTS["classification"]["tx_realistic_max_dbm"]))
+    chart_min = float(classification.get("chart_min_dbm", OPTICAL_DEFAULTS["classification"]["chart_min_dbm"]))
+    chart_max = float(classification.get("chart_max_dbm", OPTICAL_DEFAULTS["classification"]["chart_max_dbm"]))
+    genie_base = (optical_cfg.get("genieacs_base_url") or settings.get("genieacs", {}).get("base_url") or "").rstrip("/")
+
+    def genie_device_url(base_url, device_id):
+        if not base_url or not device_id:
+            return ""
+        try:
+            parsed = urllib.parse.urlparse(base_url)
+            scheme = parsed.scheme or "http"
+            host = parsed.hostname or parsed.netloc or ""
+            device_path = f"/devices/{urllib.parse.quote(str(device_id))}"
+            netloc = f"{host}:3000" if host else ""
+            return urllib.parse.urlunparse((scheme, netloc, "/", "", "", f"/{device_path.lstrip('/')}"))
+        except Exception:
+            return ""
+
+    since_iso = (datetime.utcnow() - timedelta(hours=window_hours)).replace(microsecond=0).isoformat() + "Z"
+    results = get_optical_results_since(since_iso)
+    grouped = {}
+    for row in results:
+        dev = row.get("device_id")
+        if not dev:
+            continue
+        grouped.setdefault(dev, []).append(row)
+
+    issue_rows = []
+    stable_rows = []
+    for dev_id, rows in grouped.items():
+        rows = sorted(rows, key=lambda x: x.get("timestamp") or "")
+        samples = len(rows)
+        last = rows[-1]
+        rx_raw = last.get("rx")
+        tx_raw = last.get("tx")
+        rx_invalid = rx_raw is None or rx_raw < rx_realistic_min or rx_raw > rx_realistic_max
+        tx_missing = tx_raw is None
+        tx_invalid = False
+        if tx_raw is not None:
+            tx_invalid = tx_raw < tx_realistic_min or tx_raw > tx_realistic_max
+        rx_reason = ""
+        tx_reason = ""
+        if rx_invalid:
+            rx_reason = f"RX missing/unrealistic (raw={rx_raw})"
+        if tx_missing:
+            tx_reason = "TX missing"
+        elif tx_invalid:
+            tx_reason = f"TX missing/unrealistic (raw={tx_raw})"
+        reasons = []
+        status = "stable"
+        if rx_invalid:
+            status = "issue"
+            reasons.append("Missing/Unrealistic RX")
+        else:
+            if rx_raw is not None and rx_raw <= issue_rx:
+                status = "issue"
+                reasons.append(f"RX <= {issue_rx:g}")
+            if tx_raw is not None and tx_raw <= issue_tx:
+                status = "issue"
+                reasons.append(f"TX <= {issue_tx:g}")
+            if rx_raw is not None and rx_raw <= priority_rx:
+                status = "issue"
+                reasons.append(f"Priority RX <= {priority_rx:g}")
+            if status == "stable":
+                if not (rx_raw is not None and rx_raw >= stable_rx and (tx_raw is None or tx_raw >= stable_tx)):
+                    status = "issue"
+                    reasons.append(f"RX below stable {stable_rx:g}" + ("" if tx_raw is None else f" or TX below {stable_tx:g}"))
+
+        rx_values = [item.get("rx") for item in rows if item.get("rx") is not None]
+        spark_points = _sparkline_points_fixed(rx_values or [0], chart_min, chart_max, width=120, height=30)
+        spark_points_large = _sparkline_points_fixed(rx_values or [0], chart_min, chart_max, width=640, height=200)
+        entry = {
+            "device_id": dev_id,
+            "name": last.get("pppoe") or dev_id,
+            "ip": last.get("ip") or "",
+            "status": status,
+            "rx": rx_raw,
+            "tx": tx_raw,
+            "rx_raw": rx_raw,
+            "tx_raw": tx_raw,
+            "rx_invalid": rx_invalid,
+            "tx_invalid": tx_invalid,
+            "tx_missing": tx_missing,
+            "rx_reason": rx_reason,
+            "tx_reason": tx_reason,
+            "samples": samples,
+            "last_check": format_ts_ph(last.get("timestamp")),
+            "spark_points_window": spark_points,
+            "spark_points_window_large": spark_points_large,
+            "reasons": reasons or ([] if status == "stable" else ["Monitor"]),
+            "device_url": genie_device_url(genie_base, dev_id),
+        }
+        if status == "issue":
+            issue_rows.append(entry)
+        else:
+            stable_rows.append(entry)
+
+    issue_rows = sorted(issue_rows, key=lambda x: x["name"].lower())
+    stable_rows = sorted(stable_rows, key=lambda x: x["name"].lower())
+    return {
+        "total": len(grouped),
+        "issue_total": len(issue_rows),
+        "stable_total": len(stable_rows),
+        "issue_rows": issue_rows,
+        "stable_rows": stable_rows,
+        "window_hours": window_hours,
+        "window_label": window_label,
+        "rules": {
+            "issue_rx_dbm": issue_rx,
+            "issue_tx_dbm": issue_tx,
+            "priority_rx_dbm": priority_rx,
+            "stable_rx_dbm": stable_rx,
+            "stable_tx_dbm": stable_tx,
+        },
+        "chart": {"min_dbm": chart_min, "max_dbm": chart_max},
+    }
+
+
 @app.get("/settings/optical", response_class=HTMLResponse)
 async def optical_settings(request: Request):
     settings = get_settings("optical", OPTICAL_DEFAULTS)
-    window_hours = _normalize_optical_window(request.query_params.get("window"))
-    return render_optical_response(request, settings, "", "status", "general", window_hours)
+    window_hours = _normalize_wan_window(request.query_params.get("window"))
+    job_status = {item["job_name"]: dict(item) for item in get_job_status()}
+    optical_job = job_status.get("optical", {})
+    optical_job = {
+        "last_run_at_ph": format_ts_ph(optical_job.get("last_run_at")),
+        "last_success_at_ph": format_ts_ph(optical_job.get("last_success_at")),
+    }
+    optical_status = build_optical_status(settings, window_hours)
+    return templates.TemplateResponse(
+        "settings_optical.html",
+        make_context(
+            request,
+            {
+                "settings": settings,
+                "message": "",
+                "optical_status": optical_status,
+                "optical_window_options": OPTICAL_WINDOW_OPTIONS,
+                "optical_job": optical_job,
+                "active_tab": "status",
+                "settings_tab": "general",
+            },
+        ),
+    )
 
 
 @app.post("/settings/optical", response_class=HTMLResponse)
 async def optical_settings_save(request: Request):
     form = await request.form()
-    settings_tab = "general"
-    if hasattr(form, "getlist"):
-        values = [str(item).strip().lower() for item in form.getlist("settings_tab") if str(item).strip()]
-        if values:
-            settings_tab = values[-1]
-    else:
-        settings_tab = (form.get("settings_tab", "general") or "general").strip().lower()
+    settings_tab = form.get("settings_tab") or "general"
     settings = {
         "enabled": parse_bool(form, "enabled"),
         "genieacs": {
@@ -1924,42 +2237,33 @@ async def optical_settings_save(request: Request):
             "message_title": form.get("message_title", "Optical Power Alert"),
             "include_header": parse_bool(form, "include_header"),
             "max_chars": parse_int(form, "max_chars", 3800),
-            "check_interval_minutes": parse_int(form, "check_interval_minutes", 60),
             "schedule_time_ph": form.get("schedule_time_ph", "07:00"),
-            "timezone": "Asia/Manila",
-        },
-        "storage": {
-            "raw_retention_days": parse_int(form, "optical_raw_retention_days", 30),
-        },
-        "classification": {
-            "issue_rx_dbm": parse_float(form, "optical_issue_rx_dbm", -27.0),
-            "issue_tx_dbm": parse_float(form, "optical_issue_tx_dbm", -2.0),
-            "stable_rx_dbm": parse_float(form, "optical_stable_rx_dbm", -24.0),
-            "stable_tx_dbm": parse_float(form, "optical_stable_tx_dbm", -1.0),
-            "chart_min_dbm": parse_float(form, "optical_chart_min_dbm", -35.0),
-            "chart_max_dbm": parse_float(form, "optical_chart_max_dbm", -10.0),
-            "rx_realistic_min_dbm": OPTICAL_DEFAULTS.get("classification", {}).get("rx_realistic_min_dbm", -40.0),
-            "rx_realistic_max_dbm": OPTICAL_DEFAULTS.get("classification", {}).get("rx_realistic_max_dbm", 5.0),
-            "tx_realistic_min_dbm": OPTICAL_DEFAULTS.get("classification", {}).get("tx_realistic_min_dbm", -10.0),
-            "tx_realistic_max_dbm": OPTICAL_DEFAULTS.get("classification", {}).get("tx_realistic_max_dbm", 10.0),
+            "timezone": form.get("timezone", "Asia/Manila"),
         },
     }
     save_settings("optical", settings)
-    message_map = {
-        "general": "General settings saved.",
-        "data": "Data source settings saved.",
-        "notifications": "Telegram settings saved.",
-        "thresholds": "Alert thresholds saved.",
-        "classification": "Classification settings saved.",
-        "storage": "Storage settings saved.",
+    window_hours = 24
+    optical_status = build_optical_status(settings, window_hours)
+    job_status = {item["job_name"]: dict(item) for item in get_job_status()}
+    optical_job = job_status.get("optical", {})
+    optical_job = {
+        "last_run_at_ph": format_ts_ph(optical_job.get("last_run_at")),
+        "last_success_at_ph": format_ts_ph(optical_job.get("last_success_at")),
     }
-    message = message_map.get(settings_tab, "Optical settings saved.")
-    return render_optical_response(
-        request,
-        settings,
-        message,
-        form.get("active_tab", "settings"),
-        settings_tab,
+    return templates.TemplateResponse(
+        "settings_optical.html",
+        make_context(
+            request,
+            {
+                "settings": settings,
+                "message": "Saved.",
+                "optical_status": optical_status,
+                "optical_window_options": OPTICAL_WINDOW_OPTIONS,
+                "optical_job": optical_job,
+                "active_tab": "settings",
+                "settings_tab": settings_tab or "general",
+            },
+        ),
     )
 
 
@@ -1974,7 +2278,24 @@ async def optical_settings_test(request: Request):
         message = "Test message sent."
     except TelegramError as exc:
         message = str(exc)
-    return render_optical_response(request, settings, message, "settings", "notifications")
+    return templates.TemplateResponse(
+        "settings_optical.html",
+        make_context(
+            request,
+            {
+                "settings": settings,
+                "message": message,
+                "optical_status": build_optical_status(settings, 24),
+                "optical_window_options": OPTICAL_WINDOW_OPTIONS,
+                "optical_job": {
+                    "last_run_at_ph": None,
+                    "last_success_at_ph": None,
+                },
+                "active_tab": "settings",
+                "settings_tab": "general",
+            },
+        ),
+    )
 
 
 @app.post("/settings/optical/run", response_class=HTMLResponse)
@@ -1988,37 +2309,24 @@ async def optical_settings_run(request: Request):
         message = str(exc)
     except Exception as exc:
         message = f"Run failed: {exc}"
-    return render_optical_response(request, settings, message, "settings", "general")
-
-
-@app.api_route("/settings/optical/format", methods=["GET", "POST"], response_class=HTMLResponse)
-async def optical_settings_format(request: Request):
-    form = await request.form() if request.method == "POST" else {}
-    settings = get_settings("optical", OPTICAL_DEFAULTS)
-    window_hours = _normalize_optical_window(request.query_params.get("window"))
-    message = ""
-    if request.method == "POST" and parse_bool(form, "confirm_format"):
-        clear_optical_results()
-        pause_minutes = int(settings.get("general", {}).get("check_interval_minutes", 5) or 5)
-        if pause_minutes <= 0:
-            pause_minutes = 5
-        pause_until = datetime.utcnow() + timedelta(minutes=max(pause_minutes, 1))
-        save_state(
-            "optical_state",
+    return templates.TemplateResponse(
+        "settings_optical.html",
+        make_context(
+            request,
             {
-                "last_run_date": None,
-                "last_run_at": None,
-                "last_prune_at": None,
-                "pause_until": pause_until.replace(microsecond=0).isoformat() + "Z",
+                "settings": settings,
+                "message": message,
+                "optical_status": build_optical_status(settings, 24),
+                "optical_window_options": OPTICAL_WINDOW_OPTIONS,
+                "optical_job": {
+                    "last_run_at_ph": None,
+                    "last_success_at_ph": None,
+                },
+                "active_tab": "settings",
+                "settings_tab": "general",
             },
-        )
-        message = "Optical Database successfully formatted."
-    else:
-        if request.method == "POST":
-            message = "Please confirm format before proceeding."
-        else:
-            message = ""
-    return render_optical_response(request, settings, message, "settings", "danger", window_hours)
+        ),
+    )
 
 
 @app.get("/settings/rto", response_class=HTMLResponse)
@@ -2034,26 +2342,6 @@ async def rto_series(ip: str, window: int = 24):
     since_iso = (datetime.utcnow() - timedelta(hours=hours)).replace(microsecond=0).isoformat() + "Z"
     rows = get_rto_results_for_ip_since(ip, since_iso)
     series = [{"ts": row.get("timestamp"), "value": 100 if row.get("ok") else 0} for row in rows]
-    return JSONResponse({"hours": hours, "series": series})
-
-
-@app.get("/optical/series", response_class=JSONResponse)
-async def optical_series(device_id: str, window: int = 24):
-    settings = get_settings("optical", OPTICAL_DEFAULTS)
-    hours = _normalize_optical_window(window)
-    since_iso = (datetime.utcnow() - timedelta(hours=hours)).replace(microsecond=0).isoformat() + "Z"
-    rows = get_optical_results_for_device_since(device_id, since_iso)
-    realistic_min = float(settings.get("classification", {}).get("rx_realistic_min_dbm", -40.0))
-    realistic_max = float(settings.get("classification", {}).get("rx_realistic_max_dbm", 5.0))
-    tx_min = float(settings.get("classification", {}).get("tx_realistic_min_dbm", -10.0))
-    tx_max = float(settings.get("classification", {}).get("tx_realistic_max_dbm", 10.0))
-    series = []
-    for row in rows:
-        rx = row.get("rx")
-        tx = row.get("tx")
-        rx_valid = rx if rx is not None and realistic_min <= rx <= realistic_max and rx < 0 else None
-        tx_valid = tx if tx is not None and tx_min <= tx <= tx_max else None
-        series.append({"ts": row.get("timestamp"), "rx": rx_valid, "tx": tx_valid})
     return JSONResponse({"hours": hours, "series": series})
 
 
@@ -2176,160 +2464,6 @@ def render_rto_response(request, settings, message, active_tab, settings_tab, wi
     )
 
 
-def build_optical_status(settings, window_hours=24):
-    since_iso = (datetime.utcnow() - timedelta(hours=window_hours)).replace(microsecond=0).isoformat() + "Z"
-    raw_results = get_optical_results_since(since_iso)
-    by_device = {}
-    for row in raw_results:
-        device_id = row.get("device_id")
-        if not device_id:
-            continue
-        by_device.setdefault(device_id, []).append(row)
-
-    issue_rx = float(settings.get("classification", {}).get("issue_rx_dbm", -27.0))
-    issue_tx = float(settings.get("classification", {}).get("issue_tx_dbm", -2.0))
-    stable_rx = float(settings.get("classification", {}).get("stable_rx_dbm", -24.0))
-    stable_tx = float(settings.get("classification", {}).get("stable_tx_dbm", -1.0))
-    chart_min = float(settings.get("classification", {}).get("chart_min_dbm", -35.0))
-    chart_max = float(settings.get("classification", {}).get("chart_max_dbm", -10.0))
-    realistic_min = float(settings.get("classification", {}).get("rx_realistic_min_dbm", -40.0))
-    realistic_max = float(settings.get("classification", {}).get("rx_realistic_max_dbm", 5.0))
-    tx_min = float(settings.get("classification", {}).get("tx_realistic_min_dbm", -10.0))
-    tx_max = float(settings.get("classification", {}).get("tx_realistic_max_dbm", 10.0))
-    priority_rx = float(settings.get("optical", {}).get("priority_rx_threshold_dbm", -29.0))
-    device_base = _genieacs_ui_base(settings.get("genieacs", {}).get("base_url", ""))
-
-    rows = []
-    for device_id, items in by_device.items():
-        items = sorted(items, key=lambda x: x.get("timestamp") or "")
-        last = items[-1]
-        rx_values = [
-            item.get("rx")
-            for item in items
-            if item.get("rx") is not None and realistic_min <= item.get("rx") <= realistic_max
-        ]
-        tx_values = [item.get("tx") for item in items if item.get("tx") is not None]
-        last_rx = last.get("rx")
-        last_tx = last.get("tx")
-        rx_valid = last_rx if last_rx is not None and realistic_min <= last_rx <= realistic_max and last_rx < 0 else None
-        rx_invalid = last_rx is not None and rx_valid is None
-        rx_reason = ""
-        if last_rx is None:
-            rx_reason = "Missing RX value. Check TR-069 parameters."
-        elif last_rx >= 0 and realistic_min <= last_rx <= realistic_max:
-            rx_reason = f"Non-negative RX value '{last_rx:g}' detected. Check TR-069 parameters."
-        elif rx_invalid:
-            rx_reason = f"Unrealistic RX value '{last_rx:g}' detected. Check TR-069 parameters."
-        tx_valid = last_tx if last_tx is not None and tx_min <= last_tx <= tx_max else None
-        tx_invalid = last_tx is not None and tx_valid is None
-        tx_reason = ""
-        if last_tx is None:
-            tx_reason = "Missing TX value. Check TR-069 parameters."
-        elif tx_invalid:
-            tx_reason = f"Unrealistic TX value '{last_tx:g}' detected. Check TR-069 parameters."
-        last_check = format_ts_ph(last.get("timestamp"))
-        rows.append(
-            {
-                "device_id": device_id,
-                "name": last.get("pppoe") or device_id,
-                "ip": last.get("ip") or "",
-                "rx": rx_valid,
-                "rx_raw": last_rx,
-                "rx_invalid": rx_invalid or last_rx is None,
-                "rx_reason": rx_reason,
-                "tx": tx_valid,
-                "tx_raw": last_tx,
-                "tx_invalid": tx_invalid or last_tx is None,
-                "tx_reason": tx_reason,
-                "priority": bool(last.get("priority")),
-                "samples": len(items),
-                "last_check": last_check,
-                "spark_points_window": _sparkline_points_fixed(rx_values, chart_min, chart_max, width=120, height=30),
-                "spark_points_window_large": _sparkline_points_fixed(rx_values, chart_min, chart_max, width=640, height=200),
-                "rx_avg": sum(rx_values) / len(rx_values) if rx_values else None,
-                "tx_avg": sum(tx_values) / len(tx_values) if tx_values else None,
-                "device_url": f"{device_base}/#!/devices/{_encode_genieacs_device_id(device_id)}" if device_base else "",
-            }
-        )
-
-    issue_rows = []
-    stable_rows = []
-    for row in rows:
-        reasons = []
-        rx = row.get("rx")
-        tx = row.get("tx")
-        if rx is not None and rx <= issue_rx:
-            reasons.append(f"RX <= {issue_rx:g} dBm")
-        if tx is not None and tx <= issue_tx:
-            reasons.append(f"TX <= {issue_tx:g} dBm")
-        if row.get("priority") and rx is not None and rx <= priority_rx:
-            reasons.append(f"Priority RX <= {priority_rx:g} dBm")
-
-        stable_ok = rx is not None and rx >= stable_rx and (tx is None or tx >= stable_tx)
-        if reasons:
-            row["reasons"] = reasons
-            row["status"] = "issue"
-            issue_rows.append(row)
-        elif stable_ok:
-            row["status"] = "stable"
-            stable_rows.append(row)
-        else:
-            row["reasons"] = [
-                f"RX < {stable_rx:g} dBm" if rx is not None else "RX unavailable",
-                f"TX < {stable_tx:g} dBm" if tx is not None else "TX unavailable",
-            ]
-            row["status"] = "monitor"
-            issue_rows.append(row)
-
-    issue_rows = sorted(issue_rows, key=lambda x: ((x.get("rx") or 0), x.get("name", "").lower()))
-    stable_rows = sorted(stable_rows, key=lambda x: x.get("name", "").lower())
-
-    window_label = next((label for label, hours in RTO_WINDOW_OPTIONS if hours == window_hours), "1D")
-    return {
-        "total": len(rows),
-        "issue_total": len(issue_rows),
-        "stable_total": len(stable_rows),
-        "issue_rows": issue_rows,
-        "stable_rows": stable_rows,
-        "window_hours": window_hours,
-        "window_label": window_label,
-        "rules": {
-            "issue_rx_dbm": issue_rx,
-            "issue_tx_dbm": issue_tx,
-            "stable_rx_dbm": stable_rx,
-            "stable_tx_dbm": stable_tx,
-            "priority_rx_dbm": priority_rx,
-        },
-        "chart": {
-            "min_dbm": chart_min,
-            "max_dbm": chart_max,
-        },
-    }
-
-
-def render_optical_response(request, settings, message, active_tab, settings_tab, window_hours=24):
-    status_map = {item["job_name"]: dict(item) for item in get_job_status()}
-    job_status = status_map.get("optical", {})
-    job_status["last_run_at_ph"] = format_ts_ph(job_status.get("last_run_at"))
-    job_status["last_success_at_ph"] = format_ts_ph(job_status.get("last_success_at"))
-    status = build_optical_status(settings, window_hours)
-    return templates.TemplateResponse(
-        "settings_optical.html",
-        make_context(
-            request,
-            {
-                "settings": settings,
-                "message": message,
-                "active_tab": active_tab,
-                "settings_tab": settings_tab,
-                "optical_status": status,
-                "optical_job": job_status,
-                "optical_window_options": RTO_WINDOW_OPTIONS,
-            },
-        ),
-    )
-
-
 @app.post("/settings/rto", response_class=HTMLResponse)
 async def rto_settings_save(request: Request):
     form = await request.form()
@@ -2441,10 +2575,27 @@ async def rto_settings_format(request: Request):
 
 
 
-def render_wan_ping_response(request, pulse_settings, wan_settings, message, active_tab):
+def render_wan_ping_response(request, pulse_settings, wan_settings, message, active_tab, wan_window_hours=24):
     wan_rows = build_wan_rows(pulse_settings, wan_settings)
     wan_state = get_state("wan_ping_state", {})
-    wan_latency_series = build_wan_latency_series(wan_rows, wan_state, hours=24)
+    window_end = datetime.now(timezone.utc)
+    window_start = window_end - timedelta(hours=24)
+    start_iso = window_start.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    end_iso = window_end.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    status_start = (datetime.now(timezone.utc) - timedelta(hours=max(int(wan_window_hours or 24), 1)))
+    combined_start = min(window_start - timedelta(days=1), status_start)
+    history_start_iso = combined_start.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    wan_ids = [row.get("wan_id") for row in wan_rows if row.get("wan_id")]
+    history_map = fetch_wan_history_map(wan_ids, history_start_iso, end_iso)
+    wan_latency_series = build_wan_latency_series(
+        wan_rows,
+        wan_state,
+        hours=24,
+        window_start=window_start,
+        window_end=window_end,
+        history_map=history_map,
+    )
+    wan_status = build_wan_status_summary(wan_rows, wan_state, history_map, window_hours=max(int(wan_window_hours or 24), 1))
     wan_targets = sorted({item.get("target") for item in wan_latency_series if item.get("target")})
     wan_refresh_seconds = int(wan_settings.get("general", {}).get("interval_seconds", 30) or 30)
     return templates.TemplateResponse(
@@ -2459,6 +2610,8 @@ def render_wan_ping_response(request, pulse_settings, wan_settings, message, act
                 "wan_latency_series": wan_latency_series,
                 "wan_targets": wan_targets,
                 "wan_refresh_seconds": wan_refresh_seconds,
+                "wan_status": wan_status,
+                "wan_window_options": WAN_STATUS_WINDOW_OPTIONS,
                 "wan_message_defaults": WAN_MESSAGE_DEFAULTS,
                 "wan_summary_defaults": WAN_SUMMARY_DEFAULTS,
                 "message": message,
@@ -2472,7 +2625,8 @@ def render_wan_ping_response(request, pulse_settings, wan_settings, message, act
 async def wan_settings(request: Request):
     pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
     wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
-    return render_wan_ping_response(request, pulse_settings, wan_settings_data, "", "status")
+    window_hours = _normalize_wan_window(request.query_params.get("wan_window"))
+    return render_wan_ping_response(request, pulse_settings, wan_settings_data, "", "status", window_hours)
 
 
 @app.post("/settings/wan/wans", response_class=HTMLResponse)
@@ -2681,6 +2835,18 @@ async def wan_settings_save_interval(request: Request):
     return render_wan_ping_response(request, pulse_settings, wan_settings_data, "Interval saved.", "settings")
 
 
+@app.post("/settings/wan/database", response_class=HTMLResponse)
+async def wan_settings_save_database(request: Request):
+    form = await request.form()
+    pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    retention = parse_int(form, "wan_history_retention_days", 400)
+    retention = max(min(retention, 1460), 1)
+    wan_settings_data.setdefault("general", {})["history_retention_days"] = retention
+    save_settings("wan_ping", wan_settings_data)
+    return render_wan_ping_response(request, pulse_settings, wan_settings_data, "Database settings saved.", "settings")
+
+
 @app.post("/settings/wan/format", response_class=HTMLResponse)
 async def wan_format_db(request: Request):
     form = await request.form()
@@ -2695,6 +2861,7 @@ async def wan_format_db(request: Request):
             "settings",
         )
     save_state("wan_ping_state", {"reset_at": utc_now_iso(), "wans": {}})
+    clear_wan_history()
     pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
     wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
     return render_wan_ping_response(

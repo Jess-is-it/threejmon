@@ -276,6 +276,7 @@ WAN_PING_DEFAULTS = {
     },
     "general": {
         "interval_seconds": 30,
+        "history_retention_days": 400,
     },
     "wans": [],
     "pppoe_routers": [],

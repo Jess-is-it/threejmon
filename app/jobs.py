@@ -186,7 +186,12 @@ class JobsManager:
                 update_job_status("pulsewatch", last_run_at=utc_now_iso())
                 state, _ = isp_ping_notifier.run_pulsewatch_check(cfg, state)
                 reach_last = state.get("pulsewatch_reachability_checked_at")
-                reach_last_dt = datetime.fromisoformat(reach_last.replace("Z", "")) if reach_last else None
+                reach_last_dt = None
+                if reach_last:
+                    try:
+                        reach_last_dt = datetime.fromisoformat(reach_last.replace("Z", ""))
+                    except Exception:
+                        reach_last_dt = None
                 if not reach_last_dt or datetime.utcnow() - reach_last_dt >= timedelta(minutes=10):
                     state = isp_ping_notifier.check_preset_reachability(cfg, state)
                 latest = get_state("isp_ping_state", {})

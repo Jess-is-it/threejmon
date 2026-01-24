@@ -3,7 +3,7 @@ from datetime import datetime, timezone, timedelta
 import re
 import subprocess
 
-from ..db import utc_now_iso
+from ..db import utc_now_iso, insert_wan_history_row
 from ..settings_defaults import WAN_MESSAGE_DEFAULTS, WAN_SUMMARY_DEFAULTS
 from ..mikrotik import RouterOSClient
 from .telegram import send_telegram, TelegramError
@@ -441,6 +441,16 @@ def run_check(settings, pulse_settings, state):
         if len(history) > 120:
             history = history[-120:]
         prev["history"] = history
+        insert_wan_history_row(
+            wan_id,
+            result["status"],
+            timestamp=now_iso,
+            target=target,
+            core_id=wan.get("core_id"),
+            label=label,
+            up_pct=100 if result["status"] == "up" else 0,
+            retention_days=settings.get("general", {}).get("history_retention_days", 400),
+        )
         wan_state[wan_id] = prev
 
     state["wans"] = wan_state
