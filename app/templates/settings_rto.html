@@ -69,6 +69,16 @@
           <li class="nav-item">
             <a href="#rto-stable" class="nav-link" data-bs-toggle="tab">Stable Connections</a>
           </li>
+          <li class="nav-item ms-auto">
+            <div class="px-2 py-2">
+              <div class="input-icon">
+                <input class="form-control form-control-sm" id="rto-status-search" type="text" placeholder="Search" autocomplete="off" />
+                <span class="input-icon-addon">
+                  <i class="ti ti-search"></i>
+                </span>
+              </div>
+            </div>
+          </li>
         </ul>
         <div class="tab-content pt-3">
           <div class="tab-pane active" id="rto-issues">
@@ -283,7 +293,7 @@
 </div>
 
 <script>
-  document.addEventListener("DOMContentLoaded", () => {
+	  document.addEventListener("DOMContentLoaded", () => {
     const tabLinks = document.querySelectorAll('a[data-bs-toggle="tab"]');
     const tabKey = "rto_status_active_tab";
     const storedTab = localStorage.getItem(tabKey);
@@ -465,11 +475,46 @@
       });
     };
 
-    document.querySelectorAll(".rto-table").forEach((table) => {
-      setupSortableTable(table);
-    });
+	    document.querySelectorAll(".rto-table").forEach((table) => {
+	      setupSortableTable(table);
+	    });
 
-    const modalTitle = document.getElementById("rto-spark-title");
+	    const rtoSearch = document.getElementById("rto-status-search");
+	    const applyTableFilter = (tableWrapId, query) => {
+	      const wrap = document.getElementById(tableWrapId);
+	      const table = wrap ? wrap.querySelector("table") : null;
+	      const tbody = table ? table.querySelector("tbody") : null;
+	      if (!tbody) return;
+	      const q = (query || "").trim().toLowerCase();
+	      const rows = Array.from(tbody.querySelectorAll("tr"));
+	      let emptyRow = null;
+	      let visible = 0;
+	      rows.forEach((row) => {
+	        const isEmpty = !!row.querySelector("td[colspan]");
+	        if (isEmpty) {
+	          emptyRow = row;
+	          return;
+	        }
+	        const text = (row.textContent || "").toLowerCase();
+	        const match = !q || text.includes(q);
+	        row.style.display = match ? "" : "none";
+	        if (match) visible += 1;
+	      });
+	      if (emptyRow) {
+	        emptyRow.style.display = visible === 0 ? "" : "none";
+	      }
+	    };
+	    const applyRtoSearch = () => {
+	      const query = rtoSearch ? rtoSearch.value : "";
+	      applyTableFilter("rto-issues-table", query);
+	      applyTableFilter("rto-stable-table", query);
+	    };
+	    if (rtoSearch) {
+	      rtoSearch.addEventListener("input", applyRtoSearch);
+	      applyRtoSearch();
+	    }
+
+	    const modalTitle = document.getElementById("rto-spark-title");
     const modalChart = document.getElementById("rto-spark-modal-chart");
     const modalWindowButton = document.getElementById("rto-modal-window-button");
     const modalWindowOptions = document.querySelectorAll(".rto-modal-window-option");

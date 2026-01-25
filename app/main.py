@@ -32,8 +32,17 @@ from .db import (
     get_rto_results_for_ip_since,
     get_optical_results_since,
     get_optical_results_for_device_since,
+    get_latest_optical_device_for_ip,
+    get_latest_optical_identity,
+    get_latest_rto_identity,
+    get_recent_optical_readings,
+    get_recent_rto_results,
     init_db,
     clear_pulsewatch_data,
+    search_optical_customers,
+    search_rto_customers,
+    get_optical_worst_candidates,
+    get_rto_worst_summary,
     utc_now_iso,
     fetch_wan_history_map,
     clear_wan_history,
@@ -2324,6 +2333,355 @@ async def optical_settings_run(request: Request):
                 },
                 "active_tab": "settings",
                 "settings_tab": "general",
+            },
+        ),
+    )
+
+
+@app.get("/optical/series", response_class=JSONResponse)
+async def optical_series(device_id: str, window: int = 24):
+    if not (device_id or "").strip():
+        return JSONResponse({"hours": 0, "series": []}, status_code=400)
+    hours = _normalize_wan_window(window)
+    since_iso = (datetime.utcnow() - timedelta(hours=hours)).replace(microsecond=0).isoformat() + "Z"
+    rows = get_optical_results_for_device_since(device_id, since_iso)
+    series = [{"ts": row.get("timestamp"), "rx": row.get("rx"), "tx": row.get("tx")} for row in rows]
+    return JSONResponse({"hours": hours, "series": series})
+
+
+@app.get("/profile-review/suggest", response_class=JSONResponse)
+async def profile_review_suggest(q: str = "", limit: int = 12):
+    query = (q or "").strip()
+    limit = max(min(int(limit or 12), 25), 1)
+    if len(query) < 2:
+        since_iso = (datetime.utcnow() - timedelta(hours=24)).replace(microsecond=0).isoformat() + "Z"
+        optical_settings = get_settings("optical", OPTICAL_DEFAULTS)
+        rto_settings = get_settings("rto", RTO_DEFAULTS)
+
+        rto_rows = get_rto_worst_summary(since_iso, limit=10)
+        rto_items = []
+        stable_rto_pct = float(rto_settings.get("classification", {}).get("stable_rto_pct", RTO_DEFAULTS["classification"]["stable_rto_pct"]))
+        for row in rto_rows:
+            ip = (row.get("ip") or "").strip()
+            if not ip:
+                continue
+            total = int(row.get("total") or 0)
+            failures = int(row.get("failures") or 0)
+            rto_pct = float(row.get("rto_pct") or 0.0)
+            last_ok = bool(row.get("last_ok"))
+            status = "down" if not last_ok else ("monitor" if rto_pct > stable_rto_pct else "up")
+            rto_items.append(
+                {
+                    "group": "RTO",
+                    "name": (row.get("name") or "").strip() or ip,
+                    "ip": ip,
+                    "device_id": "",
+                    "sources": ["rto"],
+                    "last_seen": row.get("timestamp") or "",
+                    "meta": {
+                        "status": status,
+                        "rto_pct": rto_pct,
+                        "failures": failures,
+                        "total": total,
+                    },
+                }
+            )
+
+        classification = optical_settings.get("classification", {})
+        issue_rx = float(classification.get("issue_rx_dbm", OPTICAL_DEFAULTS["classification"]["issue_rx_dbm"]))
+        issue_tx = float(classification.get("issue_tx_dbm", OPTICAL_DEFAULTS["classification"]["issue_tx_dbm"]))
+        stable_rx = float(classification.get("stable_rx_dbm", OPTICAL_DEFAULTS["classification"]["stable_rx_dbm"]))
+        stable_tx = float(classification.get("stable_tx_dbm", OPTICAL_DEFAULTS["classification"]["stable_tx_dbm"]))
+        rx_realistic_min = float(classification.get("rx_realistic_min_dbm", OPTICAL_DEFAULTS["classification"]["rx_realistic_min_dbm"]))
+        rx_realistic_max = float(classification.get("rx_realistic_max_dbm", OPTICAL_DEFAULTS["classification"]["rx_realistic_max_dbm"]))
+        tx_realistic_min = float(classification.get("tx_realistic_min_dbm", OPTICAL_DEFAULTS["classification"]["tx_realistic_min_dbm"]))
+        tx_realistic_max = float(classification.get("tx_realistic_max_dbm", OPTICAL_DEFAULTS["classification"]["tx_realistic_max_dbm"]))
+
+        candidates = get_optical_worst_candidates(since_iso, limit=300)
+
+        def optical_score(row):
+            rx = row.get("rx")
+            tx = row.get("tx")
+            p = 0
+            if rx is None or rx < rx_realistic_min or rx > rx_realistic_max:
+                p += 1000
+            elif rx <= issue_rx:
+                p += 600 + int(abs(issue_rx - rx) * 10)
+            elif rx < stable_rx:
+                p += 300 + int(abs(stable_rx - rx) * 5)
+            else:
+                p += 50
+            if tx is None:
+                p += 220
+            else:
+                if tx < tx_realistic_min or tx > tx_realistic_max:
+                    p += 200
+                if tx <= issue_tx:
+                    p += 180 + int(abs(issue_tx - tx) * 10)
+                elif tx < stable_tx:
+                    p += 90
+            if bool(row.get("priority")):
+                p += 80
+            return p
+
+        candidates = sorted(candidates, key=optical_score, reverse=True)[:10]
+        optical_items = []
+        for row in candidates:
+            ip = (row.get("ip") or "").strip()
+            device_id = (row.get("device_id") or "").strip()
+            rx = row.get("rx")
+            tx = row.get("tx")
+            rx_invalid = rx is None or rx < rx_realistic_min or rx > rx_realistic_max
+            tx_missing = tx is None
+            tx_unrealistic = (tx is not None) and (tx < tx_realistic_min or tx > tx_realistic_max)
+            status = "stable"
+            if rx_invalid:
+                status = "issue"
+            elif tx_missing or tx_unrealistic:
+                status = "monitor"
+            elif (rx is not None and rx <= issue_rx) or (tx is not None and tx <= issue_tx):
+                status = "issue"
+            elif not (rx is not None and rx >= stable_rx and tx is not None and tx >= stable_tx):
+                status = "monitor"
+            optical_items.append(
+                {
+                    "group": "Optical",
+                    "name": (row.get("pppoe") or "").strip() or device_id,
+                    "ip": ip,
+                    "device_id": device_id,
+                    "sources": ["optical"],
+                    "last_seen": row.get("timestamp") or "",
+                    "meta": {"status": status, "rx": rx, "tx": tx, "tx_missing": tx_missing, "tx_unrealistic": tx_unrealistic},
+                }
+            )
+
+        return JSONResponse(
+            {
+                "mode": "top10",
+                "header": "TOP10 - Critical Connections (Last 24h)",
+                "items": rto_items + optical_items,
+            }
+        )
+    since_iso = (datetime.utcnow() - timedelta(days=120)).replace(microsecond=0).isoformat() + "Z"
+
+    optical_hits = search_optical_customers(query, since_iso, limit=limit)
+    rto_hits = search_rto_customers(query, since_iso, limit=limit)
+
+    merged = {}
+    for row in optical_hits:
+        ip = (row.get("ip") or "").strip()
+        key = f"ip:{ip}" if ip else f"dev:{row.get('device_id')}"
+        merged.setdefault(
+            key,
+            {
+                "name": (row.get("pppoe") or "").strip(),
+                "ip": ip,
+                "device_id": row.get("device_id") or "",
+                "sources": set(),
+                "last_seen": row.get("timestamp") or "",
+            },
+        )
+        merged[key]["sources"].add("optical")
+        if row.get("timestamp") and row.get("timestamp") > merged[key]["last_seen"]:
+            merged[key]["last_seen"] = row.get("timestamp")
+        if not merged[key]["name"] and row.get("pppoe"):
+            merged[key]["name"] = row.get("pppoe")
+
+    for row in rto_hits:
+        ip = (row.get("ip") or "").strip()
+        if not ip:
+            continue
+        key = f"ip:{ip}"
+        merged.setdefault(
+            key,
+            {
+                "name": (row.get("name") or "").strip(),
+                "ip": ip,
+                "device_id": "",
+                "sources": set(),
+                "last_seen": row.get("timestamp") or "",
+            },
+        )
+        merged[key]["sources"].add("rto")
+        if row.get("timestamp") and row.get("timestamp") > merged[key]["last_seen"]:
+            merged[key]["last_seen"] = row.get("timestamp")
+        if not merged[key]["name"] and row.get("name"):
+            merged[key]["name"] = row.get("name")
+
+    items = []
+    for value in merged.values():
+        sources = sorted(value["sources"])
+        items.append(
+            {
+                "name": value.get("name") or value.get("ip") or value.get("device_id") or "Customer",
+                "ip": value.get("ip") or "",
+                "device_id": value.get("device_id") or "",
+                "sources": sources,
+                "last_seen": value.get("last_seen") or "",
+            }
+        )
+    items.sort(key=lambda x: x.get("last_seen") or "", reverse=True)
+    return JSONResponse({"mode": "search", "header": "Results", "items": items[:limit]})
+
+
+@app.get("/profile-review", response_class=HTMLResponse)
+async def profile_review(request: Request):
+    ip = (request.query_params.get("ip") or "").strip()
+    device_id = (request.query_params.get("device_id") or "").strip()
+    window_hours = _normalize_wan_window(request.query_params.get("window"))
+    window_label = next((label for label, hours in WAN_STATUS_WINDOW_OPTIONS if hours == window_hours), "1D")
+
+    optical_settings = get_settings("optical", OPTICAL_DEFAULTS)
+    rto_settings = get_settings("rto", RTO_DEFAULTS)
+
+    if ip and not device_id:
+        device_id = get_latest_optical_device_for_ip(ip) or ""
+    optical_ident = get_latest_optical_identity(device_id) if device_id else None
+    if optical_ident and not ip:
+        ip = (optical_ident.get("ip") or "").strip()
+    rto_ident = get_latest_rto_identity(ip) if ip else None
+
+    genie_base = ""
+    try:
+        genie_base = (
+            (optical_settings.get("optical", {}) or {}).get("genieacs_base_url")
+            or (optical_settings.get("genieacs", {}) or {}).get("base_url")
+            or ""
+        ).rstrip("/")
+    except Exception:
+        genie_base = ""
+
+    def genie_device_url(base_url, dev_id):
+        if not base_url or not dev_id:
+            return ""
+        try:
+            parsed = urllib.parse.urlparse(base_url)
+            scheme = parsed.scheme or "http"
+            host = parsed.hostname or parsed.netloc or ""
+            device_path = f"/devices/{urllib.parse.quote(str(dev_id))}"
+            netloc = f"{host}:3000" if host else ""
+            return urllib.parse.urlunparse((scheme, netloc, "/", "", "", f"/{device_path.lstrip('/')}"))
+        except Exception:
+            return ""
+
+    since_iso = (datetime.utcnow() - timedelta(hours=window_hours)).replace(microsecond=0).isoformat() + "Z"
+
+    profile = {
+        "window_hours": window_hours,
+        "window_label": window_label,
+        "ip": ip,
+        "device_id": device_id,
+        "device_url": genie_device_url(genie_base, device_id) if device_id else "",
+        "name": "",
+        "sources": [],
+        "rto": None,
+        "optical": None,
+        "classification": {
+            "tx_realistic_min_dbm": float(optical_settings.get("classification", {}).get("tx_realistic_min_dbm", OPTICAL_DEFAULTS["classification"]["tx_realistic_min_dbm"])),
+            "tx_realistic_max_dbm": float(optical_settings.get("classification", {}).get("tx_realistic_max_dbm", OPTICAL_DEFAULTS["classification"]["tx_realistic_max_dbm"])),
+        },
+    }
+
+    if optical_ident:
+        profile["name"] = (optical_ident.get("pppoe") or "").strip() or profile["name"]
+        profile["sources"].append("optical")
+        classification = optical_settings.get("classification", {})
+        issue_rx = float(classification.get("issue_rx_dbm", OPTICAL_DEFAULTS["classification"]["issue_rx_dbm"]))
+        issue_tx = float(classification.get("issue_tx_dbm", OPTICAL_DEFAULTS["classification"]["issue_tx_dbm"]))
+        stable_rx = float(classification.get("stable_rx_dbm", OPTICAL_DEFAULTS["classification"]["stable_rx_dbm"]))
+        stable_tx = float(classification.get("stable_tx_dbm", OPTICAL_DEFAULTS["classification"]["stable_tx_dbm"]))
+        rx_realistic_min = float(classification.get("rx_realistic_min_dbm", OPTICAL_DEFAULTS["classification"]["rx_realistic_min_dbm"]))
+        rx_realistic_max = float(classification.get("rx_realistic_max_dbm", OPTICAL_DEFAULTS["classification"]["rx_realistic_max_dbm"]))
+        tx_realistic_min = float(profile["classification"]["tx_realistic_min_dbm"])
+        tx_realistic_max = float(profile["classification"]["tx_realistic_max_dbm"])
+
+        rx = optical_ident.get("rx")
+        tx = optical_ident.get("tx")
+        rx_invalid = rx is None or rx < rx_realistic_min or rx > rx_realistic_max
+        tx_missing = tx is None
+        tx_unrealistic = (tx is not None) and (tx < tx_realistic_min or tx > tx_realistic_max)
+        status = "stable"
+        if rx_invalid:
+            status = "issue"
+        elif tx_missing or tx_unrealistic:
+            status = "monitor"
+        elif (rx is not None and rx <= issue_rx) or (tx is not None and tx <= issue_tx):
+            status = "issue"
+        elif not (rx is not None and rx >= stable_rx and tx is not None and tx >= stable_tx):
+            status = "monitor"
+
+        recent = get_recent_optical_readings(device_id, since_iso, limit=12)
+        profile["optical"] = {
+            "name": profile["name"],
+            "ip": ip,
+            "device_id": device_id,
+            "last_seen": format_ts_ph(optical_ident.get("timestamp")),
+            "rx": rx,
+            "tx": tx,
+            "rx_invalid": rx_invalid,
+            "tx_missing": tx_missing,
+            "tx_unrealistic": tx_unrealistic,
+            "status": status,
+            "samples": len(recent),
+            "recent": [
+                {
+                    "ts": format_ts_ph(item.get("timestamp")),
+                    "rx": item.get("rx"),
+                    "tx": item.get("tx"),
+                    "priority": bool(item.get("priority")),
+                }
+                for item in recent
+            ],
+            "chart": {
+                "min_dbm": float(classification.get("chart_min_dbm", OPTICAL_DEFAULTS["classification"]["chart_min_dbm"])),
+                "max_dbm": float(classification.get("chart_max_dbm", OPTICAL_DEFAULTS["classification"]["chart_max_dbm"])),
+            },
+        }
+
+    if rto_ident:
+        profile["name"] = (profile["name"] or (rto_ident.get("name") or "").strip()).strip()
+        profile["sources"].append("rto")
+        recent = get_recent_rto_results(ip, since_iso, limit=60)
+        recent_asc = list(reversed(recent))
+        total = len(recent_asc)
+        failures = sum(1 for item in recent_asc if not item.get("ok"))
+        rto_pct = (failures / total) * 100.0 if total else 0.0
+        uptime_pct = 100.0 - rto_pct
+        streak = 0
+        for item in recent_asc[::-1]:
+            if not item.get("ok"):
+                streak += 1
+            else:
+                break
+        stable_rto_pct = float(rto_settings.get("classification", {}).get("stable_rto_pct", RTO_DEFAULTS["classification"]["stable_rto_pct"]))
+        last_ok = bool(rto_ident.get("ok"))
+        status = "down" if not last_ok else ("up" if rto_pct <= stable_rto_pct else "monitor")
+        profile["rto"] = {
+            "ip": ip,
+            "name": (rto_ident.get("name") or "").strip(),
+            "last_seen": format_ts_ph(rto_ident.get("timestamp")),
+            "status": status,
+            "total": total,
+            "failures": failures,
+            "rto_pct": rto_pct,
+            "uptime_pct": uptime_pct,
+            "streak": streak,
+            "recent": [
+                {"ts": format_ts_ph(item.get("timestamp")), "ok": bool(item.get("ok"))}
+                for item in recent[:12]
+            ],
+        }
+
+    profile["sources"] = sorted({*profile["sources"]})
+    if not profile["name"]:
+        profile["name"] = profile["ip"] or profile["device_id"] or ""
+
+    return templates.TemplateResponse(
+        "profile_review.html",
+        make_context(
+            request,
+            {
+                "profile": profile,
             },
         ),
     )
