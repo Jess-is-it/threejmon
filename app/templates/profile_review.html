@@ -194,7 +194,6 @@
                   <th>Timestamp</th>
                   <th>RX</th>
                   <th>TX</th>
-                  <th>Tag</th>
                 </tr>
               </thead>
               <tbody>
@@ -203,13 +202,6 @@
                     <td class="text-muted">{{ row.ts }}</td>
                     <td>{{ row.rx is not none and ("%.2f"|format(row.rx)) or "n/a" }}</td>
                     <td>{{ row.tx is not none and ("%.2f"|format(row.tx)) or "n/a" }}</td>
-                    <td>
-                      {% if row.priority %}
-                        <span class="badge bg-orange-lt"><i class="ti ti-star me-1"></i>Priority</span>
-                      {% else %}
-                        <span class="badge bg-secondary-lt">Normal</span>
-                      {% endif %}
-                    </td>
                   </tr>
                 {% endfor %}
               </tbody>
