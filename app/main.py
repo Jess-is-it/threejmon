@@ -2529,6 +2529,7 @@ async def profile_review(request: Request):
     ip = (request.query_params.get("ip") or "").strip()
     device_id = (request.query_params.get("device_id") or "").strip()
     window_hours = _normalize_wan_window(request.query_params.get("window"))
+    window_label = next((label for label, hours in WAN_STATUS_WINDOW_OPTIONS if hours == window_hours), "1D")
 
     optical_settings = get_settings("optical", OPTICAL_DEFAULTS)
     rto_settings = get_settings("rto", RTO_DEFAULTS)
@@ -2540,12 +2541,37 @@ async def profile_review(request: Request):
         ip = (optical_ident.get("ip") or "").strip()
     rto_ident = get_latest_rto_identity(ip) if ip else None
 
+    genie_base = ""
+    try:
+        genie_base = (
+            (optical_settings.get("optical", {}) or {}).get("genieacs_base_url")
+            or (optical_settings.get("genieacs", {}) or {}).get("base_url")
+            or ""
+        ).rstrip("/")
+    except Exception:
+        genie_base = ""
+
+    def genie_device_url(base_url, dev_id):
+        if not base_url or not dev_id:
+            return ""
+        try:
+            parsed = urllib.parse.urlparse(base_url)
+            scheme = parsed.scheme or "http"
+            host = parsed.hostname or parsed.netloc or ""
+            device_path = f"/devices/{urllib.parse.quote(str(dev_id))}"
+            netloc = f"{host}:3000" if host else ""
+            return urllib.parse.urlunparse((scheme, netloc, "/", "", "", f"/{device_path.lstrip('/')}"))
+        except Exception:
+            return ""
+
     since_iso = (datetime.utcnow() - timedelta(hours=window_hours)).replace(microsecond=0).isoformat() + "Z"
 
     profile = {
         "window_hours": window_hours,
+        "window_label": window_label,
         "ip": ip,
         "device_id": device_id,
+        "device_url": genie_device_url(genie_base, device_id) if device_id else "",
         "name": "",
         "sources": [],
         "rto": None,

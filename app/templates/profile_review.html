@@ -51,12 +51,34 @@
                 <span><i class="ti ti-network me-1"></i>{{ profile.ip }}</span>
               {% endif %}
               {% if profile.device_id %}
-                <span><i class="ti ti-device-desktop me-1"></i>{{ profile.device_id }}</span>
+                <span>
+                  <i class="ti ti-device-desktop me-1"></i>
+                  {% if profile.device_url %}
+                    <a class="text-reset text-decoration-none profile-device-link" href="{{ profile.device_url }}" target="_blank" rel="noopener" title="Open in GenieACS">
+                      {{ profile.device_id }}
+                    </a>
+                  {% else %}
+                    {{ profile.device_id }}
+                  {% endif %}
+                </span>
               {% endif %}
-              <span><i class="ti ti-clock me-1"></i>Window: {{ profile.window_hours }}h</span>
+              <span><i class="ti ti-clock me-1"></i>Window: {{ profile.window_label }}</span>
             </div>
           </div>
-          <div class="ms-auto">
+          <div class="ms-auto d-flex gap-2 align-items-start">
+            <div class="dropdown">
+              <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" id="profile-window-button">
+                Window: {{ profile.window_label }}
+              </button>
+              <div class="dropdown-menu dropdown-menu-end">
+                <button class="dropdown-item profile-window-option" data-hours="6" data-label="6H">6H</button>
+                <button class="dropdown-item profile-window-option" data-hours="12" data-label="12H">12H</button>
+                <button class="dropdown-item profile-window-option" data-hours="24" data-label="1D">1D</button>
+                <button class="dropdown-item profile-window-option" data-hours="168" data-label="7D">7D</button>
+                <button class="dropdown-item profile-window-option" data-hours="360" data-label="15D">15D</button>
+                <button class="dropdown-item profile-window-option" data-hours="720" data-label="30D">30D</button>
+              </div>
+            </div>
             <a class="btn btn-outline-secondary btn-sm" href="/profile-review">
               <i class="ti ti-x me-1"></i>Clear
             </a>
@@ -231,6 +253,8 @@
     const profile = {{ profile | tojson }};
     const searchInput = document.getElementById("profile-search");
     const suggestMenu = document.getElementById("profile-suggest");
+    const windowButton = document.getElementById("profile-window-button");
+    const windowOptions = document.querySelectorAll(".profile-window-option");
     let pendingTimer = null;
     let lastItems = [];
 
@@ -367,6 +391,21 @@
       if (suggestMenu.contains(event.target) || searchInput.contains(event.target)) return;
       closeSuggest();
     });
+
+    if (windowButton && windowOptions.length) {
+      windowOptions.forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const hours = btn.dataset.hours || "24";
+          const label = btn.dataset.label || "";
+          if (label) {
+            windowButton.textContent = `Window: ${label}`;
+          }
+          const url = new URL(window.location.href);
+          url.searchParams.set("window", hours);
+          window.location.href = url.toString();
+        });
+      });
+    }
 
     const renderRtoChart = async () => {
       const el = document.getElementById("profile-rto-chart");

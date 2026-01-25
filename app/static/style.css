@@ -189,6 +189,11 @@ body,
   text-overflow: ellipsis;
 }
 
+.profile-device-link:hover {
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 
 .stamp-note {
   display: inline-flex;
