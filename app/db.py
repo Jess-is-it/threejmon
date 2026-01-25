@@ -733,6 +733,70 @@ def search_rto_customers(query, since_iso, limit=20):
         conn.close()
 
 
+def get_rto_worst_summary(since_iso, limit=10):
+    limit = max(int(limit or 10), 1)
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            """
+            WITH agg AS (
+                SELECT ip,
+                       COUNT(*) AS total,
+                       SUM(CASE WHEN ok = 0 THEN 1 ELSE 0 END) AS failures,
+                       MAX(timestamp) AS last_ts
+                FROM rto_results
+                WHERE timestamp >= ?
+                GROUP BY ip
+            )
+            SELECT a.ip,
+                   r.name,
+                   a.total,
+                   a.failures,
+                   CASE WHEN a.total > 0 THEN (a.failures * 100.0 / a.total) ELSE 0.0 END AS rto_pct,
+                   a.last_ts AS timestamp,
+                   r.ok AS last_ok
+            FROM agg a
+            JOIN rto_results r
+              ON r.ip = a.ip AND r.timestamp = a.last_ts
+            ORDER BY rto_pct DESC, a.failures DESC, a.total DESC, a.last_ts DESC
+            LIMIT ?
+            """,
+            (since_iso, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_optical_worst_candidates(since_iso, limit=200):
+    limit = max(int(limit or 200), 1)
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT o.timestamp, o.device_id, o.pppoe, o.ip, o.rx, o.tx, o.priority
+            FROM optical_results o
+            JOIN (
+                SELECT device_id, MAX(timestamp) AS max_ts
+                FROM optical_results
+                WHERE timestamp >= ?
+                GROUP BY device_id
+            ) latest
+            ON o.device_id = latest.device_id AND o.timestamp = latest.max_ts
+            WHERE o.timestamp >= ?
+            ORDER BY (o.rx IS NULL) DESC,
+                     (o.tx IS NULL) DESC,
+                     o.rx ASC,
+                     o.timestamp DESC
+            LIMIT ?
+            """,
+            (since_iso, since_iso, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
 def insert_alert_log(isp_id, alert_type, message, cooldown_until=None, timestamp=None):
     stamp = timestamp or utc_now_iso()
     conn = get_conn()

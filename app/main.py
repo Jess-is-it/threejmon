@@ -41,6 +41,8 @@ from .db import (
     clear_pulsewatch_data,
     search_optical_customers,
     search_rto_customers,
+    get_optical_worst_candidates,
+    get_rto_worst_summary,
     utc_now_iso,
     fetch_wan_history_map,
     clear_wan_history,
@@ -2350,9 +2352,116 @@ async def optical_series(device_id: str, window: int = 24):
 @app.get("/profile-review/suggest", response_class=JSONResponse)
 async def profile_review_suggest(q: str = "", limit: int = 12):
     query = (q or "").strip()
-    if len(query) < 2:
-        return JSONResponse({"items": []})
     limit = max(min(int(limit or 12), 25), 1)
+    if len(query) < 2:
+        since_iso = (datetime.utcnow() - timedelta(hours=24)).replace(microsecond=0).isoformat() + "Z"
+        optical_settings = get_settings("optical", OPTICAL_DEFAULTS)
+        rto_settings = get_settings("rto", RTO_DEFAULTS)
+
+        rto_rows = get_rto_worst_summary(since_iso, limit=10)
+        rto_items = []
+        stable_rto_pct = float(rto_settings.get("classification", {}).get("stable_rto_pct", RTO_DEFAULTS["classification"]["stable_rto_pct"]))
+        for row in rto_rows:
+            ip = (row.get("ip") or "").strip()
+            if not ip:
+                continue
+            total = int(row.get("total") or 0)
+            failures = int(row.get("failures") or 0)
+            rto_pct = float(row.get("rto_pct") or 0.0)
+            last_ok = bool(row.get("last_ok"))
+            status = "down" if not last_ok else ("monitor" if rto_pct > stable_rto_pct else "up")
+            rto_items.append(
+                {
+                    "group": "RTO",
+                    "name": (row.get("name") or "").strip() or ip,
+                    "ip": ip,
+                    "device_id": "",
+                    "sources": ["rto"],
+                    "last_seen": row.get("timestamp") or "",
+                    "meta": {
+                        "status": status,
+                        "rto_pct": rto_pct,
+                        "failures": failures,
+                        "total": total,
+                    },
+                }
+            )
+
+        classification = optical_settings.get("classification", {})
+        issue_rx = float(classification.get("issue_rx_dbm", OPTICAL_DEFAULTS["classification"]["issue_rx_dbm"]))
+        issue_tx = float(classification.get("issue_tx_dbm", OPTICAL_DEFAULTS["classification"]["issue_tx_dbm"]))
+        stable_rx = float(classification.get("stable_rx_dbm", OPTICAL_DEFAULTS["classification"]["stable_rx_dbm"]))
+        stable_tx = float(classification.get("stable_tx_dbm", OPTICAL_DEFAULTS["classification"]["stable_tx_dbm"]))
+        rx_realistic_min = float(classification.get("rx_realistic_min_dbm", OPTICAL_DEFAULTS["classification"]["rx_realistic_min_dbm"]))
+        rx_realistic_max = float(classification.get("rx_realistic_max_dbm", OPTICAL_DEFAULTS["classification"]["rx_realistic_max_dbm"]))
+        tx_realistic_min = float(classification.get("tx_realistic_min_dbm", OPTICAL_DEFAULTS["classification"]["tx_realistic_min_dbm"]))
+        tx_realistic_max = float(classification.get("tx_realistic_max_dbm", OPTICAL_DEFAULTS["classification"]["tx_realistic_max_dbm"]))
+
+        candidates = get_optical_worst_candidates(since_iso, limit=300)
+
+        def optical_score(row):
+            rx = row.get("rx")
+            tx = row.get("tx")
+            p = 0
+            if rx is None or rx < rx_realistic_min or rx > rx_realistic_max:
+                p += 1000
+            elif rx <= issue_rx:
+                p += 600 + int(abs(issue_rx - rx) * 10)
+            elif rx < stable_rx:
+                p += 300 + int(abs(stable_rx - rx) * 5)
+            else:
+                p += 50
+            if tx is None:
+                p += 220
+            else:
+                if tx < tx_realistic_min or tx > tx_realistic_max:
+                    p += 200
+                if tx <= issue_tx:
+                    p += 180 + int(abs(issue_tx - tx) * 10)
+                elif tx < stable_tx:
+                    p += 90
+            if bool(row.get("priority")):
+                p += 80
+            return p
+
+        candidates = sorted(candidates, key=optical_score, reverse=True)[:10]
+        optical_items = []
+        for row in candidates:
+            ip = (row.get("ip") or "").strip()
+            device_id = (row.get("device_id") or "").strip()
+            rx = row.get("rx")
+            tx = row.get("tx")
+            rx_invalid = rx is None or rx < rx_realistic_min or rx > rx_realistic_max
+            tx_missing = tx is None
+            tx_unrealistic = (tx is not None) and (tx < tx_realistic_min or tx > tx_realistic_max)
+            status = "stable"
+            if rx_invalid:
+                status = "issue"
+            elif tx_missing or tx_unrealistic:
+                status = "monitor"
+            elif (rx is not None and rx <= issue_rx) or (tx is not None and tx <= issue_tx):
+                status = "issue"
+            elif not (rx is not None and rx >= stable_rx and tx is not None and tx >= stable_tx):
+                status = "monitor"
+            optical_items.append(
+                {
+                    "group": "Optical",
+                    "name": (row.get("pppoe") or "").strip() or device_id,
+                    "ip": ip,
+                    "device_id": device_id,
+                    "sources": ["optical"],
+                    "last_seen": row.get("timestamp") or "",
+                    "meta": {"status": status, "rx": rx, "tx": tx, "tx_missing": tx_missing, "tx_unrealistic": tx_unrealistic},
+                }
+            )
+
+        return JSONResponse(
+            {
+                "mode": "top10",
+                "header": "TOP10 - Critical Connections (Last 24h)",
+                "items": rto_items + optical_items,
+            }
+        )
     since_iso = (datetime.utcnow() - timedelta(days=120)).replace(microsecond=0).isoformat() + "Z"
 
     optical_hits = search_optical_customers(query, since_iso, limit=limit)
@@ -2412,7 +2521,7 @@ async def profile_review_suggest(q: str = "", limit: int = 12):
             }
         )
     items.sort(key=lambda x: x.get("last_seen") or "", reverse=True)
-    return JSONResponse({"items": items[:limit]})
+    return JSONResponse({"mode": "search", "header": "Results", "items": items[:limit]})
 
 
 @app.get("/profile-review", response_class=HTMLResponse)

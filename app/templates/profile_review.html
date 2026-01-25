@@ -276,6 +276,7 @@
         openSuggest();
         return;
       }
+      suggestMenu.appendChild(Object.assign(document.createElement("div"), { className: "dropdown-header", textContent: "Results" }));
       items.forEach((item) => {
         const row = document.createElement("button");
         row.type = "button";
@@ -301,16 +302,50 @@
 
     const fetchSuggest = async () => {
       const q = (searchInput?.value || "").trim();
-      if (q.length < 2) {
-        closeSuggest();
-        return;
-      }
       try {
-        const res = await fetch(`/profile-review/suggest?q=${encodeURIComponent(q)}`, { headers: { "Accept": "application/json" } });
+        const url = q.length >= 2
+          ? `/profile-review/suggest?q=${encodeURIComponent(q)}`
+          : "/profile-review/suggest";
+        const res = await fetch(url, { headers: { "Accept": "application/json" } });
         if (!res.ok) return;
         const payload = await res.json();
         lastItems = payload.items || [];
-        renderSuggest(lastItems);
+        if (payload.mode === "top10") {
+          suggestMenu.innerHTML = "";
+          suggestMenu.appendChild(Object.assign(document.createElement("div"), { className: "dropdown-header", textContent: payload.header || "TOP10" }));
+          const groups = new Map();
+          lastItems.forEach((item) => {
+            const group = item.group || "Results";
+            if (!groups.has(group)) groups.set(group, []);
+            groups.get(group).push(item);
+          });
+          for (const [groupName, items] of groups.entries()) {
+            suggestMenu.appendChild(Object.assign(document.createElement("div"), { className: "dropdown-header text-muted", textContent: groupName }));
+            items.forEach((item) => {
+              const row = document.createElement("button");
+              row.type = "button";
+              row.className = "dropdown-item";
+              row.innerHTML = `
+                <div class="d-flex align-items-center gap-2">
+                  <span class="text-muted"><i class="${iconFor(item.sources)}"></i></span>
+                  <div class="flex-fill">
+                    <div class="fw-semibold">${item.name || "Customer"}</div>
+                    <div class="text-muted small">${[item.ip, item.device_id].filter(Boolean).join(" · ")}</div>
+                  </div>
+                  <div class="d-flex gap-1">
+                    ${(item.sources || []).includes("optical") ? '<span class="badge bg-azure-lt text-azure">Optical</span>' : ""}
+                    ${(item.sources || []).includes("rto") ? '<span class="badge bg-purple-lt text-purple">RTO</span>' : ""}
+                  </div>
+                </div>
+              `;
+              row.addEventListener("click", () => navigateTo(item));
+              suggestMenu.appendChild(row);
+            });
+          }
+          openSuggest();
+        } else {
+          renderSuggest(lastItems);
+        }
       } catch (err) {
         closeSuggest();
       }
@@ -322,8 +357,7 @@
         pendingTimer = window.setTimeout(fetchSuggest, 180);
       });
       searchInput.addEventListener("focus", () => {
-        const q = (searchInput.value || "").trim();
-        if (q.length >= 2 && lastItems.length) renderSuggest(lastItems);
+        fetchSuggest();
       });
       searchInput.addEventListener("keydown", (event) => {
         if (event.key === "Escape") {
@@ -445,4 +479,3 @@
 </script>
 
 {% endblock %}
-
