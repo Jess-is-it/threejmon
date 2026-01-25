@@ -98,6 +98,16 @@
           <li class="nav-item">
             <a href="#optical-stable" class="nav-link" data-bs-toggle="tab">Stable Connections</a>
           </li>
+          <li class="nav-item ms-auto">
+            <div class="px-2 py-2">
+              <div class="input-icon">
+                <input class="form-control form-control-sm" id="optical-status-search" type="text" placeholder="Search" autocomplete="off" />
+                <span class="input-icon-addon">
+                  <i class="ti ti-search"></i>
+                </span>
+              </div>
+            </div>
+          </li>
         </ul>
         <div class="tab-content pt-3">
           <div class="tab-pane active" id="optical-issues">
@@ -609,7 +619,7 @@
 </div>
 
 <script>
-  document.addEventListener("DOMContentLoaded", () => {
+	  document.addEventListener("DOMContentLoaded", () => {
     const tabLinks = document.querySelectorAll('a[data-bs-toggle="tab"]');
     const tabKey = "optical_status_active_tab";
     const storedTab = localStorage.getItem(tabKey);
@@ -781,11 +791,46 @@
       });
     };
 
-    document.querySelectorAll(".rto-table").forEach((table) => {
-      setupSortableTable(table);
-    });
+	    document.querySelectorAll(".rto-table").forEach((table) => {
+	      setupSortableTable(table);
+	    });
 
-    const modalTitle = document.getElementById("optical-spark-title");
+	    const opticalSearch = document.getElementById("optical-status-search");
+	    const applyTableFilter = (tableWrapId, query) => {
+	      const wrap = document.getElementById(tableWrapId);
+	      const table = wrap ? wrap.querySelector("table") : null;
+	      const tbody = table ? table.querySelector("tbody") : null;
+	      if (!tbody) return;
+	      const q = (query || "").trim().toLowerCase();
+	      const rows = Array.from(tbody.querySelectorAll("tr"));
+	      let emptyRow = null;
+	      let visible = 0;
+	      rows.forEach((row) => {
+	        const isEmpty = !!row.querySelector("td[colspan]");
+	        if (isEmpty) {
+	          emptyRow = row;
+	          return;
+	        }
+	        const text = (row.textContent || "").toLowerCase();
+	        const match = !q || text.includes(q);
+	        row.style.display = match ? "" : "none";
+	        if (match) visible += 1;
+	      });
+	      if (emptyRow) {
+	        emptyRow.style.display = visible === 0 ? "" : "none";
+	      }
+	    };
+	    const applyOpticalSearch = () => {
+	      const query = opticalSearch ? opticalSearch.value : "";
+	      applyTableFilter("optical-issues-table", query);
+	      applyTableFilter("optical-stable-table", query);
+	    };
+	    if (opticalSearch) {
+	      opticalSearch.addEventListener("input", applyOpticalSearch);
+	      applyOpticalSearch();
+	    }
+
+	    const modalTitle = document.getElementById("optical-spark-title");
     const modalChart = document.getElementById("optical-spark-modal-chart");
 	    const modalWindowButton = document.getElementById("optical-modal-window-button");
 	    const modalWindowOptions = document.querySelectorAll(".optical-modal-window-option");
