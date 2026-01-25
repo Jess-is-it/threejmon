@@ -572,6 +572,167 @@ def get_optical_results_for_device_since(device_id, since_iso):
         conn.close()
 
 
+def get_latest_optical_identity(device_id):
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            """
+            SELECT timestamp, device_id, pppoe, ip, rx, tx, priority
+            FROM optical_results
+            WHERE device_id = ?
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """,
+            (device_id,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_latest_optical_device_for_ip(ip):
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            """
+            SELECT device_id
+            FROM optical_results
+            WHERE ip = ?
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """,
+            (ip,),
+        ).fetchone()
+        return row["device_id"] if row else None
+    finally:
+        conn.close()
+
+
+def search_optical_customers(query, since_iso, limit=20):
+    raw = (query or "").strip()
+    if not raw:
+        return []
+    pattern = f"%{raw}%"
+    limit = max(int(limit or 20), 1)
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT o.timestamp, o.device_id, o.pppoe, o.ip, o.rx, o.tx, o.priority
+            FROM optical_results o
+            JOIN (
+                SELECT device_id, MAX(timestamp) AS max_ts
+                FROM optical_results
+                WHERE timestamp >= ?
+                GROUP BY device_id
+            ) latest
+            ON o.device_id = latest.device_id AND o.timestamp = latest.max_ts
+            WHERE o.timestamp >= ?
+              AND (
+                o.pppoe LIKE ?
+                OR o.ip LIKE ?
+                OR o.device_id LIKE ?
+              )
+            ORDER BY o.timestamp DESC
+            LIMIT ?
+            """,
+            (since_iso, since_iso, pattern, pattern, pattern, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_latest_rto_identity(ip):
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            """
+            SELECT timestamp, ip, name, ok
+            FROM rto_results
+            WHERE ip = ?
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """,
+            (ip,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_recent_rto_results(ip, since_iso, limit=50):
+    limit = max(int(limit or 50), 1)
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT timestamp, ok
+            FROM rto_results
+            WHERE ip = ? AND timestamp >= ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """,
+            (ip, since_iso, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_recent_optical_readings(device_id, since_iso, limit=50):
+    limit = max(int(limit or 50), 1)
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT timestamp, rx, tx, priority
+            FROM optical_results
+            WHERE device_id = ? AND timestamp >= ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """,
+            (device_id, since_iso, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def search_rto_customers(query, since_iso, limit=20):
+    raw = (query or "").strip()
+    if not raw:
+        return []
+    pattern = f"%{raw}%"
+    limit = max(int(limit or 20), 1)
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT r.timestamp, r.ip, r.name, r.ok
+            FROM rto_results r
+            JOIN (
+                SELECT ip, MAX(timestamp) AS max_ts
+                FROM rto_results
+                WHERE timestamp >= ?
+                GROUP BY ip
+            ) latest
+            ON r.ip = latest.ip AND r.timestamp = latest.max_ts
+            WHERE r.timestamp >= ?
+              AND (
+                r.name LIKE ?
+                OR r.ip LIKE ?
+              )
+            ORDER BY r.timestamp DESC
+            LIMIT ?
+            """,
+            (since_iso, since_iso, pattern, pattern, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
 def insert_alert_log(isp_id, alert_type, message, cooldown_until=None, timestamp=None):
     stamp = timestamp or utc_now_iso()
     conn = get_conn()

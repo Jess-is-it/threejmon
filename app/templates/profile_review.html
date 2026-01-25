@@ -1,0 +1,448 @@
+{% extends "base.html" %}
+{% block title %}Profile Review{% endblock %}
+{% block header_title %}Profile Review{% endblock %}
+{% block header_badge %}
+  <span class="badge bg-cyan-lt text-cyan header-icon-badge"><i class="ti ti-user-search"></i></span>
+{% endblock %}
+{% block content %}
+
+<div class="card mb-3">
+  <div class="card-body">
+    <div class="row align-items-center g-3">
+      <div class="col-md">
+        <h4 class="mb-1">Search Customer</h4>
+        <div class="text-muted small">Search by PPPoE, IP, device ID, or RTO name.</div>
+      </div>
+      <div class="col-md-6 col-lg-5">
+        <div class="position-relative">
+          <div class="input-icon">
+            <input class="form-control" id="profile-search" type="text" placeholder="Search customer..." autocomplete="off" />
+            <span class="input-icon-addon">
+              <i class="ti ti-search"></i>
+            </span>
+          </div>
+          <div class="dropdown-menu w-100" id="profile-suggest" style="max-height: 320px; overflow: auto;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% if profile.ip or profile.device_id %}
+<div class="row row-deck row-cards">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-body">
+        <div class="d-flex align-items-start gap-3">
+          <span class="avatar bg-cyan-lt text-cyan">{{ (profile.name or "C")[:1]|upper }}</span>
+          <div class="flex-fill">
+            <div class="d-flex align-items-center gap-2 flex-wrap">
+              <h3 class="mb-0">{{ profile.name or "Customer" }}</h3>
+              {% for src in profile.sources %}
+                {% if src == "optical" %}
+                  <span class="badge bg-azure-lt text-azure"><i class="ti ti-sun me-1"></i>Optical</span>
+                {% elif src == "rto" %}
+                  <span class="badge bg-purple-lt text-purple"><i class="ti ti-tower me-1"></i>RTO</span>
+                {% endif %}
+              {% endfor %}
+            </div>
+            <div class="text-muted mt-1 d-flex flex-wrap gap-3">
+              {% if profile.ip %}
+                <span><i class="ti ti-network me-1"></i>{{ profile.ip }}</span>
+              {% endif %}
+              {% if profile.device_id %}
+                <span><i class="ti ti-device-desktop me-1"></i>{{ profile.device_id }}</span>
+              {% endif %}
+              <span><i class="ti ti-clock me-1"></i>Window: {{ profile.window_hours }}h</span>
+            </div>
+          </div>
+          <div class="ms-auto">
+            <a class="btn btn-outline-secondary btn-sm" href="/profile-review">
+              <i class="ti ti-x me-1"></i>Clear
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-6">
+    <div class="card">
+      <div class="card-header">
+        <h3 class="card-title"><i class="ti ti-tower me-2"></i>RTO</h3>
+        {% if profile.rto %}
+          {% if profile.rto.status == "down" %}
+            <span class="badge bg-red-lt ms-auto"><i class="ti ti-alert-circle me-1"></i>Down</span>
+          {% elif profile.rto.status == "up" %}
+            <span class="badge bg-green-lt ms-auto"><i class="ti ti-check me-1"></i>Up</span>
+          {% else %}
+            <span class="badge bg-yellow-lt ms-auto"><i class="ti ti-eye me-1"></i>Monitor</span>
+          {% endif %}
+        {% else %}
+          <span class="badge bg-secondary-lt ms-auto">No data</span>
+        {% endif %}
+      </div>
+      <div class="card-body">
+        {% if profile.rto %}
+          <div class="row g-2 mb-3">
+            <div class="col-6 col-md-3">
+              <div class="text-muted small">Uptime</div>
+              <div class="h3 m-0">{{ "%.1f"|format(profile.rto.uptime_pct) }}%</div>
+            </div>
+            <div class="col-6 col-md-3">
+              <div class="text-muted small">RTO</div>
+              <div class="h3 m-0">{{ "%.1f"|format(profile.rto.rto_pct) }}%</div>
+            </div>
+            <div class="col-6 col-md-3">
+              <div class="text-muted small">Down Streak</div>
+              <div class="h3 m-0">{{ profile.rto.streak }}</div>
+            </div>
+            <div class="col-6 col-md-3">
+              <div class="text-muted small">Last Check</div>
+              <div class="fw-semibold">{{ profile.rto.last_seen }}</div>
+            </div>
+          </div>
+          <div class="border rounded p-2 mb-3">
+            <div id="profile-rto-chart" style="height: 220px;"></div>
+          </div>
+          <div class="table-responsive">
+            <table class="table table-sm table-vcenter">
+              <thead>
+                <tr>
+                  <th>Timestamp</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in profile.rto.recent %}
+                  <tr>
+                    <td class="text-muted">{{ row.ts }}</td>
+                    <td>
+                      {% if row.ok %}
+                        <span class="badge bg-green-lt">Up</span>
+                      {% else %}
+                        <span class="badge bg-red-lt">Down</span>
+                      {% endif %}
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <div class="empty">
+            <div class="empty-icon"><i class="ti ti-database-off"></i></div>
+            <p class="empty-title">No RTO history found</p>
+            <p class="empty-subtitle text-muted">Search another account or provide an IP that exists in RTO results.</p>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-6">
+    <div class="card">
+      <div class="card-header">
+        <h3 class="card-title"><i class="ti ti-sun me-2"></i>Optical</h3>
+        {% if profile.optical %}
+          {% if profile.optical.status == "issue" %}
+            <span class="badge bg-red-lt ms-auto"><i class="ti ti-alert-circle me-1"></i>Issue</span>
+          {% elif profile.optical.status == "stable" %}
+            <span class="badge bg-green-lt ms-auto"><i class="ti ti-check me-1"></i>Stable</span>
+          {% else %}
+            <span class="badge bg-yellow-lt ms-auto"><i class="ti ti-eye me-1"></i>Monitor</span>
+          {% endif %}
+        {% else %}
+          <span class="badge bg-secondary-lt ms-auto">No data</span>
+        {% endif %}
+      </div>
+      <div class="card-body">
+        {% if profile.optical %}
+          <div class="row g-2 mb-3">
+            <div class="col-6 col-md-3">
+              <div class="text-muted small">RX</div>
+              <div class="h3 m-0">{{ profile.optical.rx is not none and ("%.2f"|format(profile.optical.rx)) or "n/a" }}</div>
+            </div>
+            <div class="col-6 col-md-3">
+              <div class="text-muted small">TX</div>
+              <div class="h3 m-0">
+                {% if profile.optical.tx_missing %}
+                  <span class="text-muted">Missing</span>
+                {% elif profile.optical.tx_unrealistic %}
+                  {{ profile.optical.tx is not none and ("%.2f"|format(profile.optical.tx)) or "n/a" }} <span class="text-muted small">(unrealistic)</span>
+                {% else %}
+                  {{ profile.optical.tx is not none and ("%.2f"|format(profile.optical.tx)) or "n/a" }}
+                {% endif %}
+              </div>
+            </div>
+            <div class="col-6 col-md-3">
+              <div class="text-muted small">Samples</div>
+              <div class="h3 m-0">{{ profile.optical.samples }}</div>
+            </div>
+            <div class="col-6 col-md-3">
+              <div class="text-muted small">Last Check</div>
+              <div class="fw-semibold">{{ profile.optical.last_seen }}</div>
+            </div>
+          </div>
+          <div class="border rounded p-2 mb-3">
+            <div id="profile-optical-chart" style="height: 220px;"></div>
+          </div>
+          <div class="table-responsive">
+            <table class="table table-sm table-vcenter">
+              <thead>
+                <tr>
+                  <th>Timestamp</th>
+                  <th>RX</th>
+                  <th>TX</th>
+                  <th>Tag</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in profile.optical.recent %}
+                  <tr>
+                    <td class="text-muted">{{ row.ts }}</td>
+                    <td>{{ row.rx is not none and ("%.2f"|format(row.rx)) or "n/a" }}</td>
+                    <td>{{ row.tx is not none and ("%.2f"|format(row.tx)) or "n/a" }}</td>
+                    <td>
+                      {% if row.priority %}
+                        <span class="badge bg-orange-lt"><i class="ti ti-star me-1"></i>Priority</span>
+                      {% else %}
+                        <span class="badge bg-secondary-lt">Normal</span>
+                      {% endif %}
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <div class="empty">
+            <div class="empty-icon"><i class="ti ti-database-off"></i></div>
+            <p class="empty-title">No optical history found</p>
+            <p class="empty-subtitle text-muted">Search another account or provide a device ID that exists in optical results.</p>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% else %}
+<div class="empty">
+  <div class="empty-icon"><i class="ti ti-user-search"></i></div>
+  <p class="empty-title">Search an account to review</p>
+  <p class="empty-subtitle text-muted">Start typing at least 2 characters to see suggestions.</p>
+</div>
+{% endif %}
+
+<script>
+  document.addEventListener("DOMContentLoaded", () => {
+    const profile = {{ profile | tojson }};
+    const searchInput = document.getElementById("profile-search");
+    const suggestMenu = document.getElementById("profile-suggest");
+    let pendingTimer = null;
+    let lastItems = [];
+
+    const closeSuggest = () => {
+      if (!suggestMenu) return;
+      suggestMenu.classList.remove("show");
+      suggestMenu.innerHTML = "";
+      lastItems = [];
+    };
+
+    const openSuggest = () => {
+      if (!suggestMenu) return;
+      suggestMenu.classList.add("show");
+    };
+
+    const iconFor = (sources) => {
+      if ((sources || []).includes("optical") && (sources || []).includes("rto")) return "ti ti-layers";
+      if ((sources || []).includes("optical")) return "ti ti-sun";
+      if ((sources || []).includes("rto")) return "ti ti-tower";
+      return "ti ti-user";
+    };
+
+    const navigateTo = (item) => {
+      const params = new URLSearchParams();
+      if (item.ip) params.set("ip", item.ip);
+      if (item.device_id) params.set("device_id", item.device_id);
+      window.location.href = `/profile-review?${params.toString()}`;
+    };
+
+    const renderSuggest = (items) => {
+      if (!suggestMenu) return;
+      suggestMenu.innerHTML = "";
+      if (!items.length) {
+        suggestMenu.innerHTML = "<div class='dropdown-item text-muted'>No matches</div>";
+        openSuggest();
+        return;
+      }
+      items.forEach((item) => {
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = "dropdown-item";
+        row.innerHTML = `
+          <div class="d-flex align-items-center gap-2">
+            <span class="text-muted"><i class="${iconFor(item.sources)}"></i></span>
+            <div class="flex-fill">
+              <div class="fw-semibold">${item.name || "Customer"}</div>
+              <div class="text-muted small">${[item.ip, item.device_id].filter(Boolean).join(" · ")}</div>
+            </div>
+            <div class="d-flex gap-1">
+              ${(item.sources || []).includes("optical") ? '<span class="badge bg-azure-lt text-azure">Optical</span>' : ""}
+              ${(item.sources || []).includes("rto") ? '<span class="badge bg-purple-lt text-purple">RTO</span>' : ""}
+            </div>
+          </div>
+        `;
+        row.addEventListener("click", () => navigateTo(item));
+        suggestMenu.appendChild(row);
+      });
+      openSuggest();
+    };
+
+    const fetchSuggest = async () => {
+      const q = (searchInput?.value || "").trim();
+      if (q.length < 2) {
+        closeSuggest();
+        return;
+      }
+      try {
+        const res = await fetch(`/profile-review/suggest?q=${encodeURIComponent(q)}`, { headers: { "Accept": "application/json" } });
+        if (!res.ok) return;
+        const payload = await res.json();
+        lastItems = payload.items || [];
+        renderSuggest(lastItems);
+      } catch (err) {
+        closeSuggest();
+      }
+    };
+
+    if (searchInput) {
+      searchInput.addEventListener("input", () => {
+        if (pendingTimer) window.clearTimeout(pendingTimer);
+        pendingTimer = window.setTimeout(fetchSuggest, 180);
+      });
+      searchInput.addEventListener("focus", () => {
+        const q = (searchInput.value || "").trim();
+        if (q.length >= 2 && lastItems.length) renderSuggest(lastItems);
+      });
+      searchInput.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          closeSuggest();
+        }
+        if (event.key === "Enter" && lastItems.length) {
+          event.preventDefault();
+          navigateTo(lastItems[0]);
+        }
+      });
+    }
+
+    document.addEventListener("click", (event) => {
+      if (!suggestMenu || !searchInput) return;
+      if (suggestMenu.contains(event.target) || searchInput.contains(event.target)) return;
+      closeSuggest();
+    });
+
+    const renderRtoChart = async () => {
+      const el = document.getElementById("profile-rto-chart");
+      if (!el || !profile?.rto?.ip) return;
+      try {
+        const params = new URLSearchParams({ ip: profile.rto.ip, window: String(profile.window_hours || 24) });
+        const res = await fetch(`/rto/series?${params.toString()}`, { headers: { "Accept": "application/json" } });
+        if (!res.ok) return;
+        const payload = await res.json();
+        const points = (payload.series || [])
+          .map((row) => {
+            const ts = row.ts ? Date.parse(String(row.ts)) : NaN;
+            if (!Number.isFinite(ts)) return null;
+            return { x: ts, y: Number(row.value) };
+          })
+          .filter((row) => row !== null);
+        if (!points.length) return;
+        const chart = new window.ApexCharts(el, {
+          chart: { type: "line", height: 220, toolbar: { show: false }, zoom: { enabled: false } },
+          series: [{ name: "Uptime", data: points }],
+          colors: [profile.rto.status === "down" ? "#d63939" : "#2fb344"],
+          stroke: { width: 2 },
+          markers: { size: 0 },
+          xaxis: { type: "datetime" },
+          yaxis: { min: 0, max: 100, tickAmount: 2, labels: { formatter: (val) => `${val}%` } },
+          tooltip: { shared: false, intersect: false, followCursor: true, y: { formatter: (val) => `${val}%` } },
+          grid: { borderColor: "#e9ecef" },
+        });
+        chart.render();
+      } catch (err) {
+        // ignore
+      }
+    };
+
+    const renderOpticalChart = async () => {
+      const el = document.getElementById("profile-optical-chart");
+      if (!el || !profile?.optical?.device_id) return;
+      try {
+        const params = new URLSearchParams({ device_id: profile.optical.device_id, window: String(profile.window_hours || 24) });
+        const res = await fetch(`/optical/series?${params.toString()}`, { headers: { "Accept": "application/json" } });
+        if (!res.ok) return;
+        const payload = await res.json();
+        const txMin = Number(profile?.classification?.tx_realistic_min_dbm ?? -10);
+        const txMax = Number(profile?.classification?.tx_realistic_max_dbm ?? 10);
+        const points = (payload.series || [])
+          .map((row) => {
+            const ts = row.ts ? Date.parse(String(row.ts)) : NaN;
+            if (!Number.isFinite(ts)) return null;
+            const rx = row.rx === null || row.rx === undefined ? null : Number(row.rx);
+            const txRaw = row.tx === null || row.tx === undefined ? null : Number(row.tx);
+            const txPlot = txRaw === null || !Number.isFinite(txRaw) || txRaw < txMin || txRaw > txMax ? null : txRaw;
+            return { x: ts, rx, tx: txPlot, tx_raw: txRaw };
+          })
+          .filter((row) => row !== null);
+        if (!points.length) return;
+        const rxSeries = points.map((p) => ({ x: p.x, y: p.rx }));
+        const txSeries = points.map((p) => ({ x: p.x, y: p.tx }));
+        const chartMin = Number(profile?.optical?.chart?.min_dbm ?? -35);
+        const chartMax = Number(profile?.optical?.chart?.max_dbm ?? -10);
+        const fmtDbm = (value) => (value === null || value === undefined || Number.isNaN(Number(value)) ? "n/a" : `${Number(value).toFixed(1)} dBm`);
+        const chart = new window.ApexCharts(el, {
+          chart: { type: "line", height: 220, toolbar: { show: false }, zoom: { enabled: false }, animations: { enabled: false } },
+          series: [
+            { name: "RX (dBm)", data: rxSeries },
+            { name: "TX (dBm)", data: txSeries },
+          ],
+          colors: ["#2fb344", "#206bc4"],
+          stroke: { width: 2 },
+          markers: { size: 0 },
+          xaxis: { type: "datetime", tooltip: { enabled: false } },
+          yaxis: { min: chartMin, max: chartMax, tickAmount: 5, labels: { formatter: (val) => `${val.toFixed(1)} dBm` } },
+          tooltip: {
+            shared: true,
+            intersect: false,
+            followCursor: true,
+            y: {
+              formatter: (val, { seriesIndex, dataPointIndex }) => {
+                const point = points[dataPointIndex];
+                if (!point) return fmtDbm(val);
+                if (seriesIndex === 1) {
+                  const txRaw = point.tx_raw;
+                  if (txRaw === null || txRaw === undefined || !Number.isFinite(txRaw)) return "Missing";
+                  if (txRaw < txMin || txRaw > txMax) return `${fmtDbm(txRaw)} (unrealistic)`;
+                  return fmtDbm(txRaw);
+                }
+                return fmtDbm(point.rx);
+              },
+            },
+          },
+          grid: { borderColor: "#e9ecef" },
+          legend: { position: "top" },
+        });
+        chart.render();
+      } catch (err) {
+        // ignore
+      }
+    };
+
+    renderRtoChart();
+    renderOpticalChart();
+  });
+</script>
+
+{% endblock %}
+
