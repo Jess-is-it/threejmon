@@ -787,102 +787,183 @@
 
     const modalTitle = document.getElementById("optical-spark-title");
     const modalChart = document.getElementById("optical-spark-modal-chart");
-    const modalWindowButton = document.getElementById("optical-modal-window-button");
-    const modalWindowOptions = document.querySelectorAll(".optical-modal-window-option");
-    let modalChartInstance = null;
-    const modalEl = document.getElementById("optical-spark-modal");
-    let modalDeviceId = "";
-    let modalStatus = "stable";
-    if (modalEl && modalEl.parentElement !== document.body) {
-      document.body.appendChild(modalEl);
-    }
-    const chartMin = {{ optical_status.chart.min_dbm }};
-    const chartMax = {{ optical_status.chart.max_dbm }};
+	    const modalWindowButton = document.getElementById("optical-modal-window-button");
+	    const modalWindowOptions = document.querySelectorAll(".optical-modal-window-option");
+	    let modalChartInstance = null;
+	    let modalTooltipCleanup = null;
+	    const modalEl = document.getElementById("optical-spark-modal");
+	    let modalDeviceId = "";
+	    let modalStatus = "stable";
+	    let modalName = "Optical";
+	    let modalHours = 24;
+	    if (modalEl && modalEl.parentElement !== document.body) {
+	      document.body.appendChild(modalEl);
+	    }
+	    const chartMin = {{ optical_status.chart.min_dbm }};
+	    const chartMax = {{ optical_status.chart.max_dbm }};
+	    const txRealisticMin = {{ settings.get("classification", {}).get("tx_realistic_min_dbm", -10.0) }};
+	    const txRealisticMax = {{ settings.get("classification", {}).get("tx_realistic_max_dbm", 10.0) }};
 
-    const renderModalChart = async (name, deviceId, status, hours) => {
-      const colorMap = { stable: "#2fb344", issue: "#d63939", monitor: "#f59f00" };
-      const stroke = colorMap[status] || "#2fb344";
-      const label = hours >= 24 ? `${Math.floor(hours / 24)}D` : `${hours}H`;
+	    const renderModalWhenVisible = () => {
+	      if (!modalDeviceId) return;
+	      const doRender = () => renderModalChart(modalName, modalDeviceId, modalStatus, modalHours);
+	      if (modalEl && modalEl.classList.contains("show")) {
+	        doRender();
+	        return;
+	      }
+	      if (modalEl) {
+	        modalEl.addEventListener("shown.bs.modal", doRender, { once: true });
+	        return;
+	      }
+	      doRender();
+	    };
+
+	    const renderModalChart = async (name, deviceId, status, hours) => {
+	      const colorMap = { stable: "#2fb344", issue: "#d63939", monitor: "#f59f00" };
+	      const stroke = colorMap[status] || "#2fb344";
+	      const label = hours >= 24 ? `${Math.floor(hours / 24)}D` : `${hours}H`;
       modalTitle.textContent = `${name} · ${label} Trend`;
       if (modalWindowButton) {
         modalWindowButton.textContent = `Filter: ${label}`;
       }
-      if (modalChartInstance) {
-        modalChartInstance.destroy();
-        modalChartInstance = null;
-      }
-      modalChart.innerHTML = "<div class='text-muted'>Loading chart...</div>";
-      try {
-        const params = new URLSearchParams({ device_id: deviceId, window: String(hours) });
-        const res = await fetch(`/optical/series?${params.toString()}`, { headers: { "Accept": "application/json" } });
+	      if (modalChartInstance) {
+	        modalChartInstance.destroy();
+	        modalChartInstance = null;
+	      }
+	      if (modalTooltipCleanup) {
+	        modalTooltipCleanup();
+	        modalTooltipCleanup = null;
+	      }
+	      modalChart.innerHTML = "<div class='text-muted'>Loading chart...</div>";
+	      try {
+	        const params = new URLSearchParams({ device_id: deviceId, window: String(hours) });
+	        const res = await fetch(`/optical/series?${params.toString()}`, { headers: { "Accept": "application/json" } });
         if (!res.ok) {
           modalChart.innerHTML = "<div class='text-muted'>No data available.</div>";
           return;
         }
-        const payload = await res.json();
-        const series = (payload.series || []).map((item) => ({
-          x: item.ts,
-          rx: item.rx,
-          tx: item.tx,
-        }));
-        if (!series.length) {
-          modalChart.innerHTML = "<div class='text-muted'>No data available.</div>";
-          return;
-        }
-        const rxSeries = series.map((item) => ({ x: item.x, y: item.rx }));
-        const txSeries = series.map((item) => ({ x: item.x, y: item.tx }));
-        modalChart.innerHTML = "";
-        const formatTime = (value) =>
-          new Date(value).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
-        const formatDate = (value) =>
-          new Date(value).toLocaleDateString("en-US", { month: "short", day: "2-digit" });
-        modalChartInstance = new window.ApexCharts(modalChart, {
-          chart: {
-            type: "line",
-            height: 260,
-            toolbar: { show: false },
-            animations: { enabled: false },
-          },
-          colors: [stroke, "#206bc4"],
-          series: [
-            { name: "RX (dBm)", data: rxSeries },
-            { name: "TX (dBm)", data: txSeries },
-          ],
-          stroke: { width: 2 },
-          xaxis: {
-            type: "datetime",
-            labels: { formatter: formatTime },
-            tooltip: { enabled: false },
-          },
-          yaxis: {
-            min: chartMin,
-            max: chartMax,
-            tickAmount: 5,
-            labels: { formatter: (value) => `${value.toFixed(1)} dBm` },
-          },
-          tooltip: {
-            shared: true,
-            x: { formatter: (value) => `${formatDate(value)} ${formatTime(value)}` },
-          },
-          legend: { position: "top" },
-          grid: { borderColor: "#e9ecef" },
-        });
-        modalChartInstance.render();
-      } catch (err) {
-        modalChart.innerHTML = "<div class='text-muted'>No data available.</div>";
-      }
-    };
+	        const payload = await res.json();
+	        const toNumberOrNull = (value) => {
+	          if (value === null || value === undefined) return null;
+	          const parsed = Number(value);
+	          return Number.isFinite(parsed) ? parsed : null;
+	        };
+	        const points = (payload.series || [])
+	          .map((item) => {
+	            const ts = item.ts ?? item.timestamp ?? null;
+	            const parsedTs = ts ? Date.parse(String(ts)) : NaN;
+	            if (!Number.isFinite(parsedTs)) return null;
+	            const txRaw = toNumberOrNull(item.tx);
+	            const txPlot =
+	              txRaw === null || txRaw === undefined
+	                ? null
+	                : Number(txRaw) < txRealisticMin || Number(txRaw) > txRealisticMax
+	                  ? null
+	                  : txRaw;
+	            return {
+	              x: parsedTs,
+	              rx: toNumberOrNull(item.rx),
+	              tx: txPlot,
+	              tx_raw: txRaw,
+	            };
+	          })
+	          .filter((item) => item !== null);
+	        if (!points.length) {
+	          modalChart.innerHTML = "<div class='text-muted'>No data available.</div>";
+	          return;
+	        }
+	        const rxSeries = points.map((item) => ({ x: item.x, y: item.rx }));
+	        const txSeries = points.map((item) => ({ x: item.x, y: item.tx }));
+	        modalChart.innerHTML = "";
+	        const formatTime = (value) => {
+	          const dt = new Date(value);
+	          if (Number.isNaN(dt.getTime())) return "";
+	          return dt.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+	        };
+	        const formatDate = (value) => {
+	          const dt = new Date(value);
+	          if (Number.isNaN(dt.getTime())) return "";
+	          return dt.toLocaleDateString("en-US", { month: "short", day: "2-digit" });
+	        };
+	        const formatDbm = (value) => {
+	          if (value === null || value === undefined || Number.isNaN(Number(value))) return "n/a";
+	          return `${Number(value).toFixed(2)} dBm`;
+	        };
+	        const formatDbmTooltip = (value) => {
+	          if (value === null || value === undefined || Number.isNaN(Number(value))) return "n/a";
+	          return `${Number(value).toFixed(1)} dBm`;
+	        };
+	        modalChartInstance = new window.ApexCharts(modalChart, {
+	          chart: {
+	            type: "line",
+	            height: 260,
+	            toolbar: { show: false },
+	            animations: { enabled: false },
+	            zoom: { enabled: false },
+	          },
+	          colors: [stroke, "#206bc4"],
+	          series: [
+	            { name: "RX (dBm)", data: rxSeries },
+	            { name: "TX (dBm)", data: txSeries },
+	          ],
+	          stroke: { width: 2 },
+	          markers: { size: 0, hover: { size: 4 } },
+	          xaxis: {
+	            type: "datetime",
+	            labels: { formatter: formatTime },
+	            tooltip: { enabled: false },
+	          },
+	          yaxis: {
+	            min: chartMin,
+	            max: chartMax,
+	            tickAmount: 5,
+	            labels: { formatter: (value) => `${value.toFixed(1)} dBm` },
+	          },
+		          tooltip: {
+		            shared: true,
+		            intersect: false,
+		            followCursor: true,
+		            x: { formatter: (value) => `${formatDate(value)} ${formatTime(value)}` },
+		            y: {
+		              formatter: (value, { seriesIndex, dataPointIndex }) => {
+		                const point = points?.[dataPointIndex] || null;
+		                if (!point) {
+		                  return value === null || value === undefined || Number.isNaN(Number(value)) ? "n/a" : formatDbmTooltip(value);
+		                }
+		                if (seriesIndex === 1) {
+		                  const txValue = point.tx_raw;
+		                  if (txValue === null || txValue === undefined || Number.isNaN(Number(txValue))) return "Missing";
+		                  if (Number(txValue) < txRealisticMin || Number(txValue) > txRealisticMax) {
+		                    return `${formatDbmTooltip(txValue)} (unrealistic)`;
+		                  }
+		                  return formatDbmTooltip(txValue);
+		                }
+		                const rxValue = point.rx;
+		                return rxValue === null || rxValue === undefined ? "n/a" : formatDbmTooltip(rxValue);
+		              },
+		            },
+		          },
+	          legend: { position: "top" },
+	          grid: { borderColor: "#e9ecef" },
+	        });
+	        modalChartInstance.render();
+	        window.dispatchEvent(new Event("resize"));
+	        setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
+	        modalTooltipCleanup = null;
+	      } catch (err) {
+	        modalChart.innerHTML = "<div class='text-muted'>No data available.</div>";
+	      }
+	    };
 
-    document.querySelectorAll(".optical-spark-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        modalDeviceId = btn.dataset.deviceId || "";
-        modalStatus = btn.dataset.status || "stable";
-        const name = btn.dataset.name || "Optical";
-        const label = windowBadge ? windowBadge.textContent.trim() : "1D";
-        const hours = Number(currentWindow || "24");
-        renderModalChart(name, modalDeviceId, modalStatus, hours);
-      });
-    });
+	    document.querySelectorAll(".optical-spark-btn").forEach((btn) => {
+	      btn.addEventListener("click", () => {
+	        modalDeviceId = btn.dataset.deviceId || "";
+	        modalStatus = btn.dataset.status || "stable";
+	        modalName = btn.dataset.name || "Optical";
+	        modalHours = Number(currentWindow || "24");
+	        renderModalWhenVisible();
+	      });
+	    });
 
     modalWindowOptions.forEach((btn) => {
       btn.addEventListener("click", () => {

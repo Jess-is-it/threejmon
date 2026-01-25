@@ -2329,6 +2329,17 @@ async def optical_settings_run(request: Request):
     )
 
 
+@app.get("/optical/series", response_class=JSONResponse)
+async def optical_series(device_id: str, window: int = 24):
+    if not (device_id or "").strip():
+        return JSONResponse({"hours": 0, "series": []}, status_code=400)
+    hours = _normalize_wan_window(window)
+    since_iso = (datetime.utcnow() - timedelta(hours=hours)).replace(microsecond=0).isoformat() + "Z"
+    rows = get_optical_results_for_device_since(device_id, since_iso)
+    series = [{"ts": row.get("timestamp"), "rx": row.get("rx"), "tx": row.get("tx")} for row in rows]
+    return JSONResponse({"hours": hours, "series": series})
+
+
 @app.get("/settings/rto", response_class=HTMLResponse)
 async def rto_settings(request: Request):
     settings = get_settings("rto", RTO_DEFAULTS)
