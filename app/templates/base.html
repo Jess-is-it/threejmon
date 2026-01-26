@@ -4,9 +4,12 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{% block title %}ThreeJ Notifier Suite{% endblock %}</title>
+  {% if browser_logo_url %}
+    <link rel="icon" type="{{ browser_logo_type }}" href="{{ browser_logo_url }}" />
+  {% endif %}
   <link rel="stylesheet" href="/static/tabler/css/tabler.min.css" />
   <link rel="stylesheet" href="/static/tabler/css/tabler-icons.min.css" />
-  <link rel="stylesheet" href="/static/style.css?v=tabler2" />
+  <link rel="stylesheet" href="/static/style.css?v=tabler3" />
 </head>
 <body class="layout-fluid">
   <div class="page">
@@ -14,11 +17,17 @@
       <div class="container-fluid">
         <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-menu" aria-controls="sidebar-menu" aria-expanded="false" aria-label="Toggle navigation">
           <span class="navbar-toggler-icon"></span>
-        </button>
-        <h1 class="navbar-brand navbar-brand-autodark">
-          <a href="/">ThreeJ Notifier</a>
-        </h1>
-        <div class="collapse navbar-collapse" id="sidebar-menu">
+	        </button>
+	        <h1 class="navbar-brand navbar-brand-autodark">
+	          <a href="/">
+	            {% if company_logo_url %}
+	              <img src="{{ company_logo_url }}" class="navbar-brand-logo" alt="Company Logo" />
+	            {% else %}
+	              ThreeJ Notifier
+	            {% endif %}
+	          </a>
+	        </h1>
+	        <div class="collapse navbar-collapse" id="sidebar-menu">
           <ul class="navbar-nav pt-lg-3">
 	            <li class="nav-item">
 	              <a class="nav-link" href="/">

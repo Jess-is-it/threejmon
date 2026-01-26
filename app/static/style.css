@@ -175,6 +175,29 @@ body,
   justify-content: center;
 }
 
+aside.navbar .navbar-brand {
+  padding-left: 24px;
+  padding-right: 24px;
+  display: flex;
+  justify-content: center;
+}
+
+aside.navbar .navbar-brand > a {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  justify-content: center;
+}
+
+aside.navbar .navbar-brand-logo {
+  height: 56px !important;
+  max-height: 56px !important;
+  width: auto !important;
+  max-width: 100% !important;
+  object-fit: contain;
+  display: block;
+}
+
 .rto-spark-modal-wrap {
   width: 100%;
 }

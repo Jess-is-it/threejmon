@@ -11,6 +11,51 @@
 
 <div class="card mb-4">
   <div class="card-header">
+    <h3 class="card-title">Branding</h3>
+  </div>
+  <div class="card-body">
+    <div class="row g-4">
+      <div class="col-12 col-lg-6">
+        <form method="post" action="/settings/system/logo" enctype="multipart/form-data">
+          <label class="form-label">Company Logo <span class="info" data-tip="Displayed in the left navigation header. Image files only (PNG/JPG/WebP/GIF).">i</span></label>
+          <input class="form-control" type="file" name="company_logo" accept="image/*" required />
+          <div class="text-muted small mt-1">Recommended: transparent PNG, height 32–40px.</div>
+          <div class="mt-3 d-flex align-items-center gap-3 flex-wrap">
+            <button type="submit" class="btn btn-primary">Upload Company Logo</button>
+            {% if company_logo_url %}
+              <div class="border rounded p-2 d-inline-block bg-white">
+                <img src="{{ company_logo_url }}" alt="Company Logo" style="height: 40px; width: auto; display: block;" />
+              </div>
+            {% else %}
+              <div class="text-muted small">No logo uploaded yet.</div>
+            {% endif %}
+          </div>
+        </form>
+      </div>
+
+      <div class="col-12 col-lg-6">
+        <form method="post" action="/settings/system/browser-logo" enctype="multipart/form-data">
+          <label class="form-label">Browser Page Logo <span class="info" data-tip="Used as the browser tab icon (favicon). PNG/JPG/WebP/GIF/ICO supported.">i</span></label>
+          <input class="form-control" type="file" name="browser_logo" accept="image/*,.ico" required />
+          <div class="text-muted small mt-1">Recommended: square icon (e.g. 64×64 or 128×128 PNG).</div>
+          <div class="mt-3 d-flex align-items-center gap-3 flex-wrap">
+            <button type="submit" class="btn btn-primary">Upload Browser Logo</button>
+            {% if browser_logo_url %}
+              <div class="border rounded p-2 d-inline-block bg-white">
+                <img src="{{ browser_logo_url }}" alt="Browser Logo" style="height: 32px; width: 32px; display: block;" />
+              </div>
+            {% else %}
+              <div class="text-muted small">No browser logo uploaded yet.</div>
+            {% endif %}
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-4">
+  <div class="card-header">
     <h3 class="card-title">MikroTik API (Pulsewatch)</h3>
   </div>
   <div class="card-body">
