@@ -167,6 +167,14 @@ body,
   justify-content: center;
 }
 
+.pulsewatch-spark-modal-chart {
+  width: 100%;
+  min-height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .rto-spark-modal-wrap {
   width: 100%;
 }

@@ -1918,6 +1918,21 @@ async def pulsewatch_summary(target: str = "all", loss_minutes: int = 120):
     )
 
 
+@app.get("/pulsewatch/loss_series", response_class=JSONResponse)
+async def pulsewatch_loss_series(row_id: str, target: str = "all", loss_minutes: int = 120):
+    minutes = max(int(loss_minutes or 120), 1)
+    since = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat().replace("+00:00", "Z")
+    target_filter = None if target == "all" else target
+    history_map = get_ping_rollup_history_map([row_id], since, target=target_filter)
+    history = history_map.get(row_id, [])
+    series = [
+        {"ts": item.get("timestamp"), "value": item.get("loss")}
+        for item in history
+        if item.get("timestamp") and item.get("loss") is not None
+    ]
+    return JSONResponse({"minutes": minutes, "series": series})
+
+
 @app.get("/pulsewatch/stability")
 async def pulsewatch_stability(days: int = 7, hours: int | None = None):
     days = max(int(days or 7), 1)
