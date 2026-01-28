@@ -51,7 +51,7 @@ OPTICAL_DEFAULTS = {
         "timezone": "Asia/Manila",
     },
     "storage": {
-        "raw_retention_days": 30,
+        "raw_retention_days": 365,
     },
     "classification": {
         "issue_rx_dbm": -27.0,
@@ -102,7 +102,7 @@ RTO_DEFAULTS = {
         "window_size": 30,
     },
     "storage": {
-        "raw_retention_days": 30,
+        "raw_retention_days": 365,
     },
     "classification": {
         "issue_rto_pct": 5.0,
@@ -142,7 +142,7 @@ ISP_PING_DEFAULTS = {
         "manage_address_lists": False,
         "reconcile_interval_minutes": 10,
         "store_raw_output": False,
-        "retention_days": 30,
+        "retention_days": 365,
         "rollup_retention_days": 365,
         "list_presets": [],
         "mikrotik": {
