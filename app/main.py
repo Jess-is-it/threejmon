@@ -2097,6 +2097,13 @@ async def import_settings_route(request: Request):
 
 @app.get("/settings/db/export")
 async def export_db_route():
+    db_url = (os.environ.get("THREEJ_DATABASE_URL") or "").strip().lower()
+    if db_url.startswith("postgres://") or db_url.startswith("postgresql://"):
+        return Response(
+            content=b"Database export is not available in the UI when using Postgres. Use pg_dump instead.",
+            media_type="text/plain",
+            status_code=501,
+        )
     db_path = os.environ.get("THREEJ_DB_PATH", "/data/threejnotif.db")
     if not os.path.exists(db_path):
         return Response(content=b"Database not found.", media_type="text/plain", status_code=404)
@@ -2112,6 +2119,15 @@ async def import_db_route(request: Request):
     form = await request.form()
     uploaded = form.get("db_file")
     message = ""
+    db_url = (os.environ.get("THREEJ_DATABASE_URL") or "").strip().lower()
+    if db_url.startswith("postgres://") or db_url.startswith("postgresql://"):
+        message = "Database restore is not available in the UI when using Postgres. Use psql/pg_restore instead."
+        settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+        interfaces = get_interface_options()
+        return templates.TemplateResponse(
+            "settings_system.html",
+            make_context(request, {"message": message, "settings": settings, "interfaces": interfaces}),
+        )
     db_path = os.environ.get("THREEJ_DB_PATH", "/data/threejnotif.db")
     if not uploaded:
         message = "No database file uploaded."

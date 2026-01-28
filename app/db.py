@@ -1,12 +1,156 @@
 import json
 import os
 import sqlite3
+import threading
 from datetime import datetime, timezone, timedelta
 
 DB_PATH = os.environ.get("THREEJ_DB_PATH", "/data/threejnotif.db")
+DB_URL = (os.environ.get("THREEJ_DATABASE_URL") or os.environ.get("DATABASE_URL") or "").strip()
+
+_pg_pool = None
+_pg_pool_lock = threading.Lock()
+
+
+def _use_postgres():
+    url = (DB_URL or "").lower()
+    return url.startswith("postgres://") or url.startswith("postgresql://")
+
+
+def _translate_qmarks(sql):
+    # sqlite uses "?" params; psycopg2 expects "%s".
+    # Replace only outside single-quoted string literals.
+    out = []
+    in_single = False
+    i = 0
+    while i < len(sql):
+        ch = sql[i]
+        if ch == "'":
+            out.append(ch)
+            if in_single and i + 1 < len(sql) and sql[i + 1] == "'":
+                out.append("'")
+                i += 2
+                continue
+            in_single = not in_single
+            i += 1
+            continue
+        if ch == "?" and not in_single:
+            out.append("%s")
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+class _NoResult:
+    def fetchone(self):
+        return None
+
+    def fetchall(self):
+        return []
+
+
+class _PGCursorResult:
+    def __init__(self, owner, cursor):
+        self._owner = owner
+        self._cursor = cursor
+
+    def _close(self):
+        if not self._cursor:
+            return
+        try:
+            self._cursor.close()
+        finally:
+            self._owner._discard_cursor(self._cursor)
+            self._cursor = None
+
+    def fetchone(self):
+        try:
+            return self._cursor.fetchone()
+        finally:
+            self._close()
+
+    def fetchall(self):
+        try:
+            return self._cursor.fetchall()
+        finally:
+            self._close()
+
+
+class _PGConn:
+    def __init__(self, pool, conn):
+        self._pool = pool
+        self._conn = conn
+        self._open_cursors = []
+
+    def _discard_cursor(self, cursor):
+        try:
+            self._open_cursors.remove(cursor)
+        except ValueError:
+            pass
+
+    def __enter__(self):
+        self._conn.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return self._conn.__exit__(exc_type, exc, tb)
+
+    def execute(self, sql, params=None):
+        from psycopg2.extras import RealDictCursor
+
+        q = _translate_qmarks(str(sql))
+        cur = self._conn.cursor(cursor_factory=RealDictCursor)
+        try:
+            cur.execute(q, tuple(params or ()))
+            if cur.description is None:
+                cur.close()
+                return _NoResult()
+            self._open_cursors.append(cur)
+            return _PGCursorResult(self, cur)
+        except Exception:
+            try:
+                cur.close()
+            except Exception:
+                pass
+            raise
+
+    def close(self):
+        # Return to pool, ensuring the connection is clean.
+        for cur in list(self._open_cursors):
+            try:
+                cur.close()
+            except Exception:
+                pass
+        self._open_cursors.clear()
+        try:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
+        finally:
+            self._pool.putconn(self._conn)
+
+
+def _get_pg_pool():
+    global _pg_pool
+    if _pg_pool is not None:
+        return _pg_pool
+    with _pg_pool_lock:
+        if _pg_pool is not None:
+            return _pg_pool
+        from psycopg2.pool import ThreadedConnectionPool
+
+        minconn = max(int(os.environ.get("THREEJ_PG_POOL_MIN", 1) or 1), 1)
+        maxconn = max(int(os.environ.get("THREEJ_PG_POOL_MAX", 10) or 10), minconn)
+        _pg_pool = ThreadedConnectionPool(minconn, maxconn, dsn=DB_URL)
+        return _pg_pool
 
 
 def get_conn():
+    if _use_postgres():
+        conn = _get_pg_pool().getconn()
+        conn.autocommit = False
+        return _PGConn(_get_pg_pool(), conn)
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
@@ -15,139 +159,274 @@ def get_conn():
 def init_db():
     conn = get_conn()
     with conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
+        if _use_postgres():
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
             )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS state (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS state (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
             )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS job_status (
-                job_name TEXT PRIMARY KEY,
-                last_run_at TEXT,
-                last_success_at TEXT,
-                last_error TEXT,
-                last_error_at TEXT
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS job_status (
+                    job_name TEXT PRIMARY KEY,
+                    last_run_at TEXT,
+                    last_success_at TEXT,
+                    last_error TEXT,
+                    last_error_at TEXT
+                )
+                """
             )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS ping_results (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL,
-                isp_id TEXT NOT NULL,
-                target TEXT NOT NULL,
-                loss REAL,
-                min_ms REAL,
-                avg_ms REAL,
-                max_ms REAL,
-                raw_output TEXT
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ping_results (
+                    id BIGSERIAL PRIMARY KEY,
+                    timestamp TEXT NOT NULL,
+                    isp_id TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    loss DOUBLE PRECISION,
+                    min_ms DOUBLE PRECISION,
+                    avg_ms DOUBLE PRECISION,
+                    max_ms DOUBLE PRECISION,
+                    raw_output TEXT
+                )
+                """
             )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS ping_rollups (
-                bucket_ts TEXT NOT NULL,
-                isp_id TEXT NOT NULL,
-                target TEXT NOT NULL,
-                sample_count INTEGER NOT NULL,
-                avg_sum REAL NOT NULL,
-                avg_count INTEGER NOT NULL,
-                loss_sum REAL NOT NULL,
-                loss_count INTEGER NOT NULL,
-                min_ms REAL,
-                max_ms REAL,
-                max_avg_ms REAL,
-                PRIMARY KEY (bucket_ts, isp_id, target)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ping_rollups (
+                    bucket_ts TEXT NOT NULL,
+                    isp_id TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    sample_count INTEGER NOT NULL,
+                    avg_sum DOUBLE PRECISION NOT NULL,
+                    avg_count INTEGER NOT NULL,
+                    loss_sum DOUBLE PRECISION NOT NULL,
+                    loss_count INTEGER NOT NULL,
+                    min_ms DOUBLE PRECISION,
+                    max_ms DOUBLE PRECISION,
+                    max_avg_ms DOUBLE PRECISION,
+                    PRIMARY KEY (bucket_ts, isp_id, target)
+                )
+                """
             )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS speedtest_results (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL,
-                isp_id TEXT NOT NULL,
-                download_mbps REAL,
-                upload_mbps REAL,
-                latency_ms REAL,
-                server_name TEXT,
-                server_id TEXT,
-                public_ip TEXT,
-                raw_output TEXT
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS speedtest_results (
+                    id BIGSERIAL PRIMARY KEY,
+                    timestamp TEXT NOT NULL,
+                    isp_id TEXT NOT NULL,
+                    download_mbps DOUBLE PRECISION,
+                    upload_mbps DOUBLE PRECISION,
+                    latency_ms DOUBLE PRECISION,
+                    server_name TEXT,
+                    server_id TEXT,
+                    public_ip TEXT,
+                    raw_output TEXT
+                )
+                """
             )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS alerts_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL,
-                isp_id TEXT NOT NULL,
-                alert_type TEXT NOT NULL,
-                message TEXT NOT NULL,
-                cooldown_until TEXT
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS alerts_log (
+                    id BIGSERIAL PRIMARY KEY,
+                    timestamp TEXT NOT NULL,
+                    isp_id TEXT NOT NULL,
+                    alert_type TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    cooldown_until TEXT
+                )
+                """
             )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS rto_results (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL,
-                ip TEXT NOT NULL,
-                name TEXT,
-                ok INTEGER NOT NULL
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS rto_results (
+                    id BIGSERIAL PRIMARY KEY,
+                    timestamp TEXT NOT NULL,
+                    ip TEXT NOT NULL,
+                    name TEXT,
+                    ok INTEGER NOT NULL
+                )
+                """
             )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS optical_results (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL,
-                device_id TEXT NOT NULL,
-                pppoe TEXT,
-                ip TEXT,
-                rx REAL,
-                tx REAL,
-                priority INTEGER NOT NULL
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS optical_results (
+                    id BIGSERIAL PRIMARY KEY,
+                    timestamp TEXT NOT NULL,
+                    device_id TEXT NOT NULL,
+                    pppoe TEXT,
+                    ip TEXT,
+                    rx DOUBLE PRECISION,
+                    tx DOUBLE PRECISION,
+                    priority INTEGER NOT NULL
+                )
+                """
             )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS wan_status_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL,
-                wan_id TEXT NOT NULL,
-                status TEXT NOT NULL,
-                up_pct REAL,
-                target TEXT,
-                core_id TEXT,
-                label TEXT
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS wan_status_history (
+                    id BIGSERIAL PRIMARY KEY,
+                    timestamp TEXT NOT NULL,
+                    wan_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    up_pct DOUBLE PRECISION,
+                    target TEXT,
+                    core_id TEXT,
+                    label TEXT
+                )
+                """
             )
-            """
-        )
+        else:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS state (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS job_status (
+                    job_name TEXT PRIMARY KEY,
+                    last_run_at TEXT,
+                    last_success_at TEXT,
+                    last_error TEXT,
+                    last_error_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ping_results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    isp_id TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    loss REAL,
+                    min_ms REAL,
+                    avg_ms REAL,
+                    max_ms REAL,
+                    raw_output TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ping_rollups (
+                    bucket_ts TEXT NOT NULL,
+                    isp_id TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    sample_count INTEGER NOT NULL,
+                    avg_sum REAL NOT NULL,
+                    avg_count INTEGER NOT NULL,
+                    loss_sum REAL NOT NULL,
+                    loss_count INTEGER NOT NULL,
+                    min_ms REAL,
+                    max_ms REAL,
+                    max_avg_ms REAL,
+                    PRIMARY KEY (bucket_ts, isp_id, target)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS speedtest_results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    isp_id TEXT NOT NULL,
+                    download_mbps REAL,
+                    upload_mbps REAL,
+                    latency_ms REAL,
+                    server_name TEXT,
+                    server_id TEXT,
+                    public_ip TEXT,
+                    raw_output TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS alerts_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    isp_id TEXT NOT NULL,
+                    alert_type TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    cooldown_until TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS rto_results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    ip TEXT NOT NULL,
+                    name TEXT,
+                    ok INTEGER NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS optical_results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    device_id TEXT NOT NULL,
+                    pppoe TEXT,
+                    ip TEXT,
+                    rx REAL,
+                    tx REAL,
+                    priority INTEGER NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS wan_status_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    wan_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    up_pct REAL,
+                    target TEXT,
+                    core_id TEXT,
+                    label TEXT
+                )
+                """
+            )
+
         conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_wan_status_history_wan_ts
             ON wan_status_history (wan_id, timestamp)
             """
         )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_rto_results_ip_ts ON rto_results (ip, timestamp)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_optical_results_device_ts ON optical_results (device_id, timestamp)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_optical_results_ip_ts ON optical_results (ip, timestamp)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ping_results_isp_ts ON ping_results (isp_id, timestamp)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ping_rollups_isp_bucket ON ping_rollups (isp_id, bucket_ts)")
     conn.close()
 
 
@@ -271,6 +550,8 @@ def fetch_all_state():
 def insert_ping_result(isp_id, target, loss, min_ms, avg_ms, max_ms, raw_output=None, timestamp=None):
     stamp = timestamp or utc_now_iso()
     bucket_ts = _bucket_ts_iso(stamp, bucket_seconds=60)
+    least_fn = "LEAST" if _use_postgres() else "MIN"
+    greatest_fn = "GREATEST" if _use_postgres() else "MAX"
     conn = get_conn()
     try:
         with conn:
@@ -286,7 +567,7 @@ def insert_ping_result(isp_id, target, loss, min_ms, avg_ms, max_ms, raw_output=
             loss_sum = float(loss) if loss is not None else 0.0
             loss_count = 1 if loss is not None else 0
             conn.execute(
-                """
+                f"""
                 INSERT INTO ping_rollups (
                     bucket_ts, isp_id, target, sample_count, avg_sum, avg_count, loss_sum, loss_count, min_ms, max_ms, max_avg_ms
                 )
@@ -300,17 +581,17 @@ def insert_ping_result(isp_id, target, loss, min_ms, avg_ms, max_ms, raw_output=
                     min_ms = CASE
                         WHEN min_ms IS NULL THEN excluded.min_ms
                         WHEN excluded.min_ms IS NULL THEN min_ms
-                        ELSE MIN(min_ms, excluded.min_ms)
+                        ELSE {least_fn}(min_ms, excluded.min_ms)
                     END,
                     max_ms = CASE
                         WHEN max_ms IS NULL THEN excluded.max_ms
                         WHEN excluded.max_ms IS NULL THEN max_ms
-                        ELSE MAX(max_ms, excluded.max_ms)
+                        ELSE {greatest_fn}(max_ms, excluded.max_ms)
                     END,
                     max_avg_ms = CASE
                         WHEN max_avg_ms IS NULL THEN excluded.max_avg_ms
                         WHEN excluded.max_avg_ms IS NULL THEN max_avg_ms
-                        ELSE MAX(max_avg_ms, excluded.max_avg_ms)
+                        ELSE {greatest_fn}(max_avg_ms, excluded.max_avg_ms)
                     END
                 """,
                 (
@@ -341,6 +622,7 @@ def insert_wan_history_row(
     retention_days=400,
 ):
     stamp = timestamp or utc_now_iso()
+    cutoff = (datetime.utcnow() - timedelta(days=max(int(retention_days or 1), 1))).replace(microsecond=0).isoformat() + "Z"
     conn = get_conn()
     try:
         with conn:
@@ -351,14 +633,13 @@ def insert_wan_history_row(
                 """,
                 (stamp, wan_id, status, up_pct, target, core_id, label),
             )
-            # retain roughly ~400 days of history
             conn.execute(
                 """
                 DELETE FROM wan_status_history
-                WHERE timestamp < datetime('now', ?)
+                WHERE timestamp < ?
                 """
                 ,
-                (f"-{max(int(retention_days or 1), 1)} days",),
+                (cutoff,),
             )
     finally:
         conn.close()
@@ -1047,44 +1328,80 @@ def backfill_ping_rollups(since_iso, until_iso=None):
                 where_clause += " AND timestamp <= ?"
                 params.append(until_iso)
 
-            conn.execute(
-                f"""
-                INSERT INTO ping_rollups (
-                    bucket_ts, isp_id, target, sample_count, avg_sum, avg_count, loss_sum, loss_count, min_ms, max_ms, max_avg_ms
-                )
-                SELECT
-                    bucket_ts,
-                    isp_id,
-                    target,
-                    COUNT(*) AS sample_count,
-                    COALESCE(SUM(avg_ms), 0) AS avg_sum,
-                    SUM(CASE WHEN avg_ms IS NOT NULL THEN 1 ELSE 0 END) AS avg_count,
-                    COALESCE(SUM(loss), 0) AS loss_sum,
-                    SUM(CASE WHEN loss IS NOT NULL THEN 1 ELSE 0 END) AS loss_count,
-                    MIN(min_ms) AS min_ms,
-                    MAX(max_ms) AS max_ms,
-                    MAX(avg_ms) AS max_avg_ms
-                FROM (
+            if _use_postgres():
+                conn.execute(
+                    f"""
+                    INSERT INTO ping_rollups (
+                        bucket_ts, isp_id, target, sample_count, avg_sum, avg_count, loss_sum, loss_count, min_ms, max_ms, max_avg_ms
+                    )
                     SELECT
-                        strftime(
-                            '%Y-%m-%dT%H:%M:%SZ',
-                            datetime(
-                                CAST(strftime('%s', replace(replace(timestamp,'T',' '),'Z','')) AS integer) / 60 * 60,
-                                'unixepoch'
-                            )
-                        ) AS bucket_ts,
+                        bucket_ts,
                         isp_id,
                         target,
-                        loss,
-                        min_ms,
-                        avg_ms,
-                        max_ms
-                    FROM ping_results
-                    WHERE {where_clause}
-                ) t
-                GROUP BY bucket_ts, isp_id, target
-                """,
-                params,
-            )
+                        COUNT(*) AS sample_count,
+                        COALESCE(SUM(avg_ms), 0) AS avg_sum,
+                        SUM(CASE WHEN avg_ms IS NOT NULL THEN 1 ELSE 0 END) AS avg_count,
+                        COALESCE(SUM(loss), 0) AS loss_sum,
+                        SUM(CASE WHEN loss IS NOT NULL THEN 1 ELSE 0 END) AS loss_count,
+                        MIN(min_ms) AS min_ms,
+                        MAX(max_ms) AS max_ms,
+                        MAX(avg_ms) AS max_avg_ms
+                    FROM (
+                        SELECT
+                            to_char(date_trunc('minute', (timestamp::timestamptz AT TIME ZONE 'UTC')),
+                                    'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS bucket_ts,
+                            isp_id,
+                            target,
+                            loss,
+                            min_ms,
+                            avg_ms,
+                            max_ms
+                        FROM ping_results
+                        WHERE {where_clause}
+                    ) t
+                    GROUP BY bucket_ts, isp_id, target
+                    """,
+                    params,
+                )
+            else:
+                conn.execute(
+                    f"""
+                    INSERT INTO ping_rollups (
+                        bucket_ts, isp_id, target, sample_count, avg_sum, avg_count, loss_sum, loss_count, min_ms, max_ms, max_avg_ms
+                    )
+                    SELECT
+                        bucket_ts,
+                        isp_id,
+                        target,
+                        COUNT(*) AS sample_count,
+                        COALESCE(SUM(avg_ms), 0) AS avg_sum,
+                        SUM(CASE WHEN avg_ms IS NOT NULL THEN 1 ELSE 0 END) AS avg_count,
+                        COALESCE(SUM(loss), 0) AS loss_sum,
+                        SUM(CASE WHEN loss IS NOT NULL THEN 1 ELSE 0 END) AS loss_count,
+                        MIN(min_ms) AS min_ms,
+                        MAX(max_ms) AS max_ms,
+                        MAX(avg_ms) AS max_avg_ms
+                    FROM (
+                        SELECT
+                            strftime(
+                                '%Y-%m-%dT%H:%M:%SZ',
+                                datetime(
+                                    CAST(strftime('%s', replace(replace(timestamp,'T',' '),'Z','')) AS integer) / 60 * 60,
+                                    'unixepoch'
+                                )
+                            ) AS bucket_ts,
+                            isp_id,
+                            target,
+                            loss,
+                            min_ms,
+                            avg_ms,
+                            max_ms
+                        FROM ping_results
+                        WHERE {where_clause}
+                    ) t
+                    GROUP BY bucket_ts, isp_id, target
+                    """,
+                    params,
+                )
     finally:
         conn.close()
