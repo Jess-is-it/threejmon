@@ -287,6 +287,42 @@ def init_db():
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS accounts_ping_results (
+                    id BIGSERIAL PRIMARY KEY,
+                    timestamp TEXT NOT NULL,
+                    account_id TEXT NOT NULL,
+                    name TEXT,
+                    ip TEXT NOT NULL,
+                    loss DOUBLE PRECISION,
+                    min_ms DOUBLE PRECISION,
+                    avg_ms DOUBLE PRECISION,
+                    max_ms DOUBLE PRECISION,
+                    mode TEXT,
+                    ok INTEGER NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS accounts_ping_rollups (
+                    bucket_ts TEXT NOT NULL,
+                    account_id TEXT NOT NULL,
+                    ip TEXT NOT NULL,
+                    sample_count INTEGER NOT NULL,
+                    ok_count INTEGER NOT NULL,
+                    avg_sum DOUBLE PRECISION NOT NULL,
+                    avg_count INTEGER NOT NULL,
+                    loss_sum DOUBLE PRECISION NOT NULL,
+                    loss_count INTEGER NOT NULL,
+                    min_ms DOUBLE PRECISION,
+                    max_ms DOUBLE PRECISION,
+                    max_avg_ms DOUBLE PRECISION,
+                    PRIMARY KEY (bucket_ts, account_id)
+                )
+                """
+            )
         else:
             conn.execute(
                 """
@@ -415,6 +451,42 @@ def init_db():
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS accounts_ping_results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    account_id TEXT NOT NULL,
+                    name TEXT,
+                    ip TEXT NOT NULL,
+                    loss REAL,
+                    min_ms REAL,
+                    avg_ms REAL,
+                    max_ms REAL,
+                    mode TEXT,
+                    ok INTEGER NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS accounts_ping_rollups (
+                    bucket_ts TEXT NOT NULL,
+                    account_id TEXT NOT NULL,
+                    ip TEXT NOT NULL,
+                    sample_count INTEGER NOT NULL,
+                    ok_count INTEGER NOT NULL,
+                    avg_sum REAL NOT NULL,
+                    avg_count INTEGER NOT NULL,
+                    loss_sum REAL NOT NULL,
+                    loss_count INTEGER NOT NULL,
+                    min_ms REAL,
+                    max_ms REAL,
+                    max_avg_ms REAL,
+                    PRIMARY KEY (bucket_ts, account_id)
+                )
+                """
+            )
 
         conn.execute(
             """
@@ -427,6 +499,9 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_optical_results_ip_ts ON optical_results (ip, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ping_results_isp_ts ON ping_results (isp_id, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ping_rollups_isp_bucket ON ping_rollups (isp_id, bucket_ts)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_ping_results_acct_ts ON accounts_ping_results (account_id, timestamp)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_ping_results_ip_ts ON accounts_ping_results (ip, timestamp)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_ping_rollups_acct_bucket ON accounts_ping_rollups (account_id, bucket_ts)")
     conn.close()
 
 
@@ -607,6 +682,207 @@ def insert_ping_result(isp_id, target, loss, min_ms, avg_ms, max_ms, raw_output=
                     avg_ms,
                 ),
             )
+    finally:
+        conn.close()
+
+
+def insert_accounts_ping_result(
+    account_id,
+    name,
+    ip,
+    loss,
+    min_ms,
+    avg_ms,
+    max_ms,
+    ok,
+    mode="normal",
+    timestamp=None,
+    bucket_seconds=60,
+):
+    stamp = timestamp or utc_now_iso()
+    bucket_ts = _bucket_ts_iso(stamp, bucket_seconds=bucket_seconds)
+    least_fn = "LEAST" if _use_postgres() else "MIN"
+    greatest_fn = "GREATEST" if _use_postgres() else "MAX"
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO accounts_ping_results (timestamp, account_id, name, ip, loss, min_ms, avg_ms, max_ms, mode, ok)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (stamp, account_id, name, ip, loss, min_ms, avg_ms, max_ms, mode, 1 if ok else 0),
+            )
+            avg_sum = float(avg_ms) if avg_ms is not None else 0.0
+            avg_count = 1 if avg_ms is not None else 0
+            loss_sum = float(loss) if loss is not None else 0.0
+            loss_count = 1 if loss is not None else 0
+            ok_count = 1 if ok else 0
+            conn.execute(
+                f"""
+                INSERT INTO accounts_ping_rollups (
+                    bucket_ts, account_id, ip, sample_count, ok_count, avg_sum, avg_count, loss_sum, loss_count, min_ms, max_ms, max_avg_ms
+                )
+                VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(bucket_ts, account_id) DO UPDATE SET
+                    sample_count = sample_count + 1,
+                    ok_count = ok_count + excluded.ok_count,
+                    avg_sum = avg_sum + excluded.avg_sum,
+                    avg_count = avg_count + excluded.avg_count,
+                    loss_sum = loss_sum + excluded.loss_sum,
+                    loss_count = loss_count + excluded.loss_count,
+                    min_ms = CASE
+                        WHEN min_ms IS NULL THEN excluded.min_ms
+                        WHEN excluded.min_ms IS NULL THEN min_ms
+                        ELSE {least_fn}(min_ms, excluded.min_ms)
+                    END,
+                    max_ms = CASE
+                        WHEN max_ms IS NULL THEN excluded.max_ms
+                        WHEN excluded.max_ms IS NULL THEN max_ms
+                        ELSE {greatest_fn}(max_ms, excluded.max_ms)
+                    END,
+                    max_avg_ms = CASE
+                        WHEN max_avg_ms IS NULL THEN excluded.max_avg_ms
+                        WHEN excluded.max_avg_ms IS NULL THEN max_avg_ms
+                        ELSE {greatest_fn}(max_avg_ms, excluded.max_avg_ms)
+                    END
+                """,
+                (
+                    bucket_ts,
+                    account_id,
+                    ip,
+                    ok_count,
+                    avg_sum,
+                    avg_count,
+                    loss_sum,
+                    loss_count,
+                    min_ms,
+                    max_ms,
+                    avg_ms,
+                ),
+            )
+    finally:
+        conn.close()
+
+
+def delete_accounts_ping_raw_older_than(cutoff_iso):
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM accounts_ping_results WHERE timestamp < ?", (cutoff_iso,))
+    finally:
+        conn.close()
+
+
+def delete_accounts_ping_rollups_older_than(cutoff_iso):
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM accounts_ping_rollups WHERE bucket_ts < ?", (cutoff_iso,))
+    finally:
+        conn.close()
+
+
+def get_accounts_ping_series(account_id, since_iso):
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT timestamp, loss, min_ms, avg_ms, max_ms, ok, mode
+            FROM accounts_ping_results
+            WHERE account_id = ? AND timestamp >= ?
+            ORDER BY timestamp ASC
+            """,
+            (account_id, since_iso),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_accounts_ping_results_since(since_iso, account_ids=None):
+    conn = get_conn()
+    try:
+        params = [since_iso]
+        account_clause = ""
+        if account_ids:
+            placeholders = ",".join("?" for _ in account_ids)
+            account_clause = f"AND account_id IN ({placeholders})"
+            params.extend(list(account_ids))
+        rows = conn.execute(
+            f"""
+            SELECT timestamp, account_id, ok
+            FROM accounts_ping_results
+            WHERE timestamp >= ? {account_clause}
+            ORDER BY timestamp ASC
+            """,
+            params,
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_latest_accounts_ping_map(account_ids):
+    if not account_ids:
+        return {}
+    conn = get_conn()
+    try:
+        if _use_postgres():
+            placeholders = ",".join("?" for _ in account_ids)
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT ON (account_id)
+                    account_id, timestamp, name, ip, loss, min_ms, avg_ms, max_ms, mode, ok
+                FROM accounts_ping_results
+                WHERE account_id IN ({placeholders})
+                ORDER BY account_id, timestamp DESC
+                """,
+                list(account_ids),
+            ).fetchall()
+            return {row["account_id"]: dict(row) for row in rows}
+
+        placeholders = ",".join("?" for _ in account_ids)
+        rows = conn.execute(
+            f"""
+            SELECT r.*
+            FROM accounts_ping_results r
+            JOIN (
+                SELECT account_id, MAX(timestamp) AS max_ts
+                FROM accounts_ping_results
+                WHERE account_id IN ({placeholders})
+                GROUP BY account_id
+            ) latest
+              ON r.account_id = latest.account_id AND r.timestamp = latest.max_ts
+            """,
+            list(account_ids),
+        ).fetchall()
+        return {row["account_id"]: dict(row) for row in rows}
+    finally:
+        conn.close()
+
+
+def get_accounts_ping_window_stats(account_ids, since_iso):
+    if not account_ids:
+        return {}
+    placeholders = ",".join("?" for _ in account_ids)
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT
+              account_id,
+              COUNT(*) AS total,
+              SUM(CASE WHEN ok = 0 THEN 1 ELSE 0 END) AS failures,
+              AVG(CASE WHEN loss IS NOT NULL THEN loss ELSE NULL END) AS loss_avg,
+              AVG(CASE WHEN avg_ms IS NOT NULL THEN avg_ms ELSE NULL END) AS avg_ms_avg
+            FROM accounts_ping_results
+            WHERE timestamp >= ? AND account_id IN ({placeholders})
+            GROUP BY account_id
+            """,
+            [since_iso] + list(account_ids),
+        ).fetchall()
+        return {row["account_id"]: dict(row) for row in rows}
     finally:
         conn.close()
 

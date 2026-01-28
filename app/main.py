@@ -45,6 +45,10 @@ from .db import (
     search_rto_customers,
     get_optical_worst_candidates,
     get_rto_worst_summary,
+    get_latest_accounts_ping_map,
+    get_accounts_ping_window_stats,
+    get_accounts_ping_results_since,
+    get_accounts_ping_series,
     utc_now_iso,
     fetch_wan_history_map,
     clear_wan_history,
@@ -57,7 +61,7 @@ from .notifiers import optical as optical_notifier
 from .notifiers import rto as rto_notifier
 from .notifiers import wan_ping as wan_ping_notifier
 from .notifiers.telegram import TelegramError, send_telegram
-from .settings_defaults import ISP_PING_DEFAULTS, OPTICAL_DEFAULTS, RTO_DEFAULTS, WAN_PING_DEFAULTS, WAN_MESSAGE_DEFAULTS, WAN_SUMMARY_DEFAULTS
+from .settings_defaults import ACCOUNTS_PING_DEFAULTS, ISP_PING_DEFAULTS, OPTICAL_DEFAULTS, RTO_DEFAULTS, WAN_PING_DEFAULTS, WAN_MESSAGE_DEFAULTS, WAN_SUMMARY_DEFAULTS
 from .settings_store import export_settings, get_settings, get_state, import_settings, save_settings, save_state
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -2916,6 +2920,306 @@ def render_rto_response(request, settings, message, active_tab, settings_tab, wi
             },
         ),
     )
+
+
+@app.get("/settings/accounts-ping", response_class=HTMLResponse)
+async def accounts_ping_settings(request: Request):
+    settings = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
+    window_hours = _normalize_wan_window(request.query_params.get("window"))
+    return render_accounts_ping_response(request, settings, "", "status", "general", window_hours)
+
+
+@app.get("/accounts-ping/series", response_class=JSONResponse)
+async def accounts_ping_series(account_id: str, window: int = 24):
+    hours = _normalize_wan_window(window)
+    since_iso = (datetime.utcnow() - timedelta(hours=hours)).replace(microsecond=0).isoformat() + "Z"
+    rows = get_accounts_ping_series(account_id, since_iso)
+    series = [
+        {
+            "ts": row.get("timestamp"),
+            "ok": bool(row.get("ok")),
+            "loss": row.get("loss"),
+            "avg_ms": row.get("avg_ms"),
+        }
+        for row in rows
+    ]
+    return JSONResponse({"hours": hours, "series": series})
+
+
+def _parse_iso_z(value):
+    if not value:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        if raw.endswith("Z"):
+            raw = raw[:-1]
+        return datetime.fromisoformat(raw)
+    except Exception:
+        return None
+
+
+def _format_duration_short(seconds):
+    if seconds is None:
+        return ""
+    try:
+        seconds = int(seconds)
+    except Exception:
+        return ""
+    if seconds < 0:
+        seconds = 0
+    days = seconds // 86400
+    hours = (seconds % 86400) // 3600
+    minutes = (seconds % 3600) // 60
+    if days > 0:
+        return f"{days}d {hours}h"
+    if hours > 0:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
+
+
+def build_accounts_ping_status(settings, window_hours=24):
+    accounts = settings.get("accounts") or []
+    account_rows = []
+    for item in accounts:
+        if not isinstance(item, dict):
+            continue
+        account_id = (item.get("id") or "").strip()
+        ip = (item.get("ip") or "").strip()
+        if not account_id or not ip:
+            continue
+        if item.get("enabled", True) is False:
+            continue
+        account_rows.append({"id": account_id, "name": (item.get("name") or "").strip() or ip, "ip": ip})
+
+    account_ids = [row["id"] for row in account_rows]
+    latest_map = get_latest_accounts_ping_map(account_ids)
+    since_iso = (datetime.utcnow() - timedelta(hours=max(int(window_hours or 24), 1))).replace(microsecond=0).isoformat() + "Z"
+    stats_map = get_accounts_ping_window_stats(account_ids, since_iso)
+
+    state = get_state("accounts_ping_state", {"accounts": {}})
+    state_accounts = state.get("accounts") if isinstance(state.get("accounts"), dict) else {}
+
+    cls = settings.get("classification", {}) or {}
+    issue_loss_pct = float(cls.get("issue_loss_pct", 20.0) or 20.0)
+    issue_latency_ms = float(cls.get("issue_latency_ms", 200.0) or 200.0)
+
+    # sparklines: always use last 24h to keep payload small
+    spark_since_iso = (datetime.utcnow() - timedelta(hours=24)).replace(microsecond=0).isoformat() + "Z"
+    spark_rows = get_accounts_ping_results_since(spark_since_iso, account_ids)
+    spark_map = {}
+    for row in spark_rows:
+        aid = row.get("account_id")
+        if not aid:
+            continue
+        spark_map.setdefault(aid, []).append(100 if row.get("ok") else 0)
+
+    issue_rows = []
+    stable_rows = []
+    for account in account_rows:
+        aid = account["id"]
+        latest = latest_map.get(aid) or {}
+        stats = stats_map.get(aid) or {}
+        loss = latest.get("loss")
+        avg_ms = latest.get("avg_ms")
+        last_ok = bool(latest.get("ok")) if latest else False
+        last_seen = format_ts_ph(latest.get("timestamp")) if latest.get("timestamp") else "n/a"
+
+        total = int(stats.get("total") or 0)
+        failures = int(stats.get("failures") or 0)
+        rto_pct = (failures / total) * 100.0 if total else 0.0
+        uptime_pct = 100.0 - rto_pct
+
+        is_issue = (not last_ok) or (loss is not None and float(loss) >= issue_loss_pct) or (avg_ms is not None and float(avg_ms) >= issue_latency_ms)
+        status = "down" if not last_ok else ("issue" if is_issue else "up")
+
+        st = state_accounts.get(aid) if isinstance(state_accounts.get(aid), dict) else {}
+        streak = int(st.get("streak") or 0)
+        down_since_dt = _parse_iso_z(st.get("down_since"))
+        down_for = _format_duration_short((datetime.utcnow() - down_since_dt).total_seconds()) if down_since_dt else ""
+
+        reasons = []
+        if status == "down":
+            reasons.append("Currently down")
+        if loss is not None and float(loss) >= issue_loss_pct:
+            reasons.append(f"Loss >= {issue_loss_pct:g}%")
+        if avg_ms is not None and float(avg_ms) >= issue_latency_ms:
+            reasons.append(f"Latency >= {issue_latency_ms:g}ms")
+        if streak >= 2 and status == "down":
+            reasons.append(f"Streak {streak}")
+
+        spark_values = spark_map.get(aid, [])
+        row = {
+            "id": aid,
+            "name": account["name"],
+            "ip": account["ip"],
+            "status": status,
+            "loss": loss,
+            "avg_ms": avg_ms,
+            "total": total,
+            "failures": failures,
+            "rto_pct": rto_pct,
+            "uptime_pct": uptime_pct,
+            "streak": streak,
+            "down_for": down_for,
+            "last_check": last_seen,
+            "reasons": reasons or (["OK"] if status == "up" else ["Monitor"]),
+            "spark_points_24h": _sparkline_points_fixed(spark_values or [0], 0, 100, width=140, height=28),
+            "spark_points_24h_large": _sparkline_points_fixed(spark_values or [0], 0, 100, width=640, height=200),
+        }
+        if status == "up":
+            stable_rows.append(row)
+        else:
+            issue_rows.append(row)
+
+    issue_rows = sorted(issue_rows, key=lambda x: (x["status"] != "down", -(x["loss"] or 0), -(x["avg_ms"] or 0), x["name"].lower()))
+    stable_rows = sorted(stable_rows, key=lambda x: x["name"].lower())
+    window_label = next((label for label, hours in WAN_STATUS_WINDOW_OPTIONS if hours == window_hours), "1D")
+    return {
+        "total": len(account_rows),
+        "issue_total": len(issue_rows),
+        "stable_total": len(stable_rows),
+        "issue_rows": issue_rows,
+        "stable_rows": stable_rows,
+        "window_hours": window_hours,
+        "window_label": window_label,
+        "rules": {
+            "issue_loss_pct": issue_loss_pct,
+            "issue_latency_ms": issue_latency_ms,
+        },
+    }
+
+
+def render_accounts_ping_response(request, settings, message, active_tab, settings_tab, window_hours=24):
+    status_map = {item["job_name"]: dict(item) for item in get_job_status()}
+    job_status = status_map.get("accounts_ping", {})
+    job_status["last_run_at_ph"] = format_ts_ph(job_status.get("last_run_at"))
+    job_status["last_success_at_ph"] = format_ts_ph(job_status.get("last_success_at"))
+    status = build_accounts_ping_status(settings, window_hours)
+    return templates.TemplateResponse(
+        "settings_accounts_ping.html",
+        make_context(
+            request,
+            {
+                "settings": settings,
+                "message": message,
+                "active_tab": active_tab,
+                "settings_tab": settings_tab,
+                "accounts_ping_status": status,
+                "accounts_ping_job": job_status,
+                "accounts_ping_window_options": WAN_STATUS_WINDOW_OPTIONS,
+            },
+        ),
+    )
+
+
+def _accounts_ping_account_id_for_ip(ip):
+    raw = (ip or "").strip().encode("utf-8")
+    if not raw:
+        return ""
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _parse_accounts_lines(lines):
+    accounts = []
+    for line in (lines or []):
+        raw = (line or "").strip()
+        if not raw:
+            continue
+        # supports: "name,ip" or "name|ip" or "ip"
+        if "|" in raw:
+            parts = [p.strip() for p in raw.split("|", 1)]
+        elif "," in raw:
+            parts = [p.strip() for p in raw.split(",", 1)]
+        else:
+            parts = [raw]
+        if len(parts) == 1:
+            name = ""
+            ip = parts[0]
+        else:
+            name, ip = parts[0], parts[1]
+        if not ip:
+            continue
+        accounts.append(
+            {
+                "id": _accounts_ping_account_id_for_ip(ip),
+                "name": name,
+                "ip": ip,
+                "enabled": True,
+            }
+        )
+    # de-dupe by id
+    seen = set()
+    deduped = []
+    for acc in accounts:
+        if not acc.get("id") or acc["id"] in seen:
+            continue
+        seen.add(acc["id"])
+        deduped.append(acc)
+    return deduped
+
+
+@app.post("/settings/accounts-ping", response_class=HTMLResponse)
+async def accounts_ping_settings_save(request: Request):
+    form = await request.form()
+    accounts_lines = parse_lines(form.get("accounts_lines"))
+    settings = {
+        "enabled": parse_bool(form, "enabled"),
+        "general": {
+            "base_interval_seconds": parse_int(form, "base_interval_seconds", 30),
+            "max_parallel": parse_int(form, "max_parallel", 64),
+        },
+        "ping": {
+            "count": parse_int(form, "ping_count", 3),
+            "timeout_seconds": parse_int(form, "ping_timeout_seconds", 1),
+            "burst_count": parse_int(form, "burst_count", 1),
+            "burst_timeout_seconds": parse_int(form, "burst_timeout_seconds", 1),
+        },
+        "classification": {
+            "issue_loss_pct": parse_float(form, "issue_loss_pct", 20.0),
+            "issue_latency_ms": parse_float(form, "issue_latency_ms", 200.0),
+            "down_loss_pct": parse_float(form, "down_loss_pct", 100.0),
+        },
+        "burst": {
+            "enabled": parse_bool(form, "burst_enabled"),
+            "burst_interval_seconds": parse_int(form, "burst_interval_seconds", 1),
+            "burst_duration_seconds": parse_int(form, "burst_duration_seconds", 120),
+            "investigate_minutes": parse_int(form, "investigate_minutes", 15),
+            "trigger_on_issue": parse_bool(form, "trigger_on_issue"),
+        },
+        "backoff": {
+            "long_down_seconds": parse_int(form, "long_down_seconds", 7200),
+            "long_down_interval_seconds": parse_int(form, "long_down_interval_seconds", 300),
+        },
+        "storage": {
+            "raw_retention_days": parse_int(form, "raw_retention_days", 30),
+            "rollup_retention_days": parse_int(form, "rollup_retention_days", 365),
+            "bucket_seconds": parse_int(form, "bucket_seconds", 60),
+        },
+        "accounts": _parse_accounts_lines(accounts_lines),
+    }
+    save_settings("accounts_ping", settings)
+    window_hours = _normalize_wan_window(request.query_params.get("window"))
+    return render_accounts_ping_response(request, settings, "Accounts Ping settings saved.", "status", "general", window_hours)
+
+
+@app.post("/accounts-ping/investigate", response_class=HTMLResponse)
+async def accounts_ping_investigate(request: Request):
+    form = await request.form()
+    account_id = (form.get("account_id") or "").strip()
+    minutes = parse_int(form, "minutes", 15)
+    if not account_id:
+        return RedirectResponse(url="/settings/accounts-ping", status_code=303)
+    state = get_state("accounts_ping_state", {"accounts": {}})
+    accounts = state.get("accounts") if isinstance(state.get("accounts"), dict) else {}
+    entry = accounts.get(account_id) if isinstance(accounts.get(account_id), dict) else {}
+    until = (datetime.utcnow() + timedelta(minutes=max(int(minutes or 1), 1))).replace(microsecond=0).isoformat() + "Z"
+    entry["investigate_until"] = until
+    accounts[account_id] = entry
+    state["accounts"] = accounts
+    save_state("accounts_ping_state", state)
+    return RedirectResponse(url="/settings/accounts-ping", status_code=303)
 
 
 @app.post("/settings/rto", response_class=HTMLResponse)

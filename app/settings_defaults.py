@@ -268,6 +268,42 @@ ISP_PING_DEFAULTS = {
     },
 }
 
+ACCOUNTS_PING_DEFAULTS = {
+    "enabled": False,
+    "general": {
+        "base_interval_seconds": 30,
+        "max_parallel": 64,
+    },
+    "ping": {
+        "count": 3,
+        "timeout_seconds": 1,
+        "burst_count": 1,
+        "burst_timeout_seconds": 1,
+    },
+    "classification": {
+        "issue_loss_pct": 20.0,
+        "issue_latency_ms": 200.0,
+        "down_loss_pct": 100.0,
+    },
+    "burst": {
+        "enabled": True,
+        "burst_interval_seconds": 1,
+        "burst_duration_seconds": 120,
+        "investigate_minutes": 15,
+        "trigger_on_issue": True,
+    },
+    "backoff": {
+        "long_down_seconds": 7200,
+        "long_down_interval_seconds": 300,
+    },
+    "storage": {
+        "raw_retention_days": 30,
+        "rollup_retention_days": 365,
+        "bucket_seconds": 60,
+    },
+    "accounts": [],
+}
+
 WAN_PING_DEFAULTS = {
     "enabled": False,
     "telegram": {
