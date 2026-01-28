@@ -243,8 +243,21 @@
 {% else %}
 <div class="empty">
   <div class="empty-icon"><i class="ti ti-user-search"></i></div>
-  <p class="empty-title">Search an account to review</p>
+  <p class="empty-title">Search or Choose account below to review</p>
   <p class="empty-subtitle text-muted">Start typing at least 2 characters to see suggestions.</p>
+</div>
+
+<div class="row justify-content-center mt-4 d-none" id="profile-top10-wrap">
+  <div class="col-12 col-lg-8 col-xl-7">
+    <div class="card">
+      <div class="card-header">
+        <h3 class="card-title mb-0" id="profile-top10-title">TOP10 - Critical Connections (Last 24h)</h3>
+      </div>
+      <div class="list-group list-group-flush" id="profile-top10-list">
+        <div class="p-3 text-muted">Loading…</div>
+      </div>
+    </div>
+  </div>
 </div>
 {% endif %}
 
@@ -253,10 +266,23 @@
     const profile = {{ profile | tojson }};
     const searchInput = document.getElementById("profile-search");
     const suggestMenu = document.getElementById("profile-suggest");
+    const top10Wrap = document.getElementById("profile-top10-wrap");
+    const top10Title = document.getElementById("profile-top10-title");
+    const top10List = document.getElementById("profile-top10-list");
     const windowButton = document.getElementById("profile-window-button");
     const windowOptions = document.querySelectorAll(".profile-window-option");
     let pendingTimer = null;
     let lastItems = [];
+
+    const showTop10 = () => {
+      if (!top10Wrap) return;
+      top10Wrap.classList.remove("d-none");
+    };
+
+    const hideTop10 = () => {
+      if (!top10Wrap) return;
+      top10Wrap.classList.add("d-none");
+    };
 
     const closeSuggest = () => {
       if (!suggestMenu) return;
@@ -277,11 +303,71 @@
       return "ti ti-user";
     };
 
+    const statusBadgeHtml = (item) => {
+      const status = String(item?.meta?.status || "").toLowerCase();
+      if (!status) return "";
+      if (status === "down" || status === "issue") return '<span class="badge bg-red-lt">Critical</span>';
+      if (status === "monitor") return '<span class="badge bg-yellow-lt">Monitor</span>';
+      if (status === "up" || status === "stable") return '<span class="badge bg-green-lt">Stable</span>';
+      return "";
+    };
+
     const navigateTo = (item) => {
+      hideTop10();
       const params = new URLSearchParams();
       if (item.ip) params.set("ip", item.ip);
       if (item.device_id) params.set("device_id", item.device_id);
       window.location.href = `/profile-review?${params.toString()}`;
+    };
+
+    const renderTop10 = (payload) => {
+      if (!top10List) return;
+      top10List.innerHTML = "";
+      if (top10Title) top10Title.textContent = payload?.header || "TOP10 - Critical Connections (Last 24h)";
+
+      const items = payload?.items || [];
+      if (!items.length) {
+        top10List.innerHTML = "<div class='p-3 text-muted'>No results</div>";
+        showTop10();
+        return;
+      }
+
+      const groups = new Map();
+      items.forEach((item) => {
+        const group = item.group || "Results";
+        if (!groups.has(group)) groups.set(group, []);
+        groups.get(group).push(item);
+      });
+
+      for (const [groupName, groupItems] of groups.entries()) {
+        const header = document.createElement("div");
+        header.className = "px-3 py-2 text-muted fw-semibold bg-light border-top";
+        header.textContent = groupName;
+        top10List.appendChild(header);
+        groupItems.forEach((item) => {
+          const row = document.createElement("button");
+          row.type = "button";
+          row.className = "list-group-item list-group-item-action";
+          row.innerHTML = `
+            <div class="d-flex align-items-center gap-2">
+              <span class="text-muted"><i class="${iconFor(item.sources)}"></i></span>
+              <div class="flex-fill">
+                <div class="fw-semibold">${item.name || "Customer"}</div>
+                <div class="text-muted small">${[item.ip, item.device_id].filter(Boolean).join(" · ")}</div>
+              </div>
+              <div class="d-flex gap-1 align-items-center flex-wrap justify-content-end">
+                ${statusBadgeHtml(item)}
+                ${(item.sources || []).includes("optical") ? '<span class="badge bg-azure-lt text-azure">Optical</span>' : ""}
+                ${(item.sources || []).includes("rto") ? '<span class="badge bg-purple-lt text-purple">RTO</span>' : ""}
+              </div>
+            </div>
+          `;
+          row.addEventListener("click", () => navigateTo(item));
+          top10List.appendChild(row);
+        });
+      }
+
+      showTop10();
     };
 
     const renderSuggest = (items) => {
@@ -305,6 +391,7 @@
               <div class="text-muted small">${[item.ip, item.device_id].filter(Boolean).join(" · ")}</div>
             </div>
             <div class="d-flex gap-1">
+              ${statusBadgeHtml(item)}
               ${(item.sources || []).includes("optical") ? '<span class="badge bg-azure-lt text-azure">Optical</span>' : ""}
               ${(item.sources || []).includes("rto") ? '<span class="badge bg-purple-lt text-purple">RTO</span>' : ""}
             </div>
@@ -327,39 +414,10 @@
         const payload = await res.json();
         lastItems = payload.items || [];
         if (payload.mode === "top10") {
-          suggestMenu.innerHTML = "";
-          suggestMenu.appendChild(Object.assign(document.createElement("div"), { className: "dropdown-header", textContent: payload.header || "TOP10" }));
-          const groups = new Map();
-          lastItems.forEach((item) => {
-            const group = item.group || "Results";
-            if (!groups.has(group)) groups.set(group, []);
-            groups.get(group).push(item);
-          });
-          for (const [groupName, items] of groups.entries()) {
-            suggestMenu.appendChild(Object.assign(document.createElement("div"), { className: "dropdown-header text-muted", textContent: groupName }));
-            items.forEach((item) => {
-              const row = document.createElement("button");
-              row.type = "button";
-              row.className = "dropdown-item";
-              row.innerHTML = `
-                <div class="d-flex align-items-center gap-2">
-                  <span class="text-muted"><i class="${iconFor(item.sources)}"></i></span>
-                  <div class="flex-fill">
-                    <div class="fw-semibold">${item.name || "Customer"}</div>
-                    <div class="text-muted small">${[item.ip, item.device_id].filter(Boolean).join(" · ")}</div>
-                  </div>
-                  <div class="d-flex gap-1">
-                    ${(item.sources || []).includes("optical") ? '<span class="badge bg-azure-lt text-azure">Optical</span>' : ""}
-                    ${(item.sources || []).includes("rto") ? '<span class="badge bg-purple-lt text-purple">RTO</span>' : ""}
-                  </div>
-                </div>
-              `;
-              row.addEventListener("click", () => navigateTo(item));
-              suggestMenu.appendChild(row);
-            });
-          }
-          openSuggest();
+          closeSuggest();
+          renderTop10(payload);
         } else {
+          hideTop10();
           renderSuggest(lastItems);
         }
       } catch (err) {
@@ -506,6 +564,10 @@
 
     renderRtoChart();
     renderOpticalChart();
+
+    if (top10Wrap && !profile?.ip && !profile?.device_id) {
+      fetchSuggest();
+    }
   });
 </script>
 

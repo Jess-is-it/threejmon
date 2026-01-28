@@ -14,8 +14,10 @@ import urllib.parse
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
+import imghdr
+
+from fastapi import FastAPI, File, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -60,6 +62,22 @@ from .settings_store import export_settings, get_settings, get_state, import_set
 
 BASE_DIR = Path(__file__).resolve().parent
 PH_TZ = ZoneInfo("Asia/Manila")
+DATA_DIR = Path("/data")
+
+SYSTEM_DEFAULTS = {
+    "branding": {
+        "company_logo": {
+            "path": "",
+            "content_type": "",
+            "updated_at": "",
+        },
+        "browser_logo": {
+            "path": "",
+            "content_type": "",
+            "updated_at": "",
+        },
+    }
+}
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
@@ -82,9 +100,56 @@ async def shutdown_event():
 
 def make_context(request, extra=None):
     ctx = {"request": request}
+    try:
+        system_settings = get_settings("system", SYSTEM_DEFAULTS)
+        branding = system_settings.get("branding") or {}
+
+        company_logo = branding.get("company_logo") or {}
+        company_logo_path = (company_logo.get("path") or "").strip()
+        if company_logo_path and os.path.isfile(company_logo_path):
+            version = urllib.parse.quote((company_logo.get("updated_at") or "").strip() or str(int(os.path.getmtime(company_logo_path))))
+            ctx["company_logo_url"] = f"/company-logo?v={version}"
+        else:
+            ctx["company_logo_url"] = ""
+
+        browser_logo = branding.get("browser_logo") or {}
+        browser_logo_path = (browser_logo.get("path") or "").strip()
+        if browser_logo_path and os.path.isfile(browser_logo_path):
+            version = urllib.parse.quote((browser_logo.get("updated_at") or "").strip() or str(int(os.path.getmtime(browser_logo_path))))
+            ctx["browser_logo_url"] = f"/browser-logo?v={version}"
+            ctx["browser_logo_type"] = (browser_logo.get("content_type") or "").strip() or "image/png"
+        else:
+            ctx["browser_logo_url"] = ""
+            ctx["browser_logo_type"] = ""
+    except Exception:
+        ctx["company_logo_url"] = ""
+        ctx["browser_logo_url"] = ""
+        ctx["browser_logo_type"] = ""
     if extra:
         ctx.update(extra)
     return ctx
+
+
+@app.get("/company-logo")
+async def company_logo():
+    system_settings = get_settings("system", SYSTEM_DEFAULTS)
+    company_logo = (system_settings.get("branding") or {}).get("company_logo") or {}
+    logo_path = (company_logo.get("path") or "").strip()
+    if not logo_path or not os.path.isfile(logo_path):
+        return Response(status_code=404)
+    media_type = (company_logo.get("content_type") or "").strip() or "application/octet-stream"
+    return FileResponse(logo_path, media_type=media_type)
+
+
+@app.get("/browser-logo")
+async def browser_logo():
+    system_settings = get_settings("system", SYSTEM_DEFAULTS)
+    browser_logo_cfg = (system_settings.get("branding") or {}).get("browser_logo") or {}
+    logo_path = (browser_logo_cfg.get("path") or "").strip()
+    if not logo_path or not os.path.isfile(logo_path):
+        return Response(status_code=404)
+    media_type = (browser_logo_cfg.get("content_type") or "").strip() or "application/octet-stream"
+    return FileResponse(logo_path, media_type=media_type)
 
 
 def get_interface_options():
@@ -1916,6 +1981,21 @@ async def pulsewatch_summary(target: str = "all", loss_minutes: int = 120):
             "rows": pulse_display_rows,
         }
     )
+
+
+@app.get("/pulsewatch/loss_series", response_class=JSONResponse)
+async def pulsewatch_loss_series(row_id: str, target: str = "all", loss_minutes: int = 120):
+    minutes = max(int(loss_minutes or 120), 1)
+    since = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat().replace("+00:00", "Z")
+    target_filter = None if target == "all" else target
+    history_map = get_ping_rollup_history_map([row_id], since, target=target_filter)
+    history = history_map.get(row_id, [])
+    series = [
+        {"ts": item.get("timestamp"), "value": item.get("loss")}
+        for item in history
+        if item.get("timestamp") and item.get("loss") is not None
+    ]
+    return JSONResponse({"minutes": minutes, "series": series})
 
 
 @app.get("/pulsewatch/stability")
@@ -4124,4 +4204,230 @@ async def system_uninstall(request: Request):
     return templates.TemplateResponse(
         "settings_system.html",
         make_context(request, {"message": message, "settings": settings, "interfaces": interfaces}),
+    )
+
+
+@app.post("/settings/system/logo", response_class=HTMLResponse)
+async def system_logo_upload(request: Request, company_logo: UploadFile = File(...)):
+    settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    interfaces = get_interface_options()
+    telegram_state = get_state("telegram_state", {})
+    message = ""
+
+    if not company_logo or not (company_logo.filename or "").strip():
+        message = "Please select an image file to upload."
+        return templates.TemplateResponse(
+            "settings_system.html",
+            make_context(
+                request,
+                {"message": message, "settings": settings, "interfaces": interfaces, "telegram_state": telegram_state},
+            ),
+        )
+
+    content_type = (company_logo.content_type or "").lower().strip()
+    if not content_type.startswith("image/"):
+        message = "Invalid file type. Please upload an image only."
+        return templates.TemplateResponse(
+            "settings_system.html",
+            make_context(
+                request,
+                {"message": message, "settings": settings, "interfaces": interfaces, "telegram_state": telegram_state},
+            ),
+        )
+
+    header = await company_logo.read(512)
+    await company_logo.seek(0)
+    kind = imghdr.what(None, header)
+    allowed_kinds = {"png": "image/png", "jpeg": "image/jpeg", "gif": "image/gif", "webp": "image/webp"}
+    if kind not in allowed_kinds:
+        message = "Invalid image. Please upload a PNG, JPG, WebP, or GIF."
+        return templates.TemplateResponse(
+            "settings_system.html",
+            make_context(
+                request,
+                {"message": message, "settings": settings, "interfaces": interfaces, "telegram_state": telegram_state},
+            ),
+        )
+
+    max_bytes = 5 * 1024 * 1024
+    public_dir = DATA_DIR / "public"
+    public_dir.mkdir(parents=True, exist_ok=True)
+    for old in public_dir.glob("company_logo.*"):
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    ext = "jpg" if kind == "jpeg" else kind
+    dest = public_dir / f"company_logo.{ext}"
+    written = 0
+    try:
+        with open(dest, "wb") as handle:
+            while True:
+                chunk = await company_logo.read(1024 * 256)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > max_bytes:
+                    raise ValueError("File too large")
+                handle.write(chunk)
+    except ValueError:
+        try:
+            dest.unlink(missing_ok=True)
+        except Exception:
+            pass
+        message = "Image too large. Max size is 5MB."
+        return templates.TemplateResponse(
+            "settings_system.html",
+            make_context(
+                request,
+                {"message": message, "settings": settings, "interfaces": interfaces, "telegram_state": telegram_state},
+            ),
+        )
+    except Exception as exc:
+        try:
+            dest.unlink(missing_ok=True)
+        except Exception:
+            pass
+        message = f"Upload failed: {exc}"
+        return templates.TemplateResponse(
+            "settings_system.html",
+            make_context(
+                request,
+                {"message": message, "settings": settings, "interfaces": interfaces, "telegram_state": telegram_state},
+            ),
+        )
+
+    system_settings = get_settings("system", SYSTEM_DEFAULTS)
+    branding = dict(system_settings.get("branding") or {})
+    branding["company_logo"] = {
+        "path": str(dest),
+        "content_type": allowed_kinds.get(kind) or content_type,
+        "updated_at": utc_now_iso(),
+    }
+    system_settings["branding"] = branding
+    save_settings("system", system_settings)
+
+    message = "Company logo updated."
+    return templates.TemplateResponse(
+        "settings_system.html",
+        make_context(
+            request,
+            {"message": message, "settings": settings, "interfaces": interfaces, "telegram_state": telegram_state},
+        ),
+    )
+
+
+@app.post("/settings/system/browser-logo", response_class=HTMLResponse)
+async def system_browser_logo_upload(request: Request, browser_logo: UploadFile = File(...)):
+    settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    interfaces = get_interface_options()
+    telegram_state = get_state("telegram_state", {})
+    message = ""
+
+    if not browser_logo or not (browser_logo.filename or "").strip():
+        message = "Please select an image file to upload."
+        return templates.TemplateResponse(
+            "settings_system.html",
+            make_context(
+                request,
+                {"message": message, "settings": settings, "interfaces": interfaces, "telegram_state": telegram_state},
+            ),
+        )
+
+    content_type = (browser_logo.content_type or "").lower().strip()
+    if not content_type.startswith("image/") and content_type not in {"application/octet-stream"}:
+        message = "Invalid file type. Please upload an image only."
+        return templates.TemplateResponse(
+            "settings_system.html",
+            make_context(
+                request,
+                {"message": message, "settings": settings, "interfaces": interfaces, "telegram_state": telegram_state},
+            ),
+        )
+
+    header = await browser_logo.read(512)
+    await browser_logo.seek(0)
+    kind = imghdr.what(None, header)
+    is_ico = header[:4] == b"\x00\x00\x01\x00"
+    allowed_kinds = {"png": "image/png", "jpeg": "image/jpeg", "gif": "image/gif", "webp": "image/webp"}
+    if kind not in allowed_kinds and not is_ico:
+        message = "Invalid image. Please upload a PNG, JPG, WebP, GIF, or ICO."
+        return templates.TemplateResponse(
+            "settings_system.html",
+            make_context(
+                request,
+                {"message": message, "settings": settings, "interfaces": interfaces, "telegram_state": telegram_state},
+            ),
+        )
+
+    max_bytes = 2 * 1024 * 1024
+    public_dir = DATA_DIR / "public"
+    public_dir.mkdir(parents=True, exist_ok=True)
+    for old in public_dir.glob("browser_logo.*"):
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    if is_ico:
+        ext = "ico"
+        media = "image/x-icon"
+    else:
+        ext = "jpg" if kind == "jpeg" else kind
+        media = allowed_kinds.get(kind) or content_type or "image/png"
+    dest = public_dir / f"browser_logo.{ext}"
+    written = 0
+    try:
+        with open(dest, "wb") as handle:
+            while True:
+                chunk = await browser_logo.read(1024 * 256)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > max_bytes:
+                    raise ValueError("File too large")
+                handle.write(chunk)
+    except ValueError:
+        try:
+            dest.unlink(missing_ok=True)
+        except Exception:
+            pass
+        message = "Image too large. Max size is 2MB."
+        return templates.TemplateResponse(
+            "settings_system.html",
+            make_context(
+                request,
+                {"message": message, "settings": settings, "interfaces": interfaces, "telegram_state": telegram_state},
+            ),
+        )
+    except Exception as exc:
+        try:
+            dest.unlink(missing_ok=True)
+        except Exception:
+            pass
+        message = f"Upload failed: {exc}"
+        return templates.TemplateResponse(
+            "settings_system.html",
+            make_context(
+                request,
+                {"message": message, "settings": settings, "interfaces": interfaces, "telegram_state": telegram_state},
+            ),
+        )
+
+    system_settings = get_settings("system", SYSTEM_DEFAULTS)
+    branding = dict(system_settings.get("branding") or {})
+    branding["browser_logo"] = {
+        "path": str(dest),
+        "content_type": media,
+        "updated_at": utc_now_iso(),
+    }
+    system_settings["branding"] = branding
+    save_settings("system", system_settings)
+
+    message = "Browser logo updated."
+    return templates.TemplateResponse(
+        "settings_system.html",
+        make_context(
+            request,
+            {"message": message, "settings": settings, "interfaces": interfaces, "telegram_state": telegram_state},
+        ),
     )
