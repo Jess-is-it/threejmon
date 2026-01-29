@@ -2,6 +2,7 @@ import threading
 import time as time_module
 from datetime import datetime, time, timedelta
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout, as_completed
+import base64
 
 try:
     from zoneinfo import ZoneInfo
@@ -175,6 +176,27 @@ class JobsManager:
                 now = datetime.utcnow()
                 state = get_state("accounts_ping_state", {"accounts": {}, "last_prune_at": None})
                 accounts_state = state.get("accounts") if isinstance(state.get("accounts"), dict) else {}
+                devices = state.get("devices") if isinstance(state.get("devices"), list) else []
+                refreshed_at = state.get("devices_refreshed_at")
+                refreshed_dt = datetime.fromisoformat(refreshed_at.replace("Z", "")) if refreshed_at else None
+                refresh_minutes = int((cfg.get("source", {}) or {}).get("refresh_minutes", 15) or 15)
+                if refresh_minutes < 1:
+                    refresh_minutes = 1
+
+                def account_id_for_ip(ip):
+                    raw = (ip or "").strip().encode("utf-8")
+                    if not raw:
+                        return ""
+                    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+                # refresh devices list from SSH CSV (same source as RTO)
+                if (not refreshed_dt) or (refreshed_dt + timedelta(minutes=refresh_minutes) < now) or not devices:
+                    csv_text = rto_notifier.fetch_csv_text(cfg)
+                    parsed = rto_notifier.parse_devices(csv_text)
+                    devices = [{"name": d.get("name") or d.get("ip"), "ip": d.get("ip")} for d in (parsed or []) if d.get("ip")]
+                    state["devices"] = devices
+                    state["devices_refreshed_at"] = now.replace(microsecond=0).isoformat() + "Z"
+                    save_state("accounts_ping_state", state)
 
                 storage = cfg.get("storage", {}) or {}
                 raw_retention_days = int(storage.get("raw_retention_days", 0) or 0)
@@ -194,21 +216,18 @@ class JobsManager:
                     state["last_prune_at"] = now.replace(microsecond=0).isoformat() + "Z"
                     save_state("accounts_ping_state", state)
 
-                accounts = cfg.get("accounts") or []
                 targets = []
-                for item in accounts:
-                    if not isinstance(item, dict):
+                for device in devices:
+                    ip = (device.get("ip") or "").strip()
+                    if not ip:
                         continue
-                    account_id = (item.get("id") or "").strip()
-                    ip = (item.get("ip") or "").strip()
-                    if not account_id or not ip:
-                        continue
-                    if item.get("enabled", True) is False:
+                    account_id = account_id_for_ip(ip)
+                    if not account_id:
                         continue
                     targets.append(
                         {
                             "id": account_id,
-                            "name": (item.get("name") or "").strip(),
+                            "name": (device.get("name") or "").strip(),
                             "ip": ip,
                         }
                     )

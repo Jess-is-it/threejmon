@@ -270,6 +270,18 @@ ISP_PING_DEFAULTS = {
 
 ACCOUNTS_PING_DEFAULTS = {
     "enabled": False,
+    "ssh": {
+        "host": "",
+        "port": 22,
+        "user": "",
+        "password": "",
+        "use_key": False,
+        "key_path": "",
+        "remote_csv_path": "/opt/libreqos/src/ShapedDevices.csv",
+    },
+    "source": {
+        "refresh_minutes": 15,
+    },
     "general": {
         "base_interval_seconds": 30,
         "max_parallel": 64,
@@ -297,11 +309,10 @@ ACCOUNTS_PING_DEFAULTS = {
         "long_down_interval_seconds": 300,
     },
     "storage": {
-        "raw_retention_days": 30,
+        "raw_retention_days": 365,
         "rollup_retention_days": 365,
         "bucket_seconds": 60,
     },
-    "accounts": [],
 }
 
 WAN_PING_DEFAULTS = {

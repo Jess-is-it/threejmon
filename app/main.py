@@ -2980,25 +2980,26 @@ def _format_duration_short(seconds):
 
 
 def build_accounts_ping_status(settings, window_hours=24):
-    accounts = settings.get("accounts") or []
+    state = get_state("accounts_ping_state", {"accounts": {}, "devices": []})
+    devices = state.get("devices") if isinstance(state.get("devices"), list) else []
     account_rows = []
-    for item in accounts:
-        if not isinstance(item, dict):
+    for device in devices:
+        ip = (device.get("ip") or "").strip()
+        if not ip:
             continue
-        account_id = (item.get("id") or "").strip()
-        ip = (item.get("ip") or "").strip()
-        if not account_id or not ip:
-            continue
-        if item.get("enabled", True) is False:
-            continue
-        account_rows.append({"id": account_id, "name": (item.get("name") or "").strip() or ip, "ip": ip})
+        account_rows.append(
+            {
+                "id": _accounts_ping_account_id_for_ip(ip),
+                "name": (device.get("name") or "").strip() or ip,
+                "ip": ip,
+            }
+        )
 
     account_ids = [row["id"] for row in account_rows]
     latest_map = get_latest_accounts_ping_map(account_ids)
     since_iso = (datetime.utcnow() - timedelta(hours=max(int(window_hours or 24), 1))).replace(microsecond=0).isoformat() + "Z"
     stats_map = get_accounts_ping_window_stats(account_ids, since_iso)
 
-    state = get_state("accounts_ping_state", {"accounts": {}})
     state_accounts = state.get("accounts") if isinstance(state.get("accounts"), dict) else {}
 
     cls = settings.get("classification", {}) or {}
@@ -3121,51 +3122,23 @@ def _accounts_ping_account_id_for_ip(ip):
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
-def _parse_accounts_lines(lines):
-    accounts = []
-    for line in (lines or []):
-        raw = (line or "").strip()
-        if not raw:
-            continue
-        # supports: "name,ip" or "name|ip" or "ip"
-        if "|" in raw:
-            parts = [p.strip() for p in raw.split("|", 1)]
-        elif "," in raw:
-            parts = [p.strip() for p in raw.split(",", 1)]
-        else:
-            parts = [raw]
-        if len(parts) == 1:
-            name = ""
-            ip = parts[0]
-        else:
-            name, ip = parts[0], parts[1]
-        if not ip:
-            continue
-        accounts.append(
-            {
-                "id": _accounts_ping_account_id_for_ip(ip),
-                "name": name,
-                "ip": ip,
-                "enabled": True,
-            }
-        )
-    # de-dupe by id
-    seen = set()
-    deduped = []
-    for acc in accounts:
-        if not acc.get("id") or acc["id"] in seen:
-            continue
-        seen.add(acc["id"])
-        deduped.append(acc)
-    return deduped
-
-
 @app.post("/settings/accounts-ping", response_class=HTMLResponse)
 async def accounts_ping_settings_save(request: Request):
     form = await request.form()
-    accounts_lines = parse_lines(form.get("accounts_lines"))
     settings = {
         "enabled": parse_bool(form, "enabled"),
+        "ssh": {
+            "host": (form.get("ssh_host") or "").strip(),
+            "port": parse_int(form, "ssh_port", 22),
+            "user": (form.get("ssh_user") or "").strip(),
+            "password": (form.get("ssh_password") or "").strip(),
+            "use_key": parse_bool(form, "ssh_use_key"),
+            "key_path": (form.get("ssh_key_path") or "").strip(),
+            "remote_csv_path": (form.get("ssh_remote_csv_path") or "").strip() or "/opt/libreqos/src/ShapedDevices.csv",
+        },
+        "source": {
+            "refresh_minutes": parse_int(form, "source_refresh_minutes", 15),
+        },
         "general": {
             "base_interval_seconds": parse_int(form, "base_interval_seconds", 30),
             "max_parallel": parse_int(form, "max_parallel", 64),
@@ -3197,11 +3170,28 @@ async def accounts_ping_settings_save(request: Request):
             "rollup_retention_days": parse_int(form, "rollup_retention_days", 365),
             "bucket_seconds": parse_int(form, "bucket_seconds", 60),
         },
-        "accounts": _parse_accounts_lines(accounts_lines),
     }
     save_settings("accounts_ping", settings)
     window_hours = _normalize_wan_window(request.query_params.get("window"))
     return render_accounts_ping_response(request, settings, "Accounts Ping settings saved.", "status", "general", window_hours)
+
+
+@app.post("/settings/accounts-ping/test", response_class=HTMLResponse)
+async def accounts_ping_settings_test(request: Request):
+    cfg = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
+    message = ""
+    try:
+        csv_text = rto_notifier.fetch_csv_text(cfg)
+        devices = rto_notifier.parse_devices(csv_text)
+        state = get_state("accounts_ping_state", {"accounts": {}, "devices": []})
+        state["devices"] = [{"name": d.get("name") or d.get("ip"), "ip": d.get("ip")} for d in (devices or []) if d.get("ip")]
+        state["devices_refreshed_at"] = utc_now_iso()
+        save_state("accounts_ping_state", state)
+        message = f"SSH OK. Loaded {len(state['devices'])} accounts from CSV."
+    except Exception as exc:
+        message = f"SSH test failed: {exc}"
+    window_hours = _normalize_wan_window(request.query_params.get("window"))
+    return render_accounts_ping_response(request, cfg, message, "settings", "general", window_hours)
 
 
 @app.post("/accounts-ping/investigate", response_class=HTMLResponse)
