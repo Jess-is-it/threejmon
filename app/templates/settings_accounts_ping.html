@@ -209,11 +209,11 @@
       <div class="tab-pane {% if active_tab != 'status' %}active{% endif %}" id="accounts-ping-settings">
         <form method="post" action="/settings/accounts-ping" id="accounts-ping-form">
           <input type="hidden" name="active_tab" value="settings" />
-          <input type="hidden" name="settings_tab" id="accounts-ping-settings-tab" value="{{ settings_tab or 'source' }}" />
+          <input type="hidden" name="settings_tab" id="accounts-ping-settings-tab" value="{{ settings_tab or 'general' }}" />
 
           <ul class="nav nav-tabs" data-bs-toggle="tabs">
-            <li class="nav-item"><a href="#accounts-ping-source" class="nav-link {% if settings_tab == 'source' %}active{% endif %}" data-bs-toggle="tab">Source</a></li>
             <li class="nav-item"><a href="#accounts-ping-general" class="nav-link {% if settings_tab == 'general' %}active{% endif %}" data-bs-toggle="tab">General</a></li>
+            <li class="nav-item"><a href="#accounts-ping-source" class="nav-link {% if settings_tab == 'source' %}active{% endif %}" data-bs-toggle="tab">Source</a></li>
             <li class="nav-item"><a href="#accounts-ping-classification" class="nav-link {% if settings_tab == 'classification' %}active{% endif %}" data-bs-toggle="tab">Classification</a></li>
             <li class="nav-item"><a href="#accounts-ping-burst" class="nav-link {% if settings_tab == 'burst' %}active{% endif %}" data-bs-toggle="tab">Burst</a></li>
             <li class="nav-item"><a href="#accounts-ping-backoff" class="nav-link {% if settings_tab == 'backoff' %}active{% endif %}" data-bs-toggle="tab">Backoff</a></li>
@@ -222,6 +222,39 @@
           </ul>
 
           <div class="tab-content pt-3">
+            <div class="tab-pane {% if settings_tab == 'general' %}active{% endif %}" id="accounts-ping-general">
+              <div class="card mb-3">
+                <div class="card-body">
+                  <h5 class="mb-3">General</h5>
+                  <div class="row g-3">
+                    <div class="col-12">
+                      <label class="form-label">Enable Accounts Ping</label>
+                      <label class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" name="enabled" {% if settings.enabled %}checked{% endif %} />
+                        <span class="form-check-label">Enabled</span>
+                      </label>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Base Interval (seconds)</label>
+                      <input class="form-control" type="number" name="base_interval_seconds" value="{{ settings.general.base_interval_seconds }}" min="1" />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Max Parallel</label>
+                      <input class="form-control" type="number" name="max_parallel" value="{{ settings.general.max_parallel }}" min="1" />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Ping Count</label>
+                      <input class="form-control" type="number" name="ping_count" value="{{ settings.ping.count }}" min="1" />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Ping Timeout (seconds)</label>
+                      <input class="form-control" type="number" name="ping_timeout_seconds" value="{{ settings.ping.timeout_seconds }}" min="1" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div class="tab-pane {% if settings_tab == 'source' %}active{% endif %}" id="accounts-ping-source">
               <div class="card mb-3">
                 <div class="card-body">
@@ -267,39 +300,6 @@
                     <div class="col-md-3">
                       <label class="form-label">Refresh (minutes)</label>
                       <input class="form-control" type="number" name="source_refresh_minutes" value="{{ settings.source.refresh_minutes }}" min="1" />
-                    </div>
-                    <div class="col-12">
-                      <label class="form-label">Enable Accounts Ping</label>
-                      <label class="form-check form-switch">
-                        <input class="form-check-input" type="checkbox" name="enabled" {% if settings.enabled %}checked{% endif %} />
-                        <span class="form-check-label">Enabled</span>
-                      </label>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div class="tab-pane {% if settings_tab == 'general' %}active{% endif %}" id="accounts-ping-general">
-              <div class="card mb-3">
-                <div class="card-body">
-                  <h5 class="mb-3">General</h5>
-                  <div class="row g-3">
-                    <div class="col-md-4">
-                      <label class="form-label">Base Interval (seconds)</label>
-                      <input class="form-control" type="number" name="base_interval_seconds" value="{{ settings.general.base_interval_seconds }}" min="1" />
-                    </div>
-                    <div class="col-md-4">
-                      <label class="form-label">Max Parallel</label>
-                      <input class="form-control" type="number" name="max_parallel" value="{{ settings.general.max_parallel }}" min="1" />
-                    </div>
-                    <div class="col-md-4">
-                      <label class="form-label">Ping Count</label>
-                      <input class="form-control" type="number" name="ping_count" value="{{ settings.ping.count }}" min="1" />
-                    </div>
-                    <div class="col-md-4">
-                      <label class="form-label">Ping Timeout (seconds)</label>
-                      <input class="form-control" type="number" name="ping_timeout_seconds" value="{{ settings.ping.timeout_seconds }}" min="1" />
                     </div>
                   </div>
                 </div>
@@ -572,4 +572,3 @@
   });
 </script>
 {% endblock %}
-

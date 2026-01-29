@@ -2927,7 +2927,7 @@ def render_rto_response(request, settings, message, active_tab, settings_tab, wi
 async def accounts_ping_settings(request: Request):
     settings = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
     window_hours = _normalize_wan_window(request.query_params.get("window"))
-    return render_accounts_ping_response(request, settings, "", "status", "source", window_hours)
+    return render_accounts_ping_response(request, settings, "", "status", "general", window_hours)
 
 
 @app.get("/accounts-ping/series", response_class=JSONResponse)
@@ -3175,7 +3175,7 @@ async def accounts_ping_settings_save(request: Request):
     save_settings("accounts_ping", settings)
     window_hours = _normalize_wan_window(request.query_params.get("window"))
     active_tab = form.get("active_tab", "settings")
-    settings_tab = form.get("settings_tab", "source")
+    settings_tab = form.get("settings_tab", "general")
     return render_accounts_ping_response(request, settings, "Accounts Ping settings saved.", active_tab, settings_tab, window_hours)
 
 
@@ -3194,7 +3194,7 @@ async def accounts_ping_settings_test(request: Request):
     except Exception as exc:
         message = f"SSH test failed: {exc}"
     window_hours = _normalize_wan_window(request.query_params.get("window"))
-    return render_accounts_ping_response(request, cfg, message, "settings", "source", window_hours)
+    return render_accounts_ping_response(request, cfg, message, "settings", "general", window_hours)
 
 
 @app.post("/settings/accounts-ping/format", response_class=HTMLResponse)
