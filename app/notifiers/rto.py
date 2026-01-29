@@ -77,6 +77,7 @@ def parse_devices(csv_text):
         raise RuntimeError("CSV has no header")
 
     ip_field = None
+    pppoe_field = None
     name_fields = ["Circuit Name", "Device Name", "Circuit ID", "Device ID"]
     for field in reader.fieldnames:
         if field.strip().lower() == "ipv4":
@@ -84,6 +85,18 @@ def parse_devices(csv_text):
             break
     if not ip_field:
         raise RuntimeError("CSV does not contain IPv4 column")
+
+    for field in reader.fieldnames:
+        normalized = field.strip().lower()
+        if "pppoe" in normalized:
+            pppoe_field = field
+            break
+    if not pppoe_field:
+        for field in reader.fieldnames:
+            normalized = field.strip().lower()
+            if normalized in ("pppoe username", "pppoe user", "pppoe", "username", "user"):
+                pppoe_field = field
+                break
 
     devices = []
     for row in reader:
@@ -97,7 +110,8 @@ def parse_devices(csv_text):
                 break
         if not name:
             name = ip
-        devices.append({"name": name, "ip": ip})
+        pppoe = (row.get(pppoe_field) or "").strip() if pppoe_field else ""
+        devices.append({"name": name, "ip": ip, "pppoe": pppoe or name})
     return devices
 
 

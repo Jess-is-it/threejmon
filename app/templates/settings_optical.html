@@ -125,11 +125,13 @@
                     <th class="rto-tip rto-sort" data-sort="date" aria-sort="none" title="Timestamp of the most recent optical reading." data-tip="Timestamp of the most recent optical reading.">Last Check <span class="rto-sort-indicator" aria-hidden="true"></span></th>
                     <th class="rto-tip rto-trend-header" title="RX power trend for the current window." data-tip="RX power trend for the current window. Click to expand.">{{ optical_status.window_label }} Trend</th>
                     <th class="rto-tip rto-sort" data-sort="text" aria-sort="none" title="Reason this device is flagged under Connection Issues." data-tip="Reason this device is flagged under Connection Issues.">Reason <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="text-end"> </th>
                   </tr>
                 </thead>
                 <tbody>
                   {% for row in optical_status.issue_rows %}
-                    <tr>
+                    {% set surv_status = surveillance_index.get(row.name) %}
+                    <tr{% if surv_status == 'under' %} class="table-warning"{% elif surv_status == 'level2' %} class="table-danger"{% endif %}>
                       <td>
                         {% if row.device_url %}
                           <a href="{{ row.device_url }}" target="_blank" rel="noopener">{{ row.name }}</a>
@@ -208,10 +210,33 @@
                         {% endif %}
                       </td>
                       <td>{{ row.reasons|join(', ') }}</td>
+                      <td class="text-end">
+                        <span data-surveillance-slot>
+                          {% if surv_status == 'under' %}
+                            <a class="badge bg-yellow-lt text-yellow header-icon-badge" href="/surveillance?tab=under&focus={{ row.name|urlencode }}" title="Under Surveillance" aria-label="Under Surveillance">
+                              <i class="ti ti-eye"></i>
+                            </a>
+                          {% elif surv_status == 'level2' %}
+                            <a class="badge bg-red-lt text-red header-icon-badge" href="/surveillance?tab=level2&focus={{ row.name|urlencode }}" title="LEVEL II SUSPECT" aria-label="LEVEL II SUSPECT">
+                              <i class="ti ti-eye"></i>
+                            </a>
+                          {% else %}
+                            <button type="button"
+                                    class="badge bg-blue-lt text-blue header-icon-badge border-0 surveillance-add-btn"
+                                    title="For Surveillance"
+                                    data-pppoe="{{ row.name }}"
+                                    data-name="{{ row.name }}"
+                                    data-ip="{{ row.ip }}"
+                                    data-source="optical">
+                              <i class="ti ti-eye"></i>
+                            </button>
+                          {% endif %}
+                        </span>
+                      </td>
                     </tr>
                   {% else %}
                     <tr>
-                      <td colspan="9" class="text-muted">No connection issues detected yet.</td>
+                      <td colspan="10" class="text-muted">No connection issues detected yet.</td>
                     </tr>
                   {% endfor %}
                 </tbody>
@@ -235,11 +260,13 @@
                     <th class="rto-tip rto-sort" data-sort="number" aria-sort="none" title="Number of samples in the current window." data-tip="Number of samples in the current window.">Samples <span class="rto-sort-indicator" aria-hidden="true"></span></th>
                     <th class="rto-tip rto-sort" data-sort="date" aria-sort="none" title="Timestamp of the most recent optical reading." data-tip="Timestamp of the most recent optical reading.">Last Check <span class="rto-sort-indicator" aria-hidden="true"></span></th>
                     <th class="rto-tip rto-trend-header" title="RX power trend for the current window." data-tip="RX power trend for the current window. Click to expand.">{{ optical_status.window_label }} Trend</th>
+                    <th class="text-end"> </th>
                   </tr>
                 </thead>
                 <tbody>
                   {% for row in optical_status.stable_rows %}
-                    <tr>
+                    {% set surv_status = surveillance_index.get(row.name) %}
+                    <tr{% if surv_status == 'under' %} class="table-warning"{% elif surv_status == 'level2' %} class="table-danger"{% endif %}>
                       <td>
                         {% if row.device_url %}
                           <a href="{{ row.device_url }}" target="_blank" rel="noopener">{{ row.name }}</a>
@@ -311,10 +338,33 @@
                           <span class="text-muted small">n/a</span>
                         {% endif %}
                       </td>
+                      <td class="text-end">
+                        <span data-surveillance-slot>
+                          {% if surv_status == 'under' %}
+                            <a class="badge bg-yellow-lt text-yellow header-icon-badge" href="/surveillance?tab=under&focus={{ row.name|urlencode }}" title="Under Surveillance" aria-label="Under Surveillance">
+                              <i class="ti ti-eye"></i>
+                            </a>
+                          {% elif surv_status == 'level2' %}
+                            <a class="badge bg-red-lt text-red header-icon-badge" href="/surveillance?tab=level2&focus={{ row.name|urlencode }}" title="LEVEL II SUSPECT" aria-label="LEVEL II SUSPECT">
+                              <i class="ti ti-eye"></i>
+                            </a>
+                          {% else %}
+                            <button type="button"
+                                    class="badge bg-blue-lt text-blue header-icon-badge border-0 surveillance-add-btn"
+                                    title="For Surveillance"
+                                    data-pppoe="{{ row.name }}"
+                                    data-name="{{ row.name }}"
+                                    data-ip="{{ row.ip }}"
+                                    data-source="optical">
+                              <i class="ti ti-eye"></i>
+                            </button>
+                          {% endif %}
+                        </span>
+                      </td>
                     </tr>
                   {% else %}
                     <tr>
-                      <td colspan="8" class="text-muted">No stable connections listed yet.</td>
+                      <td colspan="9" class="text-muted">No stable connections listed yet.</td>
                     </tr>
                   {% endfor %}
                 </tbody>

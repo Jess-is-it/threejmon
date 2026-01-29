@@ -97,7 +97,9 @@
                 </thead>
                 <tbody>
                   {% for row in accounts_ping_status.issue_rows %}
-                    <tr class="accounts-ping-row" data-search="{{ (row.name ~ ' ' ~ row.ip)|lower }}">
+		                    {% set surv_key = (row.name or '') %}
+                        {% set surv_status = surveillance_index.get(surv_key) %}
+			                    <tr class="accounts-ping-row{% if surv_status == 'under' %} table-warning{% elif surv_status == 'level2' %} table-danger{% endif %}" data-search="{{ (row.name ~ ' ' ~ row.ip)|lower }}">
                       <td>{{ row.name }}</td>
                       <td>{{ row.ip }}</td>
                       <td>
@@ -114,29 +116,49 @@
                       <td>{{ row.streak }}</td>
                       <td>{{ row.down_for or "—" }}</td>
                       <td>{{ row.last_check }}</td>
-                      <td>
-                        <button type="button" class="btn btn-sm btn-outline-secondary accounts-ping-spark-btn"
-                                data-account-id="{{ row.id }}" data-name="{{ row.name }}">
-                          <svg width="140" height="28" viewBox="0 0 140 28" aria-hidden="true">
-                            <polyline fill="none" stroke="#206bc4" stroke-width="2" points="{{ row.spark_points_24h }}" />
-                          </svg>
-                        </button>
-                      </td>
+	                      <td>
+	                        <button type="button"
+	                                class="btn btn-link p-0 accounts-ping-spark-btn"
+	                                style="line-height:0"
+	                                data-account-id="{{ row.id }}"
+	                                data-name="{{ row.name }}"
+	                                data-ip="{{ row.ip }}"
+	                                data-bs-toggle="modal"
+	                                data-bs-target="#accounts-ping-spark-modal">
+	                          <svg class="accounts-ping-sparkline" width="120" height="30" viewBox="0 0 140 28" preserveAspectRatio="none" aria-hidden="true">
+	                            <polyline fill="none" stroke="#206bc4" stroke-width="2" points="{{ row.spark_points_24h }}" />
+	                          </svg>
+	                        </button>
+	                      </td>
                       <td>
                         {% for r in row.reasons %}
                           <div class="text-muted small">{{ r }}</div>
                         {% endfor %}
                       </td>
-                      <td class="text-end">
-                        <form method="post" action="/accounts-ping/investigate" class="d-inline">
-                          <input type="hidden" name="account_id" value="{{ row.id }}" />
-                          <input type="hidden" name="minutes" value="{{ settings.burst.investigate_minutes }}" />
-                          <button type="submit" class="btn btn-sm btn-outline-primary">
-                            <i class="ti ti-search me-1"></i>Investigate
-                          </button>
-                        </form>
-                      </td>
-                    </tr>
+		                      <td class="text-end">
+			                        <span data-surveillance-slot>
+			                          {% if surv_status == 'under' %}
+			                            <a class="badge bg-yellow-lt text-yellow header-icon-badge" href="/surveillance?tab=under&focus={{ row.name|urlencode }}" title="Under Surveillance" aria-label="Under Surveillance">
+			                              <i class="ti ti-eye"></i>
+			                            </a>
+			                          {% elif surv_status == 'level2' %}
+			                            <a class="badge bg-red-lt text-red header-icon-badge" href="/surveillance?tab=level2&focus={{ row.name|urlencode }}" title="LEVEL II SUSPECT" aria-label="LEVEL II SUSPECT">
+			                              <i class="ti ti-eye"></i>
+			                            </a>
+			                          {% else %}
+			                            <button type="button"
+			                                    class="badge bg-blue-lt text-blue header-icon-badge border-0 surveillance-add-btn"
+		                                    title="For Surveillance"
+		                                    data-pppoe="{{ row.name }}"
+		                                    data-name="{{ row.name }}"
+		                                    data-ip="{{ row.ip }}"
+		                                    data-source="accounts_ping">
+		                              <i class="ti ti-eye"></i>
+		                            </button>
+		                          {% endif %}
+		                        </span>
+		                      </td>
+	                    </tr>
                   {% endfor %}
                 </tbody>
               </table>
@@ -147,21 +169,24 @@
             <div class="table-responsive">
               <table class="table table-vcenter">
                 <thead>
-                  <tr>
-                    <th>Customer</th>
-                    <th>IPv4</th>
-                    <th>Status</th>
-                    <th>Loss</th>
-                    <th>Latency</th>
-                    <th>Fail %</th>
-                    <th>Uptime %</th>
-                    <th>Last Check</th>
-                    <th>24H Trend</th>
-                  </tr>
+	                  <tr>
+	                    <th>Customer</th>
+	                    <th>IPv4</th>
+	                    <th>Status</th>
+	                    <th>Loss</th>
+	                    <th>Latency</th>
+	                    <th>Fail %</th>
+	                    <th>Uptime %</th>
+	                    <th>Last Check</th>
+	                    <th>24H Trend</th>
+	                    <th class="text-end">Actions</th>
+	                  </tr>
                 </thead>
                 <tbody>
                   {% for row in accounts_ping_status.stable_rows %}
-                    <tr class="accounts-ping-row" data-search="{{ (row.name ~ ' ' ~ row.ip)|lower }}">
+		                    {% set surv_key = (row.name or '') %}
+                        {% set surv_status = surveillance_index.get(surv_key) %}
+			                    <tr class="accounts-ping-row{% if surv_status == 'under' %} table-warning{% elif surv_status == 'level2' %} table-danger{% endif %}" data-search="{{ (row.name ~ ' ' ~ row.ip)|lower }}">
                       <td>{{ row.name }}</td>
                       <td>{{ row.ip }}</td>
                       <td><span class="badge bg-green-lt">Up</span></td>
@@ -170,15 +195,44 @@
                       <td>{{ "%.1f"|format(row.rto_pct) }}</td>
                       <td>{{ "%.1f"|format(row.uptime_pct) }}</td>
                       <td>{{ row.last_check }}</td>
-                      <td>
-                        <button type="button" class="btn btn-sm btn-outline-secondary accounts-ping-spark-btn"
-                                data-account-id="{{ row.id }}" data-name="{{ row.name }}">
-                          <svg width="140" height="28" viewBox="0 0 140 28" aria-hidden="true">
-                            <polyline fill="none" stroke="#2fb344" stroke-width="2" points="{{ row.spark_points_24h }}" />
-                          </svg>
-                        </button>
-                      </td>
-                    </tr>
+		                      <td>
+		                        <button type="button"
+		                                class="btn btn-link p-0 accounts-ping-spark-btn"
+	                                style="line-height:0"
+	                                data-account-id="{{ row.id }}"
+	                                data-name="{{ row.name }}"
+	                                data-ip="{{ row.ip }}"
+	                                data-bs-toggle="modal"
+	                                data-bs-target="#accounts-ping-spark-modal">
+	                          <svg class="accounts-ping-sparkline" width="120" height="30" viewBox="0 0 140 28" preserveAspectRatio="none" aria-hidden="true">
+	                            <polyline fill="none" stroke="#2fb344" stroke-width="2" points="{{ row.spark_points_24h }}" />
+	                          </svg>
+		                        </button>
+		                      </td>
+			                      <td class="text-end">
+				                        <span data-surveillance-slot>
+				                          {% if surv_status == 'under' %}
+				                            <a class="badge bg-yellow-lt text-yellow header-icon-badge" href="/surveillance?tab=under&focus={{ row.name|urlencode }}" title="Under Surveillance" aria-label="Under Surveillance">
+				                              <i class="ti ti-eye"></i>
+				                            </a>
+				                          {% elif surv_status == 'level2' %}
+				                            <a class="badge bg-red-lt text-red header-icon-badge" href="/surveillance?tab=level2&focus={{ row.name|urlencode }}" title="LEVEL II SUSPECT" aria-label="LEVEL II SUSPECT">
+				                              <i class="ti ti-eye"></i>
+				                            </a>
+				                          {% else %}
+				                            <button type="button"
+				                                    class="badge bg-blue-lt text-blue header-icon-badge border-0 surveillance-add-btn"
+			                                    title="For Surveillance"
+			                                    data-pppoe="{{ row.name }}"
+			                                    data-name="{{ row.name }}"
+			                                    data-ip="{{ row.ip }}"
+			                                    data-source="accounts_ping">
+			                              <i class="ti ti-eye"></i>
+			                            </button>
+			                          {% endif %}
+			                        </span>
+			                      </td>
+	                    </tr>
                   {% endfor %}
                 </tbody>
               </table>
@@ -186,25 +240,29 @@
           </div>
         </div>
 
-        <div class="modal fade" id="accountsPingChartModal" tabindex="-1" aria-hidden="true">
-          <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
-            <div class="modal-content">
-              <div class="modal-header">
-                <h5 class="modal-title" id="accountsPingChartTitle">Account</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-              </div>
-              <div class="modal-body">
-                <div class="d-flex gap-2 mb-2 flex-wrap">
-                  {% for label, hours in accounts_ping_window_options %}
-                    <button type="button" class="btn btn-sm btn-outline-secondary accounts-ping-modal-window" data-hours="{{ hours }}">{{ label }}</button>
-                  {% endfor %}
-                </div>
-                <div id="accountsPingChart" style="height: 260px;"></div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
+	        <div class="modal modal-blur fade" id="accounts-ping-spark-modal" tabindex="-1" role="dialog" aria-hidden="true">
+	          <div class="modal-dialog modal-lg modal-dialog-centered" role="document">
+	            <div class="modal-content">
+	              <div class="modal-header">
+	                <h5 class="modal-title" id="accounts-ping-spark-title">Accounts Ping Trend</h5>
+	                <div class="dropdown ms-auto">
+	                  <button class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" id="accounts-ping-modal-window-button">Filter</button>
+	                  <div class="dropdown-menu dropdown-menu-end" id="accounts-ping-modal-window-menu">
+	                    {% for label, hours in accounts_ping_window_options %}
+	                      <button class="dropdown-item accounts-ping-modal-window-option" data-hours="{{ hours }}" data-label="{{ label }}">{{ label }}</button>
+	                    {% endfor %}
+	                  </div>
+	                </div>
+	                <button type="button" class="btn-close ms-2" data-bs-dismiss="modal" aria-label="Close"></button>
+	              </div>
+	              <div class="modal-body">
+	                <div id="accounts-ping-spark-modal-chart" style="height: 260px;"></div>
+	                <div class="text-muted small mt-2">Latency and loss history based on raw ping results for the selected window.</div>
+	              </div>
+	            </div>
+	          </div>
+	        </div>
+	      </div>
 
       <div class="tab-pane {% if active_tab != 'status' %}active{% endif %}" id="accounts-ping-settings">
         <form method="post" action="/settings/accounts-ping" id="accounts-ping-form">
@@ -215,8 +273,6 @@
             <li class="nav-item"><a href="#accounts-ping-general" class="nav-link {% if settings_tab == 'general' %}active{% endif %}" data-bs-toggle="tab">General</a></li>
             <li class="nav-item"><a href="#accounts-ping-source" class="nav-link {% if settings_tab == 'source' %}active{% endif %}" data-bs-toggle="tab">Source</a></li>
             <li class="nav-item"><a href="#accounts-ping-classification" class="nav-link {% if settings_tab == 'classification' %}active{% endif %}" data-bs-toggle="tab">Classification</a></li>
-            <li class="nav-item"><a href="#accounts-ping-burst" class="nav-link {% if settings_tab == 'burst' %}active{% endif %}" data-bs-toggle="tab">Burst</a></li>
-            <li class="nav-item"><a href="#accounts-ping-backoff" class="nav-link {% if settings_tab == 'backoff' %}active{% endif %}" data-bs-toggle="tab">Backoff</a></li>
             <li class="nav-item"><a href="#accounts-ping-storage" class="nav-link {% if settings_tab == 'storage' %}active{% endif %}" data-bs-toggle="tab">Storage</a></li>
             <li class="nav-item"><a href="#accounts-ping-danger" class="nav-link {% if settings_tab == 'danger' %}active{% endif %}" data-bs-toggle="tab">Danger</a></li>
           </ul>
@@ -235,7 +291,7 @@
                       </label>
                     </div>
                     <div class="col-md-4">
-                      <label class="form-label">Base Interval (seconds) <span class="info" data-tip="Normal check interval per account (seconds). Burst/backoff may override this interval.">i</span></label>
+                      <label class="form-label">Base Interval (seconds) <span class="info" data-tip="Normal check interval per account (seconds). Under Surveillance can override this interval.">i</span></label>
                       <input class="form-control" type="number" name="base_interval_seconds" value="{{ settings.general.base_interval_seconds }}" min="1" />
                     </div>
                     <div class="col-md-4">
@@ -327,66 +383,10 @@
                 </div>
               </div>
             </div>
-
-            <div class="tab-pane {% if settings_tab == 'burst' %}active{% endif %}" id="accounts-ping-burst">
-              <div class="card mb-3">
-                <div class="card-body">
-                  <h5 class="mb-3">Burst</h5>
-                  <div class="row g-3">
-                    <div class="col-md-3">
-                      <label class="form-label">Burst Enabled <span class="info" data-tip="Allow faster checks (e.g., 1s) during investigation or short failures. Long-down backoff disables bursts automatically.">i</span></label>
-                      <label class="form-check form-switch">
-                        <input class="form-check-input" type="checkbox" name="burst_enabled" {% if settings.burst.enabled %}checked{% endif %} />
-                        <span class="form-check-label">Enabled</span>
-                      </label>
-                    </div>
-                    <div class="col-md-3">
-                      <label class="form-label">Burst Interval (seconds) <span class="info" data-tip="Interval between checks while an account is in burst mode (seconds).">i</span></label>
-                      <input class="form-control" type="number" name="burst_interval_seconds" value="{{ settings.burst.burst_interval_seconds }}" min="1" />
-                    </div>
-                    <div class="col-md-3">
-                      <label class="form-label">Burst Duration (seconds) <span class="info" data-tip="How long to keep burst mode active after it is triggered (seconds).">i</span></label>
-                      <input class="form-control" type="number" name="burst_duration_seconds" value="{{ settings.burst.burst_duration_seconds }}" min="5" />
-                    </div>
-                    <div class="col-md-3">
-                      <label class="form-label">Investigate Minutes <span class="info" data-tip="Duration used by the Investigate button on the status table (minutes).">i</span></label>
-                      <input class="form-control" type="number" name="investigate_minutes" value="{{ settings.burst.investigate_minutes }}" min="1" />
-                    </div>
-                    <div class="col-md-3">
-                      <label class="form-label">Burst Count <span class="info" data-tip="Number of ICMP echo requests per burst check.">i</span></label>
-                      <input class="form-control" type="number" name="burst_count" value="{{ settings.ping.burst_count }}" min="1" />
-                    </div>
-                    <div class="col-md-3">
-                      <label class="form-label">Burst Timeout (seconds) <span class="info" data-tip="Timeout per ICMP echo request in burst mode (seconds).">i</span></label>
-                      <input class="form-control" type="number" name="burst_timeout_seconds" value="{{ settings.ping.burst_timeout_seconds }}" min="1" />
-                    </div>
-                    <div class="col-md-6">
-                      <label class="form-label">Trigger bursts on issues <span class="info" data-tip="Start burst mode when loss/latency exceeds thresholds (even if not fully down).">i</span></label>
-                      <label class="form-check form-switch">
-                        <input class="form-check-input" type="checkbox" name="trigger_on_issue" {% if settings.burst.trigger_on_issue %}checked{% endif %} />
-                        <span class="form-check-label">Enabled</span>
-                      </label>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div class="tab-pane {% if settings_tab == 'backoff' %}active{% endif %}" id="accounts-ping-backoff">
-              <div class="card mb-3">
-                <div class="card-body">
-                  <h5 class="mb-3">Backoff</h5>
-                  <div class="row g-3">
-                    <div class="col-md-4">
-                      <label class="form-label">Long-down seconds <span class="info" data-tip="If an account stays down longer than this, burst mode is disabled and polling slows down.">i</span></label>
-                      <input class="form-control" type="number" name="long_down_seconds" value="{{ settings.backoff.long_down_seconds }}" min="60" />
-                    </div>
-                    <div class="col-md-4">
-                      <label class="form-label">Long-down interval (seconds) <span class="info" data-tip="Polling interval while an account is long-down (seconds).">i</span></label>
-                      <input class="form-control" type="number" name="long_down_interval_seconds" value="{{ settings.backoff.long_down_interval_seconds }}" min="5" />
-                    </div>
-                  </div>
-                </div>
+            <div class="alert alert-info">
+              <div class="d-flex align-items-start">
+                <span class="me-2"><i class="ti ti-info-circle"></i></span>
+                <div>Burst/backoff behavior is managed under <a href="/surveillance">Under Surveillance</a>.</div>
               </div>
             </div>
 
@@ -482,24 +482,30 @@
       });
     }
 
-    const modalEl = document.getElementById("accountsPingChartModal");
-    const modalTitle = document.getElementById("accountsPingChartTitle");
-    const modalChart = document.getElementById("accountsPingChart");
-    const modalButtons = document.querySelectorAll(".accounts-ping-modal-window");
-    let modalAccountId = "";
-    let chart = null;
+	    const modalEl = document.getElementById("accounts-ping-spark-modal");
+	    const modalTitle = document.getElementById("accounts-ping-spark-title");
+	    const modalChart = document.getElementById("accounts-ping-spark-modal-chart");
+	    const modalWindowButton = document.getElementById("accounts-ping-modal-window-button");
+	    const modalWindowOptions = document.querySelectorAll(".accounts-ping-modal-window-option");
+	    let modalAccountId = "";
+	    let modalAccountName = "Account";
+	    let modalAccountIp = "";
+	    let chart = null;
 
-    const renderChart = async (name, accountId, hours) => {
-      if (!modalChart) return;
-      modalChart.innerHTML = "<div class='text-muted'>Loading…</div>";
+	    const renderChart = async (name, accountId, hours) => {
+	      if (!modalChart) return;
+	      modalChart.innerHTML = "<div class='text-muted'>Loading…</div>";
       if (chart) {
         try { chart.destroy(); } catch (e) {}
         chart = null;
       }
-      try {
-        const params = new URLSearchParams({ account_id: accountId, window: String(hours) });
-        const res = await fetch(`/accounts-ping/series?${params.toString()}`, { headers: { "Accept": "application/json" } });
-        if (!res.ok) throw new Error("fetch failed");
+	      try {
+	        if (!window.ApexCharts) {
+	          throw new Error("ApexCharts not loaded");
+	        }
+	        const params = new URLSearchParams({ account_id: accountId, window: String(hours) });
+	        const res = await fetch(`/accounts-ping/series?${params.toString()}`, { headers: { "Accept": "application/json" }, cache: "no-store" });
+	        if (!res.ok) throw new Error("fetch failed");
         const payload = await res.json();
         const points = (payload.series || []).map((row) => {
           const ts = row.ts ? Date.parse(String(row.ts)) : NaN;
@@ -510,65 +516,106 @@
         const latency = points.map((p) => ({ x: p.x, y: p.avg_ms }));
         const loss = points.map((p) => ({ x: p.x, y: p.loss }));
         modalChart.innerHTML = "";
-        chart = new window.ApexCharts(modalChart, {
-          chart: { type: "line", height: 260, toolbar: { show: false }, zoom: { enabled: false } },
-          stroke: { width: 2 },
-          markers: { size: 0 },
+	        chart = new window.ApexCharts(modalChart, {
+	          chart: { type: "line", height: 260, toolbar: { show: false }, zoom: { enabled: false } },
+	          stroke: { width: 2 },
+	          markers: { size: 0 },
           series: [
             { name: "Latency (ms)", data: latency },
             { name: "Loss (%)", data: loss },
           ],
-          colors: ["#206bc4", "#d63939"],
-          xaxis: { type: "datetime" },
-          yaxis: [
-            { title: { text: "ms" } },
-            { opposite: true, min: 0, max: 100, tickAmount: 5, title: { text: "%" } },
-          ],
-          tooltip: { shared: true, intersect: false },
-          grid: { strokeDashArray: 4 },
-          legend: { position: "top" },
-        });
-        chart.render();
-        if (modalTitle) modalTitle.textContent = `${name} (${hours}h)`;
-      } catch (err) {
-        modalChart.innerHTML = "<div class='text-muted'>No data available.</div>";
-      }
-    };
+	          colors: ["#206bc4", "#d63939"],
+	          xaxis: { type: "datetime" },
+	          yaxis: [
+	            { title: { text: "ms" } },
+	            { opposite: true, min: 0, max: 100, tickAmount: 5, title: { text: "%" } },
+	          ],
+	          tooltip: {
+	            shared: true,
+	            intersect: false,
+	            x: {
+	              formatter: (value) => {
+	                const dt = new Date(value);
+	                if (Number.isNaN(dt.getTime())) return "";
+	                return dt.toLocaleString("en-PH", {
+	                  month: "short",
+	                  day: "2-digit",
+	                  hour: "2-digit",
+	                  minute: "2-digit",
+	                  hour12: true,
+	                });
+	              },
+	            },
+	          },
+	          grid: { strokeDashArray: 4 },
+	          legend: { position: "top" },
+	        });
+	        chart.render();
+	        if (modalTitle) modalTitle.textContent = `${name}${modalAccountIp ? ` (${modalAccountIp})` : ""}`;
+	      } catch (err) {
+	        modalChart.innerHTML = "<div class='text-muted'>No data available.</div>";
+	      }
+	    };
 
-    document.querySelectorAll(".accounts-ping-spark-btn").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        modalAccountId = btn.getAttribute("data-account-id") || "";
-        const name = btn.getAttribute("data-name") || "Account";
-        const windowBadge = document.getElementById("accounts-ping-status-window");
-        const windowText = windowBadge ? windowBadge.textContent.trim() : "1D";
-        const hours = windowText.endsWith("H")
-          ? parseInt(windowText.replace("H", ""), 10)
-          : windowText.endsWith("D")
-            ? parseInt(windowText.replace("D", ""), 10) * 24
-            : 24;
-        await renderChart(name, modalAccountId, hours);
-        if (modalEl) new window.bootstrap.Modal(modalEl).show();
-      });
-    });
+	    const getDefaultHours = () => {
+	      const urlParam = new URLSearchParams(window.location.search).get("window");
+	      const stored = localStorage.getItem("accounts_ping_modal_window_hours");
+	      const candidate = stored || urlParam || "24";
+	      const parsed = parseInt(candidate, 10);
+	      return Number.isNaN(parsed) ? 24 : parsed;
+	    };
 
-    modalButtons.forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const hours = parseInt(btn.dataset.hours || "24", 10);
-        const name = (modalTitle && modalTitle.textContent.split(" (")[0]) || "Account";
-        if (!modalAccountId) return;
-        await renderChart(name, modalAccountId, hours);
-      });
-    });
+	    const setModalWindowLabel = (hours) => {
+	      const match = Array.from(modalWindowOptions).find((btn) => parseInt(btn.dataset.hours || "", 10) === hours);
+	      if (modalWindowButton) {
+	        modalWindowButton.textContent = match ? (match.dataset.label || `${hours}h`) : `${hours}h`;
+	      }
+	    };
 
-    if (modalEl) {
-      modalEl.addEventListener("hidden.bs.modal", () => {
-        if (chart) {
-          try { chart.destroy(); } catch (e) {}
-          chart = null;
-        }
-        if (modalChart) modalChart.innerHTML = "";
-      });
-    }
-  });
-</script>
+	    // Ensure modal isn't clipped by tab containers.
+	    if (modalEl && modalEl.parentElement && modalEl.parentElement !== document.body) {
+	      document.body.appendChild(modalEl);
+	    }
+
+	    document.querySelectorAll(".accounts-ping-spark-btn").forEach((btn) => {
+	      btn.addEventListener("click", () => {
+	        modalAccountId = btn.getAttribute("data-account-id") || "";
+	        modalAccountName = btn.getAttribute("data-name") || "Account";
+	        modalAccountIp = btn.getAttribute("data-ip") || "";
+	        setModalWindowLabel(getDefaultHours());
+	      });
+	    });
+
+	    modalWindowOptions.forEach((btn) => {
+	      btn.addEventListener("click", async (event) => {
+	        event.preventDefault();
+	        if (!modalAccountId) return;
+	        const hours = parseInt(btn.dataset.hours || "24", 10);
+	        localStorage.setItem("accounts_ping_modal_window_hours", String(hours));
+	        setModalWindowLabel(hours);
+	        await renderChart(modalAccountName, modalAccountId, hours);
+	      });
+	    });
+
+	    if (modalEl) {
+	      modalEl.addEventListener("shown.bs.modal", async () => {
+	        if (!modalAccountId) return;
+	        const hours = getDefaultHours();
+	        setModalWindowLabel(hours);
+	        await renderChart(modalAccountName, modalAccountId, hours);
+	      });
+
+	      modalEl.addEventListener("hidden.bs.modal", () => {
+	        if (chart) {
+	          try { chart.destroy(); } catch (e) {}
+	          chart = null;
+	        }
+	        if (modalChart) modalChart.innerHTML = "";
+	        modalAccountId = "";
+	        modalAccountName = "Account";
+	        modalAccountIp = "";
+	      });
+	    }
+	  });
+	</script>
 {% endblock %}

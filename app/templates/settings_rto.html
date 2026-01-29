@@ -97,11 +97,13 @@
                     <th class="rto-tip rto-sort" data-sort="date" aria-sort="none" title="Timestamp of the most recent check recorded for this subscriber." data-tip="Timestamp of the most recent check recorded for this subscriber.">Last Check <span class="rto-sort-indicator" aria-hidden="true"></span></th>
                     <th class="rto-tip rto-trend-header" title="Up/down history for this subscriber based on raw ping results." data-tip="Up/down history for this subscriber based on raw ping results. Click to expand.">{{ rto_status.window_label }} Trend</th>
                     <th class="rto-tip rto-sort" data-sort="text" aria-sort="none" title="Why this subscriber appears in Connection Issues, based on the configured thresholds." data-tip="Why this subscriber appears in Connection Issues, based on the configured thresholds.">Reason <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="text-end"> </th>
                   </tr>
                 </thead>
                 <tbody>
                   {% for row in rto_status.issue_rows %}
-                    <tr>
+                    {% set surv_status = surveillance_index.get(row.name) %}
+                    <tr{% if surv_status == 'under' %} class="table-warning"{% elif surv_status == 'level2' %} class="table-danger"{% endif %}>
                       <td>{{ row.name }}</td>
                       <td>{{ row.ip }}</td>
                       <td>
@@ -137,10 +139,33 @@
                         {% endif %}
                       </td>
                       <td>{{ row.reasons|join(', ') }}</td>
+                      <td class="text-end">
+                        <span data-surveillance-slot>
+                          {% if surv_status == 'under' %}
+                            <a class="badge bg-yellow-lt text-yellow header-icon-badge" href="/surveillance?tab=under&focus={{ row.name|urlencode }}" title="Under Surveillance" aria-label="Under Surveillance">
+                              <i class="ti ti-eye"></i>
+                            </a>
+                          {% elif surv_status == 'level2' %}
+                            <a class="badge bg-red-lt text-red header-icon-badge" href="/surveillance?tab=level2&focus={{ row.name|urlencode }}" title="LEVEL II SUSPECT" aria-label="LEVEL II SUSPECT">
+                              <i class="ti ti-eye"></i>
+                            </a>
+                          {% else %}
+                            <button type="button"
+                                    class="badge bg-blue-lt text-blue header-icon-badge border-0 surveillance-add-btn"
+                                    title="For Surveillance"
+                                    data-pppoe="{{ row.name }}"
+                                    data-name="{{ row.name }}"
+                                    data-ip="{{ row.ip }}"
+                                    data-source="rto">
+                              <i class="ti ti-eye"></i>
+                            </button>
+                          {% endif %}
+                        </span>
+                      </td>
                     </tr>
                   {% else %}
                     <tr>
-                      <td colspan="10" class="text-muted">No connection issues detected yet.</td>
+                      <td colspan="11" class="text-muted">No connection issues detected yet.</td>
                     </tr>
                   {% endfor %}
                 </tbody>
@@ -164,11 +189,13 @@
                     <th class="rto-tip rto-sort" data-sort="number" aria-sort="none" title="Number of recent checks stored in the history window." data-tip="Number of recent checks stored in the history window.">Total Checks <span class="rto-sort-indicator" aria-hidden="true"></span></th>
                     <th class="rto-tip rto-sort" data-sort="date" aria-sort="none" title="Timestamp of the most recent check recorded for this subscriber." data-tip="Timestamp of the most recent check recorded for this subscriber.">Last Check <span class="rto-sort-indicator" aria-hidden="true"></span></th>
                     <th class="rto-tip rto-trend-header" title="Up/down history for this subscriber based on raw ping results." data-tip="Up/down history for this subscriber based on raw ping results. Click to expand.">{{ rto_status.window_label }} Trend</th>
+                    <th class="text-end"> </th>
                   </tr>
                 </thead>
                 <tbody>
                   {% for row in rto_status.stable_rows %}
-                    <tr>
+                    {% set surv_status = surveillance_index.get(row.name) %}
+                    <tr{% if surv_status == 'under' %} class="table-warning"{% elif surv_status == 'level2' %} class="table-danger"{% endif %}>
                       <td>{{ row.name }}</td>
                       <td>{{ row.ip }}</td>
                       <td><span class="badge bg-green-lt">Up</span></td>
@@ -196,10 +223,33 @@
                           <span class="text-muted small">n/a</span>
                         {% endif %}
                       </td>
+                      <td class="text-end">
+                        <span data-surveillance-slot>
+                          {% if surv_status == 'under' %}
+                            <a class="badge bg-yellow-lt text-yellow header-icon-badge" href="/surveillance?tab=under&focus={{ row.name|urlencode }}" title="Under Surveillance" aria-label="Under Surveillance">
+                              <i class="ti ti-eye"></i>
+                            </a>
+                          {% elif surv_status == 'level2' %}
+                            <a class="badge bg-red-lt text-red header-icon-badge" href="/surveillance?tab=level2&focus={{ row.name|urlencode }}" title="LEVEL II SUSPECT" aria-label="LEVEL II SUSPECT">
+                              <i class="ti ti-eye"></i>
+                            </a>
+                          {% else %}
+                            <button type="button"
+                                    class="badge bg-blue-lt text-blue header-icon-badge border-0 surveillance-add-btn"
+                                    title="For Surveillance"
+                                    data-pppoe="{{ row.name }}"
+                                    data-name="{{ row.name }}"
+                                    data-ip="{{ row.ip }}"
+                                    data-source="rto">
+                              <i class="ti ti-eye"></i>
+                            </button>
+                          {% endif %}
+                        </span>
+                      </td>
                     </tr>
                   {% else %}
                     <tr>
-                      <td colspan="8" class="text-muted">No stable connections listed yet.</td>
+                      <td colspan="9" class="text-muted">No stable connections listed yet.</td>
                     </tr>
                   {% endfor %}
                 </tbody>

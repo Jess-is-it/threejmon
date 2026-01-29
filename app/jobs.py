@@ -9,7 +9,15 @@ try:
 except Exception:
     ZoneInfo = None
 
-from .db import delete_rto_results_older_than, delete_optical_results_older_than, update_job_status, utc_now_iso
+from .db import (
+    delete_rto_results_older_than,
+    delete_optical_results_older_than,
+    update_job_status,
+    utc_now_iso,
+    get_accounts_ping_window_stats,
+    get_latest_accounts_ping_map,
+    get_latest_optical_by_pppoe,
+)
 from .db import delete_accounts_ping_raw_older_than, delete_accounts_ping_rollups_older_than, insert_accounts_ping_result
 from .notifiers import optical as optical_notifier
 from .notifiers import rto as rto_notifier
@@ -17,8 +25,8 @@ from .notifiers import isp_ping as isp_ping_notifier
 from .notifiers import wan_ping as wan_ping_notifier
 from .notifiers.isp_ping import ping_with_source
 from .notifiers.telegram import TelegramError, get_updates, send_telegram
-from .settings_defaults import ACCOUNTS_PING_DEFAULTS, ISP_PING_DEFAULTS, OPTICAL_DEFAULTS, RTO_DEFAULTS, WAN_PING_DEFAULTS
-from .settings_store import get_settings, get_state, save_state
+from .settings_defaults import ACCOUNTS_PING_DEFAULTS, ISP_PING_DEFAULTS, OPTICAL_DEFAULTS, RTO_DEFAULTS, SURVEILLANCE_DEFAULTS, WAN_PING_DEFAULTS
+from .settings_store import get_settings, get_state, save_settings, save_state
 from .telegram_commands import handle_telegram_command
 
 
@@ -168,7 +176,24 @@ class JobsManager:
     def _accounts_ping_loop(self):
         while not self.stop_event.is_set():
             cfg = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
-            if not cfg.get("enabled"):
+            surv_cfg = get_settings("surveillance", SURVEILLANCE_DEFAULTS)
+            surv_enabled = bool(surv_cfg.get("enabled", True))
+            raw_entries = surv_cfg.get("entries") if isinstance(surv_cfg.get("entries"), list) else []
+            surv_entries = []
+            for entry in raw_entries:
+                if not isinstance(entry, dict):
+                    continue
+                pppoe = (entry.get("pppoe") or entry.get("name") or "").strip()
+                if not pppoe:
+                    continue
+                status = (entry.get("status") or "under").strip().lower()
+                if status not in ("under", "level2"):
+                    status = "under"
+                surv_entries.append({**entry, "pppoe": pppoe, "status": status})
+            surv_map = {entry["pppoe"]: entry for entry in surv_entries}
+            has_surveillance = bool(surv_enabled and surv_map)
+
+            if not cfg.get("enabled") and not has_surveillance:
                 time_module.sleep(5)
                 continue
 
@@ -183,20 +208,35 @@ class JobsManager:
                 if refresh_minutes < 1:
                     refresh_minutes = 1
 
-                def account_id_for_ip(ip):
-                    raw = (ip or "").strip().encode("utf-8")
+                def account_id_for_pppoe(pppoe):
+                    raw = (pppoe or "").strip().encode("utf-8")
                     if not raw:
                         return ""
                     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
                 # refresh devices list from SSH CSV (same source as RTO)
-                if (not refreshed_dt) or (refreshed_dt + timedelta(minutes=refresh_minutes) < now) or not devices:
-                    csv_text = rto_notifier.fetch_csv_text(cfg)
-                    parsed = rto_notifier.parse_devices(csv_text)
-                    devices = [{"name": d.get("name") or d.get("ip"), "ip": d.get("ip")} for d in (parsed or []) if d.get("ip")]
-                    state["devices"] = devices
-                    state["devices_refreshed_at"] = now.replace(microsecond=0).isoformat() + "Z"
-                    save_state("accounts_ping_state", state)
+                should_refresh = (not refreshed_dt) or (refreshed_dt + timedelta(minutes=refresh_minutes) < now) or not devices
+                ssh_cfg = cfg.get("ssh", {}) or {}
+                has_ssh = bool((ssh_cfg.get("host") or "").strip() and (ssh_cfg.get("user") or "").strip())
+                if should_refresh and has_ssh:
+                    try:
+                        csv_text = rto_notifier.fetch_csv_text(cfg)
+                        parsed = rto_notifier.parse_devices(csv_text)
+                        devices = [
+                            {
+                                "pppoe": (d.get("pppoe") or d.get("name") or d.get("ip") or "").strip(),
+                                "name": (d.get("pppoe") or d.get("name") or d.get("ip") or "").strip(),
+                                "ip": (d.get("ip") or "").strip(),
+                            }
+                            for d in (parsed or [])
+                            if (d.get("ip") or "").strip()
+                        ]
+                        state["devices"] = devices
+                        state["devices_refreshed_at"] = now.replace(microsecond=0).isoformat() + "Z"
+                        save_state("accounts_ping_state", state)
+                    except Exception:
+                        if cfg.get("enabled"):
+                            raise
 
                 storage = cfg.get("storage", {}) or {}
                 raw_retention_days = int(storage.get("raw_retention_days", 0) or 0)
@@ -216,21 +256,40 @@ class JobsManager:
                     state["last_prune_at"] = now.replace(microsecond=0).isoformat() + "Z"
                     save_state("accounts_ping_state", state)
 
-                targets = []
+                pppoe_ip_map = {}
                 for device in devices:
+                    pppoe = (device.get("pppoe") or device.get("name") or "").strip()
                     ip = (device.get("ip") or "").strip()
-                    if not ip:
+                    if not pppoe or not ip:
                         continue
-                    account_id = account_id_for_ip(ip)
-                    if not account_id:
-                        continue
-                    targets.append(
-                        {
-                            "id": account_id,
-                            "name": (device.get("name") or "").strip(),
-                            "ip": ip,
-                        }
-                    )
+                    pppoe_ip_map[pppoe] = ip
+
+                target_map = {}
+                if cfg.get("enabled"):
+                    for device in devices:
+                        pppoe = (device.get("pppoe") or device.get("name") or "").strip()
+                        ip = (device.get("ip") or "").strip()
+                        if not pppoe or not ip:
+                            continue
+                        account_id = account_id_for_pppoe(pppoe)
+                        if not account_id:
+                            continue
+                        target_map[account_id] = {"id": account_id, "pppoe": pppoe, "name": pppoe, "ip": ip}
+
+                surv_changed = False
+                if has_surveillance:
+                    for pppoe, entry in surv_map.items():
+                        ip = (entry.get("ip") or "").strip() or pppoe_ip_map.get(pppoe, "")
+                        if ip and ip != (entry.get("ip") or "").strip():
+                            entry["ip"] = ip
+                            entry["updated_at"] = now.replace(microsecond=0).isoformat() + "Z"
+                            surv_changed = True
+                        account_id = account_id_for_pppoe(pppoe)
+                        if not account_id or not ip:
+                            continue
+                        target_map.setdefault(account_id, {"id": account_id, "pppoe": pppoe, "name": pppoe, "ip": ip})
+
+                targets = list(target_map.values())
 
                 if not targets:
                     time_module.sleep(2)
@@ -241,21 +300,23 @@ class JobsManager:
                 ping_cfg = cfg.get("ping", {}) or {}
                 count = max(int(ping_cfg.get("count", 3) or 3), 1)
                 timeout_seconds = max(int(ping_cfg.get("timeout_seconds", 1) or 1), 1)
-                burst_count = max(int(ping_cfg.get("burst_count", 1) or 1), 1)
-                burst_timeout_seconds = max(int(ping_cfg.get("burst_timeout_seconds", 1) or 1), 1)
+                surv_ping_cfg = surv_cfg.get("ping", {}) or {}
+                surv_interval = max(int(surv_ping_cfg.get("interval_seconds", 1) or 1), 1)
+                burst_count = max(int(surv_ping_cfg.get("burst_count", 1) or 1), 1)
+                burst_timeout_seconds = max(int(surv_ping_cfg.get("burst_timeout_seconds", 1) or 1), 1)
 
                 cls = cfg.get("classification", {}) or {}
                 issue_loss_pct = float(cls.get("issue_loss_pct", 20.0) or 20.0)
                 issue_latency_ms = float(cls.get("issue_latency_ms", 200.0) or 200.0)
                 down_loss_pct = float(cls.get("down_loss_pct", 100.0) or 100.0)
 
-                burst_cfg = cfg.get("burst", {}) or {}
+                burst_cfg = surv_cfg.get("burst", {}) or {}
                 burst_enabled = bool(burst_cfg.get("enabled", True))
                 burst_interval = max(int(burst_cfg.get("burst_interval_seconds", 1) or 1), 1)
                 burst_duration = max(int(burst_cfg.get("burst_duration_seconds", 120) or 120), 5)
                 trigger_on_issue = bool(burst_cfg.get("trigger_on_issue", True))
 
-                backoff_cfg = cfg.get("backoff", {}) or {}
+                backoff_cfg = surv_cfg.get("backoff", {}) or {}
                 long_down_seconds = max(int(backoff_cfg.get("long_down_seconds", 7200) or 7200), 60)
                 long_down_interval = max(int(backoff_cfg.get("long_down_interval_seconds", 300) or 300), 5)
 
@@ -273,20 +334,24 @@ class JobsManager:
                     last_check_dt = parse_dt(entry.get("last_check_at"))
                     down_since_dt = parse_dt(entry.get("down_since"))
                     burst_until_dt = parse_dt(entry.get("burst_until"))
-                    investigate_until_dt = parse_dt(entry.get("investigate_until"))
 
                     is_long_down = bool(down_since_dt and (now - down_since_dt).total_seconds() >= long_down_seconds)
                     if is_long_down:
                         burst_until_dt = None
 
                     in_burst = bool(burst_enabled and (burst_until_dt and now < burst_until_dt))
-                    in_investigate = bool(investigate_until_dt and now < investigate_until_dt)
-                    if in_investigate and burst_enabled:
-                        in_burst = True
+                    is_surveillance_target = target.get("pppoe") in surv_map
 
                     effective_interval = base_interval
                     mode = "normal"
-                    if is_long_down:
+                    if is_surveillance_target:
+                        if is_long_down:
+                            effective_interval = long_down_interval
+                            mode = "backoff"
+                        else:
+                            effective_interval = surv_interval
+                            mode = "surveillance"
+                    elif is_long_down:
                         effective_interval = long_down_interval
                         mode = "backoff"
                     elif in_burst:
@@ -306,7 +371,7 @@ class JobsManager:
                 def do_ping(target_row):
                     ip = target_row["ip"]
                     mode = target_row.get("_mode") or "normal"
-                    if mode == "burst":
+                    if mode in ("burst", "surveillance"):
                         res = ping_with_source(ip, "", burst_timeout_seconds, burst_count)
                     else:
                         res = ping_with_source(ip, "", timeout_seconds, count)
@@ -344,9 +409,6 @@ class JobsManager:
                     if burst_until_dt and now >= burst_until_dt:
                         entry["burst_until"] = ""
                         burst_until_dt = None
-                    investigate_until_dt = parse_dt(entry.get("investigate_until"))
-                    if investigate_until_dt and now >= investigate_until_dt:
-                        entry["investigate_until"] = ""
                     down_since_dt = parse_dt(entry.get("down_since"))
                     if ok:
                         entry["streak"] = 0
@@ -367,7 +429,7 @@ class JobsManager:
                     if is_long_down:
                         entry["burst_until"] = ""
                     else:
-                        if burst_enabled and ((is_issue and trigger_on_issue) or (not ok)) and not burst_until_dt:
+                        if mode not in ("surveillance",) and burst_enabled and ((is_issue and trigger_on_issue) or (not ok)) and not burst_until_dt:
                             entry["burst_until"] = (now + timedelta(seconds=burst_duration)).replace(microsecond=0).isoformat() + "Z"
 
                     accounts_state[account_id] = entry
@@ -390,6 +452,78 @@ class JobsManager:
                 if changed:
                     state["accounts"] = accounts_state
                     save_state("accounts_ping_state", state)
+
+                # auto-transition surveillance entries (every ~5 seconds)
+                if has_surveillance:
+                    last_eval = state.get("surveillance_last_eval_at")
+                    last_eval_dt = parse_dt(last_eval) if last_eval else None
+                    if not last_eval_dt or (now - last_eval_dt).total_seconds() >= 5:
+                        stab_cfg = surv_cfg.get("stability", {}) or {}
+                        stable_window_minutes = max(int(stab_cfg.get("stable_window_minutes", 10) or 10), 1)
+                        uptime_threshold_pct = float(stab_cfg.get("uptime_threshold_pct", 95.0) or 95.0)
+                        latency_max_ms = float(stab_cfg.get("latency_max_ms", 15.0) or 15.0)
+                        optical_rx_min_dbm = float(stab_cfg.get("optical_rx_min_dbm", -24.0) or -24.0)
+                        require_optical = bool(stab_cfg.get("require_optical", False))
+                        escalate_after_minutes = max(int(stab_cfg.get("escalate_after_minutes", stable_window_minutes) or stable_window_minutes), 1)
+
+                        since_iso = (now - timedelta(minutes=stable_window_minutes)).replace(microsecond=0).isoformat() + "Z"
+                        surveilled_pppoes = list(surv_map.keys())
+                        surveilled_ids = [account_id_for_pppoe(p) for p in surveilled_pppoes]
+                        stats_map = get_accounts_ping_window_stats(surveilled_ids, since_iso)
+                        latest_map = get_latest_accounts_ping_map(surveilled_ids)
+                        optical_map = get_latest_optical_by_pppoe(surveilled_pppoes)
+
+                        now_iso = now.replace(microsecond=0).isoformat() + "Z"
+                        entries_changed = False
+                        for pppoe, entry in list(surv_map.items()):
+                            status = (entry.get("status") or "under").strip().lower()
+                            aid = account_id_for_pppoe(pppoe)
+                            stats = stats_map.get(aid) or {}
+                            latest = latest_map.get(aid) or {}
+
+                            total = int(stats.get("total") or 0)
+                            failures = int(stats.get("failures") or 0)
+                            uptime_pct = (100.0 - (failures / total) * 100.0) if total else 0.0
+                            avg_ms_avg = stats.get("avg_ms_avg")
+                            if avg_ms_avg is None:
+                                avg_ms_avg = latest.get("avg_ms")
+
+                            stable = bool(
+                                total > 0
+                                and uptime_pct >= uptime_threshold_pct
+                                and avg_ms_avg is not None
+                                and float(avg_ms_avg) <= latency_max_ms
+                            )
+                            if stable and require_optical:
+                                opt = optical_map.get(pppoe) or {}
+                                rx = opt.get("rx")
+                                stable = bool(rx is not None and float(rx) >= optical_rx_min_dbm)
+
+                            if status == "under":
+                                added_at = parse_dt(entry.get("added_at"))
+                                has_full_window = bool(
+                                    added_at
+                                    and (now - added_at).total_seconds() >= float(stable_window_minutes) * 60.0
+                                )
+                                if stable and has_full_window:
+                                    surv_map.pop(pppoe, None)
+                                    entries_changed = True
+                                    continue
+                                added_at = parse_dt(entry.get("added_at"))
+                                if added_at and (now - added_at).total_seconds() >= float(escalate_after_minutes) * 60.0:
+                                    entry["status"] = "level2"
+                                    entry["level2_at"] = now_iso
+                                    entry["updated_at"] = now_iso
+                                    surv_map[pppoe] = entry
+                                    entries_changed = True
+
+                        if surv_changed or entries_changed:
+                            surv_cfg["entries"] = list(surv_map.values())
+                            save_settings("surveillance", surv_cfg)
+
+                        state["surveillance_last_eval_at"] = now_iso
+                        save_state("accounts_ping_state", state)
+
                 update_job_status("accounts_ping", last_success_at=utc_now_iso(), last_error="", last_error_at="")
             except TelegramError as exc:
                 update_job_status("accounts_ping", last_error=str(exc), last_error_at=utc_now_iso())

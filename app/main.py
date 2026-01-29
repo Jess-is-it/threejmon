@@ -34,6 +34,7 @@ from .db import (
     get_rto_results_for_ip_since,
     get_optical_results_since,
     get_optical_results_for_device_since,
+    get_latest_optical_by_pppoe,
     get_latest_optical_device_for_ip,
     get_latest_optical_identity,
     get_latest_rto_identity,
@@ -62,7 +63,16 @@ from .notifiers import optical as optical_notifier
 from .notifiers import rto as rto_notifier
 from .notifiers import wan_ping as wan_ping_notifier
 from .notifiers.telegram import TelegramError, send_telegram
-from .settings_defaults import ACCOUNTS_PING_DEFAULTS, ISP_PING_DEFAULTS, OPTICAL_DEFAULTS, RTO_DEFAULTS, WAN_PING_DEFAULTS, WAN_MESSAGE_DEFAULTS, WAN_SUMMARY_DEFAULTS
+from .settings_defaults import (
+    ACCOUNTS_PING_DEFAULTS,
+    ISP_PING_DEFAULTS,
+    OPTICAL_DEFAULTS,
+    RTO_DEFAULTS,
+    SURVEILLANCE_DEFAULTS,
+    WAN_PING_DEFAULTS,
+    WAN_MESSAGE_DEFAULTS,
+    WAN_SUMMARY_DEFAULTS,
+)
 from .settings_store import export_settings, get_settings, get_state, import_settings, save_settings, save_state
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -130,6 +140,22 @@ def make_context(request, extra=None):
         ctx["company_logo_url"] = ""
         ctx["browser_logo_url"] = ""
         ctx["browser_logo_type"] = ""
+    try:
+        surv = get_settings("surveillance", SURVEILLANCE_DEFAULTS)
+        entries = surv.get("entries") if isinstance(surv.get("entries"), list) else []
+        index = {}
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            key = (entry.get("pppoe") or "").strip()
+            if not key:
+                continue
+            index[key] = (entry.get("status") or "under").strip() or "under"
+        ctx["surveillance_index"] = index
+        ctx["surveillance_count"] = len(index)
+    except Exception:
+        ctx["surveillance_index"] = {}
+        ctx["surveillance_count"] = 0
     if extra:
         ctx.update(extra)
     return ctx
@@ -2988,10 +3014,11 @@ def build_accounts_ping_status(settings, window_hours=24):
         ip = (device.get("ip") or "").strip()
         if not ip:
             continue
+        pppoe = (device.get("pppoe") or device.get("name") or "").strip() or ip
         account_rows.append(
             {
-                "id": _accounts_ping_account_id_for_ip(ip),
-                "name": (device.get("name") or "").strip() or ip,
+                "id": _accounts_ping_account_id_for_pppoe(pppoe),
+                "name": pppoe,
                 "ip": ip,
             }
         )
@@ -3116,16 +3143,25 @@ def render_accounts_ping_response(request, settings, message, active_tab, settin
     )
 
 
-def _accounts_ping_account_id_for_ip(ip):
-    raw = (ip or "").strip().encode("utf-8")
+def _accounts_ping_account_id_for_pppoe(pppoe):
+    raw = (pppoe or "").strip().encode("utf-8")
     if not raw:
         return ""
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
+def _accounts_ping_account_id_for_ip(ip):
+    # Backward-compatible wrapper (legacy callers still pass an IP string).
+    return _accounts_ping_account_id_for_pppoe(ip)
+
+
 @app.post("/settings/accounts-ping", response_class=HTMLResponse)
 async def accounts_ping_settings_save(request: Request):
     form = await request.form()
+    current = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
+    ping_current = dict(current.get("ping") or {})
+    burst_current = dict(current.get("burst") or {})
+    backoff_current = dict(current.get("backoff") or {})
     settings = {
         "enabled": parse_bool(form, "enabled"),
         "ssh": {
@@ -3145,27 +3181,19 @@ async def accounts_ping_settings_save(request: Request):
             "max_parallel": parse_int(form, "max_parallel", 64),
         },
         "ping": {
-            "count": parse_int(form, "ping_count", 3),
-            "timeout_seconds": parse_int(form, "ping_timeout_seconds", 1),
-            "burst_count": parse_int(form, "burst_count", 1),
-            "burst_timeout_seconds": parse_int(form, "burst_timeout_seconds", 1),
+            **ping_current,
+            "count": parse_int(form, "ping_count", ping_current.get("count", 3)),
+            "timeout_seconds": parse_int(form, "ping_timeout_seconds", ping_current.get("timeout_seconds", 1)),
         },
         "classification": {
             "issue_loss_pct": parse_float(form, "issue_loss_pct", 20.0),
             "issue_latency_ms": parse_float(form, "issue_latency_ms", 200.0),
             "down_loss_pct": parse_float(form, "down_loss_pct", 100.0),
         },
-        "burst": {
-            "enabled": parse_bool(form, "burst_enabled"),
-            "burst_interval_seconds": parse_int(form, "burst_interval_seconds", 1),
-            "burst_duration_seconds": parse_int(form, "burst_duration_seconds", 120),
-            "investigate_minutes": parse_int(form, "investigate_minutes", 15),
-            "trigger_on_issue": parse_bool(form, "trigger_on_issue"),
-        },
-        "backoff": {
-            "long_down_seconds": parse_int(form, "long_down_seconds", 7200),
-            "long_down_interval_seconds": parse_int(form, "long_down_interval_seconds", 300),
-        },
+        # Burst/backoff are managed under the Under Surveillance feature; keep existing values here
+        # for backward compatibility (unused by current scheduler).
+        "burst": burst_current,
+        "backoff": backoff_current,
         "storage": {
             "raw_retention_days": parse_int(form, "raw_retention_days", 30),
             "rollup_retention_days": parse_int(form, "rollup_retention_days", 365),
@@ -3175,7 +3203,9 @@ async def accounts_ping_settings_save(request: Request):
     save_settings("accounts_ping", settings)
     window_hours = _normalize_wan_window(request.query_params.get("window"))
     active_tab = form.get("active_tab", "settings")
-    settings_tab = form.get("settings_tab", "general")
+    settings_tab = (form.get("settings_tab") or "general").strip().lower()
+    if settings_tab not in ("general", "source", "classification", "storage", "danger"):
+        settings_tab = "general"
     return render_accounts_ping_response(request, settings, "Accounts Ping settings saved.", active_tab, settings_tab, window_hours)
 
 
@@ -3187,7 +3217,15 @@ async def accounts_ping_settings_test(request: Request):
         csv_text = rto_notifier.fetch_csv_text(cfg)
         devices = rto_notifier.parse_devices(csv_text)
         state = get_state("accounts_ping_state", {"accounts": {}, "devices": []})
-        state["devices"] = [{"name": d.get("name") or d.get("ip"), "ip": d.get("ip")} for d in (devices or []) if d.get("ip")]
+        state["devices"] = [
+            {
+                "pppoe": (d.get("pppoe") or d.get("name") or d.get("ip") or "").strip(),
+                "name": (d.get("pppoe") or d.get("name") or d.get("ip") or "").strip(),
+                "ip": (d.get("ip") or "").strip(),
+            }
+            for d in (devices or [])
+            if (d.get("ip") or "").strip()
+        ]
         state["devices_refreshed_at"] = utc_now_iso()
         save_state("accounts_ping_state", state)
         message = f"SSH OK. Loaded {len(state['devices'])} accounts from CSV."
@@ -3239,6 +3277,284 @@ async def accounts_ping_investigate(request: Request):
     state["accounts"] = accounts
     save_state("accounts_ping_state", state)
     return RedirectResponse(url="/settings/accounts-ping", status_code=303)
+
+
+def normalize_surveillance_settings(raw):
+    cfg = copy.deepcopy(SURVEILLANCE_DEFAULTS)
+    if isinstance(raw, dict):
+        cfg["enabled"] = bool(raw.get("enabled", cfg["enabled"]))
+        for key in ("ping", "burst", "backoff", "stability"):
+            if isinstance(raw.get(key), dict) and isinstance(cfg.get(key), dict):
+                cfg[key].update(raw[key])
+        if isinstance(raw.get("entries"), list):
+            cfg["entries"] = raw["entries"]
+
+    normalized = []
+    now_iso = utc_now_iso()
+    for entry in cfg.get("entries") or []:
+        if not isinstance(entry, dict):
+            continue
+        pppoe = (entry.get("pppoe") or entry.get("name") or "").strip()
+        if not pppoe:
+            continue
+        status = (entry.get("status") or "under").strip().lower()
+        if status not in ("under", "level2"):
+            status = "under"
+        normalized.append(
+            {
+                "pppoe": pppoe,
+                "name": (entry.get("name") or pppoe).strip(),
+                "ip": (entry.get("ip") or "").strip(),
+                "source": (entry.get("source") or "").strip(),
+                "status": status,
+                "added_at": (entry.get("added_at") or "").strip() or now_iso,
+                "updated_at": (entry.get("updated_at") or "").strip() or now_iso,
+                "level2_at": (entry.get("level2_at") or "").strip(),
+            }
+        )
+    cfg["entries"] = normalized
+    return cfg
+
+
+def _surveillance_entry_map(settings):
+    entries = settings.get("entries") if isinstance(settings.get("entries"), list) else []
+    merged = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        pppoe = (entry.get("pppoe") or "").strip()
+        if not pppoe:
+            continue
+        merged[pppoe] = entry
+    settings["entries"] = list(merged.values())
+    return merged
+
+
+@app.get("/surveillance", response_class=HTMLResponse)
+async def surveillance_page(request: Request):
+    raw = get_settings("surveillance", SURVEILLANCE_DEFAULTS)
+    settings = normalize_surveillance_settings(raw)
+    entry_map = _surveillance_entry_map(settings)
+    save_settings("surveillance", settings)
+
+    active_tab = (request.query_params.get("tab") or "").strip().lower()
+    focus = (request.query_params.get("focus") or "").strip()
+    if active_tab not in ("under", "level2", "settings"):
+        active_tab = ""
+    if focus and focus in entry_map and not active_tab:
+        active_tab = "level2" if (entry_map.get(focus, {}).get("status") == "level2") else "under"
+    if not active_tab:
+        active_tab = "under"
+
+    pppoes = sorted(entry_map.keys(), key=lambda x: x.lower())
+    account_ids = [_accounts_ping_account_id_for_ip(pppoe) for pppoe in pppoes]
+
+    stab_cfg = settings.get("stability", {}) or {}
+    stable_window_minutes = max(int(stab_cfg.get("stable_window_minutes", 10) or 10), 1)
+    now = datetime.utcnow()
+    since_iso = (now - timedelta(minutes=stable_window_minutes)).replace(microsecond=0).isoformat() + "Z"
+
+    latest_map = get_latest_accounts_ping_map(account_ids)
+    stats_map = get_accounts_ping_window_stats(account_ids, since_iso)
+    optical_latest_map = get_latest_optical_by_pppoe(pppoes)
+    ping_state = get_state("accounts_ping_state", {"accounts": {}})
+    ping_accounts = ping_state.get("accounts") if isinstance(ping_state.get("accounts"), dict) else {}
+
+    def build_row(pppoe):
+        entry = entry_map.get(pppoe, {})
+        account_id = _accounts_ping_account_id_for_ip(pppoe)
+        latest = latest_map.get(account_id) or {}
+        stats = stats_map.get(account_id) or {}
+        opt = optical_latest_map.get(pppoe) or {}
+        st = ping_accounts.get(account_id) if isinstance(ping_accounts.get(account_id), dict) else {}
+
+        total = int(stats.get("total") or 0)
+        failures = int(stats.get("failures") or 0)
+        uptime_pct = (100.0 - (failures / total) * 100.0) if total else 0.0
+
+        down_since_dt = _parse_iso_z(st.get("down_since"))
+        down_for = _format_duration_short((datetime.utcnow() - down_since_dt).total_seconds()) if down_since_dt else ""
+
+        return {
+            "pppoe": pppoe,
+            "name": entry.get("name") or pppoe,
+            "ip": entry.get("ip") or latest.get("ip") or opt.get("ip") or "",
+            "status": entry.get("status") or "under",
+            "added_at": format_ts_ph(entry.get("added_at")),
+            "added_at_iso": (entry.get("added_at") or "").strip(),
+            "last_check": format_ts_ph(latest.get("timestamp")),
+            "loss": latest.get("loss"),
+            "avg_ms": latest.get("avg_ms"),
+            "ok": bool(latest.get("ok")) if latest else False,
+            "uptime_pct": uptime_pct,
+            "down_for": down_for,
+            "optical_rx": opt.get("rx"),
+            "optical_tx": opt.get("tx"),
+            "optical_last": format_ts_ph(opt.get("timestamp")),
+        }
+
+    under_rows = [build_row(pppoe) for pppoe in pppoes if (entry_map.get(pppoe, {}).get("status") or "under") == "under"]
+    level2_rows = [build_row(pppoe) for pppoe in pppoes if (entry_map.get(pppoe, {}).get("status") or "") == "level2"]
+
+    return templates.TemplateResponse(
+        "surveillance.html",
+        make_context(
+            request,
+            {
+                "settings": settings,
+                "active_tab": active_tab,
+                "under_rows": under_rows,
+                "level2_rows": level2_rows,
+                "stable_window_minutes": stable_window_minutes,
+            },
+        ),
+    )
+
+
+@app.post("/surveillance/settings", response_class=HTMLResponse)
+async def surveillance_settings_save(request: Request):
+    form = await request.form()
+    current = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
+    entry_map = _surveillance_entry_map(current)
+
+    def _float(name, default):
+        try:
+            return float(form.get(name, default))
+        except Exception:
+            return float(default)
+
+    settings = {
+        **current,
+        "enabled": parse_bool(form, "enabled"),
+        "ping": {
+            **(current.get("ping") or {}),
+            "interval_seconds": parse_int(form, "interval_seconds", current["ping"].get("interval_seconds", 1)),
+            "count": parse_int(form, "ping_count", current["ping"].get("count", 1)),
+            "timeout_seconds": parse_int(form, "ping_timeout_seconds", current["ping"].get("timeout_seconds", 1)),
+            "burst_count": parse_int(form, "burst_count", current["ping"].get("burst_count", 1)),
+            "burst_timeout_seconds": parse_int(form, "burst_timeout_seconds", current["ping"].get("burst_timeout_seconds", 1)),
+            "max_parallel": parse_int(form, "max_parallel", current["ping"].get("max_parallel", 64)),
+        },
+        "burst": {
+            **(current.get("burst") or {}),
+            "enabled": parse_bool(form, "burst_enabled"),
+            "burst_interval_seconds": parse_int(form, "burst_interval_seconds", current["burst"].get("burst_interval_seconds", 1)),
+            "burst_duration_seconds": parse_int(form, "burst_duration_seconds", current["burst"].get("burst_duration_seconds", 120)),
+            "trigger_on_issue": parse_bool(form, "trigger_on_issue"),
+        },
+        "backoff": {
+            **(current.get("backoff") or {}),
+            "long_down_seconds": parse_int(form, "long_down_seconds", current["backoff"].get("long_down_seconds", 7200)),
+            "long_down_interval_seconds": parse_int(
+                form, "long_down_interval_seconds", current["backoff"].get("long_down_interval_seconds", 300)
+            ),
+        },
+        "stability": {
+            **(current.get("stability") or {}),
+            "stable_window_minutes": parse_int(form, "stable_window_minutes", current["stability"].get("stable_window_minutes", 10)),
+            "uptime_threshold_pct": _float("uptime_threshold_pct", current["stability"].get("uptime_threshold_pct", 95.0)),
+            "latency_max_ms": _float("latency_max_ms", current["stability"].get("latency_max_ms", 15.0)),
+            "optical_rx_min_dbm": _float("optical_rx_min_dbm", current["stability"].get("optical_rx_min_dbm", -24.0)),
+            "require_optical": parse_bool(form, "require_optical"),
+            "escalate_after_minutes": parse_int(
+                form, "escalate_after_minutes", current["stability"].get("escalate_after_minutes", current["stability"].get("stable_window_minutes", 10))
+            ),
+        },
+        "entries": list(entry_map.values()),
+    }
+
+    save_settings("surveillance", settings)
+    return RedirectResponse(url="/surveillance?tab=settings", status_code=303)
+
+
+@app.post("/surveillance/add", response_class=JSONResponse)
+async def surveillance_add(request: Request):
+    form = await request.form()
+    pppoe = (form.get("pppoe") or "").strip()
+    name = (form.get("name") or pppoe).strip()
+    ip = (form.get("ip") or "").strip()
+    source = (form.get("source") or "").strip()
+    if not pppoe:
+        return JSONResponse({"ok": False, "error": "Missing PPPoE"}, status_code=400)
+
+    settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
+    entry_map = _surveillance_entry_map(settings)
+    now_iso = utc_now_iso()
+    existing = entry_map.get(pppoe)
+    if existing:
+        existing["name"] = name or existing.get("name") or pppoe
+        existing["ip"] = ip or existing.get("ip") or ""
+        existing["updated_at"] = now_iso
+        if source and not existing.get("source"):
+            existing["source"] = source
+        entry_map[pppoe] = existing
+    else:
+        entry_map[pppoe] = {
+            "pppoe": pppoe,
+            "name": name or pppoe,
+            "ip": ip,
+            "source": source,
+            "status": "under",
+            "added_at": now_iso,
+            "updated_at": now_iso,
+            "level2_at": "",
+        }
+    settings["entries"] = list(entry_map.values())
+    save_settings("surveillance", settings)
+    return JSONResponse({"ok": True, "pppoe": pppoe})
+
+
+@app.post("/surveillance/undo", response_class=JSONResponse)
+async def surveillance_undo(request: Request):
+    form = await request.form()
+    pppoe = (form.get("pppoe") or "").strip()
+    if not pppoe:
+        return JSONResponse({"ok": False, "error": "Missing PPPoE"}, status_code=400)
+    settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
+    entry_map = _surveillance_entry_map(settings)
+    entry = entry_map.get(pppoe)
+    if not entry:
+        return JSONResponse({"ok": True, "pppoe": pppoe})
+    added = _parse_iso_z(entry.get("added_at"))
+    if not added:
+        return JSONResponse({"ok": False, "error": "Cannot undo"}, status_code=400)
+    if (datetime.utcnow() - added).total_seconds() > 5:
+        return JSONResponse({"ok": False, "error": "Undo window expired"}, status_code=400)
+    entry_map.pop(pppoe, None)
+    settings["entries"] = list(entry_map.values())
+    save_settings("surveillance", settings)
+    return JSONResponse({"ok": True, "pppoe": pppoe})
+
+
+@app.post("/surveillance/remove", response_class=HTMLResponse)
+async def surveillance_remove(request: Request):
+    form = await request.form()
+    pppoe = (form.get("pppoe") or "").strip()
+    settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
+    entry_map = _surveillance_entry_map(settings)
+    if pppoe:
+        entry_map.pop(pppoe, None)
+    settings["entries"] = list(entry_map.values())
+    save_settings("surveillance", settings)
+    tab = (form.get("tab") or "under").strip() or "under"
+    return RedirectResponse(url=f"/surveillance?tab={urllib.parse.quote(tab)}", status_code=303)
+
+
+@app.post("/surveillance/fixed", response_class=HTMLResponse)
+async def surveillance_fixed(request: Request):
+    form = await request.form()
+    pppoe = (form.get("pppoe") or "").strip()
+    settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
+    entry_map = _surveillance_entry_map(settings)
+    if pppoe and pppoe in entry_map:
+        now_iso = utc_now_iso()
+        entry_map[pppoe]["status"] = "under"
+        entry_map[pppoe]["added_at"] = now_iso
+        entry_map[pppoe]["updated_at"] = now_iso
+        entry_map[pppoe]["level2_at"] = ""
+    settings["entries"] = list(entry_map.values())
+    save_settings("surveillance", settings)
+    return RedirectResponse(url="/surveillance?tab=under", status_code=303)
 
 
 @app.post("/settings/rto", response_class=HTMLResponse)

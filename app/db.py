@@ -497,6 +497,7 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_rto_results_ip_ts ON rto_results (ip, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_optical_results_device_ts ON optical_results (device_id, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_optical_results_ip_ts ON optical_results (ip, timestamp)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_optical_results_pppoe_ts ON optical_results (pppoe, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ping_results_isp_ts ON ping_results (isp_id, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ping_rollups_isp_bucket ON ping_rollups (isp_id, bucket_ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_ping_results_acct_ts ON accounts_ping_results (account_id, timestamp)")
@@ -625,8 +626,6 @@ def fetch_all_state():
 def insert_ping_result(isp_id, target, loss, min_ms, avg_ms, max_ms, raw_output=None, timestamp=None):
     stamp = timestamp or utc_now_iso()
     bucket_ts = _bucket_ts_iso(stamp, bucket_seconds=60)
-    least_fn = "LEAST" if _use_postgres() else "MIN"
-    greatest_fn = "GREATEST" if _use_postgres() else "MAX"
     conn = get_conn()
     try:
         with conn:
@@ -641,47 +640,90 @@ def insert_ping_result(isp_id, target, loss, min_ms, avg_ms, max_ms, raw_output=
             avg_count = 1 if avg_ms is not None else 0
             loss_sum = float(loss) if loss is not None else 0.0
             loss_count = 1 if loss is not None else 0
-            conn.execute(
-                f"""
-                INSERT INTO ping_rollups (
-                    bucket_ts, isp_id, target, sample_count, avg_sum, avg_count, loss_sum, loss_count, min_ms, max_ms, max_avg_ms
+            if _use_postgres():
+                conn.execute(
+                    """
+                    INSERT INTO ping_rollups (
+                        bucket_ts, isp_id, target, sample_count, avg_sum, avg_count, loss_sum, loss_count, min_ms, max_ms, max_avg_ms
+                    )
+                    VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(bucket_ts, isp_id, target) DO UPDATE SET
+                        sample_count = ping_rollups.sample_count + 1,
+                        avg_sum = ping_rollups.avg_sum + excluded.avg_sum,
+                        avg_count = ping_rollups.avg_count + excluded.avg_count,
+                        loss_sum = ping_rollups.loss_sum + excluded.loss_sum,
+                        loss_count = ping_rollups.loss_count + excluded.loss_count,
+                        min_ms = CASE
+                            WHEN ping_rollups.min_ms IS NULL THEN excluded.min_ms
+                            WHEN excluded.min_ms IS NULL THEN ping_rollups.min_ms
+                            ELSE LEAST(ping_rollups.min_ms, excluded.min_ms)
+                        END,
+                        max_ms = CASE
+                            WHEN ping_rollups.max_ms IS NULL THEN excluded.max_ms
+                            WHEN excluded.max_ms IS NULL THEN ping_rollups.max_ms
+                            ELSE GREATEST(ping_rollups.max_ms, excluded.max_ms)
+                        END,
+                        max_avg_ms = CASE
+                            WHEN ping_rollups.max_avg_ms IS NULL THEN excluded.max_avg_ms
+                            WHEN excluded.max_avg_ms IS NULL THEN ping_rollups.max_avg_ms
+                            ELSE GREATEST(ping_rollups.max_avg_ms, excluded.max_avg_ms)
+                        END
+                    """,
+                    (
+                        bucket_ts,
+                        isp_id,
+                        target,
+                        avg_sum,
+                        avg_count,
+                        loss_sum,
+                        loss_count,
+                        min_ms,
+                        max_ms,
+                        avg_ms,
+                    ),
                 )
-                VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(bucket_ts, isp_id, target) DO UPDATE SET
-                    sample_count = sample_count + 1,
-                    avg_sum = avg_sum + excluded.avg_sum,
-                    avg_count = avg_count + excluded.avg_count,
-                    loss_sum = loss_sum + excluded.loss_sum,
-                    loss_count = loss_count + excluded.loss_count,
-                    min_ms = CASE
-                        WHEN min_ms IS NULL THEN excluded.min_ms
-                        WHEN excluded.min_ms IS NULL THEN min_ms
-                        ELSE {least_fn}(min_ms, excluded.min_ms)
-                    END,
-                    max_ms = CASE
-                        WHEN max_ms IS NULL THEN excluded.max_ms
-                        WHEN excluded.max_ms IS NULL THEN max_ms
-                        ELSE {greatest_fn}(max_ms, excluded.max_ms)
-                    END,
-                    max_avg_ms = CASE
-                        WHEN max_avg_ms IS NULL THEN excluded.max_avg_ms
-                        WHEN excluded.max_avg_ms IS NULL THEN max_avg_ms
-                        ELSE {greatest_fn}(max_avg_ms, excluded.max_avg_ms)
-                    END
-                """,
-                (
-                    bucket_ts,
-                    isp_id,
-                    target,
-                    avg_sum,
-                    avg_count,
-                    loss_sum,
-                    loss_count,
-                    min_ms,
-                    max_ms,
-                    avg_ms,
-                ),
-            )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO ping_rollups (
+                        bucket_ts, isp_id, target, sample_count, avg_sum, avg_count, loss_sum, loss_count, min_ms, max_ms, max_avg_ms
+                    )
+                    VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(bucket_ts, isp_id, target) DO UPDATE SET
+                        sample_count = sample_count + 1,
+                        avg_sum = avg_sum + excluded.avg_sum,
+                        avg_count = avg_count + excluded.avg_count,
+                        loss_sum = loss_sum + excluded.loss_sum,
+                        loss_count = loss_count + excluded.loss_count,
+                        min_ms = CASE
+                            WHEN min_ms IS NULL THEN excluded.min_ms
+                            WHEN excluded.min_ms IS NULL THEN min_ms
+                            ELSE MIN(min_ms, excluded.min_ms)
+                        END,
+                        max_ms = CASE
+                            WHEN max_ms IS NULL THEN excluded.max_ms
+                            WHEN excluded.max_ms IS NULL THEN max_ms
+                            ELSE MAX(max_ms, excluded.max_ms)
+                        END,
+                        max_avg_ms = CASE
+                            WHEN max_avg_ms IS NULL THEN excluded.max_avg_ms
+                            WHEN excluded.max_avg_ms IS NULL THEN max_avg_ms
+                            ELSE MAX(max_avg_ms, excluded.max_avg_ms)
+                        END
+                    """,
+                    (
+                        bucket_ts,
+                        isp_id,
+                        target,
+                        avg_sum,
+                        avg_count,
+                        loss_sum,
+                        loss_count,
+                        min_ms,
+                        max_ms,
+                        avg_ms,
+                    ),
+                )
     finally:
         conn.close()
 
@@ -701,8 +743,6 @@ def insert_accounts_ping_result(
 ):
     stamp = timestamp or utc_now_iso()
     bucket_ts = _bucket_ts_iso(stamp, bucket_seconds=bucket_seconds)
-    least_fn = "LEAST" if _use_postgres() else "MIN"
-    greatest_fn = "GREATEST" if _use_postgres() else "MAX"
     conn = get_conn()
     try:
         with conn:
@@ -718,49 +758,95 @@ def insert_accounts_ping_result(
             loss_sum = float(loss) if loss is not None else 0.0
             loss_count = 1 if loss is not None else 0
             ok_count = 1 if ok else 0
-            conn.execute(
-                f"""
-                INSERT INTO accounts_ping_rollups (
-                    bucket_ts, account_id, ip, sample_count, ok_count, avg_sum, avg_count, loss_sum, loss_count, min_ms, max_ms, max_avg_ms
+            if _use_postgres():
+                conn.execute(
+                    """
+                    INSERT INTO accounts_ping_rollups (
+                        bucket_ts, account_id, ip, sample_count, ok_count, avg_sum, avg_count, loss_sum, loss_count, min_ms, max_ms, max_avg_ms
+                    )
+                    VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(bucket_ts, account_id) DO UPDATE SET
+                        ip = excluded.ip,
+                        sample_count = accounts_ping_rollups.sample_count + 1,
+                        ok_count = accounts_ping_rollups.ok_count + excluded.ok_count,
+                        avg_sum = accounts_ping_rollups.avg_sum + excluded.avg_sum,
+                        avg_count = accounts_ping_rollups.avg_count + excluded.avg_count,
+                        loss_sum = accounts_ping_rollups.loss_sum + excluded.loss_sum,
+                        loss_count = accounts_ping_rollups.loss_count + excluded.loss_count,
+                        min_ms = CASE
+                            WHEN accounts_ping_rollups.min_ms IS NULL THEN excluded.min_ms
+                            WHEN excluded.min_ms IS NULL THEN accounts_ping_rollups.min_ms
+                            ELSE LEAST(accounts_ping_rollups.min_ms, excluded.min_ms)
+                        END,
+                        max_ms = CASE
+                            WHEN accounts_ping_rollups.max_ms IS NULL THEN excluded.max_ms
+                            WHEN excluded.max_ms IS NULL THEN accounts_ping_rollups.max_ms
+                            ELSE GREATEST(accounts_ping_rollups.max_ms, excluded.max_ms)
+                        END,
+                        max_avg_ms = CASE
+                            WHEN accounts_ping_rollups.max_avg_ms IS NULL THEN excluded.max_avg_ms
+                            WHEN excluded.max_avg_ms IS NULL THEN accounts_ping_rollups.max_avg_ms
+                            ELSE GREATEST(accounts_ping_rollups.max_avg_ms, excluded.max_avg_ms)
+                        END
+                    """,
+                    (
+                        bucket_ts,
+                        account_id,
+                        ip,
+                        ok_count,
+                        avg_sum,
+                        avg_count,
+                        loss_sum,
+                        loss_count,
+                        min_ms,
+                        max_ms,
+                        avg_ms,
+                    ),
                 )
-                VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(bucket_ts, account_id) DO UPDATE SET
-                    sample_count = sample_count + 1,
-                    ok_count = ok_count + excluded.ok_count,
-                    avg_sum = avg_sum + excluded.avg_sum,
-                    avg_count = avg_count + excluded.avg_count,
-                    loss_sum = loss_sum + excluded.loss_sum,
-                    loss_count = loss_count + excluded.loss_count,
-                    min_ms = CASE
-                        WHEN min_ms IS NULL THEN excluded.min_ms
-                        WHEN excluded.min_ms IS NULL THEN min_ms
-                        ELSE {least_fn}(min_ms, excluded.min_ms)
-                    END,
-                    max_ms = CASE
-                        WHEN max_ms IS NULL THEN excluded.max_ms
-                        WHEN excluded.max_ms IS NULL THEN max_ms
-                        ELSE {greatest_fn}(max_ms, excluded.max_ms)
-                    END,
-                    max_avg_ms = CASE
-                        WHEN max_avg_ms IS NULL THEN excluded.max_avg_ms
-                        WHEN excluded.max_avg_ms IS NULL THEN max_avg_ms
-                        ELSE {greatest_fn}(max_avg_ms, excluded.max_avg_ms)
-                    END
-                """,
-                (
-                    bucket_ts,
-                    account_id,
-                    ip,
-                    ok_count,
-                    avg_sum,
-                    avg_count,
-                    loss_sum,
-                    loss_count,
-                    min_ms,
-                    max_ms,
-                    avg_ms,
-                ),
-            )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO accounts_ping_rollups (
+                        bucket_ts, account_id, ip, sample_count, ok_count, avg_sum, avg_count, loss_sum, loss_count, min_ms, max_ms, max_avg_ms
+                    )
+                    VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(bucket_ts, account_id) DO UPDATE SET
+                        sample_count = sample_count + 1,
+                        ok_count = ok_count + excluded.ok_count,
+                        avg_sum = avg_sum + excluded.avg_sum,
+                        avg_count = avg_count + excluded.avg_count,
+                        loss_sum = loss_sum + excluded.loss_sum,
+                        loss_count = loss_count + excluded.loss_count,
+                        min_ms = CASE
+                            WHEN min_ms IS NULL THEN excluded.min_ms
+                            WHEN excluded.min_ms IS NULL THEN min_ms
+                            ELSE MIN(min_ms, excluded.min_ms)
+                        END,
+                        max_ms = CASE
+                            WHEN max_ms IS NULL THEN excluded.max_ms
+                            WHEN excluded.max_ms IS NULL THEN max_ms
+                            ELSE MAX(max_ms, excluded.max_ms)
+                        END,
+                        max_avg_ms = CASE
+                            WHEN max_avg_ms IS NULL THEN excluded.max_avg_ms
+                            WHEN excluded.max_avg_ms IS NULL THEN max_avg_ms
+                            ELSE MAX(max_avg_ms, excluded.max_avg_ms)
+                        END
+                    """,
+                    (
+                        bucket_ts,
+                        account_id,
+                        ip,
+                        ok_count,
+                        avg_sum,
+                        avg_count,
+                        loss_sum,
+                        loss_count,
+                        min_ms,
+                        max_ms,
+                        avg_ms,
+                    ),
+                )
     finally:
         conn.close()
 
@@ -1161,6 +1247,46 @@ def get_latest_optical_device_for_ip(ip):
             (ip,),
         ).fetchone()
         return row["device_id"] if row else None
+    finally:
+        conn.close()
+
+
+def get_latest_optical_by_pppoe(pppoe_list):
+    pppoe_list = [str(item).strip() for item in (pppoe_list or []) if str(item).strip()]
+    if not pppoe_list:
+        return {}
+    conn = get_conn()
+    try:
+        if _use_postgres():
+            placeholders = ",".join("?" for _ in pppoe_list)
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT ON (pppoe)
+                    timestamp, device_id, pppoe, ip, rx, tx, priority
+                FROM optical_results
+                WHERE pppoe IN ({placeholders})
+                ORDER BY pppoe, timestamp DESC
+                """,
+                list(pppoe_list),
+            ).fetchall()
+            return {row["pppoe"]: dict(row) for row in rows if row.get("pppoe")}
+
+        placeholders = ",".join("?" for _ in pppoe_list)
+        rows = conn.execute(
+            f"""
+            SELECT o.timestamp, o.device_id, o.pppoe, o.ip, o.rx, o.tx, o.priority
+            FROM optical_results o
+            JOIN (
+                SELECT pppoe, MAX(timestamp) AS max_ts
+                FROM optical_results
+                WHERE pppoe IN ({placeholders})
+                GROUP BY pppoe
+            ) latest
+            ON o.pppoe = latest.pppoe AND o.timestamp = latest.max_ts
+            """,
+            list(pppoe_list),
+        ).fetchall()
+        return {row["pppoe"]: dict(row) for row in rows if row.get("pppoe")}
     finally:
         conn.close()
 

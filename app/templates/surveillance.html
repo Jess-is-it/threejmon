@@ -1,0 +1,323 @@
+{% extends "base.html" %}
+{% block title %}Under Surveillance{% endblock %}
+{% block header_title %}Under Surveillance{% endblock %}
+{% block header_badge %}
+  <span class="badge bg-indigo-lt text-indigo header-icon-badge"><i class="ti ti-eye"></i></span>
+{% endblock %}
+{% block content %}
+
+<div class="card">
+  <div class="card-body">
+    <ul class="nav nav-tabs" data-bs-toggle="tabs">
+      <li class="nav-item">
+        <a href="#surv-under" class="nav-link {% if active_tab == 'under' %}active{% endif %}" data-bs-toggle="tab">Under Surveillance</a>
+      </li>
+      <li class="nav-item">
+        <a href="#surv-level2" class="nav-link {% if active_tab == 'level2' %}active{% endif %}" data-bs-toggle="tab">Level II Suspect Detected</a>
+      </li>
+      <li class="nav-item">
+        <a href="#surv-settings" class="nav-link {% if active_tab == 'settings' %}active{% endif %}" data-bs-toggle="tab">Settings</a>
+      </li>
+    </ul>
+
+    <div class="tab-content pt-4">
+      <div class="tab-pane {% if active_tab == 'under' %}active{% endif %}" id="surv-under">
+        <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
+          <div>
+            <h4 class="mb-1">Accounts Under Surveillance</h4>
+            <div class="text-muted small">Uptime % is calculated over the last {{ stable_window_minutes }} minutes.</div>
+          </div>
+          <a class="btn btn-outline-secondary btn-sm" href="/surveillance?tab=under">Refresh</a>
+        </div>
+
+        <div class="table-responsive">
+          <table class="table table-vcenter">
+            <thead>
+              <tr>
+                <th>PPPoE</th>
+                <th>IPv4</th>
+                <th>Ping</th>
+                <th>Loss</th>
+                <th>Latency</th>
+                <th>Uptime %</th>
+                <th>Under For</th>
+                <th>Down For</th>
+                <th>Last Ping</th>
+                <th>Optical RX</th>
+                <th>Optical Last</th>
+                <th class="text-end">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in under_rows %}
+                <tr data-pppoe="{{ row.pppoe }}" data-added-at="{{ row.added_at_iso }}">
+                  <td class="fw-semibold">{{ row.pppoe }}</td>
+                  <td>{{ row.ip or 'n/a' }}</td>
+                  <td>
+                    {% if row.ok %}
+                      <span class="badge bg-green-lt">Up</span>
+                    {% else %}
+                      <span class="badge bg-red-lt">Down</span>
+                    {% endif %}
+                  </td>
+                  <td>{{ row.loss is not none and ("%.1f"|format(row.loss) ~ "%") or "n/a" }}</td>
+                  <td>{{ row.avg_ms is not none and ("%.1f"|format(row.avg_ms) ~ "ms") or "n/a" }}</td>
+                  <td>{{ "%.1f"|format(row.uptime_pct) }}</td>
+                  <td><span class="surv-live-duration text-muted small">—</span></td>
+                  <td>{{ row.down_for or "—" }}</td>
+                  <td>{{ row.last_check or "n/a" }}</td>
+	                  <td>{{ row.optical_rx is not none and ("%.2f"|format(row.optical_rx) ~ " dBm") or "n/a" }}</td>
+	                  <td>{{ row.optical_last or "n/a" }}</td>
+	                  <td class="text-end">
+	                    <form method="post" action="/surveillance/remove" class="d-inline">
+	                      <input type="hidden" name="pppoe" value="{{ row.pppoe }}" />
+	                      <input type="hidden" name="tab" value="under" />
+	                      <button type="submit" class="badge bg-red-lt text-red header-icon-badge border-0" title="Remove" aria-label="Remove">
+	                        <i class="ti ti-trash"></i>
+	                      </button>
+	                    </form>
+	                  </td>
+                </tr>
+              {% else %}
+                <tr>
+                  <td colspan="12" class="text-muted">No accounts under surveillance yet.</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="tab-pane {% if active_tab == 'level2' %}active{% endif %}" id="surv-level2">
+        <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
+          <div>
+            <h4 class="mb-1 text-danger">Level II Suspect Detected</h4>
+            <div class="text-muted small">Accounts that did not meet the stability requirements within the configured window.</div>
+          </div>
+          <a class="btn btn-outline-secondary btn-sm" href="/surveillance?tab=level2">Refresh</a>
+        </div>
+
+        <div class="table-responsive">
+          <table class="table table-vcenter">
+            <thead>
+              <tr>
+                <th>PPPoE</th>
+                <th>IPv4</th>
+                <th>Ping</th>
+                <th>Loss</th>
+                <th>Latency</th>
+                <th>Uptime %</th>
+                <th>Down For</th>
+                <th>Last Ping</th>
+                <th>Optical RX</th>
+                <th>Optical Last</th>
+                <th class="text-end">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in level2_rows %}
+                <tr data-pppoe="{{ row.pppoe }}" data-added-at="{{ row.added_at_iso }}">
+                  <td class="fw-semibold">{{ row.pppoe }}</td>
+                  <td>{{ row.ip or 'n/a' }}</td>
+                  <td>
+                    {% if row.ok %}
+                      <span class="badge bg-yellow-lt">Monitor</span>
+                    {% else %}
+                      <span class="badge bg-red-lt">Down</span>
+                    {% endif %}
+                  </td>
+                  <td>{{ row.loss is not none and ("%.1f"|format(row.loss) ~ "%") or "n/a" }}</td>
+                  <td>{{ row.avg_ms is not none and ("%.1f"|format(row.avg_ms) ~ "ms") or "n/a" }}</td>
+                  <td>{{ "%.1f"|format(row.uptime_pct) }}</td>
+                  <td>{{ row.down_for or "—" }}</td>
+                  <td>{{ row.last_check or "n/a" }}</td>
+	                  <td>{{ row.optical_rx is not none and ("%.2f"|format(row.optical_rx) ~ " dBm") or "n/a" }}</td>
+	                  <td>{{ row.optical_last or "n/a" }}</td>
+	                  <td class="text-end">
+	                    <form method="post" action="/surveillance/fixed" class="d-inline">
+	                      <input type="hidden" name="pppoe" value="{{ row.pppoe }}" />
+	                      <button type="submit" class="badge bg-green-lt text-green header-icon-badge border-0" title="Account Fixed" aria-label="Account Fixed">
+	                        <i class="ti ti-check"></i>
+	                      </button>
+	                    </form>
+	                    <form method="post" action="/surveillance/remove" class="d-inline ms-2">
+	                      <input type="hidden" name="pppoe" value="{{ row.pppoe }}" />
+	                      <input type="hidden" name="tab" value="level2" />
+	                      <button type="submit" class="badge bg-red-lt text-red header-icon-badge border-0" title="Remove" aria-label="Remove">
+	                        <i class="ti ti-trash"></i>
+	                      </button>
+	                    </form>
+	                  </td>
+                </tr>
+              {% else %}
+                <tr>
+                  <td colspan="11" class="text-muted">No Level II suspects yet.</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="tab-pane {% if active_tab == 'settings' %}active{% endif %}" id="surv-settings">
+        <form method="post" action="/surveillance/settings">
+          <div class="row g-3">
+            <div class="col-12">
+              <label class="form-label">Enable Surveillance <span class="info" data-tip="When enabled, accounts in Under Surveillance are pinged at the configured interval.">i</span></label>
+              <label class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" name="enabled" {% if settings.enabled %}checked{% endif %} />
+                <span class="form-check-label">Enabled</span>
+              </label>
+            </div>
+
+            <div class="col-12"><h5 class="mb-1">Ping</h5></div>
+            <div class="col-md-3">
+              <label class="form-label">Interval (seconds) <span class="info" data-tip="How often to ping accounts under surveillance (seconds). Recommended: 1.">i</span></label>
+              <input class="form-control" type="number" name="interval_seconds" min="1" value="{{ settings.ping.interval_seconds }}" />
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Count <span class="info" data-tip="ICMP echo count per normal check.">i</span></label>
+              <input class="form-control" type="number" name="ping_count" min="1" value="{{ settings.ping.count }}" />
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Timeout (seconds) <span class="info" data-tip="Timeout per ICMP echo request (seconds).">i</span></label>
+              <input class="form-control" type="number" name="ping_timeout_seconds" min="1" value="{{ settings.ping.timeout_seconds }}" />
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Max Parallel <span class="info" data-tip="Maximum concurrent pings for surveillance.">i</span></label>
+              <input class="form-control" type="number" name="max_parallel" min="1" value="{{ settings.ping.max_parallel }}" />
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Burst Count <span class="info" data-tip="ICMP echo count when in burst mode.">i</span></label>
+              <input class="form-control" type="number" name="burst_count" min="1" value="{{ settings.ping.burst_count }}" />
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Burst Timeout (seconds) <span class="info" data-tip="Timeout per ICMP echo request in burst mode.">i</span></label>
+              <input class="form-control" type="number" name="burst_timeout_seconds" min="1" value="{{ settings.ping.burst_timeout_seconds }}" />
+            </div>
+
+            <div class="col-12"><h5 class="mb-1 mt-2">Burst</h5></div>
+            <div class="col-md-4">
+              <label class="form-label">Enable Burst <span class="info" data-tip="When enabled, Accounts Ping can temporarily burst (1s checks) when issues are detected.">i</span></label>
+              <label class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" name="burst_enabled" {% if settings.burst.enabled %}checked{% endif %} />
+                <span class="form-check-label">Enabled</span>
+              </label>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Burst Interval (seconds) <span class="info" data-tip="Polling interval while in burst mode (seconds).">i</span></label>
+              <input class="form-control" type="number" name="burst_interval_seconds" min="1" value="{{ settings.burst.burst_interval_seconds }}" />
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Burst Duration (seconds) <span class="info" data-tip="How long to keep burst mode enabled after an issue is detected (seconds).">i</span></label>
+              <input class="form-control" type="number" name="burst_duration_seconds" min="5" value="{{ settings.burst.burst_duration_seconds }}" />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Trigger bursts on issues <span class="info" data-tip="Start burst mode when loss/latency exceeds thresholds (even if not fully down).">i</span></label>
+              <label class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" name="trigger_on_issue" {% if settings.burst.trigger_on_issue %}checked{% endif %} />
+                <span class="form-check-label">Enabled</span>
+              </label>
+            </div>
+
+            <div class="col-12"><h5 class="mb-1 mt-2">Backoff</h5></div>
+            <div class="col-md-4">
+              <label class="form-label">Long-down seconds <span class="info" data-tip="If an account stays down longer than this, the system slows down polling using Long-down interval.">i</span></label>
+              <input class="form-control" type="number" name="long_down_seconds" min="60" value="{{ settings.backoff.long_down_seconds }}" />
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Long-down interval (seconds) <span class="info" data-tip="Polling interval while an account is long-down (seconds).">i</span></label>
+              <input class="form-control" type="number" name="long_down_interval_seconds" min="5" value="{{ settings.backoff.long_down_interval_seconds }}" />
+            </div>
+
+            <div class="col-12"><h5 class="mb-1 mt-2">Stability Requirements</h5></div>
+            <div class="col-md-4">
+              <label class="form-label">Stable Window (minutes) <span class="info" data-tip="How long the account must meet the stability thresholds before it is auto-removed from Under Surveillance.">i</span></label>
+              <input class="form-control" type="number" name="stable_window_minutes" min="1" value="{{ settings.stability.stable_window_minutes }}" />
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Uptime Threshold (%) <span class="info" data-tip="Minimum uptime percentage within the Stable Window to be considered healed (e.g., 95 or 100).">i</span></label>
+              <input class="form-control" type="number" step="0.1" name="uptime_threshold_pct" value="{{ settings.stability.uptime_threshold_pct }}" />
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Latency Max (ms) <span class="info" data-tip="Maximum average latency (ms) for the latest sample to be considered healed.">i</span></label>
+              <input class="form-control" type="number" step="0.1" name="latency_max_ms" value="{{ settings.stability.latency_max_ms }}" />
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Optical RX Min (dBm) <span class="info" data-tip="Minimum acceptable RX reading (e.g., -24). Higher (less negative) is better.">i</span></label>
+              <input class="form-control" type="number" step="0.1" name="optical_rx_min_dbm" value="{{ settings.stability.optical_rx_min_dbm }}" />
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Require Optical <span class="info" data-tip="When enabled, the RX threshold must be met to count an account as healed.">i</span></label>
+              <label class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" name="require_optical" {% if settings.stability.require_optical %}checked{% endif %} />
+                <span class="form-check-label">Enabled</span>
+              </label>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Escalate After (minutes) <span class="info" data-tip="If not healed within this duration after being added, move it to Level II Suspect Detected.">i</span></label>
+              <input class="form-control" type="number" name="escalate_after_minutes" min="1" value="{{ settings.stability.escalate_after_minutes }}" />
+            </div>
+          </div>
+
+          <div class="mt-4 d-flex justify-content-end">
+            <button type="submit" class="btn btn-primary">Save Surveillance Settings</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  document.addEventListener("DOMContentLoaded", () => {
+    const tabs = document.querySelectorAll('#surv-under, #surv-level2, #surv-settings');
+    const links = document.querySelectorAll('a[data-bs-toggle="tab"]');
+    links.forEach((link) => {
+      link.addEventListener("shown.bs.tab", (event) => {
+        const href = event.target.getAttribute("href") || "";
+        const tab = href === "#surv-level2" ? "level2" : href === "#surv-settings" ? "settings" : "under";
+        const url = new URL(window.location.href);
+        url.searchParams.set("tab", tab);
+        history.replaceState(null, "", url.toString());
+      });
+    });
+
+    const formatDuration = (seconds) => {
+      const total = Math.max(Math.floor(seconds), 0);
+      const days = Math.floor(total / 86400);
+      const hours = Math.floor((total % 86400) / 3600);
+      const minutes = Math.floor((total % 3600) / 60);
+      const secs = total % 60;
+      if (days > 0) return `${days}d ${hours}h`;
+      if (hours > 0) return `${hours}h ${minutes}m`;
+      if (minutes > 0) return `${minutes}m ${secs}s`;
+      return `${secs}s`;
+    };
+
+    const updateDurations = () => {
+      document.querySelectorAll('tr[data-added-at]').forEach((row) => {
+        const sinceRaw = row.getAttribute("data-added-at") || "";
+        const el = row.querySelector(".surv-live-duration");
+        if (!el) return;
+        const ts = Date.parse(sinceRaw);
+        if (!Number.isFinite(ts)) return;
+        el.textContent = formatDuration((Date.now() - ts) / 1000);
+      });
+    };
+    updateDurations();
+    setInterval(updateDurations, 1000);
+
+    const focus = new URLSearchParams(window.location.search).get("focus");
+    if (focus) {
+      const target = document.querySelector(`tr[data-pppoe="${CSS.escape(focus)}"]`);
+      if (target) {
+        target.scrollIntoView({ block: "center", behavior: "smooth" });
+        target.classList.add("table-primary");
+        setTimeout(() => target.classList.remove("table-primary"), 4000);
+      }
+    }
+  });
+</script>
+
+{% endblock %}

@@ -696,9 +696,14 @@
 
   const toEpoch = (value) => {
     if (!value) return null;
-    const raw = value.endsWith("Z") ? value : `${value}Z`;
-    const parsed = Date.parse(raw);
-    return Number.isNaN(parsed) ? null : parsed;
+    const rawValue = String(value).trim();
+    if (!rawValue) return null;
+    const direct = Date.parse(rawValue);
+    if (!Number.isNaN(direct)) return direct;
+    const hasTimezone = /Z$|[+-]\\d{2}:?\\d{2}$/.test(rawValue);
+    if (hasTimezone) return null;
+    const withUtc = Date.parse(`${rawValue}Z`);
+    return Number.isNaN(withUtc) ? null : withUtc;
   };
 
   const toLocalEpoch = (value) => {
@@ -1312,6 +1317,7 @@
     try {
       const res = await fetch(`/pulsewatch/stability?${params.toString()}`, {
         headers: { "Accept": "application/json" },
+        cache: "no-store",
       });
       if (!res.ok) {
         throw new Error("Failed to load stability data");

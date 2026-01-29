@@ -29,18 +29,24 @@
 	        </h1>
 	        <div class="collapse navbar-collapse" id="sidebar-menu">
           <ul class="navbar-nav pt-lg-3">
-	            <li class="nav-item">
-	              <a class="nav-link" href="/">
-	                <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-dashboard"></i></span>
-	                <span class="nav-link-title">Dashboard</span>
-	              </a>
-	            </li>
-	            <li class="nav-item">
-	              <a class="nav-link" href="/profile-review">
-	                <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-user-search"></i></span>
-	                <span class="nav-link-title">Profile Review</span>
-	              </a>
-	            </li>
+		            <li class="nav-item">
+		              <a class="nav-link" href="/">
+		                <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-dashboard"></i></span>
+		                <span class="nav-link-title">Dashboard</span>
+		              </a>
+		            </li>
+		            <li class="nav-item">
+		              <a class="nav-link" href="/surveillance">
+		                <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-eye"></i></span>
+		                <span class="nav-link-title">Under Surveillance</span>
+		              </a>
+		            </li>
+		            <li class="nav-item">
+		              <a class="nav-link" href="/profile-review">
+		                <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-user-search"></i></span>
+		                <span class="nav-link-title">Profile Review</span>
+		              </a>
+		            </li>
 	            <li class="nav-item">
 	              <a class="nav-link" href="/settings/optical">
 	                <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-sun"></i></span>
@@ -166,8 +172,121 @@
       }
     };
 
-    updateResources();
-    setInterval(updateResources, 15000);
-  </script>
-</body>
-</html>
+	    updateResources();
+	    setInterval(updateResources, 15000);
+	  </script>
+	  <script>
+	    const postForm = async (url, fields) => {
+	      const body = new URLSearchParams();
+	      Object.entries(fields || {}).forEach(([key, value]) => {
+	        if (value === undefined || value === null) return;
+	        body.set(key, String(value));
+	      });
+	      const res = await fetch(url, {
+	        method: "POST",
+	        headers: { "Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded" },
+	        body: body.toString(),
+	        cache: "no-store",
+	      });
+	      const data = await res.json().catch(() => ({}));
+	      if (!res.ok || data.ok === false) {
+	        const message = data.error || `Request failed (${res.status})`;
+	        throw new Error(message);
+	      }
+	      return data;
+	    };
+
+	    const surveillanceHref = (pppoe, status) => {
+	      const params = new URLSearchParams();
+	      params.set("tab", status === "level2" ? "level2" : "under");
+	      params.set("focus", pppoe);
+	      return `/surveillance?${params.toString()}`;
+	    };
+
+	    const setSurveillanceRowHighlight = (slotEl, status) => {
+	      const row = slotEl && slotEl.closest ? slotEl.closest("tr") : null;
+	      if (!row) return;
+	      row.classList.remove("table-warning", "table-danger");
+	      if (status === "under") row.classList.add("table-warning");
+	      if (status === "level2") row.classList.add("table-danger");
+	    };
+
+	    const renderSurveillanceEye = (slotEl, pppoe, status) => {
+	      const safeStatus = status === "level2" ? "level2" : "under";
+	      const href = surveillanceHref(pppoe, safeStatus);
+	      const color = safeStatus === "level2" ? "red" : "yellow";
+	      const title = safeStatus === "level2" ? "LEVEL II SUSPECT" : "Under Surveillance";
+	      slotEl.innerHTML = `
+	        <a class="badge bg-${color}-lt text-${color} header-icon-badge" href="${href}" title="${title}" aria-label="${title}">
+	          <i class="ti ti-eye"></i>
+	        </a>
+	      `;
+	      setSurveillanceRowHighlight(slotEl, safeStatus);
+	    };
+
+	    document.addEventListener("click", async (event) => {
+	      const btn = event.target.closest(".surveillance-add-btn");
+	      if (!btn) return;
+	      event.preventDefault();
+
+	      const slot = btn.closest("[data-surveillance-slot]") || btn.parentElement;
+	      if (!slot) return;
+	      if (slot.dataset.busy === "1") return;
+	      slot.dataset.busy = "1";
+
+	      const original = slot.innerHTML;
+	      const pppoe = (btn.dataset.pppoe || "").trim();
+	      const name = (btn.dataset.name || pppoe).trim();
+	      const ip = (btn.dataset.ip || "").trim();
+	      const source = (btn.dataset.source || "").trim();
+
+	      if (!pppoe) {
+	        slot.dataset.busy = "0";
+	        return;
+	      }
+
+	      slot.innerHTML = `<span class="text-muted small">Adding…</span>`;
+	      try {
+	        await postForm("/surveillance/add", { pppoe, name, ip, source });
+	      } catch (err) {
+	        slot.innerHTML = original;
+	        slot.dataset.busy = "0";
+	        return;
+	      }
+
+	      let seconds = 5;
+	      const undoBtn = document.createElement("button");
+	      undoBtn.type = "button";
+	      undoBtn.className = "btn btn-sm btn-outline-secondary";
+	      undoBtn.textContent = `Undo (${seconds})`;
+	      slot.innerHTML = "";
+	      slot.appendChild(undoBtn);
+
+		      const countdown = setInterval(() => {
+		        seconds -= 1;
+		        if (seconds <= 0) {
+		          clearInterval(countdown);
+		          renderSurveillanceEye(slot, pppoe, "under");
+		          slot.dataset.busy = "0";
+		          return;
+		        }
+		        undoBtn.textContent = `Undo (${seconds})`;
+		      }, 1000);
+
+	      undoBtn.addEventListener("click", async () => {
+	        clearInterval(countdown);
+	        undoBtn.disabled = true;
+		        try {
+		          await postForm("/surveillance/undo", { pppoe });
+		          slot.innerHTML = original;
+		          setSurveillanceRowHighlight(slot, null);
+		        } catch (err) {
+		          renderSurveillanceEye(slot, pppoe, "under");
+		        } finally {
+		          slot.dataset.busy = "0";
+		        }
+		      });
+		    });
+	  </script>
+	</body>
+	</html>

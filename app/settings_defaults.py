@@ -111,6 +111,37 @@ RTO_DEFAULTS = {
     },
 }
 
+SURVEILLANCE_DEFAULTS = {
+    "enabled": True,
+    "entries": [],
+    "ping": {
+        "interval_seconds": 1,
+        "count": 1,
+        "timeout_seconds": 1,
+        "burst_count": 1,
+        "burst_timeout_seconds": 1,
+        "max_parallel": 64,
+    },
+    "burst": {
+        "enabled": True,
+        "burst_interval_seconds": 1,
+        "burst_duration_seconds": 120,
+        "trigger_on_issue": True,
+    },
+    "backoff": {
+        "long_down_seconds": 7200,
+        "long_down_interval_seconds": 300,
+    },
+    "stability": {
+        "stable_window_minutes": 10,
+        "uptime_threshold_pct": 95.0,
+        "latency_max_ms": 15.0,
+        "optical_rx_min_dbm": -24.0,
+        "require_optical": False,
+        "escalate_after_minutes": 10,
+    },
+}
+
 ISP_PING_DEFAULTS = {
     "enabled": False,
     "telegram": {
