@@ -41,6 +41,7 @@ from .db import (
     get_recent_rto_results,
     init_db,
     clear_pulsewatch_data,
+    clear_accounts_ping_data,
     search_optical_customers,
     search_rto_customers,
     get_optical_worst_candidates,
@@ -2926,7 +2927,7 @@ def render_rto_response(request, settings, message, active_tab, settings_tab, wi
 async def accounts_ping_settings(request: Request):
     settings = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
     window_hours = _normalize_wan_window(request.query_params.get("window"))
-    return render_accounts_ping_response(request, settings, "", "status", "general", window_hours)
+    return render_accounts_ping_response(request, settings, "", "status", "source", window_hours)
 
 
 @app.get("/accounts-ping/series", response_class=JSONResponse)
@@ -3173,7 +3174,9 @@ async def accounts_ping_settings_save(request: Request):
     }
     save_settings("accounts_ping", settings)
     window_hours = _normalize_wan_window(request.query_params.get("window"))
-    return render_accounts_ping_response(request, settings, "Accounts Ping settings saved.", "status", "general", window_hours)
+    active_tab = form.get("active_tab", "settings")
+    settings_tab = form.get("settings_tab", "source")
+    return render_accounts_ping_response(request, settings, "Accounts Ping settings saved.", active_tab, settings_tab, window_hours)
 
 
 @app.post("/settings/accounts-ping/test", response_class=HTMLResponse)
@@ -3191,7 +3194,33 @@ async def accounts_ping_settings_test(request: Request):
     except Exception as exc:
         message = f"SSH test failed: {exc}"
     window_hours = _normalize_wan_window(request.query_params.get("window"))
-    return render_accounts_ping_response(request, cfg, message, "settings", "general", window_hours)
+    return render_accounts_ping_response(request, cfg, message, "settings", "source", window_hours)
+
+
+@app.post("/settings/accounts-ping/format", response_class=HTMLResponse)
+async def accounts_ping_settings_format(request: Request):
+    form = await request.form()
+    settings = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
+    message = ""
+    if parse_bool(form, "confirm_format"):
+        clear_accounts_ping_data()
+        state = get_state("accounts_ping_state", {})
+        devices = state.get("devices") if isinstance(state.get("devices"), list) else []
+        devices_refreshed_at = state.get("devices_refreshed_at") or ""
+        save_state(
+            "accounts_ping_state",
+            {
+                "accounts": {},
+                "devices": devices,
+                "devices_refreshed_at": devices_refreshed_at,
+                "last_prune_at": None,
+            },
+        )
+        message = "Accounts Ping database formatted."
+    else:
+        message = "Please confirm format before proceeding."
+    window_hours = _normalize_wan_window(request.query_params.get("window"))
+    return render_accounts_ping_response(request, settings, message, "settings", "danger", window_hours)
 
 
 @app.post("/accounts-ping/investigate", response_class=HTMLResponse)

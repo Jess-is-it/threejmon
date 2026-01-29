@@ -48,8 +48,9 @@
           <div class="d-flex align-items-start">
             <span class="me-2"><i class="ti ti-info-circle"></i></span>
             <div>
-              Connection issues are shown when a customer is down, loss is at least {{ accounts_ping_status.rules.issue_loss_pct }}%, or latency is at least {{ accounts_ping_status.rules.issue_latency_ms }}ms.
-              Bursts (1s checks) run only while an account is under investigation or failing briefly; long-down accounts automatically back off to avoid spam.
+              Accounts Ping uses SSH to pull the ShapedDevices CSV and pings each IPv4 entry.
+              Issues are shown when a customer is down, loss is at least {{ accounts_ping_status.rules.issue_loss_pct }}%, or latency is at least {{ accounts_ping_status.rules.issue_latency_ms }}ms.
+              Bursts (1s checks) run only while an account is under investigation or failing briefly; long-down accounts automatically back off.
             </div>
           </div>
         </div>
@@ -206,172 +207,241 @@
       </div>
 
       <div class="tab-pane {% if active_tab != 'status' %}active{% endif %}" id="accounts-ping-settings">
-        <form method="post" action="/settings/accounts-ping">
-          <div class="row g-3">
-            <div class="col-12">
-              <label class="form-label">Enable Accounts Ping</label>
-              <label class="form-check form-switch">
-                <input class="form-check-input" type="checkbox" name="enabled" {% if settings.enabled %}checked{% endif %} />
-                <span class="form-check-label">Enabled</span>
-              </label>
-            </div>
+        <form method="post" action="/settings/accounts-ping" id="accounts-ping-form">
+          <input type="hidden" name="active_tab" value="settings" />
+          <input type="hidden" name="settings_tab" id="accounts-ping-settings-tab" value="{{ settings_tab or 'source' }}" />
 
-            <div class="col-12">
-              <div class="alert alert-info">
-                <div class="d-flex align-items-start">
-                  <span class="me-2"><i class="ti ti-info-circle"></i></span>
-                  <div>Accounts Ping uses SSH to pull the ShapedDevices CSV and pings each IPv4 entry.</div>
+          <ul class="nav nav-tabs" data-bs-toggle="tabs">
+            <li class="nav-item"><a href="#accounts-ping-source" class="nav-link {% if settings_tab == 'source' %}active{% endif %}" data-bs-toggle="tab">Source</a></li>
+            <li class="nav-item"><a href="#accounts-ping-general" class="nav-link {% if settings_tab == 'general' %}active{% endif %}" data-bs-toggle="tab">General</a></li>
+            <li class="nav-item"><a href="#accounts-ping-classification" class="nav-link {% if settings_tab == 'classification' %}active{% endif %}" data-bs-toggle="tab">Classification</a></li>
+            <li class="nav-item"><a href="#accounts-ping-burst" class="nav-link {% if settings_tab == 'burst' %}active{% endif %}" data-bs-toggle="tab">Burst</a></li>
+            <li class="nav-item"><a href="#accounts-ping-backoff" class="nav-link {% if settings_tab == 'backoff' %}active{% endif %}" data-bs-toggle="tab">Backoff</a></li>
+            <li class="nav-item"><a href="#accounts-ping-storage" class="nav-link {% if settings_tab == 'storage' %}active{% endif %}" data-bs-toggle="tab">Storage</a></li>
+            <li class="nav-item"><a href="#accounts-ping-danger" class="nav-link {% if settings_tab == 'danger' %}active{% endif %}" data-bs-toggle="tab">Danger</a></li>
+          </ul>
+
+          <div class="tab-content pt-3">
+            <div class="tab-pane {% if settings_tab == 'source' %}active{% endif %}" id="accounts-ping-source">
+              <div class="card mb-3">
+                <div class="card-body">
+                  <div class="alert alert-info">
+                    <div class="d-flex align-items-start">
+                      <span class="me-2"><i class="ti ti-info-circle"></i></span>
+                      <div>Accounts Ping uses SSH to pull the ShapedDevices CSV and pings each IPv4 entry.</div>
+                    </div>
+                  </div>
+                  <h5 class="mb-3">SSH Source</h5>
+                  <div class="row g-3">
+                    <div class="col-md-6">
+                      <label class="form-label">Host</label>
+                      <input class="form-control" type="text" name="ssh_host" value="{{ settings.ssh.host }}" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Port</label>
+                      <input class="form-control" type="number" name="ssh_port" value="{{ settings.ssh.port }}" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">User</label>
+                      <input class="form-control" type="text" name="ssh_user" value="{{ settings.ssh.user }}" />
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label">Password</label>
+                      <input class="form-control" type="password" name="ssh_password" value="{{ settings.ssh.password }}" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Use SSH Key</label>
+                      <label class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" name="ssh_use_key" {% if settings.ssh.use_key %}checked{% endif %} />
+                        <span class="form-check-label">Enabled</span>
+                      </label>
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Key Path</label>
+                      <input class="form-control" type="text" name="ssh_key_path" value="{{ settings.ssh.key_path }}" placeholder="/data/id_rsa" />
+                    </div>
+                    <div class="col-md-9">
+                      <label class="form-label">CSV Path</label>
+                      <input class="form-control" type="text" name="ssh_remote_csv_path" value="{{ settings.ssh.remote_csv_path }}" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Refresh (minutes)</label>
+                      <input class="form-control" type="number" name="source_refresh_minutes" value="{{ settings.source.refresh_minutes }}" min="1" />
+                    </div>
+                    <div class="col-12">
+                      <label class="form-label">Enable Accounts Ping</label>
+                      <label class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" name="enabled" {% if settings.enabled %}checked{% endif %} />
+                        <span class="form-check-label">Enabled</span>
+                      </label>
+                    </div>
+                  </div>
                 </div>
               </div>
-              <h5 class="mb-3">SSH Source</h5>
-              <div class="row g-3 mb-2">
-                <div class="col-md-6">
-                  <label class="form-label">Host</label>
-                  <input class="form-control" type="text" name="ssh_host" value="{{ settings.ssh.host }}" />
+            </div>
+
+            <div class="tab-pane {% if settings_tab == 'general' %}active{% endif %}" id="accounts-ping-general">
+              <div class="card mb-3">
+                <div class="card-body">
+                  <h5 class="mb-3">General</h5>
+                  <div class="row g-3">
+                    <div class="col-md-4">
+                      <label class="form-label">Base Interval (seconds)</label>
+                      <input class="form-control" type="number" name="base_interval_seconds" value="{{ settings.general.base_interval_seconds }}" min="1" />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Max Parallel</label>
+                      <input class="form-control" type="number" name="max_parallel" value="{{ settings.general.max_parallel }}" min="1" />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Ping Count</label>
+                      <input class="form-control" type="number" name="ping_count" value="{{ settings.ping.count }}" min="1" />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Ping Timeout (seconds)</label>
+                      <input class="form-control" type="number" name="ping_timeout_seconds" value="{{ settings.ping.timeout_seconds }}" min="1" />
+                    </div>
+                  </div>
                 </div>
-                <div class="col-md-3">
-                  <label class="form-label">Port</label>
-                  <input class="form-control" type="number" name="ssh_port" value="{{ settings.ssh.port }}" />
+              </div>
+            </div>
+
+            <div class="tab-pane {% if settings_tab == 'classification' %}active{% endif %}" id="accounts-ping-classification">
+              <div class="card mb-3">
+                <div class="card-body">
+                  <h5 class="mb-3">Classification</h5>
+                  <div class="row g-3">
+                    <div class="col-md-4">
+                      <label class="form-label">Issue Loss % (min)</label>
+                      <input class="form-control" type="number" step="0.1" name="issue_loss_pct" value="{{ settings.classification.issue_loss_pct }}" />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Issue Latency ms (min)</label>
+                      <input class="form-control" type="number" step="0.1" name="issue_latency_ms" value="{{ settings.classification.issue_latency_ms }}" />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Down Loss %</label>
+                      <input class="form-control" type="number" step="0.1" name="down_loss_pct" value="{{ settings.classification.down_loss_pct }}" />
+                    </div>
+                  </div>
                 </div>
-                <div class="col-md-3">
-                  <label class="form-label">User</label>
-                  <input class="form-control" type="text" name="ssh_user" value="{{ settings.ssh.user }}" />
+              </div>
+            </div>
+
+            <div class="tab-pane {% if settings_tab == 'burst' %}active{% endif %}" id="accounts-ping-burst">
+              <div class="card mb-3">
+                <div class="card-body">
+                  <h5 class="mb-3">Burst</h5>
+                  <div class="row g-3">
+                    <div class="col-md-3">
+                      <label class="form-label">Burst Enabled</label>
+                      <label class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" name="burst_enabled" {% if settings.burst.enabled %}checked{% endif %} />
+                        <span class="form-check-label">Enabled</span>
+                      </label>
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Burst Interval (seconds)</label>
+                      <input class="form-control" type="number" name="burst_interval_seconds" value="{{ settings.burst.burst_interval_seconds }}" min="1" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Burst Duration (seconds)</label>
+                      <input class="form-control" type="number" name="burst_duration_seconds" value="{{ settings.burst.burst_duration_seconds }}" min="5" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Investigate Minutes</label>
+                      <input class="form-control" type="number" name="investigate_minutes" value="{{ settings.burst.investigate_minutes }}" min="1" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Burst Count</label>
+                      <input class="form-control" type="number" name="burst_count" value="{{ settings.ping.burst_count }}" min="1" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Burst Timeout (seconds)</label>
+                      <input class="form-control" type="number" name="burst_timeout_seconds" value="{{ settings.ping.burst_timeout_seconds }}" min="1" />
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label">Trigger bursts on issues</label>
+                      <label class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" name="trigger_on_issue" {% if settings.burst.trigger_on_issue %}checked{% endif %} />
+                        <span class="form-check-label">Enabled</span>
+                      </label>
+                    </div>
+                  </div>
                 </div>
-                <div class="col-md-6">
-                  <label class="form-label">Password</label>
-                  <input class="form-control" type="password" name="ssh_password" value="{{ settings.ssh.password }}" />
+              </div>
+            </div>
+
+            <div class="tab-pane {% if settings_tab == 'backoff' %}active{% endif %}" id="accounts-ping-backoff">
+              <div class="card mb-3">
+                <div class="card-body">
+                  <h5 class="mb-3">Backoff</h5>
+                  <div class="row g-3">
+                    <div class="col-md-4">
+                      <label class="form-label">Long-down seconds</label>
+                      <input class="form-control" type="number" name="long_down_seconds" value="{{ settings.backoff.long_down_seconds }}" min="60" />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Long-down interval (seconds)</label>
+                      <input class="form-control" type="number" name="long_down_interval_seconds" value="{{ settings.backoff.long_down_interval_seconds }}" min="5" />
+                    </div>
+                  </div>
                 </div>
-                <div class="col-md-3">
-                  <label class="form-label">Use SSH Key</label>
-                  <label class="form-check form-switch">
-                    <input class="form-check-input" type="checkbox" name="ssh_use_key" {% if settings.ssh.use_key %}checked{% endif %} />
-                    <span class="form-check-label">Enabled</span>
+              </div>
+            </div>
+
+            <div class="tab-pane {% if settings_tab == 'storage' %}active{% endif %}" id="accounts-ping-storage">
+              <div class="card mb-3">
+                <div class="card-body">
+                  <h5 class="mb-3">Storage</h5>
+                  <div class="row g-3">
+                    <div class="col-md-4">
+                      <label class="form-label">Raw retention (days)</label>
+                      <input class="form-control" type="number" name="raw_retention_days" value="{{ settings.storage.raw_retention_days }}" min="1" />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Rollup retention (days)</label>
+                      <input class="form-control" type="number" name="rollup_retention_days" value="{{ settings.storage.rollup_retention_days }}" min="1" />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Rollup bucket (seconds)</label>
+                      <input class="form-control" type="number" name="bucket_seconds" value="{{ settings.storage.bucket_seconds }}" min="30" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="tab-pane {% if settings_tab == 'danger' %}active{% endif %}" id="accounts-ping-danger">
+              <div class="card mb-3">
+                <div class="card-body">
+                  <h4 class="mb-2">Format Accounts Ping Database</h4>
+                  <div class="alert alert-warning">
+                    <div class="d-flex align-items-center">
+                      <span class="me-2"><i class="ti ti-alert-triangle"></i></span>
+                      <div>Formatting removes stored Accounts Ping history so the next run starts fresh.</div>
+                    </div>
+                  </div>
+                  <label class="form-check">
+                    <input class="form-check-input" type="checkbox" name="confirm_format" form="accounts-ping-format-form" />
+                    <span class="form-check-label">I understand this will erase Accounts Ping history data.</span>
                   </label>
-                </div>
-                <div class="col-md-3">
-                  <label class="form-label">Key Path</label>
-                  <input class="form-control" type="text" name="ssh_key_path" value="{{ settings.ssh.key_path }}" placeholder="/data/id_rsa" />
-                </div>
-                <div class="col-md-9">
-                  <label class="form-label">CSV Path</label>
-                  <input class="form-control" type="text" name="ssh_remote_csv_path" value="{{ settings.ssh.remote_csv_path }}" />
-                </div>
-                <div class="col-md-3">
-                  <label class="form-label">Refresh (minutes)</label>
-                  <input class="form-control" type="number" name="source_refresh_minutes" value="{{ settings.source.refresh_minutes }}" min="1" />
+                  <div class="mt-3">
+                    <button type="submit" class="btn btn-danger" form="accounts-ping-format-form">Format Accounts Ping Database</button>
+                  </div>
                 </div>
               </div>
-              <div class="d-flex gap-2">
-                <button type="submit" class="btn btn-primary">Save Accounts Ping</button>
-                <button type="submit" class="btn btn-outline-secondary" formaction="/settings/accounts-ping/test" formmethod="post">
-                  <i class="ti ti-plug-connected me-1"></i>Test SSH & Load CSV
-                </button>
-              </div>
-              <div class="text-muted small mt-2">Tip: Save first, then Test to load accounts immediately.</div>
-            </div>
-
-            <div class="col-12"><hr class="my-2" /></div>
-
-            <div class="col-md-4">
-              <label class="form-label">Base Interval (seconds)</label>
-              <input class="form-control" type="number" name="base_interval_seconds" value="{{ settings.general.base_interval_seconds }}" min="1" />
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Max Parallel</label>
-              <input class="form-control" type="number" name="max_parallel" value="{{ settings.general.max_parallel }}" min="1" />
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Ping Count</label>
-              <input class="form-control" type="number" name="ping_count" value="{{ settings.ping.count }}" min="1" />
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Ping Timeout (seconds)</label>
-              <input class="form-control" type="number" name="ping_timeout_seconds" value="{{ settings.ping.timeout_seconds }}" min="1" />
-            </div>
-
-            <div class="col-12"><hr class="my-2" /></div>
-
-            <div class="col-md-4">
-              <label class="form-label">Issue Loss % (min)</label>
-              <input class="form-control" type="number" step="0.1" name="issue_loss_pct" value="{{ settings.classification.issue_loss_pct }}" />
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Issue Latency ms (min)</label>
-              <input class="form-control" type="number" step="0.1" name="issue_latency_ms" value="{{ settings.classification.issue_latency_ms }}" />
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Down Loss %</label>
-              <input class="form-control" type="number" step="0.1" name="down_loss_pct" value="{{ settings.classification.down_loss_pct }}" />
-            </div>
-
-            <div class="col-12"><hr class="my-2" /></div>
-
-            <div class="col-md-3">
-              <label class="form-label">Burst Enabled</label>
-              <label class="form-check form-switch">
-                <input class="form-check-input" type="checkbox" name="burst_enabled" {% if settings.burst.enabled %}checked{% endif %} />
-                <span class="form-check-label">Enabled</span>
-              </label>
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Burst Interval (seconds)</label>
-              <input class="form-control" type="number" name="burst_interval_seconds" value="{{ settings.burst.burst_interval_seconds }}" min="1" />
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Burst Duration (seconds)</label>
-              <input class="form-control" type="number" name="burst_duration_seconds" value="{{ settings.burst.burst_duration_seconds }}" min="5" />
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Investigate Minutes</label>
-              <input class="form-control" type="number" name="investigate_minutes" value="{{ settings.burst.investigate_minutes }}" min="1" />
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Burst Count</label>
-              <input class="form-control" type="number" name="burst_count" value="{{ settings.ping.burst_count }}" min="1" />
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Burst Timeout (seconds)</label>
-              <input class="form-control" type="number" name="burst_timeout_seconds" value="{{ settings.ping.burst_timeout_seconds }}" min="1" />
-            </div>
-            <div class="col-md-6">
-              <label class="form-label">Trigger bursts on issues</label>
-              <label class="form-check form-switch">
-                <input class="form-check-input" type="checkbox" name="trigger_on_issue" {% if settings.burst.trigger_on_issue %}checked{% endif %} />
-                <span class="form-check-label">Enabled</span>
-              </label>
-            </div>
-
-            <div class="col-12"><hr class="my-2" /></div>
-
-            <div class="col-md-4">
-              <label class="form-label">Long-down seconds</label>
-              <input class="form-control" type="number" name="long_down_seconds" value="{{ settings.backoff.long_down_seconds }}" min="60" />
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Long-down interval (seconds)</label>
-              <input class="form-control" type="number" name="long_down_interval_seconds" value="{{ settings.backoff.long_down_interval_seconds }}" min="5" />
-            </div>
-
-            <div class="col-12"><hr class="my-2" /></div>
-
-            <div class="col-md-4">
-              <label class="form-label">Raw retention (days)</label>
-              <input class="form-control" type="number" name="raw_retention_days" value="{{ settings.storage.raw_retention_days }}" min="1" />
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Rollup retention (days)</label>
-              <input class="form-control" type="number" name="rollup_retention_days" value="{{ settings.storage.rollup_retention_days }}" min="1" />
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Rollup bucket (seconds)</label>
-              <input class="form-control" type="number" name="bucket_seconds" value="{{ settings.storage.bucket_seconds }}" min="30" />
-            </div>
-
-            <div class="col-12 d-flex gap-2 mt-2">
-              <a class="btn btn-outline-secondary" href="/settings/accounts-ping">Refresh</a>
             </div>
           </div>
+
+          <div class="d-flex justify-content-end gap-2">
+            <button type="submit" class="btn btn-primary">Save Accounts Ping Settings</button>
+            <button type="submit" class="btn btn-outline-secondary" formaction="/settings/accounts-ping/test" formmethod="post">
+              Test SSH & Load CSV
+            </button>
+          </div>
         </form>
+        <form id="accounts-ping-format-form" method="post" action="/settings/accounts-ping/format"></form>
       </div>
     </div>
   </div>
@@ -398,6 +468,19 @@
         window.location.href = url.toString();
       });
     });
+
+    const settingsInput = document.getElementById("accounts-ping-settings-tab");
+    if (settingsInput) {
+      const settingsTabs = document.querySelectorAll('#accounts-ping-settings [data-bs-toggle="tabs"] .nav-link');
+      settingsTabs.forEach((tab) => {
+        tab.addEventListener("shown.bs.tab", (event) => {
+          const target = event.target.getAttribute("href") || "";
+          if (target.startsWith("#accounts-ping-")) {
+            settingsInput.value = target.replace("#accounts-ping-", "");
+          }
+        });
+      });
+    }
 
     const modalEl = document.getElementById("accountsPingChartModal");
     const modalTitle = document.getElementById("accountsPingChartTitle");
@@ -489,3 +572,4 @@
   });
 </script>
 {% endblock %}
+
