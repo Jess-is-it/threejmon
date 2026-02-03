@@ -50,26 +50,33 @@
     </ul>
 
     <div class="tab-content pt-4">
-      <div class="tab-pane {% if active_tab == 'status' %}active{% endif %}" id="optical-status">
-        <div id="optical-loading-overlay" style="display: none; position: fixed; inset: 0; background: rgba(255,255,255,0.75); z-index: 1050; align-items: center; justify-content: center;">
-          <div class="spinner-border text-primary" role="status" aria-hidden="true"></div>
-        </div>
-        <div class="d-flex flex-wrap align-items-center justify-content-between mb-3 gap-2">
-          <div>
-            <h4 class="mb-1">Optical Status <span class="badge bg-azure-lt" id="optical-status-window">{{ optical_status.window_label }}</span></h4>
-            <div class="text-muted small">
-              Last run: {{ optical_job.last_run_at_ph or 'n/a' }} · Last success: {{ optical_job.last_success_at_ph or 'n/a' }}
-            </div>
-          </div>
-          <div class="d-flex gap-2 align-items-center">
-            <span class="badge bg-blue-lt">Total: {{ optical_status.total }}</span>
-            <span class="badge bg-red-lt">Issues: {{ optical_status.issue_total }}</span>
-            <span class="badge bg-green-lt">Stable: {{ optical_status.stable_total }}</span>
-            <div class="dropdown">
-              <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" id="optical-window-button">Filter</button>
-              <div class="dropdown-menu dropdown-menu-end" id="optical-window-menu">
-                {% for label, hours in optical_window_options %}
-                  <div class="dropdown-item d-flex align-items-center justify-content-between optical-window-row" data-hours="{{ hours }}" data-label="{{ label }}">
+	      <div class="tab-pane {% if active_tab == 'status' %}active{% endif %}" id="optical-status">
+		        <div class="d-flex flex-wrap align-items-center justify-content-between mb-3 gap-2">
+		          <div>
+	            <h4 class="mb-1">Optical Status <span class="badge bg-azure-lt" id="optical-status-window">{{ optical_status.window_label }}</span></h4>
+	            <div class="text-muted small">
+	              Last run: {{ optical_job.last_run_at_ph or 'n/a' }} · Last success: {{ optical_job.last_success_at_ph or 'n/a' }}
+	            </div>
+	          </div>
+		          <div class="d-flex gap-2 align-items-center">
+		            <span class="badge bg-blue-lt">Total: {{ optical_status.total }}</span>
+		            <span class="badge bg-red-lt">Issues: {{ optical_status.issue_total }}</span>
+		            <span class="badge bg-green-lt">Stable: {{ optical_status.stable_total }}</span>
+                {% set optical_limit_param = 'all' if optical_status.pagination.limit == 0 else optical_status.pagination.limit %}
+                <div class="dropdown">
+                  <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" id="optical-limit-button">Show: {{ optical_status.pagination.limit_label }}</button>
+                  <div class="dropdown-menu dropdown-menu-end" id="optical-limit-menu">
+                    {% for opt in optical_status.pagination.options %}
+                      <div class="dropdown-item optical-limit-row" data-limit="{{ opt }}">{{ opt }}</div>
+                    {% endfor %}
+	                    {# "ALL" removed to keep pages fast #}
+	                  </div>
+                </div>
+		            <div class="dropdown">
+	              <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" id="optical-window-button">Filter</button>
+	              <div class="dropdown-menu dropdown-menu-end" id="optical-window-menu">
+	                {% for label, hours in optical_window_options %}
+	                  <div class="dropdown-item d-flex align-items-center justify-content-between optical-window-row" data-hours="{{ hours }}" data-label="{{ label }}">
                     <span>{{ label }}</span>
                     <button class="btn btn-sm btn-link p-0 optical-window-star-btn" data-hours="{{ hours }}" title="Set default filter">
                       <i class="ti ti-star text-muted"></i>
@@ -85,23 +92,23 @@
           <div class="d-flex align-items-start">
             <span class="me-2"><i class="ti ti-info-circle"></i></span>
             <div>
-              Connection issues appear when RX ≤ {{ optical_status.rules.issue_rx_dbm }} dBm, TX ≤ {{ optical_status.rules.issue_tx_dbm }} dBm, or priority RX ≤ {{ optical_status.rules.priority_rx_dbm }} dBm.
-              Stable connections require RX ≥ {{ optical_status.rules.stable_rx_dbm }} dBm and TX ≥ {{ optical_status.rules.stable_tx_dbm }} dBm.
-            </div>
-          </div>
-        </div>
+	              Connection issues appear when RX ≤ {{ optical_status.rules.issue_rx_dbm }} dBm, TX ≤ {{ optical_status.rules.issue_tx_dbm }} dBm, or priority RX ≤ {{ optical_status.rules.priority_rx_dbm }} dBm.
+	              Stable (green) requires RX ≥ {{ optical_status.rules.stable_rx_dbm }} dBm and TX ≥ {{ optical_status.rules.stable_tx_dbm }} dBm (missing/unrealistic TX is allowed). Non-issue connections below stable show as Monitor (yellow) in the Stable Connections tab.
+	            </div>
+	          </div>
+	        </div>
 
-        <ul class="nav nav-tabs" data-bs-toggle="tabs">
-          <li class="nav-item">
-            <a href="#optical-issues" class="nav-link active" data-bs-toggle="tab">Connection Issues</a>
-          </li>
-          <li class="nav-item">
-            <a href="#optical-stable" class="nav-link" data-bs-toggle="tab">Stable Connections</a>
-          </li>
+	        <ul class="nav nav-tabs" data-bs-toggle="tabs">
+	          <li class="nav-item">
+	            <a href="#optical-issues" class="nav-link active" data-bs-toggle="tab">Connection Issues</a>
+	          </li>
+	          <li class="nav-item">
+	            <a href="#optical-stable" class="nav-link" data-bs-toggle="tab">Stable Connections</a>
+	          </li>
           <li class="nav-item ms-auto">
             <div class="px-2 py-2">
               <div class="input-icon">
-                <input class="form-control form-control-sm" id="optical-status-search" type="text" placeholder="Search" autocomplete="off" />
+	                <input class="form-control form-control-sm" id="optical-status-search" type="text" placeholder="Search" autocomplete="off" value="{{ optical_status.query or '' }}" />
                 <span class="input-icon-addon">
                   <i class="ti ti-search"></i>
                 </span>
@@ -110,21 +117,21 @@
           </li>
         </ul>
         <div class="tab-content pt-3">
-          <div class="tab-pane active" id="optical-issues">
-            <div class="rto-table-shell">
-              <div class="rto-table-wrap" id="optical-issues-table">
-              <table class="table table-vcenter rto-table">
+		          <div class="tab-pane active" id="optical-issues">
+	            <div class="rto-table-shell">
+	              <div class="rto-table-wrap" id="optical-issues-table">
+	              <table class="table table-vcenter rto-table">
                 <thead>
                   <tr>
-                    <th class="rto-tip rto-sort" data-sort="text" aria-sort="none" title="Subscriber name detected from GenieACS (PPPoE username or device label)." data-tip="Subscriber name detected from GenieACS (PPPoE username or device label).">Customer <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                    <th class="rto-tip rto-sort" data-sort="text" aria-sort="none" title="IP address reported by GenieACS." data-tip="IP address reported by GenieACS.">IPv4 <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                    <th class="rto-tip rto-sort" data-sort="text" aria-sort="none" title="Current health classification based on RX/TX thresholds." data-tip="Current health classification based on RX/TX thresholds.">Status <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                    <th class="rto-tip rto-sort" data-sort="number" aria-sort="none" title="Latest RX power reading in dBm." data-tip="Latest RX power reading in dBm.">RX (dBm) <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                    <th class="rto-tip rto-sort" data-sort="number" aria-sort="none" title="Latest TX power reading in dBm." data-tip="Latest TX power reading in dBm.">TX (dBm) <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                    <th class="rto-tip rto-sort" data-sort="number" aria-sort="none" title="Number of samples in the current window." data-tip="Number of samples in the current window.">Samples <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                    <th class="rto-tip rto-sort" data-sort="date" aria-sort="none" title="Timestamp of the most recent optical reading." data-tip="Timestamp of the most recent optical reading.">Last Check <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort" data-sort-key="customer" aria-sort="none" title="Subscriber name detected from GenieACS (PPPoE username or device label)." data-tip="Subscriber name detected from GenieACS (PPPoE username or device label).">Customer <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort" data-sort-key="ip" aria-sort="none" title="IP address reported by GenieACS." data-tip="IP address reported by GenieACS.">IPv4 <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort" data-sort-key="status" aria-sort="none" title="Current health classification based on RX/TX thresholds." data-tip="Current health classification based on RX/TX thresholds.">Status <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort" data-sort-key="rx" aria-sort="none" title="Latest RX power reading in dBm." data-tip="Latest RX power reading in dBm.">RX (dBm) <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort" data-sort-key="tx" aria-sort="none" title="Latest TX power reading in dBm." data-tip="Latest TX power reading in dBm.">TX (dBm) <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort" data-sort-key="samples" aria-sort="none" title="Number of samples in the current window." data-tip="Number of samples in the current window.">Samples <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort" data-sort-key="last_check_at" aria-sort="none" title="Timestamp of the most recent optical reading." data-tip="Timestamp of the most recent optical reading.">Last Check <span class="rto-sort-indicator" aria-hidden="true"></span></th>
                     <th class="rto-tip rto-trend-header" title="RX power trend for the current window." data-tip="RX power trend for the current window. Click to expand.">{{ optical_status.window_label }} Trend</th>
-                    <th class="rto-tip rto-sort" data-sort="text" aria-sort="none" title="Reason this device is flagged under Connection Issues." data-tip="Reason this device is flagged under Connection Issues.">Reason <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort" data-sort-key="reason" aria-sort="none" title="Reason this device is flagged under Connection Issues." data-tip="Reason this device is flagged under Connection Issues.">Reason <span class="rto-sort-indicator" aria-hidden="true"></span></th>
                     <th class="text-end"> </th>
                   </tr>
                 </thead>
@@ -240,25 +247,44 @@
                     </tr>
                   {% endfor %}
                 </tbody>
-              </table>
+	              </table>
+	              </div>
+	              <div class="rto-resize-handle" data-target="optical-issues-table"></div>
+	            </div>
+              {% set meta = optical_status.pagination.issues %}
+              <div class="d-flex flex-wrap align-items-center justify-content-between mt-2 gap-2">
+                <div class="text-muted small">Showing {{ meta.start }}–{{ meta.end }} of {{ meta.total }}</div>
+                {% if meta.pages > 1 %}
+                  {% set prev_page = meta.page - 1 if meta.page > 1 else 1 %}
+                  {% set next_page = meta.page + 1 if meta.page < meta.pages else meta.pages %}
+                  <div class="d-flex align-items-center gap-2">
+                    <span class="text-muted small">Page {{ meta.page }} of {{ meta.pages }}</span>
+                    <ul class="pagination pagination-sm mb-0">
+                      <li class="page-item {% if not meta.has_prev %}disabled{% endif %}">
+	                        <a class="page-link" href="/settings/optical?window={{ optical_status.window_hours }}&limit={{ optical_limit_param }}&issues_page={{ prev_page }}&stable_page={{ optical_status.pagination.stable.page }}&issues_sort={{ optical_status.sort.issues.key }}&issues_dir={{ optical_status.sort.issues.dir }}&stable_sort={{ optical_status.sort.stable.key }}&stable_dir={{ optical_status.sort.stable.dir }}&q={{ optical_status.query|urlencode }}#optical-issues">Prev</a>
+                      </li>
+                      <li class="page-item {% if not meta.has_next %}disabled{% endif %}">
+	                        <a class="page-link" href="/settings/optical?window={{ optical_status.window_hours }}&limit={{ optical_limit_param }}&issues_page={{ next_page }}&stable_page={{ optical_status.pagination.stable.page }}&issues_sort={{ optical_status.sort.issues.key }}&issues_dir={{ optical_status.sort.issues.dir }}&stable_sort={{ optical_status.sort.stable.key }}&stable_dir={{ optical_status.sort.stable.dir }}&q={{ optical_status.query|urlencode }}#optical-issues">Next</a>
+                      </li>
+                    </ul>
+                  </div>
+                {% endif %}
               </div>
-              <div class="rto-resize-handle" data-target="optical-issues-table"></div>
-            </div>
-          </div>
+		          </div>
 
-          <div class="tab-pane" id="optical-stable">
-            <div class="rto-table-shell">
-              <div class="rto-table-wrap" id="optical-stable-table">
-              <table class="table table-vcenter rto-table">
+	          <div class="tab-pane" id="optical-stable">
+	            <div class="rto-table-shell">
+	              <div class="rto-table-wrap" id="optical-stable-table">
+	              <table class="table table-vcenter rto-table">
                 <thead>
                   <tr>
-                    <th class="rto-tip rto-sort" data-sort="text" aria-sort="none" title="Subscriber name detected from GenieACS (PPPoE username or device label)." data-tip="Subscriber name detected from GenieACS (PPPoE username or device label).">Customer <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                    <th class="rto-tip rto-sort" data-sort="text" aria-sort="none" title="IP address reported by GenieACS." data-tip="IP address reported by GenieACS.">IPv4 <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                    <th class="rto-tip rto-sort" data-sort="text" aria-sort="none" title="Stable classification based on RX/TX thresholds." data-tip="Stable classification based on RX/TX thresholds.">Status <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                    <th class="rto-tip rto-sort" data-sort="number" aria-sort="none" title="Latest RX power reading in dBm." data-tip="Latest RX power reading in dBm.">RX (dBm) <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                    <th class="rto-tip rto-sort" data-sort="number" aria-sort="none" title="Latest TX power reading in dBm." data-tip="Latest TX power reading in dBm.">TX (dBm) <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                    <th class="rto-tip rto-sort" data-sort="number" aria-sort="none" title="Number of samples in the current window." data-tip="Number of samples in the current window.">Samples <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                    <th class="rto-tip rto-sort" data-sort="date" aria-sort="none" title="Timestamp of the most recent optical reading." data-tip="Timestamp of the most recent optical reading.">Last Check <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort" data-sort-key="customer" aria-sort="none" title="Subscriber name detected from GenieACS (PPPoE username or device label)." data-tip="Subscriber name detected from GenieACS (PPPoE username or device label).">Customer <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort" data-sort-key="ip" aria-sort="none" title="IP address reported by GenieACS." data-tip="IP address reported by GenieACS.">IPv4 <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort" data-sort-key="status" aria-sort="none" title="Stable classification based on RX/TX thresholds." data-tip="Stable classification based on RX/TX thresholds.">Status <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort" data-sort-key="rx" aria-sort="none" title="Latest RX power reading in dBm." data-tip="Latest RX power reading in dBm.">RX (dBm) <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort" data-sort-key="tx" aria-sort="none" title="Latest TX power reading in dBm." data-tip="Latest TX power reading in dBm.">TX (dBm) <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort" data-sort-key="samples" aria-sort="none" title="Number of samples in the current window." data-tip="Number of samples in the current window.">Samples <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort" data-sort-key="last_check_at" aria-sort="none" title="Timestamp of the most recent optical reading." data-tip="Timestamp of the most recent optical reading.">Last Check <span class="rto-sort-indicator" aria-hidden="true"></span></th>
                     <th class="rto-tip rto-trend-header" title="RX power trend for the current window." data-tip="RX power trend for the current window. Click to expand.">{{ optical_status.window_label }} Trend</th>
                     <th class="text-end"> </th>
                   </tr>
@@ -273,9 +299,15 @@
                         {% else %}
                           {{ row.name }}
                         {% endif %}
-                      </td>
-                      <td>{{ row.ip or 'n/a' }}</td>
-                      <td><span class="badge bg-green-lt">Stable</span></td>
+	                      </td>
+	                      <td>{{ row.ip or 'n/a' }}</td>
+	                      <td>
+	                        {% if row.status == 'stable' %}
+	                          <span class="badge bg-green-lt">Stable</span>
+	                        {% else %}
+	                          <span class="badge bg-yellow-lt">Monitor</span>
+	                        {% endif %}
+	                      </td>
                       <td>
                         {% if row.rx_invalid %}
                           {% set rx_raw = row.rx_raw if row.rx_raw is not none else 'n/a' %}
@@ -318,26 +350,26 @@
                       </td>
                       <td>{{ row.samples }}</td>
                       <td>{{ row.last_check or 'n/a' }}</td>
-                      <td>
-                        {% if row.spark_points_window %}
-                          <button type="button"
-                                  class="btn btn-link p-0 optical-spark-btn"
-                                  data-name="{{ row.name }}"
-                                  data-device-id="{{ row.device_id }}"
-                                  data-status="stable"
-                                  data-points="{{ row.spark_points_window_large }}"
-                                  data-width="640"
-                                  data-height="200"
-                                  data-bs-toggle="modal"
-                                  data-bs-target="#optical-spark-modal">
-                            <svg class="rto-sparkline" width="120" height="30" viewBox="0 0 120 30" preserveAspectRatio="none">
-                              <polyline points="{{ row.spark_points_window }}" fill="none" stroke="#2fb344" stroke-width="2"></polyline>
-                            </svg>
-                          </button>
-                        {% else %}
-                          <span class="text-muted small">n/a</span>
-                        {% endif %}
-                      </td>
+	                      <td>
+	                        {% if row.spark_points_window %}
+	                          <button type="button"
+	                                  class="btn btn-link p-0 optical-spark-btn"
+	                                  data-name="{{ row.name }}"
+	                                  data-device-id="{{ row.device_id }}"
+	                                  data-status="{{ row.status }}"
+	                                  data-points="{{ row.spark_points_window_large }}"
+	                                  data-width="640"
+	                                  data-height="200"
+	                                  data-bs-toggle="modal"
+	                                  data-bs-target="#optical-spark-modal">
+	                            <svg class="rto-sparkline" width="120" height="30" viewBox="0 0 120 30" preserveAspectRatio="none">
+	                              <polyline points="{{ row.spark_points_window }}" fill="none" stroke="{% if row.status == 'stable' %}#2fb344{% else %}#f59f00{% endif %}" stroke-width="2"></polyline>
+	                            </svg>
+	                          </button>
+	                        {% else %}
+	                          <span class="text-muted small">n/a</span>
+	                        {% endif %}
+	                      </td>
                       <td class="text-end">
                         <span data-surveillance-slot>
                           {% if surv_status == 'under' %}
@@ -368,13 +400,32 @@
                     </tr>
                   {% endfor %}
                 </tbody>
-              </table>
+	              </table>
+	              </div>
+	              <div class="rto-resize-handle" data-target="optical-stable-table"></div>
+	            </div>
+              {% set meta = optical_status.pagination.stable %}
+              <div class="d-flex flex-wrap align-items-center justify-content-between mt-2 gap-2">
+                <div class="text-muted small">Showing {{ meta.start }}–{{ meta.end }} of {{ meta.total }}</div>
+                {% if meta.pages > 1 %}
+                  {% set prev_page = meta.page - 1 if meta.page > 1 else 1 %}
+                  {% set next_page = meta.page + 1 if meta.page < meta.pages else meta.pages %}
+                  <div class="d-flex align-items-center gap-2">
+                    <span class="text-muted small">Page {{ meta.page }} of {{ meta.pages }}</span>
+                    <ul class="pagination pagination-sm mb-0">
+                      <li class="page-item {% if not meta.has_prev %}disabled{% endif %}">
+	                        <a class="page-link" href="/settings/optical?window={{ optical_status.window_hours }}&limit={{ optical_limit_param }}&issues_page={{ optical_status.pagination.issues.page }}&stable_page={{ prev_page }}&issues_sort={{ optical_status.sort.issues.key }}&issues_dir={{ optical_status.sort.issues.dir }}&stable_sort={{ optical_status.sort.stable.key }}&stable_dir={{ optical_status.sort.stable.dir }}&q={{ optical_status.query|urlencode }}#optical-stable">Prev</a>
+                      </li>
+                      <li class="page-item {% if not meta.has_next %}disabled{% endif %}">
+	                        <a class="page-link" href="/settings/optical?window={{ optical_status.window_hours }}&limit={{ optical_limit_param }}&issues_page={{ optical_status.pagination.issues.page }}&stable_page={{ next_page }}&issues_sort={{ optical_status.sort.issues.key }}&issues_dir={{ optical_status.sort.issues.dir }}&stable_sort={{ optical_status.sort.stable.key }}&stable_dir={{ optical_status.sort.stable.dir }}&q={{ optical_status.query|urlencode }}#optical-stable">Next</a>
+                      </li>
+                    </ul>
+                  </div>
+                {% endif %}
               </div>
-              <div class="rto-resize-handle" data-target="optical-stable-table"></div>
-            </div>
-          </div>
-        </div>
-      </div>
+	          </div>
+	        </div>
+	      </div>
 
       <div class="tab-pane {% if active_tab != 'status' %}active{% endif %}" id="optical-settings">
         <form method="post">
@@ -420,7 +471,7 @@
                       <div>Optical checks run on the interval below for status history. Telegram alerts follow the schedule in the Telegram tab.</div>
                     </div>
                   </div>
-                  <label class="form-label">Enable optical notifier <span class="info" data-tip="Turns on the optical monitoring job.">i</span></label>
+	                  <label class="form-label">Enable Optical Monitoring <span class="info" data-tip="Turns on the optical monitoring job.">i</span></label>
                   <label class="form-check form-switch">
                     <input class="form-check-input" type="checkbox" name="enabled" {% if settings.enabled %}checked{% endif %} />
                     <span class="form-check-label">Active</span>
@@ -442,11 +493,11 @@
               <div class="card mb-3">
                 <div class="card-body">
                   <h4 class="mb-3">GenieACS</h4>
-                  <div class="row g-3">
-                    <div class="col-md-6">
-                      <label class="form-label">Base URL <span class="info" data-tip="GenieACS server base address (example: http://genieacs:7557)."><i class="ti ti-info-circle"></i></span></label>
-                      <input class="form-control" type="text" name="genieacs_base_url" value="{{ settings.genieacs.base_url }}" />
-                    </div>
+	                  <div class="row g-3">
+	                    <div class="col-md-6">
+	                      <label class="form-label">Base URL <span class="info" data-tip="GenieACS server base address (example: http://genieacs:7557)."><i class="ti ti-info-circle"></i></span></label>
+	                      <input class="form-control" type="text" name="genieacs_base_url" value="{{ settings.genieacs.base_url }}" />
+	                    </div>
                     <div class="col-md-6">
                       <label class="form-label">Username <span class="info" data-tip="GenieACS API username used for authentication."><i class="ti ti-info-circle"></i></span></label>
                       <input class="form-control" type="text" name="genieacs_username" value="{{ settings.genieacs.username }}" />
@@ -455,13 +506,16 @@
                       <label class="form-label">Password <span class="info" data-tip="GenieACS API password used for authentication."><i class="ti ti-info-circle"></i></span></label>
                       <input class="form-control" type="password" name="genieacs_password" value="{{ settings.genieacs.password }}" />
                     </div>
-                    <div class="col-md-6">
-                      <label class="form-label">Page Size <span class="info" data-tip="How many devices per GenieACS page request."><i class="ti ti-info-circle"></i></span></label>
-                      <input class="form-control" type="number" name="genieacs_page_size" value="{{ settings.genieacs.page_size }}" />
-                    </div>
-                  </div>
-                </div>
-              </div>
+	                    <div class="col-md-6">
+	                      <label class="form-label">Page Size <span class="info" data-tip="How many devices per GenieACS page request."><i class="ti ti-info-circle"></i></span></label>
+	                      <input class="form-control" type="number" name="genieacs_page_size" value="{{ settings.genieacs.page_size }}" />
+	                    </div>
+	                  </div>
+	                  <div class="d-flex gap-2 mt-3">
+	                    <a class="btn btn-secondary" href="/settings/optical/test_genieacs">Test GenieACS API</a>
+	                  </div>
+	                </div>
+	              </div>
 
               <div class="card mb-3">
                 <div class="card-body">
@@ -694,41 +748,22 @@
       });
     });
 
-    const windowBadge = document.getElementById("optical-status-window");
-    const windowButton = document.getElementById("optical-window-button");
-    const windowOptions = document.querySelectorAll(".optical-window-row");
-    const windowStars = document.querySelectorAll(".optical-window-star-btn");
-    const windowParam = new URLSearchParams(window.location.search).get("window");
-    let defaultWindow = localStorage.getItem("optical_status_default_window");
-    if (!defaultWindow) {
-      defaultWindow = "24";
-      localStorage.setItem("optical_status_default_window", defaultWindow);
-    }
-    let currentWindow = windowParam || defaultWindow;
-    if (!windowParam && windowBadge) {
-      const url = new URL(window.location.href);
-      url.searchParams.set("window", currentWindow);
-      window.location.replace(url.toString());
-      return;
-    }
-    const loadingOverlay = document.getElementById("optical-loading-overlay");
-    const showLoading = () => {
-      if (loadingOverlay) {
-        loadingOverlay.style.display = "flex";
-      }
-    };
-    const hideLoading = () => {
-      if (loadingOverlay) {
-        loadingOverlay.style.display = "none";
-      }
-    };
-    showLoading();
-    window.addEventListener("load", () => {
-      hideLoading();
-    });
-    const updateStars = () => {
-      windowStars.forEach((btn) => {
-        const icon = btn.querySelector("i");
+	    const windowBadge = document.getElementById("optical-status-window");
+	    const windowButton = document.getElementById("optical-window-button");
+	    const windowOptions = document.querySelectorAll(".optical-window-row");
+	    const windowStars = document.querySelectorAll(".optical-window-star-btn");
+      const limitButton = document.getElementById("optical-limit-button");
+      const limitRows = document.querySelectorAll(".optical-limit-row");
+		    const windowParam = new URLSearchParams(window.location.search).get("window");
+		    let defaultWindow = localStorage.getItem("optical_status_default_window");
+		    if (!defaultWindow) {
+		      defaultWindow = "24";
+	      localStorage.setItem("optical_status_default_window", defaultWindow);
+	    }
+	    const currentWindow = windowParam || "24";
+	    const updateStars = () => {
+	      windowStars.forEach((btn) => {
+	        const icon = btn.querySelector("i");
         if (!icon) return;
         if (btn.dataset.hours === defaultWindow) {
           icon.classList.remove("ti-star");
@@ -739,146 +774,129 @@
         }
       });
     };
-    const updateButtonLabel = () => {
-      const label = windowBadge ? windowBadge.textContent.trim() : "1D";
-      const isDefault = currentWindow === defaultWindow;
-      if (windowButton) {
-        windowButton.textContent = isDefault ? `Filter: ${label} ⭐` : `Filter: ${label}`;
-      }
+	    const updateButtonLabel = () => {
+	      const label = windowBadge ? windowBadge.textContent.trim() : "1D";
+	      const isDefault = Boolean(windowParam) && currentWindow === defaultWindow;
+	      if (windowButton) {
+	        windowButton.textContent = isDefault ? `Filter: ${label} ⭐` : `Filter: ${label}`;
+	      }
       document.querySelectorAll(".rto-trend-header").forEach((el) => {
         el.textContent = `${label} Trend`;
       });
     };
     updateStars();
     updateButtonLabel();
-    windowOptions.forEach((row) => {
-      row.addEventListener("click", () => {
-        currentWindow = row.dataset.hours;
-        updateStars();
-        updateButtonLabel();
-        const url = new URL(window.location.href);
-        url.searchParams.set("window", currentWindow);
-        const tabHash = localStorage.getItem(tabKey) || window.location.hash;
-        if (tabHash) {
-          url.hash = tabHash;
-        }
-        showLoading();
-        window.location.href = url.toString();
-      });
-    });
-    windowStars.forEach((btn) => {
-      btn.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        defaultWindow = btn.dataset.hours;
-        localStorage.setItem("optical_status_default_window", defaultWindow);
-        updateStars();
-        updateButtonLabel();
-      });
-    });
-
-    const parseSortValue = (value, type) => {
-      if (type === "number") {
-        const cleaned = value.replace(/[^0-9.-]/g, "");
-        const parsed = parseFloat(cleaned);
-        return Number.isNaN(parsed) ? -Infinity : parsed;
-      }
-      if (type === "date") {
-        const parsed = Date.parse(value);
-        return Number.isNaN(parsed) ? -Infinity : parsed;
-      }
-      return value.toLowerCase();
-    };
-
-    const setupSortableTable = (table) => {
-      if (!table) return;
-      const headers = Array.from(table.querySelectorAll("th.rto-sort"));
-      if (!headers.length) return;
-      const tbody = table.querySelector("tbody");
-      table.addEventListener("click", (event) => {
-        const header = event.target.closest("th.rto-sort");
-        if (!header || !table.contains(header)) return;
-        if (!tbody) return;
-        const index = headers.indexOf(header);
-        if (index < 0) return;
-        const rows = Array.from(tbody.querySelectorAll("tr"));
-        if (rows.length <= 1 && rows[0]?.querySelector("td[colspan]")) {
-          return;
-        }
-        const currentDir = header.dataset.sortDir === "asc" ? "asc" : "desc";
-        const nextDir = currentDir === "asc" ? "desc" : "asc";
-        headers.forEach((th) => {
-          delete th.dataset.sortDir;
-          th.classList.remove("rto-sorted-asc", "rto-sorted-desc");
-          th.setAttribute("aria-sort", "none");
-          const indicator = th.querySelector(".rto-sort-indicator");
-          if (indicator) {
-            indicator.textContent = "";
-          }
-        });
-        header.dataset.sortDir = nextDir;
-        header.classList.add(nextDir === "asc" ? "rto-sorted-asc" : "rto-sorted-desc");
-        header.setAttribute("aria-sort", nextDir === "asc" ? "ascending" : "descending");
-        const indicator = header.querySelector(".rto-sort-indicator");
-        if (indicator) {
-          indicator.textContent = nextDir === "asc" ? "▲" : "▼";
-        }
-        const sortType = header.dataset.sort || "text";
-        rows.sort((a, b) => {
-          const aCell = a.children[index]?.textContent.trim() || "";
-          const bCell = b.children[index]?.textContent.trim() || "";
-          const aValue = parseSortValue(aCell, sortType);
-          const bValue = parseSortValue(bCell, sortType);
-          let result = 0;
-          if (typeof aValue === "number" && typeof bValue === "number") {
-            result = aValue - bValue;
-          } else {
-            result = String(aValue).localeCompare(String(bValue), undefined, { numeric: true, sensitivity: "base" });
-          }
-          return nextDir === "asc" ? result : -result;
-        });
-        rows.forEach((row) => tbody.appendChild(row));
-      });
-    };
-
-	    document.querySelectorAll(".rto-table").forEach((table) => {
-	      setupSortableTable(table);
+		    windowOptions.forEach((row) => {
+		      row.addEventListener("click", () => {
+		        currentWindow = row.dataset.hours;
+		        updateStars();
+		        updateButtonLabel();
+		        const url = new URL(window.location.href);
+		        url.searchParams.set("window", currentWindow);
+            url.searchParams.set("issues_page", "1");
+            url.searchParams.set("stable_page", "1");
+		        const tabHash = localStorage.getItem(tabKey) || window.location.hash;
+		        if (tabHash) {
+		          url.hash = tabHash;
+		        }
+		        window.location.href = url.toString();
+		      });
+		    });
+	    windowStars.forEach((btn) => {
+	      btn.addEventListener("click", (event) => {
+	        event.preventDefault();
+	        event.stopPropagation();
+	        defaultWindow = btn.dataset.hours;
+	        localStorage.setItem("optical_status_default_window", defaultWindow);
+	        updateStars();
+	        updateButtonLabel();
+	      });
 	    });
 
-	    const opticalSearch = document.getElementById("optical-status-search");
-	    const applyTableFilter = (tableWrapId, query) => {
-	      const wrap = document.getElementById(tableWrapId);
-	      const table = wrap ? wrap.querySelector("table") : null;
-	      const tbody = table ? table.querySelector("tbody") : null;
-	      if (!tbody) return;
-	      const q = (query || "").trim().toLowerCase();
-	      const rows = Array.from(tbody.querySelectorAll("tr"));
-	      let emptyRow = null;
-	      let visible = 0;
-	      rows.forEach((row) => {
-	        const isEmpty = !!row.querySelector("td[colspan]");
-	        if (isEmpty) {
-	          emptyRow = row;
-	          return;
-	        }
-	        const text = (row.textContent || "").toLowerCase();
-	        const match = !q || text.includes(q);
-	        row.style.display = match ? "" : "none";
-	        if (match) visible += 1;
-	      });
-	      if (emptyRow) {
-	        emptyRow.style.display = visible === 0 ? "" : "none";
-	      }
-	    };
-	    const applyOpticalSearch = () => {
-	      const query = opticalSearch ? opticalSearch.value : "";
-	      applyTableFilter("optical-issues-table", query);
-	      applyTableFilter("optical-stable-table", query);
-	    };
-	    if (opticalSearch) {
-	      opticalSearch.addEventListener("input", applyOpticalSearch);
-	      applyOpticalSearch();
-	    }
+      limitRows.forEach((row) => {
+        row.addEventListener("click", () => {
+          const limit = row.dataset.limit || "50";
+          const url = new URL(window.location.href);
+          url.searchParams.set("limit", limit);
+          url.searchParams.set("issues_page", "1");
+          url.searchParams.set("stable_page", "1");
+          const tabHash = localStorage.getItem(tabKey) || window.location.hash;
+          if (tabHash) {
+            url.hash = tabHash;
+          }
+          window.location.href = url.toString();
+        });
+      });
+
+      const setupServerSort = (wrapId, prefix, hash) => {
+        const wrap = document.getElementById(wrapId);
+        const table = wrap ? wrap.querySelector("table") : null;
+        if (!table) return;
+        const headers = Array.from(table.querySelectorAll("th.rto-sort"));
+        if (!headers.length) return;
+        const url = new URL(window.location.href);
+        const activeKey = (url.searchParams.get(`${prefix}_sort`) || "").trim();
+        const activeDir = ((url.searchParams.get(`${prefix}_dir`) || "desc").trim().toLowerCase() === "asc") ? "asc" : "desc";
+        headers.forEach((th) => {
+          const key = (th.dataset.sortKey || "").trim();
+          const indicator = th.querySelector(".rto-sort-indicator");
+          th.classList.remove("rto-sorted-asc", "rto-sorted-desc");
+          th.setAttribute("aria-sort", "none");
+          if (indicator) indicator.textContent = "";
+          if (key && key === activeKey) {
+            th.classList.add(activeDir === "asc" ? "rto-sorted-asc" : "rto-sorted-desc");
+            th.setAttribute("aria-sort", activeDir === "asc" ? "ascending" : "descending");
+            if (indicator) indicator.textContent = activeDir === "asc" ? "▲" : "▼";
+          }
+        });
+        table.addEventListener("click", (event) => {
+          const header = event.target.closest("th.rto-sort");
+          if (!header || !table.contains(header)) return;
+          const sortKey = (header.dataset.sortKey || "").trim();
+          if (!sortKey) return;
+          const nextDir = (sortKey === activeKey && activeDir === "asc") ? "desc" : "asc";
+          const nextUrl = new URL(window.location.href);
+          nextUrl.searchParams.set(`${prefix}_sort`, sortKey);
+          nextUrl.searchParams.set(`${prefix}_dir`, nextDir);
+          nextUrl.searchParams.set(`${prefix}_page`, "1");
+          nextUrl.hash = hash;
+          window.location.href = nextUrl.toString();
+        });
+      };
+
+      setupServerSort("optical-issues-table", "issues", "#optical-issues");
+      setupServerSort("optical-stable-table", "stable", "#optical-stable");
+
+		    const opticalSearch = document.getElementById("optical-status-search");
+		    if (opticalSearch) {
+          let lastValue = (opticalSearch.value || "").trim();
+          let timer = null;
+		      const submit = () => {
+            const q = (opticalSearch.value || "").trim();
+            if (q === lastValue) return;
+            lastValue = q;
+            if (q && q.length < 2) return;
+            const url = new URL(window.location.href);
+            if (q) url.searchParams.set("q", q);
+            else url.searchParams.delete("q");
+            url.searchParams.set("issues_page", "1");
+            url.searchParams.set("stable_page", "1");
+            const tabHash = localStorage.getItem(tabKey) || window.location.hash;
+            if (tabHash) url.hash = tabHash;
+            window.location.href = url.toString();
+		      };
+          opticalSearch.addEventListener("input", () => {
+            if (timer) clearTimeout(timer);
+            timer = setTimeout(submit, 350);
+          });
+          opticalSearch.addEventListener("keydown", (event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              if (timer) clearTimeout(timer);
+              submit();
+            }
+          });
+		    }
 
 	    const modalTitle = document.getElementById("optical-spark-title");
     const modalChart = document.getElementById("optical-spark-modal-chart");

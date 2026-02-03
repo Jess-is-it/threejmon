@@ -65,11 +65,38 @@
               <span><i class="ti ti-clock me-1"></i>Window: {{ profile.window_label }}</span>
             </div>
           </div>
-          <div class="ms-auto d-flex gap-2 align-items-start">
-            <div class="dropdown">
-              <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" id="profile-window-button">
-                Window: {{ profile.window_label }}
-              </button>
+	          <div class="ms-auto d-flex gap-2 align-items-start">
+              {% set surv_pppoe = (profile.pppoe or '') %}
+              {% set surv_status = surveillance_index.get(surv_pppoe) if surv_pppoe else None %}
+              <span data-surveillance-slot>
+                {% if not surv_pppoe %}
+                  <button type="button" class="btn btn-outline-secondary btn-sm" title="No PPPoE detected for this profile" aria-label="No PPPoE detected" disabled>
+                    <i class="ti ti-eye me-1"></i>For Surveillance
+                  </button>
+                {% elif surv_status == 'under' %}
+                  <a class="btn btn-outline-warning btn-sm" href="/surveillance?tab=under&focus={{ surv_pppoe|urlencode }}" title="Under Surveillance" aria-label="Under Surveillance">
+                    <i class="ti ti-eye me-1"></i>Under Surveillance
+                  </a>
+                {% elif surv_status == 'level2' %}
+                  <a class="btn btn-outline-danger btn-sm" href="/surveillance?tab=level2&focus={{ surv_pppoe|urlencode }}" title="LEVEL II SUSPECT" aria-label="LEVEL II SUSPECT">
+                    <i class="ti ti-eye me-1"></i>LEVEL II SUSPECT
+                  </a>
+                {% else %}
+                  <button type="button"
+                          class="btn btn-outline-secondary btn-sm surveillance-add-btn"
+                          title="For Surveillance"
+                          data-pppoe="{{ surv_pppoe }}"
+                          data-name="{{ surv_pppoe }}"
+                          data-ip="{{ profile.ip }}"
+                          data-source="profile_review">
+                    <i class="ti ti-eye me-1"></i>For Surveillance
+                  </button>
+                {% endif %}
+              </span>
+	            <div class="dropdown">
+	              <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" id="profile-window-button">
+	                Window: {{ profile.window_label }}
+	              </button>
               <div class="dropdown-menu dropdown-menu-end">
                 <button class="dropdown-item profile-window-option" data-hours="6" data-label="6H">6H</button>
                 <button class="dropdown-item profile-window-option" data-hours="12" data-label="12H">12H</button>

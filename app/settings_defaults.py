@@ -114,6 +114,22 @@ RTO_DEFAULTS = {
 SURVEILLANCE_DEFAULTS = {
     "enabled": True,
     "entries": [],
+    "auto_add": {
+        "enabled": False,
+        # Lookback window for computing criteria (days).
+        "window_days": 3,
+        # Intermittent (full-down flapping) criteria within the lookback window.
+        # A "down event" is counted when a minute bucket has Loss% = 100% and the previous minute was not 100%.
+        "min_down_events": 5,
+        # How often to scan all accounts for auto-add candidates (minutes).
+        "scan_interval_minutes": 5,
+        # Safety limit: max accounts to auto-add per scan (0 = no limit).
+        "max_add_per_eval": 3,
+        # Currently supported source: accounts_ping (based on latest ping status + duration).
+        "sources": {
+            "accounts_ping": True,
+        },
+    },
     "ping": {
         "interval_seconds": 1,
         "count": 1,
@@ -136,9 +152,11 @@ SURVEILLANCE_DEFAULTS = {
         "stable_window_minutes": 10,
         "uptime_threshold_pct": 95.0,
         "latency_max_ms": 15.0,
+        "loss_max_pct": 100.0,
         "optical_rx_min_dbm": -24.0,
-        "require_optical": False,
+        "require_optical": True,
         "escalate_after_minutes": 10,
+        "level2_autofix_after_minutes": 30,
     },
 }
 
@@ -320,24 +338,14 @@ ACCOUNTS_PING_DEFAULTS = {
     "ping": {
         "count": 3,
         "timeout_seconds": 1,
-        "burst_count": 1,
-        "burst_timeout_seconds": 1,
     },
     "classification": {
         "issue_loss_pct": 20.0,
         "issue_latency_ms": 200.0,
         "down_loss_pct": 100.0,
-    },
-    "burst": {
-        "enabled": True,
-        "burst_interval_seconds": 1,
-        "burst_duration_seconds": 120,
-        "investigate_minutes": 15,
-        "trigger_on_issue": True,
-    },
-    "backoff": {
-        "long_down_seconds": 7200,
-        "long_down_interval_seconds": 300,
+        "stable_rto_pct": 2.0,
+        "issue_rto_pct": 5.0,
+        "issue_streak": 2,
     },
     "storage": {
         "raw_retention_days": 365,

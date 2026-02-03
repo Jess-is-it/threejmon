@@ -15,8 +15,14 @@ from .db import (
     update_job_status,
     utc_now_iso,
     get_accounts_ping_window_stats,
+    get_accounts_ping_down_events_map,
     get_latest_accounts_ping_map,
     get_latest_optical_by_pppoe,
+    ensure_surveillance_session,
+    touch_surveillance_session,
+    increment_surveillance_observed,
+    end_surveillance_session,
+    has_surveillance_session,
 )
 from .db import delete_accounts_ping_raw_older_than, delete_accounts_ping_rollups_older_than, insert_accounts_ping_result
 from .notifiers import optical as optical_notifier
@@ -178,6 +184,13 @@ class JobsManager:
             cfg = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
             surv_cfg = get_settings("surveillance", SURVEILLANCE_DEFAULTS)
             surv_enabled = bool(surv_cfg.get("enabled", True))
+            auto_add_cfg = surv_cfg.get("auto_add", {}) or {}
+            auto_add_sources = auto_add_cfg.get("sources", {}) or {}
+            auto_add_enabled = bool(
+                surv_enabled
+                and auto_add_cfg.get("enabled", False)
+                and auto_add_sources.get("accounts_ping", True)
+            )
             raw_entries = surv_cfg.get("entries") if isinstance(surv_cfg.get("entries"), list) else []
             surv_entries = []
             for entry in raw_entries:
@@ -191,9 +204,10 @@ class JobsManager:
                     status = "under"
                 surv_entries.append({**entry, "pppoe": pppoe, "status": status})
             surv_map = {entry["pppoe"]: entry for entry in surv_entries}
-            has_surveillance = bool(surv_enabled and surv_map)
+            has_surveillance_targets = bool(surv_enabled and surv_map)
 
-            if not cfg.get("enabled") and not has_surveillance:
+            should_run = bool(cfg.get("enabled") or has_surveillance_targets or auto_add_enabled)
+            if not should_run:
                 time_module.sleep(5)
                 continue
 
@@ -277,13 +291,22 @@ class JobsManager:
                         target_map[account_id] = {"id": account_id, "pppoe": pppoe, "name": pppoe, "ip": ip}
 
                 surv_changed = False
-                if has_surveillance:
+                if has_surveillance_targets:
                     for pppoe, entry in surv_map.items():
                         ip = (entry.get("ip") or "").strip() or pppoe_ip_map.get(pppoe, "")
                         if ip and ip != (entry.get("ip") or "").strip():
                             entry["ip"] = ip
                             entry["updated_at"] = now.replace(microsecond=0).isoformat() + "Z"
                             surv_changed = True
+                            try:
+                                touch_surveillance_session(
+                                    pppoe,
+                                    source=(entry.get("source") or "").strip(),
+                                    ip=ip,
+                                    state=(entry.get("status") or "under"),
+                                )
+                            except Exception:
+                                pass
                         account_id = account_id_for_pppoe(pppoe)
                         if not account_id or not ip:
                             continue
@@ -294,6 +317,31 @@ class JobsManager:
                 if not targets:
                     time_module.sleep(2)
                     continue
+
+                # Seed history sessions for current surveillance entries (once per PPPoE).
+                seeded = state.get("surveillance_sessions_seeded")
+                if not isinstance(seeded, list):
+                    seeded = []
+                seeded_set = {str(x).strip() for x in seeded if str(x).strip()}
+                seeded_changed = False
+                if has_surveillance_targets:
+                    for pppoe, entry in surv_map.items():
+                        if pppoe in seeded_set:
+                            continue
+                        try:
+                            ensure_surveillance_session(
+                                pppoe,
+                                started_at=(entry.get("added_at") or "").strip(),
+                                source=(entry.get("source") or "").strip(),
+                                ip=(entry.get("ip") or "").strip(),
+                                state=(entry.get("status") or "under"),
+                            )
+                        except Exception:
+                            pass
+                        seeded_set.add(pppoe)
+                        seeded_changed = True
+                if seeded_changed:
+                    state["surveillance_sessions_seeded"] = sorted(seeded_set, key=lambda x: x.lower())
 
                 base_interval = max(int((cfg.get("general", {}) or {}).get("base_interval_seconds", 30) or 30), 1)
                 max_parallel = max(int((cfg.get("general", {}) or {}).get("max_parallel", 64) or 64), 1)
@@ -414,13 +462,23 @@ class JobsManager:
                         entry["streak"] = 0
                         entry["down_since"] = ""
                         entry["last_up_at"] = now.replace(microsecond=0).isoformat() + "Z"
+                        if is_issue:
+                            if not entry.get("issue_since"):
+                                entry["issue_since"] = now.replace(microsecond=0).isoformat() + "Z"
+                        else:
+                            entry["issue_since"] = ""
                     else:
                         entry["streak"] = int(entry.get("streak", 0) or 0) + 1
                         if not down_since_dt:
                             entry["down_since"] = now.replace(microsecond=0).isoformat() + "Z"
+                        entry["issue_since"] = ""
 
                     entry["last_check_at"] = now.replace(microsecond=0).isoformat() + "Z"
                     entry["last_status"] = "up" if ok and not is_issue else ("issue" if ok else "down")
+                    entry["last_ip"] = ip
+                    entry["last_ok"] = bool(ok)
+                    entry["last_loss"] = loss
+                    entry["last_avg_ms"] = avg_ms
 
                     is_long_down = False
                     down_since_dt2 = parse_dt(entry.get("down_since"))
@@ -454,68 +512,246 @@ class JobsManager:
                     save_state("accounts_ping_state", state)
 
                 # auto-transition surveillance entries (every ~5 seconds)
-                if has_surveillance:
+                if surv_enabled and (has_surveillance_targets or auto_add_enabled):
                     last_eval = state.get("surveillance_last_eval_at")
                     last_eval_dt = parse_dt(last_eval) if last_eval else None
                     if not last_eval_dt or (now - last_eval_dt).total_seconds() >= 5:
+                        now_iso = now.replace(microsecond=0).isoformat() + "Z"
+                        entries_changed = False
+
+                        # Auto-add accounts into surveillance on a schedule (minutes).
+                        scan_due = False
+                        if auto_add_enabled:
+                            scan_interval_minutes = max(int(auto_add_cfg.get("scan_interval_minutes", 5) or 5), 1)
+                            last_scan = state.get("surveillance_autoadd_last_scan_at")
+                            last_scan_dt = parse_dt(last_scan) if last_scan else None
+                            scan_due = (not last_scan_dt) or (now - last_scan_dt) >= timedelta(minutes=scan_interval_minutes)
+
+                        if auto_add_enabled and scan_due:
+                            sources = auto_add_cfg.get("sources") if isinstance(auto_add_cfg.get("sources"), dict) else {}
+                            if not bool(sources.get("accounts_ping", True)):
+                                state["surveillance_autoadd_last_scan_at"] = now_iso
+                            else:
+                                try:
+                                    window_days = float(auto_add_cfg.get("window_days", 3) or 3)
+                                except Exception:
+                                    window_days = 3.0
+                                if window_days <= 0:
+                                    window_days = 3.0
+                                min_down_events = max(int(auto_add_cfg.get("min_down_events", 5) or 5), 1)
+                                try:
+                                    max_add = int(auto_add_cfg.get("max_add_per_eval", 3))
+                                except Exception:
+                                    max_add = 3
+                                if max_add < 0:
+                                    max_add = 0
+
+                                seen_map = (
+                                    state.get("surveillance_autoadd_seen")
+                                    if isinstance(state.get("surveillance_autoadd_seen"), dict)
+                                    else {}
+                                )
+                                if len(seen_map) > 50000:
+                                    seen_map = {}
+
+                                candidates = []
+                                for target in targets:
+                                    pppoe = (target.get("pppoe") or "").strip()
+                                    if not pppoe or pppoe in surv_map:
+                                        continue
+                                    if pppoe in seen_map:
+                                        continue
+                                    candidates.append(target)
+
+                                since_iso2 = (now - timedelta(days=window_days)).replace(microsecond=0).isoformat() + "Z"
+                                until_iso2 = now.replace(microsecond=0).isoformat() + "Z"
+                                down_events_map = get_accounts_ping_down_events_map(
+                                    [t["id"] for t in candidates], since_iso2, until_iso2
+                                )
+
+                                added = 0
+                                for target in candidates:
+                                    if max_add and added >= max_add:
+                                        break
+                                    pppoe = (target.get("pppoe") or "").strip()
+                                    if not pppoe or pppoe in surv_map:
+                                        continue
+                                    if pppoe in seen_map:
+                                        continue
+
+                                    # PPPoE can only ever be auto-added once. If it exists in history, skip permanently.
+                                    try:
+                                        if has_surveillance_session(pppoe):
+                                            seen_map[pppoe] = 1
+                                            continue
+                                    except Exception:
+                                        continue
+
+                                    down_events = int(down_events_map.get(target["id"]) or 0)
+                                    if down_events < min_down_events:
+                                        continue
+                                    reason = f"Intermittent: {down_events} down events / {window_days:g}d"
+
+                                    ip = (target.get("ip") or "").strip()
+                                    entry = {
+                                        "pppoe": pppoe,
+                                        "name": (target.get("name") or pppoe).strip(),
+                                        "ip": ip,
+                                        "source": "accounts_ping",
+                                        "status": "under",
+                                        "added_at": now_iso,
+                                        "updated_at": now_iso,
+                                        "level2_at": "",
+                                        "last_fixed_at": "",
+                                        "last_fixed_reason": "",
+                                        "last_fixed_mode": "",
+                                        "added_mode": "auto",
+                                        "auto_source": "accounts_ping",
+                                        "auto_reason": reason,
+                                    }
+                                    surv_map[pppoe] = entry
+                                    seen_map[pppoe] = 1
+                                    entries_changed = True
+                                    added += 1
+                                    try:
+                                        ensure_surveillance_session(
+                                            pppoe,
+                                            started_at=now_iso,
+                                            source="accounts_ping",
+                                            ip=ip,
+                                            state="under",
+                                        )
+                                    except Exception:
+                                        pass
+
+                                state["surveillance_autoadd_seen"] = seen_map
+                                state["surveillance_autoadd_last_scan_at"] = now_iso
+
                         stab_cfg = surv_cfg.get("stability", {}) or {}
                         stable_window_minutes = max(int(stab_cfg.get("stable_window_minutes", 10) or 10), 1)
                         uptime_threshold_pct = float(stab_cfg.get("uptime_threshold_pct", 95.0) or 95.0)
                         latency_max_ms = float(stab_cfg.get("latency_max_ms", 15.0) or 15.0)
+                        loss_max_pct = float(stab_cfg.get("loss_max_pct", 100.0) or 100.0)
                         optical_rx_min_dbm = float(stab_cfg.get("optical_rx_min_dbm", -24.0) or -24.0)
                         require_optical = bool(stab_cfg.get("require_optical", False))
                         escalate_after_minutes = max(int(stab_cfg.get("escalate_after_minutes", stable_window_minutes) or stable_window_minutes), 1)
 
-                        since_iso = (now - timedelta(minutes=stable_window_minutes)).replace(microsecond=0).isoformat() + "Z"
-                        surveilled_pppoes = list(surv_map.keys())
-                        surveilled_ids = [account_id_for_pppoe(p) for p in surveilled_pppoes]
-                        stats_map = get_accounts_ping_window_stats(surveilled_ids, since_iso)
-                        latest_map = get_latest_accounts_ping_map(surveilled_ids)
-                        optical_map = get_latest_optical_by_pppoe(surveilled_pppoes)
+                        if surv_map:
+                            since_iso = (now - timedelta(minutes=stable_window_minutes)).replace(microsecond=0).isoformat() + "Z"
+                            surveilled_pppoes = list(surv_map.keys())
+                            surveilled_ids = [account_id_for_pppoe(p) for p in surveilled_pppoes]
+                            stats_map = get_accounts_ping_window_stats(surveilled_ids, since_iso)
+                            latest_map = get_latest_accounts_ping_map(surveilled_ids)
+                            optical_map = get_latest_optical_by_pppoe(surveilled_pppoes)
 
-                        now_iso = now.replace(microsecond=0).isoformat() + "Z"
-                        entries_changed = False
-                        for pppoe, entry in list(surv_map.items()):
-                            status = (entry.get("status") or "under").strip().lower()
-                            aid = account_id_for_pppoe(pppoe)
-                            stats = stats_map.get(aid) or {}
-                            latest = latest_map.get(aid) or {}
+                            for pppoe, entry in list(surv_map.items()):
+                                    status = (entry.get("status") or "under").strip().lower()
+                                    aid = account_id_for_pppoe(pppoe)
+                                    stats = stats_map.get(aid) or {}
+                                    latest = latest_map.get(aid) or {}
 
-                            total = int(stats.get("total") or 0)
-                            failures = int(stats.get("failures") or 0)
-                            uptime_pct = (100.0 - (failures / total) * 100.0) if total else 0.0
-                            avg_ms_avg = stats.get("avg_ms_avg")
-                            if avg_ms_avg is None:
-                                avg_ms_avg = latest.get("avg_ms")
+                                    total = int(stats.get("total") or 0)
+                                    failures = int(stats.get("failures") or 0)
+                                    uptime_pct = (100.0 - (failures / total) * 100.0) if total else 0.0
+                                    avg_ms_avg = stats.get("avg_ms_avg")
+                                    if avg_ms_avg is None:
+                                        avg_ms_avg = latest.get("avg_ms")
+                                    loss_avg = stats.get("loss_avg")
+                                    if loss_avg is None:
+                                        loss_avg = latest.get("loss")
 
-                            stable = bool(
-                                total > 0
-                                and uptime_pct >= uptime_threshold_pct
-                                and avg_ms_avg is not None
-                                and float(avg_ms_avg) <= latency_max_ms
-                            )
-                            if stable and require_optical:
-                                opt = optical_map.get(pppoe) or {}
-                                rx = opt.get("rx")
-                                stable = bool(rx is not None and float(rx) >= optical_rx_min_dbm)
+                                    stable = bool(
+                                        total > 0
+                                        and uptime_pct >= uptime_threshold_pct
+                                        and avg_ms_avg is not None
+                                        and float(avg_ms_avg) <= latency_max_ms
+                                    )
+                                    if stable and loss_avg is not None:
+                                        stable = bool(float(loss_avg) <= loss_max_pct)
+                                    if stable and require_optical:
+                                        opt = optical_map.get(pppoe) or {}
+                                        rx = opt.get("rx")
+                                        stable = bool(rx is not None and float(rx) >= optical_rx_min_dbm)
 
-                            if status == "under":
-                                added_at = parse_dt(entry.get("added_at"))
-                                has_full_window = bool(
-                                    added_at
-                                    and (now - added_at).total_seconds() >= float(stable_window_minutes) * 60.0
-                                )
-                                if stable and has_full_window:
-                                    surv_map.pop(pppoe, None)
-                                    entries_changed = True
-                                    continue
-                                added_at = parse_dt(entry.get("added_at"))
-                                if added_at and (now - added_at).total_seconds() >= float(escalate_after_minutes) * 60.0:
-                                    entry["status"] = "level2"
-                                    entry["level2_at"] = now_iso
-                                    entry["updated_at"] = now_iso
-                                    surv_map[pppoe] = entry
-                                    entries_changed = True
+                                    if status == "under":
+                                        added_at = parse_dt(entry.get("added_at"))
+                                        has_full_window = bool(
+                                            added_at
+                                            and (now - added_at).total_seconds() >= float(stable_window_minutes) * 60.0
+                                        )
+                                        if stable and has_full_window:
+                                            try:
+                                                end_surveillance_session(
+                                                    pppoe,
+                                                    "healed",
+                                                    started_at=(entry.get("added_at") or "").strip(),
+                                                    source=(entry.get("source") or "").strip(),
+                                                    ip=(entry.get("ip") or "").strip(),
+                                                    state=(entry.get("status") or "under"),
+                                                )
+                                            except Exception:
+                                                pass
+                                            surv_map.pop(pppoe, None)
+                                            entries_changed = True
+                                            continue
+                                        if added_at and (now - added_at).total_seconds() >= float(escalate_after_minutes) * 60.0:
+                                            try:
+                                                increment_surveillance_observed(
+                                                    pppoe,
+                                                    started_at=(entry.get("added_at") or "").strip(),
+                                                    source=(entry.get("source") or "").strip(),
+                                                    ip=(entry.get("ip") or "").strip(),
+                                                )
+                                            except Exception:
+                                                pass
+                                            entry["status"] = "level2"
+                                            entry["level2_at"] = now_iso
+                                            entry["updated_at"] = now_iso
+                                            surv_map[pppoe] = entry
+                                            entries_changed = True
+                                    elif status == "level2":
+                                        level2_autofix_minutes = max(
+                                            int(stab_cfg.get("level2_autofix_after_minutes", 30) or 30),
+                                            1,
+                                        )
+                                        level2_since = parse_dt(entry.get("level2_at")) or parse_dt(entry.get("updated_at")) or parse_dt(entry.get("added_at"))
+                                        due_autofix = bool(
+                                            level2_since
+                                            and (now - level2_since).total_seconds() >= float(level2_autofix_minutes) * 60.0
+                                        )
+                                        if stable and due_autofix:
+                                            try:
+                                                end_surveillance_session(
+                                                    pppoe,
+                                                    "fixed",
+                                                    started_at=(entry.get("added_at") or "").strip(),
+                                                    source=(entry.get("source") or "").strip(),
+                                                    ip=(entry.get("ip") or "").strip(),
+                                                    state="level2",
+                                                    note="Auto-fixed by system",
+                                                )
+                                            except Exception:
+                                                pass
+                                            now_iso2 = now.replace(microsecond=0).isoformat() + "Z"
+                                            entry["status"] = "under"
+                                            entry["added_at"] = now_iso2
+                                            entry["updated_at"] = now_iso2
+                                            entry["level2_at"] = ""
+                                            entry["last_fixed_at"] = now_iso2
+                                            entry["last_fixed_reason"] = "Auto fixed"
+                                            entry["last_fixed_mode"] = "auto"
+                                            surv_map[pppoe] = entry
+                                            entries_changed = True
+                                            try:
+                                                ensure_surveillance_session(
+                                                    pppoe,
+                                                    started_at=now_iso2,
+                                                    source=(entry.get("source") or "").strip(),
+                                                    ip=(entry.get("ip") or "").strip(),
+                                                    state="under",
+                                                )
+                                            except Exception:
+                                                pass
 
                         if surv_changed or entries_changed:
                             surv_cfg["entries"] = list(surv_map.values())

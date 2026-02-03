@@ -29,31 +29,47 @@
               Last run: {{ accounts_ping_job.last_run_at_ph or 'n/a' }} · Last success: {{ accounts_ping_job.last_success_at_ph or 'n/a' }}
             </div>
           </div>
-          <div class="d-flex gap-2 align-items-center flex-wrap">
-            <span class="badge bg-blue-lt">Total: {{ accounts_ping_status.total }}</span>
-            <span class="badge bg-red-lt">Issues: {{ accounts_ping_status.issue_total }}</span>
-            <span class="badge bg-green-lt">Stable: {{ accounts_ping_status.stable_total }}</span>
-            <div class="dropdown">
-              <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" id="accounts-ping-window-button">Filter</button>
-              <div class="dropdown-menu dropdown-menu-end" id="accounts-ping-window-menu">
-                {% for label, hours in accounts_ping_window_options %}
-                  <div class="dropdown-item accounts-ping-window-row" data-hours="{{ hours }}" data-label="{{ label }}">{{ label }}</div>
-                {% endfor %}
-              </div>
-            </div>
-          </div>
-        </div>
+	          <div class="d-flex gap-2 align-items-center flex-wrap">
+	            <span class="badge bg-blue-lt">Total: {{ accounts_ping_status.total }}</span>
+	            <span class="badge bg-red-lt">Issues: {{ accounts_ping_status.issue_total }}</span>
+	            <span class="badge bg-green-lt">Stable: {{ accounts_ping_status.stable_total }}</span>
+              <span class="badge bg-secondary-lt">Pending: {{ accounts_ping_status.pending_total }}</span>
+              {% set accounts_ping_limit_param = 'all' if accounts_ping_status.pagination.limit == 0 else accounts_ping_status.pagination.limit %}
+              <div class="dropdown">
+                <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" id="accounts-ping-limit-button">Show: {{ accounts_ping_status.pagination.limit_label }}</button>
+                <div class="dropdown-menu dropdown-menu-end" id="accounts-ping-limit-menu">
+                  {% for opt in accounts_ping_status.pagination.options %}
+                    <div class="dropdown-item accounts-ping-limit-row" data-limit="{{ opt }}">{{ opt }}</div>
+                  {% endfor %}
+	                  {# "ALL" removed to keep pages fast #}
+	                </div>
+	              </div>
+	            <div class="dropdown">
+	              <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" id="accounts-ping-window-button">Filter</button>
+	              <div class="dropdown-menu dropdown-menu-end" id="accounts-ping-window-menu">
+	                {% for label, hours in accounts_ping_window_options %}
+	                  <div class="dropdown-item d-flex align-items-center justify-content-between accounts-ping-window-row" data-hours="{{ hours }}" data-label="{{ label }}">
+	                    <span>{{ label }}</span>
+	                    <button class="btn btn-sm btn-link p-0 accounts-ping-window-star-btn" data-hours="{{ hours }}" title="Set default filter">
+	                      <i class="ti ti-star text-muted"></i>
+	                    </button>
+	                  </div>
+	                {% endfor %}
+	              </div>
+	            </div>
+	          </div>
+	        </div>
 
         <div class="alert alert-info">
           <div class="d-flex align-items-start">
             <span class="me-2"><i class="ti ti-info-circle"></i></span>
-            <div>
-              Accounts Ping uses SSH to pull the ShapedDevices CSV and pings each IPv4 entry.
-              Issues are shown when a customer is down, loss is at least {{ accounts_ping_status.rules.issue_loss_pct }}%, or latency is at least {{ accounts_ping_status.rules.issue_latency_ms }}ms.
-              Bursts (1s checks) run only while an account is under investigation or failing briefly; long-down accounts automatically back off.
-            </div>
-          </div>
-        </div>
+		            <div>
+		              Accounts Ping uses SSH to pull the ShapedDevices CSV and pings each IPv4 entry.
+		              Issues are shown when a customer is down, loss is at least {{ accounts_ping_status.rules.issue_loss_pct }}%, latency is at least {{ accounts_ping_status.rules.issue_latency_ms }}ms, or Fail % is at least {{ accounts_ping_status.rules.issue_rto_pct }}%.
+		              Up accounts with Fail % above {{ accounts_ping_status.rules.stable_rto_pct }}% are shown as Monitor.
+		            </div>
+		          </div>
+		        </div>
 
         <ul class="nav nav-tabs" data-bs-toggle="tabs">
           <li class="nav-item">
@@ -65,7 +81,7 @@
           <li class="nav-item ms-auto">
             <div class="px-2 py-2">
               <div class="input-icon">
-                <input class="form-control form-control-sm" id="accounts-ping-search" type="text" placeholder="Search" autocomplete="off" />
+	                <input class="form-control form-control-sm" id="accounts-ping-search" type="text" placeholder="Search" autocomplete="off" value="{{ accounts_ping_status.query or '' }}" />
                 <span class="input-icon-addon">
                   <i class="ti ti-search"></i>
                 </span>
@@ -75,32 +91,32 @@
         </ul>
 
         <div class="tab-content pt-3">
-          <div class="tab-pane active" id="accounts-ping-issues">
-            <div class="table-responsive">
-              <table class="table table-vcenter">
-                <thead>
-                  <tr>
-                    <th>Customer</th>
-                    <th>IPv4</th>
-                    <th>Status</th>
-                    <th>Loss</th>
-                    <th>Latency</th>
-                    <th>Fail %</th>
-                    <th>Uptime %</th>
-                    <th>Streak</th>
-                    <th>Down For</th>
-                    <th>Last Check</th>
-                    <th>24H Trend</th>
-                    <th>Reason</th>
-                    <th class="text-end">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {% for row in accounts_ping_status.issue_rows %}
-		                    {% set surv_key = (row.name or '') %}
+	          <div class="tab-pane active" id="accounts-ping-issues">
+	            <div class="table-responsive">
+	              <table class="table table-vcenter rto-table">
+	                <thead>
+	                  <tr>
+	                    <th class="rto-sort" data-sort-key="customer" aria-sort="none">Customer <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-sort" data-sort-key="ip" aria-sort="none">IPv4 <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-sort" data-sort-key="status" aria-sort="none">Status <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-sort" data-sort-key="loss" aria-sort="none">Loss <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-sort" data-sort-key="latency" aria-sort="none">Latency <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-sort" data-sort-key="fail_pct" aria-sort="none">Fail % <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-sort" data-sort-key="uptime_pct" aria-sort="none">Uptime % <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-sort" data-sort-key="streak" aria-sort="none">Streak <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-sort" data-sort-key="down_seconds" aria-sort="none">Down For <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-sort" data-sort-key="last_check_at" aria-sort="none">Last Check <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th>24H Trend</th>
+	                    <th class="rto-sort" data-sort-key="reason" aria-sort="none">Reason <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="text-end">Actions</th>
+	                  </tr>
+	                </thead>
+	                <tbody>
+	                  {% for row in accounts_ping_status.issue_rows %}
+			                    {% set surv_key = (row.name or '') %}
                         {% set surv_status = surveillance_index.get(surv_key) %}
-			                    <tr class="accounts-ping-row{% if surv_status == 'under' %} table-warning{% elif surv_status == 'level2' %} table-danger{% endif %}" data-search="{{ (row.name ~ ' ' ~ row.ip)|lower }}">
-                      <td>{{ row.name }}</td>
+				                    <tr class="accounts-ping-row{% if surv_status == 'under' %} table-warning{% elif surv_status == 'level2' %} table-danger{% endif %}" data-search="{{ (row.name ~ ' ' ~ row.ip)|lower }}">
+	                      <td>{{ row.name }}</td>
                       <td>{{ row.ip }}</td>
                       <td>
                         {% if row.status == 'down' %}
@@ -130,11 +146,10 @@
 	                          </svg>
 	                        </button>
 	                      </td>
-                      <td>
-                        {% for r in row.reasons %}
-                          <div class="text-muted small">{{ r }}</div>
-                        {% endfor %}
-                      </td>
+	                      <td>
+	                        {% set reason_text = row.reasons|join('; ') %}
+	                        <div class="text-muted small text-truncate d-inline-block" style="max-width: 320px;" title="{{ reason_text }}">{{ reason_text }}</div>
+	                      </td>
 		                      <td class="text-end">
 			                        <span data-surveillance-slot>
 			                          {% if surv_status == 'under' %}
@@ -157,58 +172,91 @@
 		                            </button>
 		                          {% endif %}
 		                        </span>
-		                      </td>
-	                    </tr>
-                  {% endfor %}
-                </tbody>
-              </table>
-            </div>
-          </div>
+			                      </td>
+		                    </tr>
+	                  {% else %}
+                      <tr>
+                        <td colspan="13" class="text-muted">No connection issues detected yet.</td>
+                      </tr>
+	                  {% endfor %}
+	                </tbody>
+	              </table>
+	            </div>
+              {% set meta = accounts_ping_status.pagination.issues %}
+              <div class="d-flex flex-wrap align-items-center justify-content-between mt-2 gap-2">
+                <div class="text-muted small">Showing {{ meta.start }}–{{ meta.end }} of {{ meta.total }}</div>
+                {% if meta.pages > 1 %}
+                  {% set prev_page = meta.page - 1 if meta.page > 1 else 1 %}
+                  {% set next_page = meta.page + 1 if meta.page < meta.pages else meta.pages %}
+                  <div class="d-flex align-items-center gap-2">
+                    <span class="text-muted small">Page {{ meta.page }} of {{ meta.pages }}</span>
+                    <ul class="pagination pagination-sm mb-0">
+                      <li class="page-item {% if not meta.has_prev %}disabled{% endif %}">
+	                        <a class="page-link" href="/settings/accounts-ping?window={{ accounts_ping_status.window_hours }}&limit={{ accounts_ping_limit_param }}&issues_page={{ prev_page }}&stable_page={{ accounts_ping_status.pagination.stable.page }}&issues_sort={{ accounts_ping_status.sort.issues.key }}&issues_dir={{ accounts_ping_status.sort.issues.dir }}&stable_sort={{ accounts_ping_status.sort.stable.key }}&stable_dir={{ accounts_ping_status.sort.stable.dir }}&q={{ accounts_ping_status.query|urlencode }}#accounts-ping-issues">Prev</a>
+	                      </li>
+	                      <li class="page-item {% if not meta.has_next %}disabled{% endif %}">
+	                        <a class="page-link" href="/settings/accounts-ping?window={{ accounts_ping_status.window_hours }}&limit={{ accounts_ping_limit_param }}&issues_page={{ next_page }}&stable_page={{ accounts_ping_status.pagination.stable.page }}&issues_sort={{ accounts_ping_status.sort.issues.key }}&issues_dir={{ accounts_ping_status.sort.issues.dir }}&stable_sort={{ accounts_ping_status.sort.stable.key }}&stable_dir={{ accounts_ping_status.sort.stable.dir }}&q={{ accounts_ping_status.query|urlencode }}#accounts-ping-issues">Next</a>
+	                      </li>
+                    </ul>
+                  </div>
+                {% endif %}
+              </div>
+	          </div>
 
-          <div class="tab-pane" id="accounts-ping-stable">
-            <div class="table-responsive">
-              <table class="table table-vcenter">
-                <thead>
-	                  <tr>
-	                    <th>Customer</th>
-	                    <th>IPv4</th>
-	                    <th>Status</th>
-	                    <th>Loss</th>
-	                    <th>Latency</th>
-	                    <th>Fail %</th>
-	                    <th>Uptime %</th>
-	                    <th>Last Check</th>
-	                    <th>24H Trend</th>
-	                    <th class="text-end">Actions</th>
-	                  </tr>
-                </thead>
-                <tbody>
-                  {% for row in accounts_ping_status.stable_rows %}
-		                    {% set surv_key = (row.name or '') %}
+	          <div class="tab-pane" id="accounts-ping-stable">
+	            <div class="table-responsive">
+	              <table class="table table-vcenter rto-table">
+	                <thead>
+		                  <tr>
+		                    <th class="rto-sort" data-sort-key="customer" aria-sort="none">Customer <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+		                    <th class="rto-sort" data-sort-key="ip" aria-sort="none">IPv4 <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+		                    <th class="rto-sort" data-sort-key="status" aria-sort="none">Status <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+		                    <th class="rto-sort" data-sort-key="loss" aria-sort="none">Loss <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+		                    <th class="rto-sort" data-sort-key="latency" aria-sort="none">Latency <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+		                    <th class="rto-sort" data-sort-key="fail_pct" aria-sort="none">Fail % <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+		                    <th class="rto-sort" data-sort-key="uptime_pct" aria-sort="none">Uptime % <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+		                    <th class="rto-sort" data-sort-key="last_check_at" aria-sort="none">Last Check <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+		                    <th>24H Trend</th>
+		                    <th class="text-end">Actions</th>
+		                  </tr>
+	                </thead>
+	                <tbody>
+	                  {% for row in accounts_ping_status.stable_rows %}
+			                    {% set surv_key = (row.name or '') %}
                         {% set surv_status = surveillance_index.get(surv_key) %}
-			                    <tr class="accounts-ping-row{% if surv_status == 'under' %} table-warning{% elif surv_status == 'level2' %} table-danger{% endif %}" data-search="{{ (row.name ~ ' ' ~ row.ip)|lower }}">
-                      <td>{{ row.name }}</td>
+				                    <tr class="accounts-ping-row{% if surv_status == 'under' %} table-warning{% elif surv_status == 'level2' %} table-danger{% endif %}" data-search="{{ (row.name ~ ' ' ~ row.ip)|lower }}">
+	                      <td>{{ row.name }}</td>
                       <td>{{ row.ip }}</td>
-                      <td><span class="badge bg-green-lt">Up</span></td>
+	                      <td>
+	                        {% if row.status == 'pending' %}
+	                          <span class="badge bg-secondary-lt">Pending</span>
+	                        {% else %}
+	                          <span class="badge bg-green-lt">Up</span>
+	                        {% endif %}
+	                      </td>
                       <td>{{ row.loss is not none and ("%.1f"|format(row.loss) ~ "%") or "n/a" }}</td>
                       <td>{{ row.avg_ms is not none and ("%.1f"|format(row.avg_ms) ~ "ms") or "n/a" }}</td>
                       <td>{{ "%.1f"|format(row.rto_pct) }}</td>
                       <td>{{ "%.1f"|format(row.uptime_pct) }}</td>
                       <td>{{ row.last_check }}</td>
-		                      <td>
-		                        <button type="button"
-		                                class="btn btn-link p-0 accounts-ping-spark-btn"
-	                                style="line-height:0"
-	                                data-account-id="{{ row.id }}"
-	                                data-name="{{ row.name }}"
-	                                data-ip="{{ row.ip }}"
-	                                data-bs-toggle="modal"
-	                                data-bs-target="#accounts-ping-spark-modal">
-	                          <svg class="accounts-ping-sparkline" width="120" height="30" viewBox="0 0 140 28" preserveAspectRatio="none" aria-hidden="true">
-	                            <polyline fill="none" stroke="#2fb344" stroke-width="2" points="{{ row.spark_points_24h }}" />
-	                          </svg>
-		                        </button>
-		                      </td>
+			                      <td>
+                              {% if row.status == 'pending' %}
+                                <span class="text-muted small">n/a</span>
+                              {% else %}
+			                          <button type="button"
+			                                  class="btn btn-link p-0 accounts-ping-spark-btn"
+		                                  style="line-height:0"
+		                                  data-account-id="{{ row.id }}"
+		                                  data-name="{{ row.name }}"
+		                                  data-ip="{{ row.ip }}"
+		                                  data-bs-toggle="modal"
+		                                  data-bs-target="#accounts-ping-spark-modal">
+		                            <svg class="accounts-ping-sparkline" width="120" height="30" viewBox="0 0 140 28" preserveAspectRatio="none" aria-hidden="true">
+		                              <polyline fill="none" stroke="#2fb344" stroke-width="2" points="{{ row.spark_points_24h }}" />
+		                            </svg>
+			                          </button>
+                              {% endif %}
+			                      </td>
 			                      <td class="text-end">
 				                        <span data-surveillance-slot>
 				                          {% if surv_status == 'under' %}
@@ -231,14 +279,37 @@
 			                            </button>
 			                          {% endif %}
 			                        </span>
-			                      </td>
-	                    </tr>
-                  {% endfor %}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
+				                      </td>
+		                    </tr>
+	                  {% else %}
+                      <tr>
+                        <td colspan="10" class="text-muted">No stable connections listed yet.</td>
+                      </tr>
+	                  {% endfor %}
+	                </tbody>
+	              </table>
+	            </div>
+              {% set meta = accounts_ping_status.pagination.stable %}
+              <div class="d-flex flex-wrap align-items-center justify-content-between mt-2 gap-2">
+                <div class="text-muted small">Showing {{ meta.start }}–{{ meta.end }} of {{ meta.total }}</div>
+                {% if meta.pages > 1 %}
+                  {% set prev_page = meta.page - 1 if meta.page > 1 else 1 %}
+                  {% set next_page = meta.page + 1 if meta.page < meta.pages else meta.pages %}
+                  <div class="d-flex align-items-center gap-2">
+                    <span class="text-muted small">Page {{ meta.page }} of {{ meta.pages }}</span>
+                    <ul class="pagination pagination-sm mb-0">
+                      <li class="page-item {% if not meta.has_prev %}disabled{% endif %}">
+	                        <a class="page-link" href="/settings/accounts-ping?window={{ accounts_ping_status.window_hours }}&limit={{ accounts_ping_limit_param }}&issues_page={{ accounts_ping_status.pagination.issues.page }}&stable_page={{ prev_page }}&issues_sort={{ accounts_ping_status.sort.issues.key }}&issues_dir={{ accounts_ping_status.sort.issues.dir }}&stable_sort={{ accounts_ping_status.sort.stable.key }}&stable_dir={{ accounts_ping_status.sort.stable.dir }}&q={{ accounts_ping_status.query|urlencode }}#accounts-ping-stable">Prev</a>
+	                      </li>
+	                      <li class="page-item {% if not meta.has_next %}disabled{% endif %}">
+	                        <a class="page-link" href="/settings/accounts-ping?window={{ accounts_ping_status.window_hours }}&limit={{ accounts_ping_limit_param }}&issues_page={{ accounts_ping_status.pagination.issues.page }}&stable_page={{ next_page }}&issues_sort={{ accounts_ping_status.sort.issues.key }}&issues_dir={{ accounts_ping_status.sort.issues.dir }}&stable_sort={{ accounts_ping_status.sort.stable.key }}&stable_dir={{ accounts_ping_status.sort.stable.dir }}&q={{ accounts_ping_status.query|urlencode }}#accounts-ping-stable">Next</a>
+	                      </li>
+                    </ul>
+                  </div>
+                {% endif %}
+              </div>
+	          </div>
+	        </div>
 
 	        <div class="modal modal-blur fade" id="accounts-ping-spark-modal" tabindex="-1" role="dialog" aria-hidden="true">
 	          <div class="modal-dialog modal-lg modal-dialog-centered" role="document">
@@ -366,30 +437,35 @@
               <div class="card mb-3">
                 <div class="card-body">
                   <h5 class="mb-3">Classification</h5>
-                  <div class="row g-3">
-                    <div class="col-md-4">
-                      <label class="form-label">Issue Loss % (min) <span class="info" data-tip="Minimum packet loss percentage to classify a connection as an issue/monitor.">i</span></label>
-                      <input class="form-control" type="number" step="0.1" name="issue_loss_pct" value="{{ settings.classification.issue_loss_pct }}" />
-                    </div>
-                    <div class="col-md-4">
-                      <label class="form-label">Issue Latency ms (min) <span class="info" data-tip="Minimum average latency (ms) to classify a connection as an issue/monitor.">i</span></label>
-                      <input class="form-control" type="number" step="0.1" name="issue_latency_ms" value="{{ settings.classification.issue_latency_ms }}" />
-                    </div>
-                    <div class="col-md-4">
-                      <label class="form-label">Down Loss % <span class="info" data-tip="Loss threshold to treat a connection as down (usually 100%).">i</span></label>
-                      <input class="form-control" type="number" step="0.1" name="down_loss_pct" value="{{ settings.classification.down_loss_pct }}" />
-                    </div>
-                  </div>
-                </div>
-              </div>
+	                  <div class="row g-3">
+	                    <div class="col-md-4">
+	                      <label class="form-label">Issue Loss % (min) <span class="info" data-tip="Minimum packet loss percentage to classify a connection as an issue/monitor.">i</span></label>
+	                      <input class="form-control" type="number" step="0.1" name="issue_loss_pct" value="{{ settings.classification.issue_loss_pct }}" />
+	                    </div>
+	                    <div class="col-md-4">
+	                      <label class="form-label">Issue Latency ms (min) <span class="info" data-tip="Minimum average latency (ms) to classify a connection as an issue/monitor.">i</span></label>
+	                      <input class="form-control" type="number" step="0.1" name="issue_latency_ms" value="{{ settings.classification.issue_latency_ms }}" />
+	                    </div>
+	                    <div class="col-md-4">
+	                      <label class="form-label">Down Loss % <span class="info" data-tip="Loss threshold to treat a connection as down (usually 100%).">i</span></label>
+	                      <input class="form-control" type="number" step="0.1" name="down_loss_pct" value="{{ settings.classification.down_loss_pct }}" />
+	                    </div>
+	                    <div class="col-md-4">
+	                      <label class="form-label">Stable Fail % (max) <span class="info" data-tip="Up accounts with Fail % at or below this threshold are shown as Stable. Above this becomes Monitor.">i</span></label>
+	                      <input class="form-control" type="number" step="0.1" name="stable_rto_pct" value="{{ settings.classification.stable_rto_pct }}" />
+	                    </div>
+	                    <div class="col-md-4">
+	                      <label class="form-label">Issue Fail % (min) <span class="info" data-tip="Fail % at or above this threshold counts as an issue.">i</span></label>
+	                      <input class="form-control" type="number" step="0.1" name="issue_rto_pct" value="{{ settings.classification.issue_rto_pct }}" />
+	                    </div>
+	                    <div class="col-md-4">
+	                      <label class="form-label">Issue Streak (down) <span class="info" data-tip="Consecutive down checks required to add a streak reason for down accounts.">i</span></label>
+	                      <input class="form-control" type="number" name="issue_streak" value="{{ settings.classification.issue_streak }}" min="1" />
+	                    </div>
+	                  </div>
+	                </div>
+	              </div>
             </div>
-            <div class="alert alert-info">
-              <div class="d-flex align-items-start">
-                <span class="me-2"><i class="ti ti-info-circle"></i></span>
-                <div>Burst/backoff behavior is managed under <a href="/surveillance">Under Surveillance</a>.</div>
-              </div>
-            </div>
-
             <div class="tab-pane {% if settings_tab == 'storage' %}active{% endif %}" id="accounts-ping-storage">
               <div class="card mb-3">
                 <div class="card-body">
@@ -447,27 +523,170 @@
   </div>
 </div>
 
-<script>
-  document.addEventListener("DOMContentLoaded", () => {
-    const searchEl = document.getElementById("accounts-ping-search");
-    if (searchEl) {
-      searchEl.addEventListener("input", () => {
-        const q = (searchEl.value || "").trim().toLowerCase();
-        document.querySelectorAll(".accounts-ping-row").forEach((tr) => {
-          const hay = (tr.getAttribute("data-search") || "").toLowerCase();
-          tr.style.display = !q || hay.includes(q) ? "" : "none";
+	<script>
+	  document.addEventListener("DOMContentLoaded", () => {
+      const tabLinks = document.querySelectorAll('a[data-bs-toggle="tab"]');
+      const tabKey = "accounts_ping_active_tab";
+      const storedTab = localStorage.getItem(tabKey);
+      if (window.location.hash) {
+        const target = document.querySelector(`a[href="${window.location.hash}"]`);
+        if (target && window.bootstrap?.Tab) {
+          new window.bootstrap.Tab(target).show();
+        }
+      } else if (storedTab) {
+        const target = document.querySelector(`a[href="${storedTab}"]`);
+        if (target && window.bootstrap?.Tab) {
+          new window.bootstrap.Tab(target).show();
+        }
+      }
+      tabLinks.forEach((link) => {
+        link.addEventListener("shown.bs.tab", (event) => {
+          const href = event.target.getAttribute("href");
+          if (href) {
+            localStorage.setItem(tabKey, href);
+            history.replaceState(null, "", href);
+          }
         });
       });
-    }
 
-    document.querySelectorAll(".accounts-ping-window-row").forEach((row) => {
-      row.addEventListener("click", () => {
-        const hours = row.dataset.hours || "24";
+      const setupServerSort = (table, prefix, hash) => {
+        if (!table) return;
+        const headers = Array.from(table.querySelectorAll("th.rto-sort"));
+        if (!headers.length) return;
         const url = new URL(window.location.href);
-        url.searchParams.set("window", hours);
-        window.location.href = url.toString();
+        const activeKey = (url.searchParams.get(`${prefix}_sort`) || "").trim();
+        const activeDir = ((url.searchParams.get(`${prefix}_dir`) || "desc").trim().toLowerCase() === "asc") ? "asc" : "desc";
+        headers.forEach((th) => {
+          const key = (th.dataset.sortKey || "").trim();
+          const indicator = th.querySelector(".rto-sort-indicator");
+          th.classList.remove("rto-sorted-asc", "rto-sorted-desc");
+          th.setAttribute("aria-sort", "none");
+          if (indicator) indicator.textContent = "";
+          if (key && key === activeKey) {
+            th.classList.add(activeDir === "asc" ? "rto-sorted-asc" : "rto-sorted-desc");
+            th.setAttribute("aria-sort", activeDir === "asc" ? "ascending" : "descending");
+            if (indicator) indicator.textContent = activeDir === "asc" ? "▲" : "▼";
+          }
+        });
+        table.addEventListener("click", (event) => {
+          const header = event.target.closest("th.rto-sort");
+          if (!header || !table.contains(header)) return;
+          const sortKey = (header.dataset.sortKey || "").trim();
+          if (!sortKey) return;
+          const nextDir = (sortKey === activeKey && activeDir === "asc") ? "desc" : "asc";
+          const nextUrl = new URL(window.location.href);
+          nextUrl.searchParams.set(`${prefix}_sort`, sortKey);
+          nextUrl.searchParams.set(`${prefix}_dir`, nextDir);
+          nextUrl.searchParams.set(`${prefix}_page`, "1");
+          nextUrl.hash = hash;
+          window.location.href = nextUrl.toString();
+        });
+      };
+
+      const issuesTable = document.querySelector("#accounts-ping-issues table");
+      const stableTable = document.querySelector("#accounts-ping-stable table");
+      setupServerSort(issuesTable, "issues", "#accounts-ping-issues");
+      setupServerSort(stableTable, "stable", "#accounts-ping-stable");
+
+	      const searchEl = document.getElementById("accounts-ping-search");
+	      if (searchEl) {
+	        let lastValue = (searchEl.value || "").trim();
+	        let timer = null;
+	        const submit = () => {
+	          const q = (searchEl.value || "").trim();
+	          if (q === lastValue) return;
+	          lastValue = q;
+	          if (q && q.length < 2) return;
+	          const url = new URL(window.location.href);
+	          if (q) url.searchParams.set("q", q);
+	          else url.searchParams.delete("q");
+	          url.searchParams.set("issues_page", "1");
+	          url.searchParams.set("stable_page", "1");
+	          const tabHash = localStorage.getItem(tabKey) || window.location.hash;
+	          if (tabHash) url.hash = tabHash;
+	          window.location.href = url.toString();
+	        };
+	        searchEl.addEventListener("input", () => {
+	          if (timer) clearTimeout(timer);
+	          timer = setTimeout(submit, 350);
+	        });
+	        searchEl.addEventListener("keydown", (event) => {
+	          if (event.key === "Enter") {
+	            event.preventDefault();
+	            if (timer) clearTimeout(timer);
+	            submit();
+	          }
+	        });
+	      }
+
+      const windowBadge = document.getElementById("accounts-ping-status-window");
+      const windowButton = document.getElementById("accounts-ping-window-button");
+      const windowOptions = document.querySelectorAll(".accounts-ping-window-row");
+      const windowStars = document.querySelectorAll(".accounts-ping-window-star-btn");
+      const windowParam = new URLSearchParams(window.location.search).get("window");
+      let defaultWindow = localStorage.getItem("accounts_ping_status_default_window");
+      if (!defaultWindow) {
+        defaultWindow = "24";
+        localStorage.setItem("accounts_ping_status_default_window", defaultWindow);
+      }
+      const currentWindow = windowParam || "24";
+      const updateStars = () => {
+        windowStars.forEach((btn) => {
+          const icon = btn.querySelector("i");
+          if (!icon) return;
+          if (btn.dataset.hours === defaultWindow) {
+            icon.classList.remove("ti-star");
+            icon.classList.add("ti-star-filled", "text-warning");
+          } else {
+            icon.classList.remove("ti-star-filled", "text-warning");
+            icon.classList.add("ti-star");
+          }
+        });
+      };
+      const updateButtonLabel = () => {
+        const label = windowBadge ? windowBadge.textContent.trim() : "1D";
+        const isDefault = Boolean(windowParam) && currentWindow === defaultWindow;
+        if (windowButton) {
+          windowButton.textContent = isDefault ? `Filter: ${label} ⭐` : `Filter: ${label}`;
+        }
+      };
+      updateStars();
+      updateButtonLabel();
+      windowOptions.forEach((row) => {
+        row.addEventListener("click", () => {
+          const hours = row.dataset.hours || "24";
+          const url = new URL(window.location.href);
+          url.searchParams.set("window", hours);
+          url.searchParams.set("issues_page", "1");
+          url.searchParams.set("stable_page", "1");
+          const tabHash = localStorage.getItem(tabKey) || window.location.hash;
+          if (tabHash) url.hash = tabHash;
+          window.location.href = url.toString();
+        });
       });
-    });
+      windowStars.forEach((btn) => {
+        btn.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          defaultWindow = btn.dataset.hours;
+          localStorage.setItem("accounts_ping_status_default_window", defaultWindow);
+          updateStars();
+          updateButtonLabel();
+        });
+      });
+
+      document.querySelectorAll(".accounts-ping-limit-row").forEach((row) => {
+        row.addEventListener("click", () => {
+          const limit = row.dataset.limit || "50";
+          const url = new URL(window.location.href);
+          url.searchParams.set("limit", limit);
+          url.searchParams.set("issues_page", "1");
+          url.searchParams.set("stable_page", "1");
+          const tabHash = localStorage.getItem(tabKey) || window.location.hash;
+          if (tabHash) url.hash = tabHash;
+          window.location.href = url.toString();
+        });
+      });
 
     const settingsInput = document.getElementById("accounts-ping-settings-tab");
     if (settingsInput) {

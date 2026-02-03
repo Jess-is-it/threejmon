@@ -323,6 +323,23 @@ def init_db():
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS surveillance_sessions (
+                    id BIGSERIAL PRIMARY KEY,
+                    pppoe TEXT NOT NULL,
+                    source TEXT,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT,
+                    end_reason TEXT,
+                    end_note TEXT,
+                    observed_count INTEGER NOT NULL DEFAULT 0,
+                    last_state TEXT NOT NULL DEFAULT 'under',
+                    last_ip TEXT,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
         else:
             conn.execute(
                 """
@@ -487,6 +504,23 @@ def init_db():
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS surveillance_sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    pppoe TEXT NOT NULL,
+                    source TEXT,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT,
+                    end_reason TEXT,
+                    end_note TEXT,
+                    observed_count INTEGER NOT NULL DEFAULT 0,
+                    last_state TEXT NOT NULL DEFAULT 'under',
+                    last_ip TEXT,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
 
         conn.execute(
             """
@@ -503,6 +537,27 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_ping_results_acct_ts ON accounts_ping_results (account_id, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_ping_results_ip_ts ON accounts_ping_results (ip, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_ping_rollups_acct_bucket ON accounts_ping_rollups (account_id, bucket_ts)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_surveillance_sessions_pppoe_started ON surveillance_sessions (pppoe, started_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_surveillance_sessions_active ON surveillance_sessions (ended_at)"
+        )
+        # Lightweight schema upgrade for existing installs.
+        try:
+            if _use_postgres():
+                conn.execute("ALTER TABLE surveillance_sessions ADD COLUMN IF NOT EXISTS end_note TEXT")
+            else:
+                cols = []
+                try:
+                    info = conn.execute("PRAGMA table_info(surveillance_sessions)").fetchall()
+                    cols = [row["name"] for row in info] if info else []
+                except Exception:
+                    cols = []
+                if "end_note" not in cols:
+                    conn.execute("ALTER TABLE surveillance_sessions ADD COLUMN end_note TEXT")
+        except Exception:
+            pass
     conn.close()
 
 
@@ -516,6 +571,314 @@ def get_json(table, key, default):
         if not row:
             return default
         return json.loads(row["value"])
+    finally:
+        conn.close()
+
+
+def _get_active_surveillance_session(pppoe):
+    pppoe = (pppoe or "").strip()
+    if not pppoe:
+        return None
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            """
+            SELECT id, pppoe, source, started_at, ended_at, end_reason, observed_count, last_state, last_ip, updated_at
+            FROM surveillance_sessions
+            WHERE pppoe = ? AND ended_at IS NULL
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (pppoe,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def _get_surveillance_observed_total(pppoe):
+    pppoe = (pppoe or "").strip()
+    if not pppoe:
+        return 0
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(observed_count), 0) AS c FROM surveillance_sessions WHERE pppoe = ?",
+            (pppoe,),
+        ).fetchone()
+        if isinstance(row, dict):
+            return int(row.get("c") or 0)
+        return int(row["c"] or 0)
+    except Exception:
+        return 0
+    finally:
+        conn.close()
+
+
+def ensure_surveillance_session(pppoe, started_at=None, source="", ip="", state="under"):
+    """
+    Ensures there is an active (non-ended) session for this PPPoE.
+    Returns the active session row as a dict.
+    """
+    pppoe = (pppoe or "").strip()
+    if not pppoe:
+        return None
+    existing = _get_active_surveillance_session(pppoe)
+    if existing:
+        return existing
+    now_iso = utc_now_iso()
+    started_at = (started_at or "").strip() or now_iso
+    state = (state or "under").strip().lower() or "under"
+    if state not in ("under", "level2"):
+        state = "under"
+    observed_total = _get_surveillance_observed_total(pppoe)
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO surveillance_sessions (
+                    pppoe, source, started_at, ended_at, end_reason, observed_count, last_state, last_ip, updated_at
+                )
+                VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?)
+                """,
+                (
+                    pppoe,
+                    (source or "").strip(),
+                    started_at,
+                    observed_total,
+                    state,
+                    (ip or "").strip(),
+                    now_iso,
+                ),
+            )
+    finally:
+        conn.close()
+    return _get_active_surveillance_session(pppoe)
+
+
+def touch_surveillance_session(pppoe, source="", ip="", state=None):
+    """
+    Updates the active session's last_state/last_ip/source/updated_at.
+    If no active session exists, it is created using now as started_at.
+    """
+    session = ensure_surveillance_session(pppoe, source=source, ip=ip, state=state or "under")
+    if not session:
+        return None
+    session_id = session.get("id")
+    if not session_id:
+        return session
+    now_iso = utc_now_iso()
+    state = (state or session.get("last_state") or "under").strip().lower() or "under"
+    if state not in ("under", "level2"):
+        state = "under"
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute(
+                """
+                UPDATE surveillance_sessions
+                SET source = ?,
+                    last_state = ?,
+                    last_ip = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    (source or session.get("source") or "").strip(),
+                    state,
+                    (ip or session.get("last_ip") or "").strip(),
+                    now_iso,
+                    session_id,
+                ),
+            )
+    finally:
+        conn.close()
+    return _get_active_surveillance_session(pppoe)
+
+
+def increment_surveillance_observed(pppoe, started_at=None, source="", ip=""):
+    """
+    Increments observed_count for the active session and sets last_state to level2.
+    If no active session exists, it is created using started_at (or now).
+    """
+    session = ensure_surveillance_session(pppoe, started_at=started_at, source=source, ip=ip, state="under")
+    if not session:
+        return None
+    session_id = session.get("id")
+    if not session_id:
+        return session
+    now_iso = utc_now_iso()
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute(
+                """
+                UPDATE surveillance_sessions
+                SET observed_count = COALESCE(observed_count, 0) + 1,
+                    source = ?,
+                    last_state = 'level2',
+                    last_ip = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    (source or session.get("source") or "").strip(),
+                    (ip or session.get("last_ip") or "").strip(),
+                    now_iso,
+                    session_id,
+                ),
+            )
+    finally:
+        conn.close()
+    return _get_active_surveillance_session(pppoe)
+
+
+def end_surveillance_session(pppoe, end_reason, started_at=None, source="", ip="", state=None, note=""):
+    """
+    Ends the active session, setting ended_at + end_reason.
+    If no active session exists, it is created first (using started_at or now) then ended.
+    """
+    end_reason = (end_reason or "").strip().lower()
+    if end_reason not in ("healed", "removed", "fixed"):
+        end_reason = "removed"
+    session = ensure_surveillance_session(pppoe, started_at=started_at, source=source, ip=ip, state="under")
+    if not session:
+        return None
+    session_id = session.get("id")
+    if not session_id:
+        return session
+    now_iso = utc_now_iso()
+    state = (state or session.get("last_state") or "under").strip().lower() or "under"
+    if state not in ("under", "level2"):
+        state = session.get("last_state") or "under"
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute(
+                """
+                UPDATE surveillance_sessions
+                SET ended_at = ?,
+                    end_reason = ?,
+                    last_state = ?,
+                    last_ip = ?,
+                    source = ?,
+                    end_note = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    now_iso,
+                    end_reason,
+                    state,
+                    (ip or session.get("last_ip") or "").strip(),
+                    (source or session.get("source") or "").strip(),
+                    (note or "").strip(),
+                    now_iso,
+                    session_id,
+                ),
+            )
+    finally:
+        conn.close()
+    return None
+
+
+def list_surveillance_sessions(query="", page=1, limit=50):
+    try:
+        page = int(page or 1)
+    except Exception:
+        page = 1
+    if page < 1:
+        page = 1
+    try:
+        limit = int(limit or 50)
+    except Exception:
+        limit = 50
+    if limit < 1:
+        limit = 50
+    if limit > 500:
+        limit = 500
+    query = (query or "").strip().lower()
+    params = []
+    where = ""
+    if query:
+        where = "WHERE lower(pppoe) LIKE ?"
+        params.append(f"%{query}%")
+    offset = (page - 1) * limit
+    conn = get_conn()
+    try:
+        count_row = conn.execute(
+            f"SELECT COUNT(*) AS c FROM surveillance_sessions {where}",
+            tuple(params),
+        ).fetchone()
+        if isinstance(count_row, dict):
+            total = int(count_row.get("c") or 0)
+        else:
+            total = int(count_row["c"] or 0)
+        rows = conn.execute(
+            f"""
+            SELECT id, pppoe, source, started_at, ended_at, end_reason, observed_count, last_state, last_ip, updated_at
+            FROM surveillance_sessions
+            {where}
+            ORDER BY id DESC
+            LIMIT ? OFFSET ?
+            """,
+            tuple(params + [limit, offset]),
+        ).fetchall()
+        out = [dict(row) for row in rows] if rows else []
+        return {"rows": out, "total": total, "page": page, "limit": limit}
+    finally:
+        conn.close()
+
+
+def list_surveillance_history(query="", page=1, limit=50):
+    """
+    History is only sessions that have ended (removed/healed/fixed).
+    """
+    try:
+        page = int(page or 1)
+    except Exception:
+        page = 1
+    if page < 1:
+        page = 1
+    try:
+        limit = int(limit or 50)
+    except Exception:
+        limit = 50
+    if limit < 1:
+        limit = 50
+    if limit > 500:
+        limit = 500
+    query = (query or "").strip().lower()
+    params = []
+    where_parts = ["ended_at IS NOT NULL"]
+    if query:
+        where_parts.append("lower(pppoe) LIKE ?")
+        params.append(f"%{query}%")
+    where = "WHERE " + " AND ".join(where_parts)
+    offset = (page - 1) * limit
+    conn = get_conn()
+    try:
+        count_row = conn.execute(
+            f"SELECT COUNT(*) AS c FROM surveillance_sessions {where}",
+            tuple(params),
+        ).fetchone()
+        if isinstance(count_row, dict):
+            total = int(count_row.get("c") or 0)
+        else:
+            total = int(count_row["c"] or 0)
+        rows = conn.execute(
+            f"""
+            SELECT id, pppoe, source, started_at, ended_at, end_reason, end_note, observed_count, last_state, last_ip, updated_at
+            FROM surveillance_sessions
+            {where}
+            ORDER BY id DESC
+            LIMIT ? OFFSET ?
+            """,
+            tuple(params + [limit, offset]),
+        ).fetchall()
+        out = [dict(row) for row in rows] if rows else []
+        return {"rows": out, "total": total, "page": page, "limit": limit}
     finally:
         conn.close()
 
@@ -874,7 +1237,7 @@ def get_accounts_ping_series(account_id, since_iso):
     try:
         rows = conn.execute(
             """
-            SELECT timestamp, loss, min_ms, avg_ms, max_ms, ok, mode
+            SELECT timestamp, ip, loss, min_ms, avg_ms, max_ms, ok, mode
             FROM accounts_ping_results
             WHERE account_id = ? AND timestamp >= ?
             ORDER BY timestamp ASC
@@ -882,6 +1245,43 @@ def get_accounts_ping_series(account_id, since_iso):
             (account_id, since_iso),
         ).fetchall()
         return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_accounts_ping_series_range(account_id, since_iso, until_iso):
+    if not account_id:
+        return []
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT timestamp, ip, loss, min_ms, avg_ms, max_ms, ok, mode
+            FROM accounts_ping_results
+            WHERE account_id = ? AND timestamp >= ? AND timestamp < ?
+            ORDER BY timestamp ASC
+            """,
+            (account_id, since_iso, until_iso),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_accounts_ping_latest_ip_since(account_id, since_iso):
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            """
+            SELECT ip
+            FROM accounts_ping_results
+            WHERE account_id = ? AND timestamp >= ?
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """,
+            (account_id, since_iso),
+        ).fetchone()
+        return row["ip"] if row and row.get("ip") else ""
     finally:
         conn.close()
 
@@ -897,7 +1297,7 @@ def get_accounts_ping_results_since(since_iso, account_ids=None):
             params.extend(list(account_ids))
         rows = conn.execute(
             f"""
-            SELECT timestamp, account_id, ok
+            SELECT timestamp, account_id, ip, ok
             FROM accounts_ping_results
             WHERE timestamp >= ? {account_clause}
             ORDER BY timestamp ASC
@@ -905,6 +1305,155 @@ def get_accounts_ping_results_since(since_iso, account_ids=None):
             params,
         ).fetchall()
         return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_accounts_ping_rollups_since(since_iso, account_ids=None):
+    conn = get_conn()
+    try:
+        params = [since_iso]
+        account_clause = ""
+        if account_ids:
+            if _use_postgres():
+                rows = conn.execute(
+                    """
+                    SELECT bucket_ts, account_id, ip, sample_count, ok_count
+                    FROM accounts_ping_rollups
+                    WHERE bucket_ts >= ? AND account_id = ANY(?)
+                    ORDER BY bucket_ts ASC
+                    """,
+                    (since_iso, list(account_ids)),
+                ).fetchall()
+                return [dict(row) for row in rows]
+            placeholders = ",".join("?" for _ in account_ids)
+            account_clause = f"AND account_id IN ({placeholders})"
+            params.extend(list(account_ids))
+        rows = conn.execute(
+            f"""
+            SELECT bucket_ts, account_id, ip, sample_count, ok_count
+            FROM accounts_ping_rollups
+            WHERE bucket_ts >= ? {account_clause}
+            ORDER BY bucket_ts ASC
+            """,
+            params,
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_accounts_ping_rollups_range(account_id, since_iso, until_iso):
+    if not account_id:
+        return []
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT bucket_ts, account_id, ip, sample_count, ok_count, avg_sum, avg_count, loss_sum, loss_count, min_ms, max_ms, max_avg_ms
+            FROM accounts_ping_rollups
+            WHERE account_id = ? AND bucket_ts >= ? AND bucket_ts < ?
+            ORDER BY bucket_ts ASC
+            """,
+            (account_id, since_iso, until_iso),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_accounts_ping_downtime_minutes_map(account_ids, since_iso, until_iso):
+    """
+    Returns a map of account_id -> downtime_minutes within the given window.
+
+    Downtime minutes are counted from minute rollups where Loss% is 100%.
+    (loss_pct = loss_sum / loss_count >= 99.999)
+    """
+    if not account_ids:
+        return {}
+    conn = get_conn()
+    try:
+        placeholders = ",".join("?" for _ in account_ids)
+        rows = conn.execute(
+            f"""
+            SELECT
+                account_id,
+                SUM(CASE
+                    WHEN loss_count > 0 AND (loss_sum / loss_count) >= 99.999 THEN 1
+                    ELSE 0
+                END) AS downtime_minutes
+            FROM accounts_ping_rollups
+            WHERE bucket_ts >= ? AND bucket_ts < ? AND account_id IN ({placeholders})
+            GROUP BY account_id
+            """,
+            tuple([since_iso, until_iso] + list(account_ids)),
+        ).fetchall()
+        out = {}
+        for row in rows or []:
+            d = dict(row) if not isinstance(row, dict) else row
+            aid = (d.get("account_id") or "").strip()
+            if not aid:
+                continue
+            try:
+                out[aid] = int(d.get("downtime_minutes") or 0)
+            except Exception:
+                out[aid] = 0
+        return out
+    finally:
+        conn.close()
+
+
+def get_accounts_ping_down_events_map(account_ids, since_iso, until_iso):
+    """
+    Returns a map of account_id -> down_events within the given window.
+
+    A down event is counted at the start of a contiguous down streak:
+    - current minute bucket has Loss% = 100% (>= 99.999)
+    - previous minute bucket was not 100% (or does not exist)
+    """
+    if not account_ids:
+        return {}
+    conn = get_conn()
+    try:
+        placeholders = ",".join("?" for _ in account_ids)
+        rows = conn.execute(
+            f"""
+            WITH w AS (
+              SELECT
+                account_id,
+                bucket_ts,
+                CASE
+                  WHEN loss_count > 0 AND (loss_sum / loss_count) >= 99.999 THEN 1
+                  ELSE 0
+                END AS is_down,
+                LAG(
+                  CASE
+                    WHEN loss_count > 0 AND (loss_sum / loss_count) >= 99.999 THEN 1
+                    ELSE 0
+                  END
+                ) OVER (PARTITION BY account_id ORDER BY bucket_ts) AS prev_down
+              FROM accounts_ping_rollups
+              WHERE bucket_ts >= ? AND bucket_ts < ? AND account_id IN ({placeholders})
+            )
+            SELECT
+              account_id,
+              SUM(CASE WHEN is_down = 1 AND COALESCE(prev_down, 0) = 0 THEN 1 ELSE 0 END) AS down_events
+            FROM w
+            GROUP BY account_id
+            """,
+            tuple([since_iso, until_iso] + list(account_ids)),
+        ).fetchall()
+        out = {}
+        for row in rows or []:
+            d = dict(row) if not isinstance(row, dict) else row
+            aid = (d.get("account_id") or "").strip()
+            if not aid:
+                continue
+            try:
+                out[aid] = int(d.get("down_events") or 0)
+            except Exception:
+                out[aid] = 0
+        return out
     finally:
         conn.close()
 
@@ -948,27 +1497,241 @@ def get_latest_accounts_ping_map(account_ids):
         conn.close()
 
 
+def has_surveillance_session(pppoe: str) -> bool:
+    pppoe = (pppoe or "").strip()
+    if not pppoe:
+        return False
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT 1 AS ok FROM surveillance_sessions WHERE pppoe = ? LIMIT 1",
+            (pppoe,),
+        ).fetchone()
+        if isinstance(row, dict):
+            return bool(row.get("ok"))
+        return bool(row)
+    finally:
+        conn.close()
+
+
 def get_accounts_ping_window_stats(account_ids, since_iso):
     if not account_ids:
         return {}
-    placeholders = ",".join("?" for _ in account_ids)
     conn = get_conn()
     try:
+        if _use_postgres():
+            rows = conn.execute(
+                """
+                SELECT
+                  account_id,
+                  SUM(sample_count) AS total,
+                  SUM(sample_count - ok_count) AS failures,
+                  CASE
+                    WHEN SUM(loss_count) > 0 THEN SUM(loss_sum) / SUM(loss_count)
+                    ELSE NULL
+                  END AS loss_avg,
+                  CASE
+                    WHEN SUM(avg_count) > 0 THEN SUM(avg_sum) / SUM(avg_count)
+                    ELSE NULL
+                  END AS avg_ms_avg
+                FROM accounts_ping_rollups
+                WHERE bucket_ts >= ? AND account_id = ANY(?)
+                GROUP BY account_id
+                """,
+                (since_iso, list(account_ids)),
+            ).fetchall()
+            return {row["account_id"]: dict(row) for row in rows}
+
+        placeholders = ",".join("?" for _ in account_ids)
         rows = conn.execute(
             f"""
             SELECT
               account_id,
-              COUNT(*) AS total,
-              SUM(CASE WHEN ok = 0 THEN 1 ELSE 0 END) AS failures,
-              AVG(CASE WHEN loss IS NOT NULL THEN loss ELSE NULL END) AS loss_avg,
-              AVG(CASE WHEN avg_ms IS NOT NULL THEN avg_ms ELSE NULL END) AS avg_ms_avg
-            FROM accounts_ping_results
-            WHERE timestamp >= ? AND account_id IN ({placeholders})
+              SUM(sample_count) AS total,
+              SUM(sample_count - ok_count) AS failures,
+              CASE
+                WHEN SUM(loss_count) > 0 THEN SUM(loss_sum) / SUM(loss_count)
+                ELSE NULL
+              END AS loss_avg,
+              CASE
+                WHEN SUM(avg_count) > 0 THEN SUM(avg_sum) / SUM(avg_count)
+                ELSE NULL
+              END AS avg_ms_avg
+            FROM accounts_ping_rollups
+            WHERE bucket_ts >= ? AND account_id IN ({placeholders})
             GROUP BY account_id
             """,
             [since_iso] + list(account_ids),
         ).fetchall()
         return {row["account_id"]: dict(row) for row in rows}
+    finally:
+        conn.close()
+
+
+def get_accounts_ping_window_stats_by_ip(account_ids, since_iso):
+    if not account_ids:
+        return {}
+    conn = get_conn()
+    try:
+        if _use_postgres():
+            rows = conn.execute(
+                """
+                SELECT
+                  account_id,
+                  ip,
+                  SUM(sample_count) AS total,
+                  SUM(sample_count - ok_count) AS failures,
+                  CASE
+                    WHEN SUM(loss_count) > 0 THEN SUM(loss_sum) / SUM(loss_count)
+                    ELSE NULL
+                  END AS loss_avg,
+                  CASE
+                    WHEN SUM(avg_count) > 0 THEN SUM(avg_sum) / SUM(avg_count)
+                    ELSE NULL
+                  END AS avg_ms_avg
+                FROM accounts_ping_rollups
+                WHERE bucket_ts >= ? AND account_id = ANY(?)
+                GROUP BY account_id, ip
+                """,
+                (since_iso, list(account_ids)),
+            ).fetchall()
+        else:
+            placeholders = ",".join("?" for _ in account_ids)
+            rows = conn.execute(
+                f"""
+                SELECT
+                  account_id,
+                  ip,
+                  SUM(sample_count) AS total,
+                  SUM(sample_count - ok_count) AS failures,
+                  CASE
+                    WHEN SUM(loss_count) > 0 THEN SUM(loss_sum) / SUM(loss_count)
+                    ELSE NULL
+                  END AS loss_avg,
+                  CASE
+                    WHEN SUM(avg_count) > 0 THEN SUM(avg_sum) / SUM(avg_count)
+                    ELSE NULL
+                  END AS avg_ms_avg
+                FROM accounts_ping_rollups
+                WHERE bucket_ts >= ? AND account_id IN ({placeholders})
+                GROUP BY account_id, ip
+                """,
+                [since_iso] + list(account_ids),
+            ).fetchall()
+        out = {}
+        for row in rows:
+            acct = row["account_id"]
+            ip = row["ip"]
+            out.setdefault(acct, {})[ip] = dict(row)
+        return out
+    finally:
+        conn.close()
+
+
+def get_optical_latest_results_since(since_iso):
+    conn = get_conn()
+    try:
+        if _use_postgres():
+            rows = conn.execute(
+                """
+                SELECT DISTINCT ON (device_id)
+                  timestamp, device_id, pppoe, ip, rx, tx, priority
+                FROM optical_results
+                WHERE timestamp >= ?
+                ORDER BY device_id, timestamp DESC
+                """,
+                (since_iso,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+        rows = conn.execute(
+            """
+            SELECT o.timestamp, o.device_id, o.pppoe, o.ip, o.rx, o.tx, o.priority
+            FROM optical_results o
+            JOIN (
+              SELECT device_id, MAX(timestamp) AS max_ts
+              FROM optical_results
+              WHERE timestamp >= ?
+              GROUP BY device_id
+            ) latest
+              ON o.device_id = latest.device_id AND o.timestamp = latest.max_ts
+            """,
+            (since_iso,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_optical_samples_for_devices_since(device_ids, since_iso):
+    if not device_ids:
+        return {}
+    conn = get_conn()
+    try:
+        if _use_postgres():
+            rows = conn.execute(
+                """
+                SELECT device_id, COUNT(*) AS samples
+                FROM optical_results
+                WHERE timestamp >= ? AND device_id = ANY(?)
+                GROUP BY device_id
+                """,
+                (since_iso, list(device_ids)),
+            ).fetchall()
+        else:
+            placeholders = ",".join("?" for _ in device_ids)
+            rows = conn.execute(
+                f"""
+                SELECT device_id, COUNT(*) AS samples
+                FROM optical_results
+                WHERE timestamp >= ? AND device_id IN ({placeholders})
+                GROUP BY device_id
+                """,
+                [since_iso] + list(device_ids),
+            ).fetchall()
+        return {row["device_id"]: int(row["samples"] or 0) for row in rows}
+    finally:
+        conn.close()
+
+
+def get_optical_rx_series_for_devices_since(device_ids, since_iso):
+    if not device_ids:
+        return {}
+    conn = get_conn()
+    try:
+        if _use_postgres():
+            rows = conn.execute(
+                """
+                SELECT device_id, rx
+                FROM optical_results
+                WHERE timestamp >= ? AND device_id = ANY(?)
+                ORDER BY device_id ASC, timestamp ASC
+                """,
+                (since_iso, list(device_ids)),
+            ).fetchall()
+        else:
+            placeholders = ",".join("?" for _ in device_ids)
+            rows = conn.execute(
+                f"""
+                SELECT device_id, rx
+                FROM optical_results
+                WHERE timestamp >= ? AND device_id IN ({placeholders})
+                ORDER BY device_id ASC, timestamp ASC
+                """,
+                [since_iso] + list(device_ids),
+            ).fetchall()
+        out = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                row = dict(row)
+            dev = row.get("device_id")
+            if not dev:
+                continue
+            rx = row.get("rx")
+            if rx is None:
+                continue
+            out.setdefault(dev, []).append(rx)
+        return out
     finally:
         conn.close()
 

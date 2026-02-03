@@ -11,6 +11,7 @@ import shutil
 import time
 import subprocess
 import urllib.parse
+import urllib.request
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
@@ -32,7 +33,9 @@ from .db import (
     get_ping_stability_counts,
     get_rto_results_since,
     get_rto_results_for_ip_since,
-    get_optical_results_since,
+    get_optical_latest_results_since,
+    get_optical_rx_series_for_devices_since,
+    get_optical_samples_for_devices_since,
     get_optical_results_for_device_since,
     get_latest_optical_by_pppoe,
     get_latest_optical_device_for_ip,
@@ -49,11 +52,19 @@ from .db import (
     get_rto_worst_summary,
     get_latest_accounts_ping_map,
     get_accounts_ping_window_stats,
-    get_accounts_ping_results_since,
+    get_accounts_ping_rollups_since,
+    get_accounts_ping_rollups_range,
     get_accounts_ping_series,
+    get_accounts_ping_series_range,
+    get_accounts_ping_latest_ip_since,
+    get_accounts_ping_window_stats_by_ip,
     utc_now_iso,
     fetch_wan_history_map,
     clear_wan_history,
+    ensure_surveillance_session,
+    touch_surveillance_session,
+    end_surveillance_session,
+    list_surveillance_history,
 )
 from .forms import parse_bool, parse_float, parse_int, parse_int_list, parse_lines
 from .jobs import JobsManager
@@ -999,6 +1010,62 @@ def _normalize_wan_window(value):
     return 24
 
 
+TABLE_PAGE_SIZE_OPTIONS = [50, 100, 200, 500, 1000]
+
+
+def _parse_table_limit(value, default=50):
+    raw = str(value or "").strip().lower()
+    if raw in ("all", "0"):
+        return 0
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        return default
+    if parsed in TABLE_PAGE_SIZE_OPTIONS:
+        return parsed
+    return default
+
+
+def _parse_table_page(value, default=1):
+    try:
+        parsed = int(str(value or "").strip() or default)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _paginate_items(items, page, limit):
+    total = len(items)
+    if not limit or int(limit) <= 0:
+        return items, {
+            "page": 1,
+            "pages": 1,
+            "limit": 0,
+            "total": total,
+            "start": 1 if total else 0,
+            "end": total,
+            "has_prev": False,
+            "has_next": False,
+        }
+    limit = int(limit)
+    pages = max((total + limit - 1) // limit, 1)
+    page = max(int(page or 1), 1)
+    if page > pages:
+        page = pages
+    start_idx = (page - 1) * limit
+    end_idx = min(start_idx + limit, total)
+    return items[start_idx:end_idx], {
+        "page": page,
+        "pages": pages,
+        "limit": limit,
+        "total": total,
+        "start": start_idx + 1 if total else 0,
+        "end": end_idx,
+        "has_prev": page > 1,
+        "has_next": page < pages,
+    }
+
+
 def build_wan_status_summary(wan_rows, wan_state, history_map, window_hours=24):
     history_map = history_map or {}
     now = datetime.now(timezone.utc)
@@ -1463,6 +1530,10 @@ def _sparkline_points(values, width=120, height=30):
 def _sparkline_points_fixed(values, min_val, max_val, width=120, height=30):
     if not values:
         return ""
+    max_points = max(int(width) + 1, 2)
+    if len(values) > max_points:
+        last_idx = len(values) - 1
+        values = [values[int(i * last_idx / (max_points - 1))] for i in range(max_points)]
     span = max(max_val - min_val, 1)
     step = width / max(len(values) - 1, 1)
     points = []
@@ -2185,8 +2256,22 @@ async def import_db_route(request: Request):
 OPTICAL_WINDOW_OPTIONS = WAN_STATUS_WINDOW_OPTIONS
 
 
-def build_optical_status(settings, window_hours=24):
+def build_optical_status(
+    settings,
+    window_hours=24,
+    limit=50,
+    issues_page=1,
+    stable_page=1,
+    issues_sort="",
+    issues_dir="",
+    stable_sort="",
+    stable_dir="",
+    query="",
+):
     window_hours = max(int(window_hours or 24), 1)
+    limit = _parse_table_limit(limit, default=50)
+    issues_page = _parse_table_page(issues_page, default=1)
+    stable_page = _parse_table_page(stable_page, default=1)
     optical_cfg = settings.get("optical", {})
     classification = settings.get("classification", {})
     window_label = next((label for label, hours in OPTICAL_WINDOW_OPTIONS if hours == window_hours), "1D")
@@ -2217,20 +2302,14 @@ def build_optical_status(settings, window_hours=24):
             return ""
 
     since_iso = (datetime.utcnow() - timedelta(hours=window_hours)).replace(microsecond=0).isoformat() + "Z"
-    results = get_optical_results_since(since_iso)
-    grouped = {}
-    for row in results:
-        dev = row.get("device_id")
-        if not dev:
-            continue
-        grouped.setdefault(dev, []).append(row)
+    latest_rows = get_optical_latest_results_since(since_iso)
 
-    issue_rows = []
-    stable_rows = []
-    for dev_id, rows in grouped.items():
-        rows = sorted(rows, key=lambda x: x.get("timestamp") or "")
-        samples = len(rows)
-        last = rows[-1]
+    issue_candidates = []
+    stable_candidates = []
+    for last in latest_rows:
+        dev_id = last.get("device_id")
+        if not dev_id:
+            continue
         rx_raw = last.get("rx")
         tx_raw = last.get("tx")
         rx_invalid = rx_raw is None or rx_raw < rx_realistic_min or rx_raw > rx_realistic_max
@@ -2248,31 +2327,42 @@ def build_optical_status(settings, window_hours=24):
             tx_reason = f"TX missing/unrealistic (raw={tx_raw})"
         reasons = []
         status = "stable"
+
         if rx_invalid:
             status = "issue"
             reasons.append("Missing/Unrealistic RX")
         else:
+            issue_hit = False
             if rx_raw is not None and rx_raw <= issue_rx:
-                status = "issue"
+                issue_hit = True
                 reasons.append(f"RX <= {issue_rx:g}")
-            if tx_raw is not None and tx_raw <= issue_tx:
-                status = "issue"
+            if tx_raw is not None and not tx_invalid and tx_raw <= issue_tx:
+                issue_hit = True
                 reasons.append(f"TX <= {issue_tx:g}")
             if rx_raw is not None and rx_raw <= priority_rx:
-                status = "issue"
+                issue_hit = True
                 reasons.append(f"Priority RX <= {priority_rx:g}")
-            if status == "stable":
-                if not (rx_raw is not None and rx_raw >= stable_rx and (tx_raw is None or tx_raw >= stable_tx)):
-                    status = "issue"
-                    reasons.append(f"RX below stable {stable_rx:g}" + ("" if tx_raw is None else f" or TX below {stable_tx:g}"))
 
-        rx_values = [item.get("rx") for item in rows if item.get("rx") is not None]
-        spark_points = _sparkline_points_fixed(rx_values or [0], chart_min, chart_max, width=120, height=30)
-        spark_points_large = _sparkline_points_fixed(rx_values or [0], chart_min, chart_max, width=640, height=200)
+            if issue_hit:
+                status = "issue"
+            else:
+                is_stable = rx_raw is not None and rx_raw >= stable_rx and (
+                    tx_raw is None or tx_invalid or tx_raw >= stable_tx
+                )
+                if is_stable:
+                    status = "stable"
+                else:
+                    status = "monitor"
+                    if rx_raw is not None and rx_raw < stable_rx:
+                        reasons.append(f"RX below stable {stable_rx:g}")
+                    if tx_raw is not None and not tx_invalid and tx_raw < stable_tx:
+                        reasons.append(f"TX below stable {stable_tx:g}")
+
         entry = {
             "device_id": dev_id,
             "name": last.get("pppoe") or dev_id,
             "ip": last.get("ip") or "",
+            "last_ts": (last.get("timestamp") or "").strip(),
             "status": status,
             "rx": rx_raw,
             "tx": tx_raw,
@@ -2283,28 +2373,138 @@ def build_optical_status(settings, window_hours=24):
             "tx_missing": tx_missing,
             "rx_reason": rx_reason,
             "tx_reason": tx_reason,
-            "samples": samples,
+            "samples": 0,
             "last_check": format_ts_ph(last.get("timestamp")),
-            "spark_points_window": spark_points,
-            "spark_points_window_large": spark_points_large,
+            # sparklines are computed after pagination to keep rendering fast
+            "spark_points_window": "",
+            "spark_points_window_large": "",
             "reasons": reasons or ([] if status == "stable" else ["Monitor"]),
             "device_url": genie_device_url(genie_base, dev_id),
         }
         if status == "issue":
-            issue_rows.append(entry)
+            issue_candidates.append(entry)
         else:
-            stable_rows.append(entry)
+            stable_candidates.append(entry)
 
-    issue_rows = sorted(issue_rows, key=lambda x: x["name"].lower())
-    stable_rows = sorted(stable_rows, key=lambda x: x["name"].lower())
+    q = (query or "").strip().lower()
+    if q:
+        def matches(entry):
+            hay = " ".join(
+                [
+                    str(entry.get("name") or ""),
+                    str(entry.get("ip") or ""),
+                    str(entry.get("device_id") or ""),
+                    " ".join(entry.get("reasons") or []),
+                ]
+            ).lower()
+            return q in hay
+
+        issue_candidates = [row for row in issue_candidates if matches(row)]
+        stable_candidates = [row for row in stable_candidates if matches(row)]
+
+    def _sort_numeric(val, desc=False):
+        if val is None:
+            return (1, 0.0)
+        try:
+            num = float(val)
+        except Exception:
+            return (1, 0.0)
+        return (0, -num if desc else num)
+
+    def _sort_text(val, desc=False):
+        text = (val or "").strip().lower()
+        return (0, "".join(reversed(text)) if desc else text)
+
+    def _sort_key_for(entry, key, desc=False):
+        if key in ("customer", "name"):
+            return _sort_text(entry.get("name"), desc=desc)
+        if key in ("ip", "ipv4"):
+            return _sort_text(entry.get("ip"), desc=desc)
+        if key == "status":
+            order = {"issue": 0, "monitor": 1, "stable": 2}
+            return (0, -order.get(entry.get("status"), 9) if desc else order.get(entry.get("status"), 9))
+        if key == "rx":
+            return _sort_numeric(entry.get("rx"), desc=desc)
+        if key == "tx":
+            return _sort_numeric(entry.get("tx"), desc=desc)
+        if key == "samples":
+            return _sort_numeric(entry.get("samples"), desc=desc)
+        if key in ("last_check_at", "last_ts"):
+            return _sort_text(entry.get("last_ts"), desc=desc)
+        if key == "reason":
+            return _sort_text(", ".join(entry.get("reasons") or []), desc=desc)
+        return _sort_text(entry.get("name"), desc=desc)
+
+    issues_sort = (issues_sort or "").strip()
+    stable_sort = (stable_sort or "").strip()
+    issues_desc = (issues_dir or "").lower() != "asc"
+    stable_desc = (stable_dir or "").lower() != "asc"
+
+    # default by name
+    issue_candidates = sorted(issue_candidates, key=lambda x: (x.get("name") or "").lower())
+    stable_candidates = sorted(stable_candidates, key=lambda x: (x.get("name") or "").lower())
+
+    if issues_sort == "samples" or stable_sort == "samples":
+        all_ids = sorted({e.get("device_id") for e in (issue_candidates + stable_candidates) if e.get("device_id")})
+        samples_map_all = get_optical_samples_for_devices_since(all_ids, since_iso) if all_ids else {}
+        for entry in issue_candidates:
+            dev = entry.get("device_id")
+            entry["samples"] = int(samples_map_all.get(dev, 0) or 0)
+        for entry in stable_candidates:
+            dev = entry.get("device_id")
+            entry["samples"] = int(samples_map_all.get(dev, 0) or 0)
+    else:
+        samples_map_all = {}
+
+    if issues_sort:
+        issue_candidates = sorted(issue_candidates, key=lambda row: _sort_key_for(row, issues_sort, desc=issues_desc))
+    if stable_sort:
+        stable_candidates = sorted(stable_candidates, key=lambda row: _sort_key_for(row, stable_sort, desc=stable_desc))
+
+    paged_issue, issue_page_meta = _paginate_items(issue_candidates, issues_page, limit)
+    paged_stable, stable_page_meta = _paginate_items(stable_candidates, stable_page, limit)
+
+    page_device_ids = sorted({row.get("device_id") for row in (paged_issue + paged_stable) if row.get("device_id")})
+    samples_map = (
+        {dev: int(samples_map_all.get(dev, 0) or 0) for dev in page_device_ids}
+        if samples_map_all
+        else (get_optical_samples_for_devices_since(page_device_ids, since_iso) if page_device_ids else {})
+    )
+    rx_series_map = get_optical_rx_series_for_devices_since(page_device_ids, since_iso) if page_device_ids else {}
+
+    def with_spark(entry):
+        dev = entry.get("device_id")
+        values = rx_series_map.get(dev, [])
+        points = _sparkline_points_fixed(values or [0], chart_min, chart_max, width=120, height=30)
+        points_large = _sparkline_points_fixed(values or [0], chart_min, chart_max, width=640, height=200)
+        next_entry = dict(entry)
+        next_entry["samples"] = int(samples_map.get(dev, 0) or 0)
+        next_entry["spark_points_window"] = points
+        next_entry["spark_points_window_large"] = points_large
+        return next_entry
+
+    issue_rows = [with_spark(entry) for entry in paged_issue]
+    stable_rows = [with_spark(entry) for entry in paged_stable]
     return {
-        "total": len(grouped),
-        "issue_total": len(issue_rows),
-        "stable_total": len(stable_rows),
+        "total": len(issue_candidates) + len(stable_candidates),
+        "issue_total": len(issue_candidates),
+        "stable_total": len(stable_candidates),
         "issue_rows": issue_rows,
         "stable_rows": stable_rows,
         "window_hours": window_hours,
         "window_label": window_label,
+        "pagination": {
+            "limit": limit,
+            "limit_label": "ALL" if not limit else str(limit),
+            "options": TABLE_PAGE_SIZE_OPTIONS,
+            "issues": issue_page_meta,
+            "stable": stable_page_meta,
+        },
+        "sort": {
+            "issues": {"key": issues_sort, "dir": "desc" if issues_desc else "asc"},
+            "stable": {"key": stable_sort, "dir": "desc" if stable_desc else "asc"},
+        },
+        "query": query or "",
         "rules": {
             "issue_rx_dbm": issue_rx,
             "issue_tx_dbm": issue_tx,
@@ -2320,13 +2520,32 @@ def build_optical_status(settings, window_hours=24):
 async def optical_settings(request: Request):
     settings = get_settings("optical", OPTICAL_DEFAULTS)
     window_hours = _normalize_wan_window(request.query_params.get("window"))
+    limit = _parse_table_limit(request.query_params.get("limit"), default=50)
+    issues_page = _parse_table_page(request.query_params.get("issues_page"), default=1)
+    stable_page = _parse_table_page(request.query_params.get("stable_page"), default=1)
+    issues_sort = (request.query_params.get("issues_sort") or "").strip()
+    issues_dir = (request.query_params.get("issues_dir") or "").strip().lower()
+    stable_sort = (request.query_params.get("stable_sort") or "").strip()
+    stable_dir = (request.query_params.get("stable_dir") or "").strip().lower()
+    query = (request.query_params.get("q") or "").strip()
     job_status = {item["job_name"]: dict(item) for item in get_job_status()}
     optical_job = job_status.get("optical", {})
     optical_job = {
         "last_run_at_ph": format_ts_ph(optical_job.get("last_run_at")),
         "last_success_at_ph": format_ts_ph(optical_job.get("last_success_at")),
     }
-    optical_status = build_optical_status(settings, window_hours)
+    optical_status = build_optical_status(
+        settings,
+        window_hours,
+        limit,
+        issues_page,
+        stable_page,
+        issues_sort=issues_sort,
+        issues_dir=issues_dir,
+        stable_sort=stable_sort,
+        stable_dir=stable_dir,
+        query=query,
+    )
     return templates.TemplateResponse(
         "settings_optical.html",
         make_context(
@@ -2347,36 +2566,159 @@ async def optical_settings(request: Request):
 @app.post("/settings/optical", response_class=HTMLResponse)
 async def optical_settings_save(request: Request):
     form = await request.form()
+    action = (form.get("action") or "").strip()
     settings_tab = form.get("settings_tab") or "general"
-    settings = {
-        "enabled": parse_bool(form, "enabled"),
-        "genieacs": {
-            "base_url": form.get("genieacs_base_url", ""),
-            "username": form.get("genieacs_username", ""),
-            "password": form.get("genieacs_password", ""),
-            "page_size": parse_int(form, "genieacs_page_size", 100),
-        },
-        "telegram": {
-            "bot_token": form.get("telegram_bot_token", ""),
-            "chat_id": form.get("telegram_chat_id", ""),
-        },
-        "optical": {
-            "rx_threshold_dbm": parse_float(form, "rx_threshold_dbm", -26.0),
-            "tx_low_threshold_dbm": parse_float(form, "tx_low_threshold_dbm", -1.0),
-            "priority_rx_threshold_dbm": parse_float(form, "priority_rx_threshold_dbm", -29.0),
-            "rx_paths": parse_lines(form.get("rx_paths", "")),
-            "tx_paths": parse_lines(form.get("tx_paths", "")),
-            "pppoe_paths": parse_lines(form.get("pppoe_paths", "")),
-            "ip_paths": parse_lines(form.get("ip_paths", "")),
-        },
-        "general": {
-            "message_title": form.get("message_title", "Optical Power Alert"),
-            "include_header": parse_bool(form, "include_header"),
-            "max_chars": parse_int(form, "max_chars", 3800),
-            "schedule_time_ph": form.get("schedule_time_ph", "07:00"),
-            "timezone": form.get("timezone", "Asia/Manila"),
-        },
-    }
+    settings = get_settings("optical", OPTICAL_DEFAULTS)
+
+    genieacs = settings.get("genieacs") if isinstance(settings.get("genieacs"), dict) else {}
+    settings["genieacs"] = genieacs
+
+    telegram = settings.get("telegram") if isinstance(settings.get("telegram"), dict) else {}
+    settings["telegram"] = telegram
+
+    optical = settings.get("optical") if isinstance(settings.get("optical"), dict) else {}
+    settings["optical"] = optical
+
+    general = settings.get("general") if isinstance(settings.get("general"), dict) else {}
+    settings["general"] = general
+
+    storage = settings.get("storage") if isinstance(settings.get("storage"), dict) else {}
+    settings["storage"] = storage
+
+    classification = (
+        settings.get("classification") if isinstance(settings.get("classification"), dict) else {}
+    )
+    settings["classification"] = classification
+
+    if action != "test_genieacs":
+        if settings_tab == "general":
+            settings["enabled"] = parse_bool(form, "enabled")
+            general["check_interval_minutes"] = parse_int(
+                form, "check_interval_minutes", general.get("check_interval_minutes", 60)
+            )
+
+        elif settings_tab == "data":
+            genieacs["base_url"] = form.get("genieacs_base_url", genieacs.get("base_url", ""))
+            genieacs["username"] = form.get("genieacs_username", genieacs.get("username", ""))
+            genieacs["password"] = form.get("genieacs_password", genieacs.get("password", ""))
+            genieacs["page_size"] = parse_int(
+                form, "genieacs_page_size", genieacs.get("page_size", 100)
+            )
+
+            optical["rx_paths"] = parse_lines(form.get("rx_paths", ""))
+            optical["tx_paths"] = parse_lines(form.get("tx_paths", ""))
+            optical["pppoe_paths"] = parse_lines(form.get("pppoe_paths", ""))
+            optical["ip_paths"] = parse_lines(form.get("ip_paths", ""))
+
+        elif settings_tab == "notifications":
+            telegram["bot_token"] = form.get("telegram_bot_token", telegram.get("bot_token", ""))
+            telegram["chat_id"] = form.get("telegram_chat_id", telegram.get("chat_id", ""))
+
+            general["message_title"] = form.get(
+                "message_title", general.get("message_title", "Optical Power Alert")
+            )
+            general["include_header"] = parse_bool(form, "include_header")
+            general["max_chars"] = parse_int(form, "max_chars", general.get("max_chars", 3800))
+            general["schedule_time_ph"] = form.get(
+                "schedule_time_ph", general.get("schedule_time_ph", "07:00")
+            )
+
+        elif settings_tab == "thresholds":
+            optical["rx_threshold_dbm"] = parse_float(
+                form, "rx_threshold_dbm", optical.get("rx_threshold_dbm", -26.0)
+            )
+            optical["tx_low_threshold_dbm"] = parse_float(
+                form, "tx_low_threshold_dbm", optical.get("tx_low_threshold_dbm", -1.0)
+            )
+            optical["priority_rx_threshold_dbm"] = parse_float(
+                form,
+                "priority_rx_threshold_dbm",
+                optical.get("priority_rx_threshold_dbm", -29.0),
+            )
+
+        elif settings_tab == "classification":
+            classification["issue_rx_dbm"] = parse_float(
+                form, "optical_issue_rx_dbm", classification.get("issue_rx_dbm", -27.0)
+            )
+            classification["issue_tx_dbm"] = parse_float(
+                form, "optical_issue_tx_dbm", classification.get("issue_tx_dbm", -2.0)
+            )
+            classification["stable_rx_dbm"] = parse_float(
+                form, "optical_stable_rx_dbm", classification.get("stable_rx_dbm", -24.0)
+            )
+            classification["stable_tx_dbm"] = parse_float(
+                form, "optical_stable_tx_dbm", classification.get("stable_tx_dbm", -1.0)
+            )
+            classification["chart_min_dbm"] = parse_float(
+                form, "optical_chart_min_dbm", classification.get("chart_min_dbm", -35.0)
+            )
+            classification["chart_max_dbm"] = parse_float(
+                form, "optical_chart_max_dbm", classification.get("chart_max_dbm", -10.0)
+            )
+
+        elif settings_tab == "storage":
+            storage["raw_retention_days"] = parse_int(
+                form, "optical_raw_retention_days", storage.get("raw_retention_days", 365)
+            )
+
+    if action == "test_genieacs":
+        settings_tab = "data"
+        genieacs["base_url"] = form.get("genieacs_base_url", genieacs.get("base_url", ""))
+        genieacs["username"] = form.get("genieacs_username", genieacs.get("username", ""))
+        genieacs["password"] = form.get("genieacs_password", genieacs.get("password", ""))
+        genieacs["page_size"] = parse_int(form, "genieacs_page_size", genieacs.get("page_size", 100))
+
+        optical["rx_paths"] = parse_lines(form.get("rx_paths", ""))
+        optical["tx_paths"] = parse_lines(form.get("tx_paths", ""))
+        optical["pppoe_paths"] = parse_lines(form.get("pppoe_paths", ""))
+        optical["ip_paths"] = parse_lines(form.get("ip_paths", ""))
+
+        message = ""
+        try:
+            base_url = (genieacs.get("base_url") or "").rstrip("/")
+            if not base_url:
+                raise ValueError("GenieACS Base URL is required.")
+            username = genieacs.get("username") or ""
+            password = genieacs.get("password") or ""
+            headers = {}
+            if username or password:
+                token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+                headers["Authorization"] = f"Basic {token}"
+
+            params = {"query": "{}", "limit": "1", "skip": "0"}
+            url = f"{base_url}/devices?{urllib.parse.urlencode(params)}"
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            count = len(payload) if isinstance(payload, list) else 0
+            message = f"GenieACS API OK. Retrieved {count} device(s)."
+        except Exception as exc:
+            message = f"GenieACS test failed: {exc}"
+
+        window_hours = 24
+        optical_status = build_optical_status(settings, window_hours)
+        job_status = {item["job_name"]: dict(item) for item in get_job_status()}
+        optical_job = job_status.get("optical", {})
+        optical_job = {
+            "last_run_at_ph": format_ts_ph(optical_job.get("last_run_at")),
+            "last_success_at_ph": format_ts_ph(optical_job.get("last_success_at")),
+        }
+        return templates.TemplateResponse(
+            "settings_optical.html",
+            make_context(
+                request,
+                {
+                    "settings": settings,
+                    "message": message,
+                    "optical_status": optical_status,
+                    "optical_window_options": OPTICAL_WINDOW_OPTIONS,
+                    "optical_job": optical_job,
+                    "active_tab": "settings",
+                    "settings_tab": settings_tab,
+                },
+            ),
+        )
+
     save_settings("optical", settings)
     window_hours = 24
     optical_status = build_optical_status(settings, window_hours)
@@ -2429,6 +2771,123 @@ async def optical_settings_test(request: Request):
                 },
                 "active_tab": "settings",
                 "settings_tab": "general",
+            },
+        ),
+    )
+
+
+@app.post("/settings/optical/test_genieacs", response_class=HTMLResponse)
+async def optical_settings_test_genieacs(request: Request):
+    form = await request.form()
+    settings = get_settings("optical", OPTICAL_DEFAULTS)
+
+    genieacs = settings.get("genieacs") if isinstance(settings.get("genieacs"), dict) else {}
+    genieacs["base_url"] = form.get("genieacs_base_url", genieacs.get("base_url", ""))
+    genieacs["username"] = form.get("genieacs_username", genieacs.get("username", ""))
+    genieacs["password"] = form.get("genieacs_password", genieacs.get("password", ""))
+    genieacs["page_size"] = parse_int(form, "genieacs_page_size", genieacs.get("page_size", 100))
+    settings["genieacs"] = genieacs
+
+    optical = settings.get("optical") if isinstance(settings.get("optical"), dict) else {}
+    optical["rx_paths"] = parse_lines(form.get("rx_paths", ""))
+    optical["tx_paths"] = parse_lines(form.get("tx_paths", ""))
+    optical["pppoe_paths"] = parse_lines(form.get("pppoe_paths", ""))
+    optical["ip_paths"] = parse_lines(form.get("ip_paths", ""))
+    settings["optical"] = optical
+
+    message = ""
+    try:
+        base_url = (genieacs.get("base_url") or "").rstrip("/")
+        if not base_url:
+            raise ValueError("GenieACS Base URL is required.")
+        username = genieacs.get("username") or ""
+        password = genieacs.get("password") or ""
+        headers = {}
+        if username or password:
+            token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+            headers["Authorization"] = f"Basic {token}"
+
+        params = {"query": "{}", "limit": "1", "skip": "0"}
+        url = f"{base_url}/devices?{urllib.parse.urlencode(params)}"
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        count = len(payload) if isinstance(payload, list) else 0
+        message = f"GenieACS API OK. Retrieved {count} device(s)."
+    except Exception as exc:
+        message = f"GenieACS test failed: {exc}"
+
+    job_status = {item["job_name"]: dict(item) for item in get_job_status()}
+    optical_job = job_status.get("optical", {})
+    optical_job = {
+        "last_run_at_ph": format_ts_ph(optical_job.get("last_run_at")),
+        "last_success_at_ph": format_ts_ph(optical_job.get("last_success_at")),
+    }
+    return templates.TemplateResponse(
+        "settings_optical.html",
+        make_context(
+            request,
+            {
+                "settings": settings,
+                "message": message,
+                "optical_status": build_optical_status(settings, 24),
+                "optical_window_options": OPTICAL_WINDOW_OPTIONS,
+                "optical_job": optical_job,
+                "active_tab": "settings",
+                "settings_tab": "data",
+            },
+        ),
+    )
+
+
+@app.get("/settings/optical/test_genieacs", response_class=HTMLResponse)
+async def optical_settings_test_genieacs_get(request: Request):
+    settings = get_settings("optical", OPTICAL_DEFAULTS)
+    message = ""
+    started = time.monotonic()
+    try:
+        genieacs = settings.get("genieacs", {}) if isinstance(settings.get("genieacs"), dict) else {}
+        base_url = (genieacs.get("base_url") or "").rstrip("/")
+        if not base_url:
+            raise ValueError("GenieACS Base URL is required.")
+        username = genieacs.get("username") or ""
+        password = genieacs.get("password") or ""
+        headers = {}
+        if username or password:
+            token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+            headers["Authorization"] = f"Basic {token}"
+
+        params = {"query": "{}", "limit": "1", "skip": "0"}
+        url = f"{base_url}/devices?{urllib.parse.urlencode(params)}"
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        count = len(payload) if isinstance(payload, list) else 0
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        message = f"GenieACS API OK ({elapsed_ms} ms). Retrieved {count} device(s)."
+    except Exception as exc:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        message = f"GenieACS test failed ({elapsed_ms} ms): {exc}"
+
+    window_hours = _normalize_wan_window(request.query_params.get("window"))
+    job_status = {item["job_name"]: dict(item) for item in get_job_status()}
+    optical_job = job_status.get("optical", {})
+    optical_job = {
+        "last_run_at_ph": format_ts_ph(optical_job.get("last_run_at")),
+        "last_success_at_ph": format_ts_ph(optical_job.get("last_success_at")),
+    }
+    return templates.TemplateResponse(
+        "settings_optical.html",
+        make_context(
+            request,
+            {
+                "settings": settings,
+                "message": message,
+                "optical_status": build_optical_status(settings, window_hours),
+                "optical_window_options": OPTICAL_WINDOW_OPTIONS,
+                "optical_job": optical_job,
+                "active_tab": "settings",
+                "settings_tab": "data",
             },
         ),
     )
@@ -2700,6 +3159,7 @@ async def profile_review(request: Request):
         "device_id": device_id,
         "device_url": genie_device_url(genie_base, device_id) if device_id else "",
         "name": "",
+        "pppoe": "",
         "sources": [],
         "rto": None,
         "optical": None,
@@ -2710,7 +3170,10 @@ async def profile_review(request: Request):
     }
 
     if optical_ident:
-        profile["name"] = (optical_ident.get("pppoe") or "").strip() or profile["name"]
+        optical_pppoe = (optical_ident.get("pppoe") or "").strip()
+        if optical_pppoe and not profile["pppoe"]:
+            profile["pppoe"] = optical_pppoe
+        profile["name"] = optical_pppoe or profile["name"]
         profile["sources"].append("optical")
         classification = optical_settings.get("classification", {})
         issue_rx = float(classification.get("issue_rx_dbm", OPTICAL_DEFAULTS["classification"]["issue_rx_dbm"]))
@@ -2766,7 +3229,10 @@ async def profile_review(request: Request):
         }
 
     if rto_ident:
-        profile["name"] = (profile["name"] or (rto_ident.get("name") or "").strip()).strip()
+        rto_name = (rto_ident.get("name") or "").strip()
+        if rto_name and not profile["pppoe"]:
+            profile["pppoe"] = rto_name
+        profile["name"] = (profile["name"] or rto_name).strip()
         profile["sources"].append("rto")
         recent = get_recent_rto_results(ip, since_iso, limit=60)
         recent_asc = list(reversed(recent))
@@ -2802,6 +3268,9 @@ async def profile_review(request: Request):
     profile["sources"] = sorted({*profile["sources"]})
     if not profile["name"]:
         profile["name"] = profile["ip"] or profile["device_id"] or ""
+    if not profile["pppoe"]:
+        # keep empty when we can't confidently identify the PPPoE username
+        profile["pppoe"] = ""
 
     return templates.TemplateResponse(
         "profile_review.html",
@@ -2835,13 +3304,22 @@ def build_rto_status(settings, window_hours=24):
     since_iso = (datetime.utcnow() - timedelta(hours=window_hours)).replace(microsecond=0).isoformat() + "Z"
     raw_results = get_rto_results_since(since_iso)
     rows = []
-    by_ip = {}
+    by_name_ip = {}
+    latest_ip_by_name = {}
     for row in raw_results:
         ip = row.get("ip")
         if not ip:
             continue
-        by_ip.setdefault(ip, []).append(row)
-    for ip, items in by_ip.items():
+        name = (row.get("name") or ip).strip() or ip
+        by_name_ip.setdefault(name, {}).setdefault(ip, []).append(row)
+        ts = row.get("timestamp") or ""
+        latest = latest_ip_by_name.get(name)
+        if not latest or ts > (latest.get("timestamp") or ""):
+            latest_ip_by_name[name] = {"timestamp": ts, "ip": ip}
+
+    for name, ip_map in by_name_ip.items():
+        latest_ip = (latest_ip_by_name.get(name) or {}).get("ip") or next(iter(ip_map.keys()))
+        items = ip_map.get(latest_ip) or []
         items = sorted(items, key=lambda x: x.get("timestamp") or "")
         total = len(items)
         failures = sum(1 for item in items if not item.get("ok"))
@@ -2853,7 +3331,7 @@ def build_rto_status(settings, window_hours=24):
             else:
                 break
         last_ok = items[-1].get("ok")
-        name = items[-1].get("name") or ip
+        ip = latest_ip
         last_check = format_ts_ph(items[-1].get("timestamp"))
         spark_values = [100 if item.get("ok") else 0 for item in items]
         rows.append(
@@ -2953,14 +3431,40 @@ def render_rto_response(request, settings, message, active_tab, settings_tab, wi
 async def accounts_ping_settings(request: Request):
     settings = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
     window_hours = _normalize_wan_window(request.query_params.get("window"))
-    return render_accounts_ping_response(request, settings, "", "status", "general", window_hours)
+    limit = _parse_table_limit(request.query_params.get("limit"), default=50)
+    issues_page = _parse_table_page(request.query_params.get("issues_page"), default=1)
+    stable_page = _parse_table_page(request.query_params.get("stable_page"), default=1)
+    issues_sort = (request.query_params.get("issues_sort") or "").strip()
+    issues_dir = (request.query_params.get("issues_dir") or "").strip().lower()
+    stable_sort = (request.query_params.get("stable_sort") or "").strip()
+    stable_dir = (request.query_params.get("stable_dir") or "").strip().lower()
+    query = (request.query_params.get("q") or "").strip()
+    return render_accounts_ping_response(
+        request,
+        settings,
+        "",
+        "status",
+        "general",
+        window_hours,
+        limit=limit,
+        issues_page=issues_page,
+        stable_page=stable_page,
+        issues_sort=issues_sort,
+        issues_dir=issues_dir,
+        stable_sort=stable_sort,
+        stable_dir=stable_dir,
+        query=query,
+    )
 
 
 @app.get("/accounts-ping/series", response_class=JSONResponse)
 async def accounts_ping_series(account_id: str, window: int = 24):
     hours = _normalize_wan_window(window)
     since_iso = (datetime.utcnow() - timedelta(hours=hours)).replace(microsecond=0).isoformat() + "Z"
+    chosen_ip = (get_accounts_ping_latest_ip_since(account_id, since_iso) or "").strip()
     rows = get_accounts_ping_series(account_id, since_iso)
+    if chosen_ip:
+        rows = [row for row in rows if (row.get("ip") or "").strip() == chosen_ip]
     series = [
         {
             "ts": row.get("timestamp"),
@@ -3006,83 +3510,117 @@ def _format_duration_short(seconds):
     return f"{minutes}m"
 
 
-def build_accounts_ping_status(settings, window_hours=24):
+def build_accounts_ping_status(
+    settings,
+    window_hours=24,
+    limit=50,
+    issues_page=1,
+    stable_page=1,
+    issues_sort="",
+    issues_dir="",
+    stable_sort="",
+    stable_dir="",
+    query="",
+):
+    window_hours = max(int(window_hours or 24), 1)
+    limit = _parse_table_limit(limit, default=50)
+    issues_page = _parse_table_page(issues_page, default=1)
+    stable_page = _parse_table_page(stable_page, default=1)
     state = get_state("accounts_ping_state", {"accounts": {}, "devices": []})
     devices = state.get("devices") if isinstance(state.get("devices"), list) else []
-    account_rows = []
+    account_map = {}
     for device in devices:
         ip = (device.get("ip") or "").strip()
         if not ip:
             continue
         pppoe = (device.get("pppoe") or device.get("name") or "").strip() or ip
-        account_rows.append(
-            {
-                "id": _accounts_ping_account_id_for_pppoe(pppoe),
-                "name": pppoe,
-                "ip": ip,
-            }
-        )
+        aid = _accounts_ping_account_id_for_pppoe(pppoe)
+        if not aid:
+            continue
+        account_map[aid] = {"id": aid, "name": pppoe, "ip": ip}
 
+    account_rows = list(account_map.values())
     account_ids = [row["id"] for row in account_rows]
-    latest_map = get_latest_accounts_ping_map(account_ids)
-    since_iso = (datetime.utcnow() - timedelta(hours=max(int(window_hours or 24), 1))).replace(microsecond=0).isoformat() + "Z"
-    stats_map = get_accounts_ping_window_stats(account_ids, since_iso)
+    since_iso = (datetime.utcnow() - timedelta(hours=window_hours)).replace(microsecond=0).isoformat() + "Z"
+    stats_by_ip_map = get_accounts_ping_window_stats_by_ip(account_ids, since_iso)
 
     state_accounts = state.get("accounts") if isinstance(state.get("accounts"), dict) else {}
 
     cls = settings.get("classification", {}) or {}
     issue_loss_pct = float(cls.get("issue_loss_pct", 20.0) or 20.0)
     issue_latency_ms = float(cls.get("issue_latency_ms", 200.0) or 200.0)
+    stable_rto_pct = float(cls.get("stable_rto_pct", 2.0) or 2.0)
+    issue_rto_pct = float(cls.get("issue_rto_pct", 5.0) or 5.0)
+    issue_streak = int(cls.get("issue_streak", 2) or 2)
 
-    # sparklines: always use last 24h to keep payload small
-    spark_since_iso = (datetime.utcnow() - timedelta(hours=24)).replace(microsecond=0).isoformat() + "Z"
-    spark_rows = get_accounts_ping_results_since(spark_since_iso, account_ids)
-    spark_map = {}
-    for row in spark_rows:
-        aid = row.get("account_id")
-        if not aid:
-            continue
-        spark_map.setdefault(aid, []).append(100 if row.get("ok") else 0)
+    chosen_ip_map = {}
+    for account in account_rows:
+        aid = account["id"]
+        st = state_accounts.get(aid) if isinstance(state_accounts.get(aid), dict) else {}
+        chosen_ip_map[aid] = (st.get("last_ip") or account.get("ip") or "").strip()
 
     issue_rows = []
     stable_rows = []
+    pending_total = 0
     for account in account_rows:
         aid = account["id"]
-        latest = latest_map.get(aid) or {}
-        stats = stats_map.get(aid) or {}
-        loss = latest.get("loss")
-        avg_ms = latest.get("avg_ms")
-        last_ok = bool(latest.get("ok")) if latest else False
-        last_seen = format_ts_ph(latest.get("timestamp")) if latest.get("timestamp") else "n/a"
+        st = state_accounts.get(aid) if isinstance(state_accounts.get(aid), dict) else {}
+        chosen_ip = chosen_ip_map.get(aid) or (st.get("last_ip") or account.get("ip") or "").strip()
+        stats = (stats_by_ip_map.get(aid) or {}).get(chosen_ip) or {}
+        loss = st.get("last_loss")
+        avg_ms = st.get("last_avg_ms")
+        has_recent = bool(st.get("last_check_at"))
+        last_ok = bool(st.get("last_ok")) if has_recent else True
+        last_seen = format_ts_ph(st.get("last_check_at")) if has_recent else "n/a"
+        last_seen_raw = (st.get("last_check_at") or "").strip()
 
         total = int(stats.get("total") or 0)
         failures = int(stats.get("failures") or 0)
         rto_pct = (failures / total) * 100.0 if total else 0.0
         uptime_pct = 100.0 - rto_pct
 
-        is_issue = (not last_ok) or (loss is not None and float(loss) >= issue_loss_pct) or (avg_ms is not None and float(avg_ms) >= issue_latency_ms)
-        status = "down" if not last_ok else ("issue" if is_issue else "up")
-
-        st = state_accounts.get(aid) if isinstance(state_accounts.get(aid), dict) else {}
         streak = int(st.get("streak") or 0)
         down_since_dt = _parse_iso_z(st.get("down_since"))
         down_for = _format_duration_short((datetime.utcnow() - down_since_dt).total_seconds()) if down_since_dt else ""
+        down_seconds = int((datetime.utcnow() - down_since_dt).total_seconds()) if down_since_dt else 0
 
+        issue_hit = False
         reasons = []
-        if status == "down":
-            reasons.append("Currently down")
-        if loss is not None and float(loss) >= issue_loss_pct:
-            reasons.append(f"Loss >= {issue_loss_pct:g}%")
-        if avg_ms is not None and float(avg_ms) >= issue_latency_ms:
-            reasons.append(f"Latency >= {issue_latency_ms:g}ms")
-        if streak >= 2 and status == "down":
-            reasons.append(f"Streak {streak}")
+        if not has_recent:
+            pending_total += 1
+            status = "pending"
+            reasons = ["Not yet checked"]
+        else:
+            if not last_ok:
+                issue_hit = True
+                reasons.append("Currently down")
+            if loss is not None and float(loss) >= issue_loss_pct:
+                issue_hit = True
+                reasons.append(f"Loss >= {issue_loss_pct:g}%")
+            if avg_ms is not None and float(avg_ms) >= issue_latency_ms:
+                issue_hit = True
+                reasons.append(f"Latency >= {issue_latency_ms:g}ms")
+            if total and rto_pct >= issue_rto_pct:
+                issue_hit = True
+                reasons.append(f"Fail % >= {issue_rto_pct:g}%")
+            if streak >= issue_streak and not last_ok:
+                issue_hit = True
+                reasons.append(f"Streak {streak}")
 
-        spark_values = spark_map.get(aid, [])
+            is_stable = last_ok and (not issue_hit) and ((not total) or rto_pct <= stable_rto_pct)
+            status = "down" if not last_ok else ("up" if is_stable else "monitor")
+
+            if status == "monitor" and total and rto_pct > stable_rto_pct:
+                reasons.append(f"Fail % > {stable_rto_pct:g}%")
+
+        if status not in ("pending", "down", "up", "monitor"):
+            status = "pending"
+            reasons = ["Not yet checked"]
+
         row = {
             "id": aid,
             "name": account["name"],
-            "ip": account["ip"],
+            "ip": chosen_ip or account["ip"],
             "status": status,
             "loss": loss,
             "avg_ms": avg_ms,
@@ -3092,40 +3630,215 @@ def build_accounts_ping_status(settings, window_hours=24):
             "uptime_pct": uptime_pct,
             "streak": streak,
             "down_for": down_for,
+            "down_seconds": down_seconds,
             "last_check": last_seen,
+            "last_check_at": last_seen_raw,
             "reasons": reasons or (["OK"] if status == "up" else ["Monitor"]),
-            "spark_points_24h": _sparkline_points_fixed(spark_values or [0], 0, 100, width=140, height=28),
-            "spark_points_24h_large": _sparkline_points_fixed(spark_values or [0], 0, 100, width=640, height=200),
+            "spark_points_24h": "",
+            "spark_points_24h_large": "",
+            "pending": status == "pending",
         }
-        if status == "up":
+        if status in ("up", "pending"):
             stable_rows.append(row)
         else:
             issue_rows.append(row)
 
-    issue_rows = sorted(issue_rows, key=lambda x: (x["status"] != "down", -(x["loss"] or 0), -(x["avg_ms"] or 0), x["name"].lower()))
-    stable_rows = sorted(stable_rows, key=lambda x: x["name"].lower())
+    def _sort_numeric(val, desc=False):
+        if val is None:
+            return (1, 0.0)
+        try:
+            num = float(val)
+        except Exception:
+            return (1, 0.0)
+        return (0, -num if desc else num)
+
+    def _sort_text(val, desc=False):
+        text = (val or "").strip().lower()
+        return (0, "".join(reversed(text)) if desc else text)
+
+    def _sort_key_for(row, key, desc=False):
+        if key in ("customer", "name"):
+            return _sort_text(row.get("name"), desc=desc)
+        if key in ("ip", "ipv4"):
+            return _sort_text(row.get("ip"), desc=desc)
+        if key == "status":
+            order = {"down": 0, "monitor": 1, "up": 2, "pending": 3}
+            return (0, -order.get(row.get("status"), 9) if desc else order.get(row.get("status"), 9))
+        if key in ("loss", "loss_pct"):
+            return _sort_numeric(row.get("loss"), desc=desc)
+        if key in ("latency", "avg_ms"):
+            return _sort_numeric(row.get("avg_ms"), desc=desc)
+        if key in ("fail", "fail_pct", "rto_pct"):
+            return _sort_numeric(row.get("rto_pct"), desc=desc)
+        if key in ("uptime", "uptime_pct"):
+            return _sort_numeric(row.get("uptime_pct"), desc=desc)
+        if key == "streak":
+            return _sort_numeric(row.get("streak"), desc=desc)
+        if key in ("down_for", "down_seconds"):
+            return _sort_numeric(row.get("down_seconds"), desc=desc)
+        if key in ("last_check", "last_check_at"):
+            return _sort_text(row.get("last_check_at"), desc=desc)
+        if key == "reason":
+            return _sort_text("; ".join(row.get("reasons") or []), desc=desc)
+        return _sort_text(row.get("name"), desc=desc)
+
+    q = (query or "").strip().lower()
+    if q:
+        def match_row(row):
+            hay = " ".join(
+                [
+                    str(row.get("name") or ""),
+                    str(row.get("ip") or ""),
+                    " ".join(row.get("reasons") or []),
+                ]
+            ).lower()
+            return q in hay
+
+        issue_rows = [row for row in issue_rows if match_row(row)]
+        stable_rows = [row for row in stable_rows if match_row(row)]
+        pending_total = sum(1 for row in stable_rows if row.get("status") == "pending")
+
+    # defaults
+    default_issue = sorted(
+        issue_rows,
+        key=lambda x: (x["status"] != "down", -(x["loss"] or 0), -(x["avg_ms"] or 0), x["name"].lower()),
+    )
+    default_stable = sorted(stable_rows, key=lambda x: (x.get("pending", False), x["name"].lower()))
+
+    issues_sort = (issues_sort or "").strip()
+    stable_sort = (stable_sort or "").strip()
+    issues_desc = (issues_dir or "").lower() != "asc"
+    stable_desc = (stable_dir or "").lower() != "asc"
+
+    issue_rows = (
+        sorted(issue_rows, key=lambda row: _sort_key_for(row, issues_sort, desc=issues_desc))
+        if issues_sort
+        else default_issue
+    )
+    stable_rows = (
+        sorted(stable_rows, key=lambda row: _sort_key_for(row, stable_sort, desc=stable_desc))
+        if stable_sort
+        else default_stable
+    )
+
+    stable_up_total = sum(1 for row in stable_rows if row.get("status") == "up")
+
+    paged_issue, issue_page_meta = _paginate_items(issue_rows, issues_page, limit)
+    paged_stable, stable_page_meta = _paginate_items(stable_rows, stable_page, limit)
+
+    paged_ids = sorted({row["id"] for row in (paged_issue + paged_stable) if row.get("id")})
+    spark_map = {}
+    if paged_ids:
+        spark_since_iso = (datetime.utcnow() - timedelta(hours=24)).replace(microsecond=0).isoformat() + "Z"
+        spark_rows = get_accounts_ping_rollups_since(spark_since_iso, paged_ids)
+        for row in spark_rows:
+            aid = (row.get("account_id") or "").strip()
+            if not aid:
+                continue
+            chosen_ip = chosen_ip_map.get(aid) or ""
+            if chosen_ip and (row.get("ip") or "").strip() != chosen_ip:
+                continue
+            sample_count = int(row.get("sample_count") or 0)
+            ok_count = int(row.get("ok_count") or 0)
+            pct = (ok_count / sample_count) * 100.0 if sample_count > 0 else 0.0
+            spark_map.setdefault(aid, []).append(pct)
+
+    def with_spark(row):
+        aid = row.get("id")
+        if row.get("pending"):
+            next_row = dict(row)
+            next_row["spark_points_24h"] = ""
+            next_row["spark_points_24h_large"] = ""
+            return next_row
+        spark_values = spark_map.get(aid, [])
+        next_row = dict(row)
+        next_row["spark_points_24h"] = _sparkline_points_fixed(spark_values or [0], 0, 100, width=140, height=28)
+        next_row["spark_points_24h_large"] = _sparkline_points_fixed(spark_values or [0], 0, 100, width=640, height=200)
+        return next_row
+
+    paged_issue = [with_spark(row) for row in paged_issue]
+    paged_stable = [with_spark(row) for row in paged_stable]
+
     window_label = next((label for label, hours in WAN_STATUS_WINDOW_OPTIONS if hours == window_hours), "1D")
     return {
-        "total": len(account_rows),
+        "total": len(issue_rows) + len(stable_rows),
         "issue_total": len(issue_rows),
-        "stable_total": len(stable_rows),
-        "issue_rows": issue_rows,
-        "stable_rows": stable_rows,
+        "stable_total": stable_up_total,
+        "pending_total": pending_total,
+        "issue_rows": paged_issue,
+        "stable_rows": paged_stable,
         "window_hours": window_hours,
         "window_label": window_label,
+        "pagination": {
+            "limit": limit,
+            "limit_label": "ALL" if not limit else str(limit),
+            "options": TABLE_PAGE_SIZE_OPTIONS,
+            "issues": issue_page_meta,
+            "stable": stable_page_meta,
+        },
+        "sort": {
+            "issues": {"key": issues_sort, "dir": "desc" if issues_desc else "asc"},
+            "stable": {"key": stable_sort, "dir": "desc" if stable_desc else "asc"},
+        },
+        "query": query or "",
         "rules": {
             "issue_loss_pct": issue_loss_pct,
             "issue_latency_ms": issue_latency_ms,
+            "stable_rto_pct": stable_rto_pct,
+            "issue_rto_pct": issue_rto_pct,
+            "issue_streak": issue_streak,
         },
     }
 
 
-def render_accounts_ping_response(request, settings, message, active_tab, settings_tab, window_hours=24):
+def render_accounts_ping_response(
+    request,
+    settings,
+    message,
+    active_tab,
+    settings_tab,
+    window_hours=24,
+    limit=None,
+    issues_page=None,
+    stable_page=None,
+    issues_sort="",
+    issues_dir="",
+    stable_sort="",
+    stable_dir="",
+    query="",
+):
     status_map = {item["job_name"]: dict(item) for item in get_job_status()}
     job_status = status_map.get("accounts_ping", {})
     job_status["last_run_at_ph"] = format_ts_ph(job_status.get("last_run_at"))
     job_status["last_success_at_ph"] = format_ts_ph(job_status.get("last_success_at"))
-    status = build_accounts_ping_status(settings, window_hours)
+    if limit is None:
+        limit = _parse_table_limit(request.query_params.get("limit"), default=50)
+    if issues_page is None:
+        issues_page = _parse_table_page(request.query_params.get("issues_page"), default=1)
+    if stable_page is None:
+        stable_page = _parse_table_page(request.query_params.get("stable_page"), default=1)
+    if not issues_sort:
+        issues_sort = (request.query_params.get("issues_sort") or "").strip()
+    if not issues_dir:
+        issues_dir = (request.query_params.get("issues_dir") or "").strip().lower()
+    if not stable_sort:
+        stable_sort = (request.query_params.get("stable_sort") or "").strip()
+    if not stable_dir:
+        stable_dir = (request.query_params.get("stable_dir") or "").strip().lower()
+    if not query:
+        query = (request.query_params.get("q") or "").strip()
+    status = build_accounts_ping_status(
+        settings,
+        window_hours,
+        limit=limit,
+        issues_page=issues_page,
+        stable_page=stable_page,
+        issues_sort=issues_sort,
+        issues_dir=issues_dir,
+        stable_sort=stable_sort,
+        stable_dir=stable_dir,
+        query=query,
+    )
     return templates.TemplateResponse(
         "settings_accounts_ping.html",
         make_context(
@@ -3159,9 +3872,6 @@ def _accounts_ping_account_id_for_ip(ip):
 async def accounts_ping_settings_save(request: Request):
     form = await request.form()
     current = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
-    ping_current = dict(current.get("ping") or {})
-    burst_current = dict(current.get("burst") or {})
-    backoff_current = dict(current.get("backoff") or {})
     settings = {
         "enabled": parse_bool(form, "enabled"),
         "ssh": {
@@ -3181,19 +3891,17 @@ async def accounts_ping_settings_save(request: Request):
             "max_parallel": parse_int(form, "max_parallel", 64),
         },
         "ping": {
-            **ping_current,
-            "count": parse_int(form, "ping_count", ping_current.get("count", 3)),
-            "timeout_seconds": parse_int(form, "ping_timeout_seconds", ping_current.get("timeout_seconds", 1)),
+            "count": parse_int(form, "ping_count", 3),
+            "timeout_seconds": parse_int(form, "ping_timeout_seconds", 1),
         },
         "classification": {
             "issue_loss_pct": parse_float(form, "issue_loss_pct", 20.0),
             "issue_latency_ms": parse_float(form, "issue_latency_ms", 200.0),
             "down_loss_pct": parse_float(form, "down_loss_pct", 100.0),
+            "stable_rto_pct": parse_float(form, "stable_rto_pct", 2.0),
+            "issue_rto_pct": parse_float(form, "issue_rto_pct", 5.0),
+            "issue_streak": parse_int(form, "issue_streak", 2),
         },
-        # Burst/backoff are managed under the Under Surveillance feature; keep existing values here
-        # for backward compatibility (unused by current scheduler).
-        "burst": burst_current,
-        "backoff": backoff_current,
         "storage": {
             "raw_retention_days": parse_int(form, "raw_retention_days", 30),
             "rollup_retention_days": parse_int(form, "rollup_retention_days", 365),
@@ -3283,7 +3991,7 @@ def normalize_surveillance_settings(raw):
     cfg = copy.deepcopy(SURVEILLANCE_DEFAULTS)
     if isinstance(raw, dict):
         cfg["enabled"] = bool(raw.get("enabled", cfg["enabled"]))
-        for key in ("ping", "burst", "backoff", "stability"):
+        for key in ("ping", "burst", "backoff", "stability", "auto_add"):
             if isinstance(raw.get(key), dict) and isinstance(cfg.get(key), dict):
                 cfg[key].update(raw[key])
         if isinstance(raw.get("entries"), list):
@@ -3291,6 +3999,45 @@ def normalize_surveillance_settings(raw):
 
     normalized = []
     now_iso = utc_now_iso()
+    cfg.setdefault("stability", {})
+    cfg["stability"]["require_optical"] = True
+    cfg.setdefault("auto_add", {})
+    if not isinstance(cfg["auto_add"], dict):
+        cfg["auto_add"] = copy.deepcopy(SURVEILLANCE_DEFAULTS.get("auto_add") or {})
+    sources = cfg["auto_add"].get("sources")
+    if not isinstance(sources, dict):
+        cfg["auto_add"]["sources"] = {"accounts_ping": True}
+    cfg["auto_add"]["sources"].setdefault("accounts_ping", True)
+    try:
+        wd = float(cfg["auto_add"].get("window_days", 3) or 3)
+    except Exception:
+        wd = 3.0
+    if wd <= 0:
+        wd = 3.0
+    cfg["auto_add"]["window_days"] = wd
+    try:
+        mde = int(cfg["auto_add"].get("min_down_events", 5) or 5)
+    except Exception:
+        mde = 5
+    if mde < 1:
+        mde = 1
+    cfg["auto_add"]["min_down_events"] = mde
+    try:
+        sim = int(cfg["auto_add"].get("scan_interval_minutes", 5) or 5)
+    except Exception:
+        sim = 5
+    if sim < 1:
+        sim = 1
+    cfg["auto_add"]["scan_interval_minutes"] = sim
+    try:
+        mae = int(cfg["auto_add"].get("max_add_per_eval", 3))
+    except Exception:
+        mae = 3
+    if mae is None:
+        mae = 3
+    if mae < 0:
+        mae = 0
+    cfg["auto_add"]["max_add_per_eval"] = mae
     for entry in cfg.get("entries") or []:
         if not isinstance(entry, dict):
             continue
@@ -3310,6 +4057,12 @@ def normalize_surveillance_settings(raw):
                 "added_at": (entry.get("added_at") or "").strip() or now_iso,
                 "updated_at": (entry.get("updated_at") or "").strip() or now_iso,
                 "level2_at": (entry.get("level2_at") or "").strip(),
+                "last_fixed_at": (entry.get("last_fixed_at") or "").strip(),
+                "last_fixed_reason": (entry.get("last_fixed_reason") or "").strip(),
+                "last_fixed_mode": (entry.get("last_fixed_mode") or "").strip(),
+                "added_mode": (entry.get("added_mode") or "").strip().lower() or "manual",
+                "auto_source": (entry.get("auto_source") or "").strip(),
+                "auto_reason": (entry.get("auto_reason") or "").strip(),
             }
         )
     cfg["entries"] = normalized
@@ -3339,7 +4092,7 @@ async def surveillance_page(request: Request):
 
     active_tab = (request.query_params.get("tab") or "").strip().lower()
     focus = (request.query_params.get("focus") or "").strip()
-    if active_tab not in ("under", "level2", "settings"):
+    if active_tab not in ("under", "level2", "history", "settings"):
         active_tab = ""
     if focus and focus in entry_map and not active_tab:
         active_tab = "level2" if (entry_map.get(focus, {}).get("status") == "level2") else "under"
@@ -3351,6 +4104,7 @@ async def surveillance_page(request: Request):
 
     stab_cfg = settings.get("stability", {}) or {}
     stable_window_minutes = max(int(stab_cfg.get("stable_window_minutes", 10) or 10), 1)
+    stable_window_days = stable_window_minutes / 1440.0
     now = datetime.utcnow()
     since_iso = (now - timedelta(minutes=stable_window_minutes)).replace(microsecond=0).isoformat() + "Z"
 
@@ -3378,23 +4132,77 @@ async def surveillance_page(request: Request):
         return {
             "pppoe": pppoe,
             "name": entry.get("name") or pppoe,
+            "optical_device_id": (opt.get("device_id") or "").strip(),
             "ip": entry.get("ip") or latest.get("ip") or opt.get("ip") or "",
             "status": entry.get("status") or "under",
+            "added_mode": (entry.get("added_mode") or "manual").strip().lower(),
+            "auto_source": (entry.get("auto_source") or "").strip(),
+            "auto_reason": (entry.get("auto_reason") or "").strip(),
             "added_at": format_ts_ph(entry.get("added_at")),
             "added_at_iso": (entry.get("added_at") or "").strip(),
             "last_check": format_ts_ph(latest.get("timestamp")),
             "loss": latest.get("loss"),
             "avg_ms": latest.get("avg_ms"),
+            "mode": latest.get("mode") or "",
             "ok": bool(latest.get("ok")) if latest else False,
             "uptime_pct": uptime_pct,
+            "stable_total": total,
+            "stable_failures": failures,
+            "stable_loss_avg": stats.get("loss_avg"),
+            "stable_avg_ms_avg": stats.get("avg_ms_avg"),
             "down_for": down_for,
+            "down_since_iso": (st.get("down_since") or "").strip(),
             "optical_rx": opt.get("rx"),
             "optical_tx": opt.get("tx"),
             "optical_last": format_ts_ph(opt.get("timestamp")),
+            "optical_last_iso": (opt.get("timestamp") or "").strip(),
+            "last_fixed_at_iso": (entry.get("last_fixed_at") or "").strip(),
+            "last_fixed_at_ph": format_ts_ph(entry.get("last_fixed_at")),
+            "last_fixed_reason": (entry.get("last_fixed_reason") or "").strip(),
+            "last_fixed_mode": (entry.get("last_fixed_mode") or "").strip(),
         }
 
     under_rows = [build_row(pppoe) for pppoe in pppoes if (entry_map.get(pppoe, {}).get("status") or "under") == "under"]
     level2_rows = [build_row(pppoe) for pppoe in pppoes if (entry_map.get(pppoe, {}).get("status") or "") == "level2"]
+
+    history_query = (request.query_params.get("q") or "").strip() if active_tab == "history" else ""
+    history_page = _parse_table_page(request.query_params.get("page"), default=1) if active_tab == "history" else 1
+    history = list_surveillance_history(query=history_query, page=history_page, limit=50)
+
+    message = (request.query_params.get("msg") or "").strip()
+
+    history_rows = []
+    if history.get("rows"):
+        for row in history["rows"]:
+            started_iso = (row.get("started_at") or "").strip()
+            ended_iso = (row.get("ended_at") or "").strip()
+            history_rows.append(
+                {
+                    "id": row.get("id"),
+                    "pppoe": row.get("pppoe") or "",
+                    "source": row.get("source") or "",
+                    "last_ip": row.get("last_ip") or "",
+                    "last_state": row.get("last_state") or "",
+                    "observed_count": int(row.get("observed_count") or 0),
+                    "end_reason": (row.get("end_reason") or "").strip().lower(),
+                    "end_note": (row.get("end_note") or "").strip(),
+                    "started_at_iso": started_iso,
+                    "ended_at_iso": ended_iso,
+                    "started_at_ph": format_ts_ph(started_iso),
+                    "ended_at_ph": format_ts_ph(ended_iso),
+                    "active": not bool(ended_iso),
+                    "currently_active": bool((row.get("pppoe") or "") in entry_map),
+                }
+            )
+
+    total = int(history.get("total") or 0)
+    limit = int(history.get("limit") or 50)
+    page = int(history.get("page") or 1)
+    pages = max((total + limit - 1) // limit, 1) if limit else 1
+    history_pagination = {"page": page, "pages": pages, "total": total}
+
+    optical_cfg = get_settings("optical", OPTICAL_DEFAULTS)
+    optical_class = (optical_cfg.get("classification") or {}) if isinstance(optical_cfg.get("classification"), dict) else {}
 
     return templates.TemplateResponse(
         "surveillance.html",
@@ -3406,8 +4214,544 @@ async def surveillance_page(request: Request):
                 "under_rows": under_rows,
                 "level2_rows": level2_rows,
                 "stable_window_minutes": stable_window_minutes,
+                "stable_window_days": stable_window_days,
+                "history_rows": history_rows,
+                "history_query": history_query,
+                "history_pagination": history_pagination,
+                "message": message,
+                "optical_window_options": OPTICAL_WINDOW_OPTIONS,
+                "surv_optical_chart_min_dbm": float(optical_class.get("chart_min_dbm", -35.0) or -35.0),
+                "surv_optical_chart_max_dbm": float(optical_class.get("chart_max_dbm", -10.0) or -10.0),
+                "surv_optical_tx_realistic_min_dbm": float(optical_class.get("tx_realistic_min_dbm", -10.0) or -10.0),
+                "surv_optical_tx_realistic_max_dbm": float(optical_class.get("tx_realistic_max_dbm", 10.0) or 10.0),
             },
         ),
+    )
+
+
+@app.get("/surveillance/series", response_class=JSONResponse)
+async def surveillance_series(pppoe: str, window: int = 24):
+    pppoe = (pppoe or "").strip()
+    if not pppoe:
+        return JSONResponse({"hours": 0, "series": []})
+    try:
+        hours = int(str(window).strip())
+    except Exception:
+        hours = 24
+    if hours not in {1, 6, 12, 24, 168}:
+        hours = 24
+    now = datetime.utcnow().replace(microsecond=0)
+    since_iso = (now - timedelta(hours=hours)).replace(microsecond=0).isoformat() + "Z"
+    until_iso = now.isoformat() + "Z"
+    account_id = _accounts_ping_account_id_for_pppoe(pppoe)
+    rows = get_accounts_ping_series_range(account_id, since_iso, until_iso)
+
+    def _merge_rows(rows_in):
+        merged = []
+        cur = None
+        cur_ts = None
+        for row in rows_in or []:
+            ts = (row.get("timestamp") or "").strip()
+            if not ts:
+                continue
+            ok = bool(row.get("ok"))
+            loss = row.get("loss")
+            avg_ms = row.get("avg_ms")
+            mode = row.get("mode")
+            if cur is None or ts != cur_ts:
+                if cur is not None:
+                    merged.append(cur)
+                cur_ts = ts
+                cur = {"ts": ts, "ok": ok, "loss": loss, "avg_ms": avg_ms, "mode": mode}
+                continue
+            cur["ok"] = bool(cur.get("ok")) or ok
+            # Preserve worst-case values per second.
+            for k, v in (("loss", loss), ("avg_ms", avg_ms)):
+                a = cur.get(k)
+                b = v
+                try:
+                    av = float(a) if a is not None else None
+                except Exception:
+                    av = None
+                try:
+                    bv = float(b) if b is not None else None
+                except Exception:
+                    bv = None
+                if av is None:
+                    cur[k] = b
+                elif bv is None:
+                    pass
+                else:
+                    cur[k] = b if bv > av else a
+        if cur is not None:
+            merged.append(cur)
+        return merged
+
+    series = _merge_rows(rows)
+    return JSONResponse({"pppoe": pppoe, "hours": hours, "since": since_iso, "until": until_iso, "series": series})
+
+
+def _surv_rollup_points_and_stats(rollups, bucket_seconds=60):
+    points = []
+    sample_total = 0
+    ok_total = 0
+    avg_sum_total = 0.0
+    avg_count_total = 0
+    loss_sum_total = 0.0
+    loss_count_total = 0
+    max_latency = None
+    max_loss = None
+    loss100_seconds = 0
+    downtime_seconds = 0.0
+
+    for row in rollups or []:
+        ts = (row.get("bucket_ts") or "").strip()
+        if not ts:
+            continue
+        sc = int(row.get("sample_count") or 0)
+        oc = int(row.get("ok_count") or 0)
+        sample_total += sc
+        ok_total += oc
+
+        a_sum = row.get("avg_sum")
+        a_cnt = int(row.get("avg_count") or 0)
+        l_sum = row.get("loss_sum")
+        l_cnt = int(row.get("loss_count") or 0)
+
+        if a_sum is not None:
+            try:
+                avg_sum_total += float(a_sum)
+            except Exception:
+                pass
+        avg_count_total += a_cnt
+
+        if l_sum is not None:
+            try:
+                loss_sum_total += float(l_sum)
+            except Exception:
+                pass
+        loss_count_total += l_cnt
+
+        avg_ms = (float(a_sum) / a_cnt) if (a_sum is not None and a_cnt) else None
+        loss_pct = (float(l_sum) / l_cnt) if (l_sum is not None and l_cnt) else None
+        points.append({"ts": ts, "avg_ms": avg_ms, "loss": loss_pct})
+
+        if avg_ms is not None:
+            max_latency = avg_ms if max_latency is None else max(max_latency, avg_ms)
+        if loss_pct is not None:
+            max_loss = loss_pct if max_loss is None else max(max_loss, loss_pct)
+            # Downtime is an "equivalent downtime" derived from loss%.
+            # Example: 10% loss over a 60s bucket contributes ~6 seconds of downtime.
+            try:
+                downtime_seconds += (float(loss_pct) / 100.0) * float(bucket_seconds)
+            except Exception:
+                pass
+            if loss_pct >= 99.999:
+                loss100_seconds += int(bucket_seconds)
+
+    avg_latency = (avg_sum_total / avg_count_total) if avg_count_total else None
+    avg_loss = (loss_sum_total / loss_count_total) if loss_count_total else None
+    uptime_pct = (ok_total / sample_total * 100.0) if sample_total else 0.0
+    return {
+        "points": points,
+        "stats": {
+            "samples": sample_total,
+            "uptime_pct": uptime_pct,
+            "avg_latency_ms": avg_latency,
+            "max_latency_ms": max_latency,
+            "avg_loss_pct": avg_loss,
+            "max_loss_pct": max_loss,
+            "loss100_seconds": loss100_seconds,
+            "downtime_seconds": int(round(downtime_seconds)),
+            "bucket_seconds": int(bucket_seconds),
+        },
+    }
+
+
+def _surv_raw_points_and_stats(rows):
+    items = []
+    for row in rows or []:
+        ts = (row.get("timestamp") or "").strip()
+        if not ts:
+            continue
+        dt = _parse_iso_z(ts)
+        if not dt:
+            continue
+        items.append(
+            {
+                "ts": ts,
+                "dt": dt,
+                "ok": bool(row.get("ok")),
+                "loss": row.get("loss"),
+                "avg_ms": row.get("avg_ms"),
+            }
+        )
+    items.sort(key=lambda x: x["dt"])
+    if not items:
+        return {"points": [], "stats": {"samples": 0, "uptime_pct": 0.0, "avg_latency_ms": None, "max_latency_ms": None, "avg_loss_pct": None, "max_loss_pct": None, "loss100_seconds": 0, "downtime_seconds": 0, "bucket_seconds": 0}}
+
+    # Collapse duplicate timestamps (common when multiple checks happen within the same second)
+    # by keeping the "worst" values for that timestamp. Without this, spike samples can be
+    # de-duplicated away later and mini charts can misleadingly look "clean".
+    merged = []
+    cur = None
+    for it in items:
+        if cur is None or it["dt"] != cur["dt"]:
+            if cur is not None:
+                merged.append(cur)
+            cur = dict(it)
+            continue
+        # Same timestamp: merge (worst-case).
+        cur["ok"] = bool(cur.get("ok")) or bool(it.get("ok"))
+        for k in ("loss", "avg_ms"):
+            a = cur.get(k)
+            b = it.get(k)
+            try:
+                av = float(a) if a is not None else None
+            except Exception:
+                av = None
+            try:
+                bv = float(b) if b is not None else None
+            except Exception:
+                bv = None
+            if av is None:
+                cur[k] = b
+            elif bv is None:
+                pass
+            else:
+                cur[k] = b if bv > av else a
+    if cur is not None:
+        merged.append(cur)
+    items = merged
+
+    deltas = []
+    for i in range(len(items) - 1):
+        d = (items[i + 1]["dt"] - items[i]["dt"]).total_seconds()
+        if d <= 0:
+            continue
+        deltas.append(d)
+    deltas_sorted = sorted(deltas)
+    if deltas_sorted:
+        mid = deltas_sorted[len(deltas_sorted) // 2]
+        default_dt = max(1.0, min(float(mid), 300.0))
+    else:
+        default_dt = 60.0
+
+    sample_total = 0
+    ok_total = 0
+    avg_sum_total = 0.0
+    avg_count_total = 0
+    loss_sum_total = 0.0
+    loss_count_total = 0
+    max_latency = None
+    max_loss = None
+    loss100_seconds = 0.0
+    downtime_seconds = 0.0
+
+    for i, it in enumerate(items):
+        sample_total += 1
+        if it["ok"]:
+            ok_total += 1
+        avg_ms = it["avg_ms"]
+        if avg_ms is not None:
+            try:
+                v = float(avg_ms)
+                avg_sum_total += v
+                avg_count_total += 1
+                max_latency = v if max_latency is None else max(max_latency, v)
+            except Exception:
+                pass
+        loss = it["loss"]
+        loss_pct = None
+        if loss is not None:
+            try:
+                loss_pct = float(loss)
+                loss_sum_total += loss_pct
+                loss_count_total += 1
+                max_loss = loss_pct if max_loss is None else max(max_loss, loss_pct)
+            except Exception:
+                loss_pct = None
+
+        if i < len(items) - 1:
+            duration = (items[i + 1]["dt"] - it["dt"]).total_seconds()
+        else:
+            duration = default_dt
+        if duration <= 0:
+            duration = default_dt
+        duration = max(1.0, min(float(duration), 300.0))
+
+        if loss_pct is not None:
+            downtime_seconds += (loss_pct / 100.0) * duration
+            if loss_pct >= 99.999:
+                loss100_seconds += duration
+
+    avg_latency = (avg_sum_total / avg_count_total) if avg_count_total else None
+    avg_loss = (loss_sum_total / loss_count_total) if loss_count_total else None
+    uptime_pct = (ok_total / sample_total * 100.0) if sample_total else 0.0
+    points = [{"ts": it["ts"], "avg_ms": (float(it["avg_ms"]) if it["avg_ms"] is not None else None), "loss": (float(it["loss"]) if it["loss"] is not None else None)} for it in items]
+    return {
+        "points": points,
+        "stats": {
+            "samples": sample_total,
+            "uptime_pct": uptime_pct,
+            "avg_latency_ms": avg_latency,
+            "max_latency_ms": max_latency,
+            "avg_loss_pct": avg_loss,
+            "max_loss_pct": max_loss,
+            "loss100_seconds": int(round(loss100_seconds)),
+            "downtime_seconds": int(round(downtime_seconds)),
+            "bucket_seconds": int(round(default_dt)),
+        },
+    }
+
+
+def _surv_downsample_points(points, max_points=96):
+    pts = list(points or [])
+    if len(pts) <= max_points:
+        return pts
+    # Preserve spikes by including max-loss point per chunk (plus endpoints).
+    # This is important for mini charts where rare loss spikes would otherwise be skipped.
+    step = max(1, int((len(pts) + max_points - 1) // max_points))
+    out = []
+    for i in range(0, len(pts), step):
+        chunk = pts[i : i + step]
+        if not chunk:
+            continue
+        out.append(chunk[0])
+
+        # Add peak loss point (if any).
+        best_loss = None
+        for p in chunk:
+            loss = p.get("loss")
+            if loss is None:
+                continue
+            try:
+                v = float(loss)
+            except Exception:
+                continue
+            if best_loss is None or v > best_loss[0]:
+                best_loss = (v, p)
+        if best_loss is not None:
+            out.append(best_loss[1])
+
+        # Add peak latency point (if any).
+        best_lat = None
+        for p in chunk:
+            avg_ms = p.get("avg_ms")
+            if avg_ms is None:
+                continue
+            try:
+                v = float(avg_ms)
+            except Exception:
+                continue
+            if best_lat is None or v > best_lat[0]:
+                best_lat = (v, p)
+        if best_lat is not None:
+            out.append(best_lat[1])
+
+        out.append(chunk[-1])
+
+    # De-duplicate by timestamp while preserving order, but keep the "worst" values
+    # when duplicates exist so we don't lose spikes.
+    seen = {}
+    order = []
+    for p in out:
+        ts = (p.get("ts") or "").strip()
+        if not ts:
+            continue
+        if ts not in seen:
+            seen[ts] = dict(p)
+            order.append(ts)
+            continue
+        existing = seen[ts]
+        for k in ("loss", "avg_ms"):
+            a = existing.get(k)
+            b = p.get(k)
+            try:
+                av = float(a) if a is not None else None
+            except Exception:
+                av = None
+            try:
+                bv = float(b) if b is not None else None
+            except Exception:
+                bv = None
+            if av is None:
+                existing[k] = b
+            elif bv is None:
+                pass
+            else:
+                existing[k] = b if bv > av else a
+    return [seen[ts] for ts in order]
+
+
+@app.get("/surveillance/series_range", response_class=JSONResponse)
+async def surveillance_series_range(pppoe: str, since: str, until: str):
+    pppoe = (pppoe or "").strip()
+    since = (since or "").strip()
+    until = (until or "").strip()
+    if not pppoe or not since or not until:
+        return JSONResponse({"pppoe": pppoe, "series": []})
+    account_id = _accounts_ping_account_id_for_pppoe(pppoe)
+    rows = get_accounts_ping_series_range(account_id, since, until)
+    # Keep the range chart consistent with the dropdown chart by using the same raw dataset.
+    series = []
+    cur = None
+    cur_ts = None
+    for row in rows or []:
+        ts = (row.get("timestamp") or "").strip()
+        if not ts:
+            continue
+        ok = bool(row.get("ok"))
+        loss = row.get("loss")
+        avg_ms = row.get("avg_ms")
+        mode = row.get("mode")
+        if cur is None or ts != cur_ts:
+            if cur is not None:
+                series.append(cur)
+            cur_ts = ts
+            cur = {"ts": ts, "ok": ok, "loss": loss, "avg_ms": avg_ms, "mode": mode}
+            continue
+        cur["ok"] = bool(cur.get("ok")) or ok
+        for k, v in (("loss", loss), ("avg_ms", avg_ms)):
+            a = cur.get(k)
+            b = v
+            try:
+                av = float(a) if a is not None else None
+            except Exception:
+                av = None
+            try:
+                bv = float(b) if b is not None else None
+            except Exception:
+                bv = None
+            if av is None:
+                cur[k] = b
+            elif bv is None:
+                pass
+            else:
+                cur[k] = b if bv > av else a
+    if cur is not None:
+        series.append(cur)
+    return JSONResponse({"pppoe": pppoe, "since": since, "until": until, "series": series})
+
+
+@app.get("/surveillance/timeline", response_class=JSONResponse)
+async def surveillance_timeline(pppoe: str, until: str = ""):
+    pppoe = (pppoe or "").strip()
+    if not pppoe:
+        return JSONResponse({"pppoe": "", "days": [], "summary": {}, "total": {}})
+
+    raw = get_settings("surveillance", SURVEILLANCE_DEFAULTS)
+    settings = normalize_surveillance_settings(raw)
+    entry_map = _surveillance_entry_map(settings)
+    entry = entry_map.get(pppoe) or {}
+    added_at_iso = (entry.get("added_at") or "").strip()
+    added_dt = _parse_iso_z(added_at_iso) or datetime.utcnow().replace(microsecond=0)
+    tz = ZoneInfo("Asia/Manila")
+    added_local = added_dt.replace(tzinfo=timezone.utc).astimezone(tz)
+    now_local = datetime.now(tz)
+
+    # Day 1 is the calendar day the account was added to Surveillance (Asia/Manila).
+    # Day 0 is a 7-day overview (stats + optional chart range).
+    start_day = added_local.date()
+    current_day_index = (now_local.date() - start_day).days + 1
+    if current_day_index < 1:
+        current_day_index = 1
+    total_days = max(7, current_day_index + 1)
+
+    def day_start_local(day_date):
+        return datetime(day_date.year, day_date.month, day_date.day, 0, 0, 0, tzinfo=tz)
+
+    def to_utc_iso(dt_local):
+        return dt_local.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+    account_id = _accounts_ping_account_id_for_pppoe(pppoe)
+
+    day_items = []
+    # Day 0 is a rolling "Last 7d" overview. Anchor it to the same `until` the big chart uses
+    # so the Day 0 tile matches the dropdown's 7d window exactly.
+    anchor_until = (until or "").strip()
+    anchor_dt = _parse_iso_z(anchor_until) if anchor_until else None
+    now_utc = (anchor_dt or datetime.utcnow()).replace(microsecond=0)
+    range7_since_utc = (now_utc - timedelta(hours=168)).replace(microsecond=0)
+    range7_until_utc = now_utc
+    range7_since_iso = range7_since_utc.isoformat() + "Z"
+    range7_until_iso = range7_until_utc.isoformat() + "Z"
+    # Use raw samples for Day 0 to match the big chart's 7d dropdown (investigation view).
+    summary7_rows = get_accounts_ping_series_range(account_id, range7_since_iso, range7_until_iso)
+    summary7_payload = _surv_raw_points_and_stats(summary7_rows)
+    summary7 = summary7_payload["stats"]
+    summary7_points = _surv_downsample_points(summary7_payload["points"], max_points=160)
+
+    # Total since added (rounded down to minute boundary).
+    added_floor = added_dt.replace(second=0, microsecond=0)
+    total_rollups = get_accounts_ping_rollups_range(
+        account_id,
+        added_floor.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z"),
+        to_utc_iso(now_local + timedelta(minutes=1)),
+    )
+    total_stats = _surv_rollup_points_and_stats(total_rollups, bucket_seconds=60)["stats"]
+
+    for idx in range(1, total_days + 1):
+        day_date = start_day + timedelta(days=idx - 1)
+        kind = "future"
+        if day_date < now_local.date():
+            kind = "past"
+        elif day_date == now_local.date():
+            kind = "today"
+
+        start_local = day_start_local(day_date)
+        until_local = day_start_local(day_date + timedelta(days=1))
+        # For today, stop at "now" for partial rendering.
+        query_until_local = until_local if kind == "past" else min(until_local, now_local + timedelta(minutes=1))
+
+        series = []
+        stats = None
+        if kind != "future":
+            rollups = get_accounts_ping_rollups_range(account_id, to_utc_iso(start_local), to_utc_iso(query_until_local))
+            payload = _surv_rollup_points_and_stats(rollups, bucket_seconds=60)
+            stats = payload["stats"]
+            series = _surv_downsample_points(payload["points"], max_points=96)
+
+        hours_so_far = None
+        if kind == "today":
+            seconds = max(0, (now_local - start_local).total_seconds())
+            hours_so_far = round(seconds / 3600.0, 1)
+
+        day_items.append(
+            {
+                "index": idx,
+                "date": day_date.isoformat(),
+                "label": f"Day {idx}",
+                "date_label": start_local.strftime("%b %d"),
+                "kind": kind,
+                "hours_so_far": hours_so_far,
+                "start_iso": to_utc_iso(start_local),
+                "until_iso": to_utc_iso(until_local),
+                "series": [{"ts": p["ts"], "loss": p["loss"], "avg_ms": p["avg_ms"]} for p in series],
+                "stats": stats,
+            }
+        )
+
+    return JSONResponse(
+        {
+            "pppoe": pppoe,
+            "added_at": added_at_iso,
+            "start_day": start_day.isoformat(),
+            "current_day_index": current_day_index,
+            "total_days": total_days,
+            "day0": {
+                "label": "Day 0",
+                "title": "Last 7d",
+                "start_iso": range7_since_iso,
+                "until_iso": range7_until_iso,
+                "query_until_iso": range7_until_iso,
+                "series": [{"ts": p["ts"], "loss": p["loss"], "avg_ms": p["avg_ms"]} for p in summary7_points],
+                "stats": summary7,
+            },
+            "days": day_items,
+            "summary7": summary7,
+            "total": total_stats,
+        }
     )
 
 
@@ -3423,9 +4767,41 @@ async def surveillance_settings_save(request: Request):
         except Exception:
             return float(default)
 
+    def _minutes_from_days(field, default_minutes, min_minutes=1):
+        default_days = float(default_minutes) / 1440.0
+        days = _float(field, default_days)
+        if days <= 0:
+            days = default_days
+        minutes = int(round(days * 1440.0))
+        if minutes < min_minutes:
+            minutes = min_minutes
+        return minutes
+
     settings = {
         **current,
         "enabled": parse_bool(form, "enabled"),
+        "auto_add": {
+            "enabled": parse_bool(form, "auto_add_enabled"),
+            "window_days": _float("auto_add_window_days", (current.get("auto_add", {}) or {}).get("window_days", 3)),
+            "min_down_events": parse_int(
+                form,
+                "auto_add_min_down_events",
+                (current.get("auto_add", {}) or {}).get("min_down_events", 5),
+            ),
+            "scan_interval_minutes": parse_int(
+                form,
+                "auto_add_scan_interval_minutes",
+                (current.get("auto_add", {}) or {}).get("scan_interval_minutes", 5),
+            ),
+            "max_add_per_eval": parse_int(
+                form,
+                "auto_add_max_add_per_eval",
+                (current.get("auto_add", {}) or {}).get("max_add_per_eval", 3),
+            ),
+            "sources": {
+                "accounts_ping": parse_bool(form, "auto_add_source_accounts_ping"),
+            },
+        },
         "ping": {
             **(current.get("ping") or {}),
             "interval_seconds": parse_int(form, "interval_seconds", current["ping"].get("interval_seconds", 1)),
@@ -3451,17 +4827,48 @@ async def surveillance_settings_save(request: Request):
         },
         "stability": {
             **(current.get("stability") or {}),
-            "stable_window_minutes": parse_int(form, "stable_window_minutes", current["stability"].get("stable_window_minutes", 10)),
+            "stable_window_minutes": _minutes_from_days(
+                "stable_window_days",
+                current["stability"].get("stable_window_minutes", 10),
+                min_minutes=1,
+            ),
             "uptime_threshold_pct": _float("uptime_threshold_pct", current["stability"].get("uptime_threshold_pct", 95.0)),
             "latency_max_ms": _float("latency_max_ms", current["stability"].get("latency_max_ms", 15.0)),
+            "loss_max_pct": _float("loss_max_pct", current["stability"].get("loss_max_pct", 100.0)),
             "optical_rx_min_dbm": _float("optical_rx_min_dbm", current["stability"].get("optical_rx_min_dbm", -24.0)),
-            "require_optical": parse_bool(form, "require_optical"),
-            "escalate_after_minutes": parse_int(
-                form, "escalate_after_minutes", current["stability"].get("escalate_after_minutes", current["stability"].get("stable_window_minutes", 10))
+            "require_optical": True,
+            "escalate_after_minutes": _minutes_from_days(
+                "escalate_after_days",
+                current["stability"].get(
+                    "escalate_after_minutes", current["stability"].get("stable_window_minutes", 10)
+                ),
+                min_minutes=1,
+            ),
+            "level2_autofix_after_minutes": _minutes_from_days(
+                "level2_autofix_after_days",
+                current["stability"].get("level2_autofix_after_minutes", 30),
+                min_minutes=1,
             ),
         },
         "entries": list(entry_map.values()),
     }
+    # normalize auto-add numeric bounds
+    try:
+        wd = float(settings["auto_add"].get("window_days", 3) or 3)
+    except Exception:
+        wd = 3.0
+    if wd <= 0:
+        wd = 3.0
+    settings["auto_add"]["window_days"] = wd
+    settings["auto_add"]["min_down_events"] = max(int(settings["auto_add"].get("min_down_events", 5) or 5), 1)
+    settings["auto_add"]["scan_interval_minutes"] = max(int(settings["auto_add"].get("scan_interval_minutes", 5) or 5), 1)
+    try:
+        mae = int(settings["auto_add"].get("max_add_per_eval", 3))
+    except Exception:
+        mae = 3
+    if mae < 0:
+        mae = 0
+    settings["auto_add"]["max_add_per_eval"] = mae
 
     save_settings("surveillance", settings)
     return RedirectResponse(url="/surveillance?tab=settings", status_code=303)
@@ -3498,9 +4905,19 @@ async def surveillance_add(request: Request):
             "added_at": now_iso,
             "updated_at": now_iso,
             "level2_at": "",
+            "last_fixed_at": "",
+            "last_fixed_reason": "",
+            "last_fixed_mode": "",
+            "added_mode": "manual",
+            "auto_source": "",
+            "auto_reason": "",
         }
     settings["entries"] = list(entry_map.values())
     save_settings("surveillance", settings)
+    try:
+        ensure_surveillance_session(pppoe, started_at=now_iso, source=source, ip=ip, state="under")
+    except Exception:
+        pass
     return JSONResponse({"ok": True, "pppoe": pppoe})
 
 
@@ -3520,6 +4937,17 @@ async def surveillance_undo(request: Request):
         return JSONResponse({"ok": False, "error": "Cannot undo"}, status_code=400)
     if (datetime.utcnow() - added).total_seconds() > 5:
         return JSONResponse({"ok": False, "error": "Undo window expired"}, status_code=400)
+    try:
+        end_surveillance_session(
+            pppoe,
+            "removed",
+            started_at=(entry.get("added_at") or "").strip(),
+            source=(entry.get("source") or "").strip(),
+            ip=(entry.get("ip") or "").strip(),
+            state=(entry.get("status") or "under"),
+        )
+    except Exception:
+        pass
     entry_map.pop(pppoe, None)
     settings["entries"] = list(entry_map.values())
     save_settings("surveillance", settings)
@@ -3533,6 +4961,18 @@ async def surveillance_remove(request: Request):
     settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
     entry_map = _surveillance_entry_map(settings)
     if pppoe:
+        entry = entry_map.get(pppoe) or {}
+        try:
+            end_surveillance_session(
+                pppoe,
+                "removed",
+                started_at=(entry.get("added_at") or "").strip(),
+                source=(entry.get("source") or "").strip(),
+                ip=(entry.get("ip") or "").strip(),
+                state=(entry.get("status") or "under"),
+            )
+        except Exception:
+            pass
         entry_map.pop(pppoe, None)
     settings["entries"] = list(entry_map.values())
     save_settings("surveillance", settings)
@@ -3540,18 +4980,192 @@ async def surveillance_remove(request: Request):
     return RedirectResponse(url=f"/surveillance?tab={urllib.parse.quote(tab)}", status_code=303)
 
 
+@app.post("/surveillance/remove_many", response_class=HTMLResponse)
+async def surveillance_remove_many(request: Request):
+    form = await request.form()
+    raw_pppoes = (form.get("pppoes") or "").strip()
+    tab = (form.get("tab") or "under").strip() or "under"
+
+    pppoes: list[str] = []
+    if raw_pppoes:
+        try:
+            parsed = json.loads(raw_pppoes)
+            if isinstance(parsed, list):
+                for item in parsed:
+                    if isinstance(item, str) and item.strip():
+                        pppoes.append(item.strip())
+        except Exception:
+            # Fallback: comma-separated
+            pppoes = [p.strip() for p in raw_pppoes.split(",") if p.strip()]
+
+    if not pppoes:
+        return RedirectResponse(url=f"/surveillance?tab={urllib.parse.quote(tab)}", status_code=303)
+
+    settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
+    entry_map = _surveillance_entry_map(settings)
+    # De-dupe while keeping order.
+    seen = set()
+    unique_pppoes = []
+    for p in pppoes:
+        if p in seen:
+            continue
+        seen.add(p)
+        unique_pppoes.append(p)
+
+    for pppoe in unique_pppoes:
+        entry = entry_map.get(pppoe) or {}
+        if not entry:
+            continue
+        try:
+            end_surveillance_session(
+                pppoe,
+                "removed",
+                started_at=(entry.get("added_at") or "").strip(),
+                source=(entry.get("source") or "").strip(),
+                ip=(entry.get("ip") or "").strip(),
+                state=(entry.get("status") or "under"),
+            )
+        except Exception:
+            pass
+        entry_map.pop(pppoe, None)
+
+    settings["entries"] = list(entry_map.values())
+    save_settings("surveillance", settings)
+    return RedirectResponse(url=f"/surveillance?tab={urllib.parse.quote(tab)}", status_code=303)
+
+
 @app.post("/surveillance/fixed", response_class=HTMLResponse)
 async def surveillance_fixed(request: Request):
     form = await request.form()
     pppoe = (form.get("pppoe") or "").strip()
+    reason = (form.get("reason") or "").strip()
     settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
     entry_map = _surveillance_entry_map(settings)
     if pppoe and pppoe in entry_map:
+        old = dict(entry_map.get(pppoe) or {})
+        if not reason or len(reason) < 3:
+            return RedirectResponse(
+                url=f"/surveillance?tab=level2&msg={urllib.parse.quote('Reason is required for Account Fixed.')}",
+                status_code=303,
+            )
+        if len(reason) > 500:
+            return RedirectResponse(
+                url=f"/surveillance?tab=level2&msg={urllib.parse.quote('Reason is too long (max 500 characters).')}",
+                status_code=303,
+            )
         now_iso = utc_now_iso()
+        try:
+            end_surveillance_session(
+                pppoe,
+                "fixed",
+                started_at=(old.get("added_at") or "").strip(),
+                source=(old.get("source") or "").strip(),
+                ip=(old.get("ip") or "").strip(),
+                state=(old.get("status") or "level2"),
+                note=reason,
+            )
+        except Exception:
+            pass
+
         entry_map[pppoe]["status"] = "under"
         entry_map[pppoe]["added_at"] = now_iso
         entry_map[pppoe]["updated_at"] = now_iso
         entry_map[pppoe]["level2_at"] = ""
+        entry_map[pppoe]["last_fixed_at"] = now_iso
+        entry_map[pppoe]["last_fixed_reason"] = reason
+        entry_map[pppoe]["last_fixed_mode"] = "manual"
+        try:
+            ensure_surveillance_session(
+                pppoe,
+                started_at=now_iso,
+                source=(entry_map[pppoe].get("source") or "").strip(),
+                ip=(entry_map[pppoe].get("ip") or "").strip(),
+                state="under",
+            )
+        except Exception:
+            pass
+    settings["entries"] = list(entry_map.values())
+    save_settings("surveillance", settings)
+    return RedirectResponse(url="/surveillance?tab=under", status_code=303)
+
+
+@app.post("/surveillance/fixed_many", response_class=HTMLResponse)
+async def surveillance_fixed_many(request: Request):
+    form = await request.form()
+    raw_pppoes = (form.get("pppoes") or "").strip()
+    reason = (form.get("reason") or "").strip()
+
+    pppoes: list[str] = []
+    if raw_pppoes:
+        try:
+            parsed = json.loads(raw_pppoes)
+            if isinstance(parsed, list):
+                for item in parsed:
+                    if isinstance(item, str) and item.strip():
+                        pppoes.append(item.strip())
+        except Exception:
+            pppoes = [p.strip() for p in raw_pppoes.split(",") if p.strip()]
+
+    if not pppoes:
+        return RedirectResponse(url="/surveillance?tab=level2", status_code=303)
+
+    if not reason or len(reason) < 3:
+        return RedirectResponse(
+            url=f"/surveillance?tab=level2&msg={urllib.parse.quote('Reason is required for Account Fixed.')}",
+            status_code=303,
+        )
+    if len(reason) > 500:
+        return RedirectResponse(
+            url=f"/surveillance?tab=level2&msg={urllib.parse.quote('Reason is too long (max 500 characters).')}",
+            status_code=303,
+        )
+
+    settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
+    entry_map = _surveillance_entry_map(settings)
+    now_iso = utc_now_iso()
+
+    seen = set()
+    unique_pppoes: list[str] = []
+    for p in pppoes:
+        if p in seen:
+            continue
+        seen.add(p)
+        unique_pppoes.append(p)
+
+    for pppoe in unique_pppoes:
+        if pppoe not in entry_map:
+            continue
+        old = dict(entry_map.get(pppoe) or {})
+        try:
+            end_surveillance_session(
+                pppoe,
+                "fixed",
+                started_at=(old.get("added_at") or "").strip(),
+                source=(old.get("source") or "").strip(),
+                ip=(old.get("ip") or "").strip(),
+                state=(old.get("status") or "level2"),
+                note=reason,
+            )
+        except Exception:
+            pass
+        entry_map[pppoe]["status"] = "under"
+        entry_map[pppoe]["added_at"] = now_iso
+        entry_map[pppoe]["updated_at"] = now_iso
+        entry_map[pppoe]["level2_at"] = ""
+        entry_map[pppoe]["last_fixed_at"] = now_iso
+        entry_map[pppoe]["last_fixed_reason"] = reason
+        entry_map[pppoe]["last_fixed_mode"] = "manual"
+        try:
+            ensure_surveillance_session(
+                pppoe,
+                started_at=now_iso,
+                source=(entry_map[pppoe].get("source") or "").strip(),
+                ip=(entry_map[pppoe].get("ip") or "").strip(),
+                state="under",
+            )
+        except Exception:
+            pass
+
     settings["entries"] = list(entry_map.values())
     save_settings("surveillance", settings)
     return RedirectResponse(url="/surveillance?tab=under", status_code=303)

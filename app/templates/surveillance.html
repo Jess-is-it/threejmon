@@ -8,282 +8,1293 @@
 
 <div class="card">
   <div class="card-body">
+    {% if message %}
+      <div class="alert alert-warning">
+        <div class="d-flex align-items-start">
+          <span class="me-2"><i class="ti ti-alert-triangle"></i></span>
+          <div>{{ message }}</div>
+        </div>
+      </div>
+    {% endif %}
     <ul class="nav nav-tabs" data-bs-toggle="tabs">
       <li class="nav-item">
         <a href="#surv-under" class="nav-link {% if active_tab == 'under' %}active{% endif %}" data-bs-toggle="tab">Under Surveillance</a>
       </li>
-      <li class="nav-item">
-        <a href="#surv-level2" class="nav-link {% if active_tab == 'level2' %}active{% endif %}" data-bs-toggle="tab">Level II Suspect Detected</a>
-      </li>
-      <li class="nav-item">
-        <a href="#surv-settings" class="nav-link {% if active_tab == 'settings' %}active{% endif %}" data-bs-toggle="tab">Settings</a>
-      </li>
-    </ul>
+	      <li class="nav-item">
+	        <a href="#surv-level2" class="nav-link {% if active_tab == 'level2' %}active{% endif %}" data-bs-toggle="tab">Level II Suspect Detected</a>
+	      </li>
+	      <li class="nav-item">
+	        <a href="#surv-history" class="nav-link {% if active_tab == 'history' %}active{% endif %}" data-bs-toggle="tab">History</a>
+	      </li>
+	      <li class="nav-item">
+	        <a href="#surv-settings" class="nav-link {% if active_tab == 'settings' %}active{% endif %}" data-bs-toggle="tab">Settings</a>
+	      </li>
+	    </ul>
 
     <div class="tab-content pt-4">
-      <div class="tab-pane {% if active_tab == 'under' %}active{% endif %}" id="surv-under">
-        <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
-          <div>
-            <h4 class="mb-1">Accounts Under Surveillance</h4>
-            <div class="text-muted small">Uptime % is calculated over the last {{ stable_window_minutes }} minutes.</div>
-          </div>
-          <a class="btn btn-outline-secondary btn-sm" href="/surveillance?tab=under">Refresh</a>
-        </div>
+	      <div class="tab-pane {% if active_tab == 'under' %}active{% endif %}" id="surv-under">
+	        <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
+		          <div>
+		            <h4 class="mb-1">Accounts Under Surveillance</h4>
+			            <div class="text-muted small">Stability checks use the last {{ stable_window_days|round(3) }} days window.</div>
+		            <div class="mt-2">
+		              {% set under_total = under_rows|length %}
+		              {% set under_auto = under_rows|selectattr('added_mode', 'equalto', 'auto')|list|length %}
+		              {% set under_manual = under_total - under_auto %}
+		              <span class="badge bg-indigo-lt text-indigo me-1">Total: {{ under_total }}</span>
+		              <span class="badge bg-azure-lt text-azure me-1">Auto: {{ under_auto }}</span>
+		              <span class="badge bg-cyan-lt text-cyan">Manual: {{ under_manual }}</span>
+		            </div>
+		          </div>
+		          <div class="d-flex align-items-center gap-2 flex-wrap">
+		            <div class="border rounded px-2 py-1">
+		              <label class="form-check form-switch m-0">
+		                <input class="form-check-input" type="checkbox" data-surv-multiselect-toggle="under" />
+		                <span class="form-check-label">Select multiple</span>
+		              </label>
+		            </div>
+		            <form method="post" action="/surveillance/remove_many" class="d-inline d-none" data-surv-bulk-form="under">
+		              <input type="hidden" name="tab" value="under" />
+		              <input type="hidden" name="pppoes" value="[]" data-surv-bulk-input="under" />
+		              <button type="submit" class="btn btn-outline-danger btn-sm" disabled data-surv-bulk-btn="under" title="Delete selected accounts">
+		                <i class="ti ti-trash me-1"></i>Delete Selected
+		              </button>
+		            </form>
+		            <div class="input-icon">
+		              <input class="form-control form-control-sm" type="text" placeholder="Search PPPoE / IP" data-surv-search="under" autocomplete="off" />
+	              <span class="input-icon-addon"><i class="ti ti-search"></i></span>
+	            </div>
+		            <a class="btn btn-outline-secondary btn-sm" href="/surveillance?tab=under">Refresh</a>
+		          </div>
+		        </div>
 
-        <div class="table-responsive">
-          <table class="table table-vcenter">
-            <thead>
-              <tr>
-                <th>PPPoE</th>
-                <th>IPv4</th>
-                <th>Ping</th>
-                <th>Loss</th>
-                <th>Latency</th>
-                <th>Uptime %</th>
-                <th>Under For</th>
-                <th>Down For</th>
-                <th>Last Ping</th>
-                <th>Optical RX</th>
-                <th>Optical Last</th>
-                <th class="text-end">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for row in under_rows %}
-                <tr data-pppoe="{{ row.pppoe }}" data-added-at="{{ row.added_at_iso }}">
-                  <td class="fw-semibold">{{ row.pppoe }}</td>
-                  <td>{{ row.ip or 'n/a' }}</td>
-                  <td>
-                    {% if row.ok %}
-                      <span class="badge bg-green-lt">Up</span>
-                    {% else %}
-                      <span class="badge bg-red-lt">Down</span>
-                    {% endif %}
-                  </td>
-                  <td>{{ row.loss is not none and ("%.1f"|format(row.loss) ~ "%") or "n/a" }}</td>
-                  <td>{{ row.avg_ms is not none and ("%.1f"|format(row.avg_ms) ~ "ms") or "n/a" }}</td>
-                  <td>{{ "%.1f"|format(row.uptime_pct) }}</td>
-                  <td><span class="surv-live-duration text-muted small">—</span></td>
-                  <td>{{ row.down_for or "—" }}</td>
-                  <td>{{ row.last_check or "n/a" }}</td>
-	                  <td>{{ row.optical_rx is not none and ("%.2f"|format(row.optical_rx) ~ " dBm") or "n/a" }}</td>
-	                  <td>{{ row.optical_last or "n/a" }}</td>
-	                  <td class="text-end">
-	                    <form method="post" action="/surveillance/remove" class="d-inline">
-	                      <input type="hidden" name="pppoe" value="{{ row.pppoe }}" />
-	                      <input type="hidden" name="tab" value="under" />
-	                      <button type="submit" class="badge bg-red-lt text-red header-icon-badge border-0" title="Remove" aria-label="Remove">
-	                        <i class="ti ti-trash"></i>
-	                      </button>
-	                    </form>
+	        <div data-surv-pane="under" data-surv-view="table">
+	          <div class="table-responsive" style="max-height: 70vh; overflow: auto;">
+		            <table class="table table-vcenter table-hover" data-surv-list-full="under">
+			              <thead>
+			                <tr>
+			                  <th class="w-1 d-none" data-surv-select-col="under">
+			                    <label class="form-check m-0">
+			                      <input class="form-check-input" type="checkbox" data-surv-select-all="under" aria-label="Select all" />
+			                    </label>
+			                  </th>
+			                  <th>PPPoE</th>
+			                  <th>IPv4</th>
+			                  <th>Ping</th>
+			                  <th>Loss</th>
+		                  <th>Latency</th>
+		                  <th>Added By</th>
+		                  <th>Under For</th>
+		                  <th>Down For</th>
+		                  <th>Last Ping</th>
+		                  <th>Optical RX</th>
+		                  <th>Optical Last</th>
+	                  <th class="text-end">Actions</th>
+	                </tr>
+	              </thead>
+	              <tbody>
+		                {% for row in under_rows %}
+		                  <tr
+		                    class="surv-row-full"
+		                    data-pppoe="{{ row.pppoe }}"
+		                    data-ip="{{ row.ip or '' }}"
+		                    data-added-mode="{{ row.added_mode or '' }}"
+		                    data-ok="{{ 1 if row.ok else 0 }}"
+		                    data-loss="{{ row.loss if row.loss is not none else '' }}"
+		                    data-avg-ms="{{ row.avg_ms if row.avg_ms is not none else '' }}"
+	                    data-uptime-pct="{{ '%.1f'|format(row.uptime_pct) }}"
+	                    data-stable-total="{{ row.stable_total or 0 }}"
+	                    data-stable-failures="{{ row.stable_failures or 0 }}"
+	                    data-stable-loss-avg="{{ row.stable_loss_avg if row.stable_loss_avg is not none else '' }}"
+	                    data-stable-avg-ms-avg="{{ row.stable_avg_ms_avg if row.stable_avg_ms_avg is not none else '' }}"
+	                    data-down-for="{{ row.down_for or '' }}"
+	                    data-down-since="{{ row.down_since_iso or '' }}"
+	                    data-last-check="{{ row.last_check or '' }}"
+	                    data-optical-rx="{{ row.optical_rx if row.optical_rx is not none else '' }}"
+		                    data-optical-last="{{ row.optical_last or '' }}"
+		                    data-optical-last-iso="{{ row.optical_last_iso or '' }}"
+			                    data-optical-device-id="{{ row.optical_device_id or '' }}"
+			                    data-mode="{{ row.mode or '' }}"
+			                    data-added-at="{{ row.added_at_iso }}">
+		                    <td class="d-none" data-surv-select-col="under">
+		                      <label class="form-check m-0">
+		                        <input class="form-check-input" type="checkbox" data-surv-select-item="under" value="{{ row.pppoe }}" aria-label="Select {{ row.pppoe }}" />
+		                      </label>
+		                    </td>
+					                    <td class="fw-semibold">
+					                      {% if row.last_fixed_at_iso %}
+					                        <span class="badge bg-blue-lt text-blue me-2"
+					                              title="{% if row.last_fixed_reason %}Fixed: {{ row.last_fixed_reason }}{% elif row.last_fixed_mode == 'auto' %}Auto fixed{% else %}Fixed{% endif %}">
+				                          <i class="ti ti-check me-1"></i>Fixed
+				                        </span>
+				                      {% endif %}
+				                      {{ row.pppoe }}
+				                    </td>
+		                    <td>{{ row.ip or 'n/a' }}</td>
+		                    <td>
+		                      {% if row.ok %}
+		                        <span class="badge bg-green-lt">Up</span>
+		                      {% else %}
+		                        <span class="badge bg-red-lt">Down</span>
+		                      {% endif %}
+		                    </td>
+		                    <td>{{ row.loss is not none and ("%.1f"|format(row.loss) ~ "%") or "n/a" }}</td>
+		                    <td>{{ row.avg_ms is not none and ("%.1f"|format(row.avg_ms) ~ "ms") or "n/a" }}</td>
+		                    <td>
+			                      {% if row.added_mode == 'auto' %}
+			                        <span class="badge bg-azure-lt text-azure"
+			                              title="Auto added by system{% if row.auto_source %} ({{ row.auto_source }}){% endif %}{% if row.auto_reason %}: {{ row.auto_reason }}{% endif %}">
+			                          <i class="ti ti-bolt me-1"></i>Auto
+			                        </span>
+			                      {% else %}
+			                        <span class="badge bg-secondary-lt text-secondary" title="Added manually by user">
+			                          <i class="ti ti-user me-1"></i>Manual
+		                        </span>
+		                      {% endif %}
+		                    </td>
+		                    <td><span class="surv-live-duration text-muted small">—</span></td>
+		                    <td>{{ row.down_for or "—" }}</td>
+		                    <td>{{ row.last_check or "n/a" }}</td>
+		                    <td>{{ row.optical_rx is not none and ("%.2f"|format(row.optical_rx) ~ " dBm") or "n/a" }}</td>
+	                    <td>{{ row.optical_last or "n/a" }}</td>
+		                    <td class="text-end">
+		                      <form method="post" action="/surveillance/remove" class="d-inline" data-surv-row-delete="under">
+		                        <input type="hidden" name="pppoe" value="{{ row.pppoe }}" />
+		                        <input type="hidden" name="tab" value="under" />
+		                        <button type="submit" class="badge bg-red-lt text-red header-icon-badge border-0" title="Remove" aria-label="Remove">
+		                          <i class="ti ti-trash"></i>
+	                        </button>
+	                      </form>
+	                    </td>
+	                  </tr>
+		                {% else %}
+		                  <tr>
+		                    <td colspan="13" class="text-muted p-3">No accounts under surveillance yet.</td>
+		                  </tr>
+		                {% endfor %}
+		              </tbody>
+		            </table>
+	          </div>
+	        </div>
+
+	        <div class="d-none" data-surv-pane="under" data-surv-view="split">
+	          <div class="row g-3">
+	          <div class="col-12 col-lg-4">
+	            <div class="card">
+	              <div class="card-body p-0">
+	                <div class="table-responsive" data-surv-list="under" style="max-height: 70vh; overflow: auto;">
+	                  <table class="table table-vcenter table-hover table-sm mb-0">
+		                    <thead>
+		                      <tr>
+		                        <th>PPPoE</th>
+		                        <th>Ping</th>
+		                        <th>Added</th>
+		                        <th>Under For</th>
+		                        <th class="text-end"> </th>
+		                      </tr>
+		                    </thead>
+	                    <tbody>
+	                      {% for row in under_rows %}
+	                        <tr
+                          class="surv-row"
+                          data-pppoe="{{ row.pppoe }}"
+                          data-ip="{{ row.ip or '' }}"
+                          data-ok="{{ 1 if row.ok else 0 }}"
+                          data-loss="{{ row.loss if row.loss is not none else '' }}"
+                          data-avg-ms="{{ row.avg_ms if row.avg_ms is not none else '' }}"
+                          data-uptime-pct="{{ '%.1f'|format(row.uptime_pct) }}"
+                          data-stable-total="{{ row.stable_total or 0 }}"
+                          data-stable-failures="{{ row.stable_failures or 0 }}"
+                          data-stable-loss-avg="{{ row.stable_loss_avg if row.stable_loss_avg is not none else '' }}"
+                          data-stable-avg-ms-avg="{{ row.stable_avg_ms_avg if row.stable_avg_ms_avg is not none else '' }}"
+                          data-down-for="{{ row.down_for or '' }}"
+                          data-down-since="{{ row.down_since_iso or '' }}"
+                          data-last-check="{{ row.last_check or '' }}"
+                          data-optical-rx="{{ row.optical_rx if row.optical_rx is not none else '' }}"
+	                          data-optical-last="{{ row.optical_last or '' }}"
+	                          data-optical-last-iso="{{ row.optical_last_iso or '' }}"
+	                          data-optical-device-id="{{ row.optical_device_id or '' }}"
+	                          data-mode="{{ row.mode or '' }}"
+	                          data-added-at="{{ row.added_at_iso }}">
+			                          <td class="fw-semibold text-truncate" style="max-width: 180px;">
+			                            {% if row.last_fixed_at_iso %}
+			                              <span class="badge bg-blue-lt text-blue me-1"
+			                                    title="{% if row.last_fixed_reason %}Fixed: {{ row.last_fixed_reason }}{% elif row.last_fixed_mode == 'auto' %}Auto fixed{% else %}Fixed{% endif %}">F</span>
+			                            {% endif %}
+			                            {{ row.pppoe }}
+			                          </td>
+	                          <td>
+	                            {% if row.ok %}
+	                              <span class="badge bg-green-lt">Up</span>
+	                            {% else %}
+	                              <span class="badge bg-red-lt">Down</span>
+	                            {% endif %}
+	                          </td>
+			                          <td>
+			                            {% if row.added_mode == 'auto' %}
+			                              <span class="badge bg-azure-lt text-azure"
+			                                    title="Auto added by system{% if row.auto_source %} ({{ row.auto_source }}){% endif %}{% if row.auto_reason %}: {{ row.auto_reason }}{% endif %}">
+			                                <i class="ti ti-bolt me-1"></i>Auto
+			                              </span>
+			                            {% else %}
+			                              <span class="badge bg-secondary-lt text-secondary" title="Added manually by user">
+			                                <i class="ti ti-user me-1"></i>Manual
+			                              </span>
+			                            {% endif %}
+			                          </td>
+		                          <td><span class="surv-live-duration text-muted small">—</span></td>
+		                          <td class="text-end">
+		                            <form method="post" action="/surveillance/remove" class="d-inline">
+		                              <input type="hidden" name="pppoe" value="{{ row.pppoe }}" />
+	                              <input type="hidden" name="tab" value="under" />
+	                              <button type="submit" class="btn btn-sm btn-outline-danger btn-icon" title="Remove" aria-label="Remove">
+	                                <i class="ti ti-trash"></i>
+	                              </button>
+	                            </form>
+	                          </td>
+	                        </tr>
+	                      {% else %}
+	                        <tr>
+	                          <td colspan="5" class="text-muted p-3">No accounts under surveillance yet.</td>
+	                        </tr>
+	                      {% endfor %}
+	                    </tbody>
+	                  </table>
+	                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="col-12 col-lg-8">
+            <div class="card"
+                 data-surv-detail="under"
+                 data-thr-uptime="{{ settings.stability.uptime_threshold_pct }}"
+                 data-thr-latency="{{ settings.stability.latency_max_ms }}"
+                 data-thr-loss="{{ settings.stability.loss_max_pct if settings.stability.loss_max_pct is defined else 100.0 }}"
+                 data-thr-optical="{{ settings.stability.optical_rx_min_dbm }}"
+	                 data-require-optical="1"
+                 data-stable-window-min="{{ settings.stability.stable_window_minutes }}">
+              <div class="card-body">
+                <div class="d-flex align-items-start justify-content-between flex-wrap gap-2">
+                  <div>
+                    <div class="d-flex align-items-center gap-2 flex-wrap">
+                      <span class="badge bg-yellow-lt text-yellow header-icon-badge" title="Under Surveillance" aria-label="Under Surveillance">
+                        <i class="ti ti-eye"></i>
+                      </span>
+                      <h3 class="m-0">
+                        <span data-surv-field="pppoe">Select an account</span>
+                      </h3>
+                      <span class="badge bg-secondary-lt text-secondary" data-surv-health-badge>—</span>
+                    </div>
+                    <div class="text-muted small mt-1">
+                      <span data-surv-field="ip"></span>
+                      <span class="ms-2">· Under for <span class="surv-detail-underfor">—</span></span>
+                      <span class="ms-2">· Last ping <span data-surv-field="last_check">—</span></span>
+                    </div>
+                  </div>
+		                  <div class="d-flex align-items-center gap-2">
+                        <span class="badge bg-secondary-lt text-secondary" title="Down For">
+                          <i class="ti ti-clock me-1"></i><span data-surv-field="down_for">—</span>
+                        </span>
+                        <span class="badge bg-secondary-lt text-secondary" title="Mode">
+                          <i class="ti ti-adjustments me-1"></i><span data-surv-field="mode">—</span>
+                        </span>
+		                    <div class="dropdown">
+		                      <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" data-surv-window-btn="under">Filter</button>
+		                      <div class="dropdown-menu dropdown-menu-end">
+		                        <button class="dropdown-item" type="button" data-surv-window="1">Last 1h</button>
+	                        <button class="dropdown-item" type="button" data-surv-window="6">Last 6h</button>
+	                        <button class="dropdown-item" type="button" data-surv-window="12">Last 12h</button>
+	                        <button class="dropdown-item" type="button" data-surv-window="24">Last 24h</button>
+		                        <button class="dropdown-item" type="button" data-surv-window="168">Last 7d</button>
+		                      </div>
+		                    </div>
+		                    <button type="button" class="badge bg-secondary-lt text-secondary header-icon-badge border-0" data-surv-close="under" title="Close" aria-label="Close">
+		                      <i class="ti ti-x"></i>
+		                    </button>
+		                  </div>
+		                </div>
+
+		                <div class="row g-2 mt-3">
+	                  <div class="col-6 col-lg-3">
+	                    <div class="border rounded p-2" data-kpi="ping">
+	                      <div class="d-flex align-items-center justify-content-between">
+	                        <div class="text-muted small">Ping</div>
+	                        <span class="badge bg-secondary-lt text-secondary" data-kpi-badge="ping">—</span>
+	                      </div>
+	                      <div class="fw-semibold" data-surv-field="ping_state">—</div>
+	                      <div class="text-muted small" data-kpi-goal="ping">Goal: Up</div>
+	                    </div>
+	                  </div>
+	                  <div class="col-6 col-lg-3">
+	                    <div class="border rounded p-2" data-kpi="latency">
+	                      <div class="d-flex align-items-center justify-content-between">
+	                        <div class="text-muted small">Latency</div>
+	                        <span class="badge bg-secondary-lt text-secondary" data-kpi-badge="latency">—</span>
+	                      </div>
+	                      <div class="fw-semibold"><span data-surv-field="avg_ms">—</span></div>
+	                      <div class="text-muted small" data-kpi-goal="latency">Goal: —</div>
+	                    </div>
+	                  </div>
+	                  <div class="col-6 col-lg-3">
+	                    <div class="border rounded p-2" data-kpi="loss">
+	                      <div class="d-flex align-items-center justify-content-between">
+	                        <div class="text-muted small">Loss</div>
+	                        <span class="badge bg-secondary-lt text-secondary" data-kpi-badge="loss">—</span>
+	                      </div>
+	                      <div class="fw-semibold"><span data-surv-field="loss">—</span></div>
+	                      <div class="text-muted small" data-kpi-goal="loss">Goal: —</div>
+	                    </div>
+	                  </div>
+		                  <div class="col-6 col-lg-3">
+		                    <div class="border rounded p-2" data-kpi="uptime">
+		                      <div class="d-flex align-items-center justify-content-between">
+		                        <div class="text-muted small">Uptime ({{ stable_window_days|round(3) }}d)</div>
+		                        <span class="badge bg-secondary-lt text-secondary" data-kpi-badge="uptime">—</span>
+		                      </div>
+		                      <div class="fw-semibold"><span data-surv-field="uptime_pct">—</span></div>
+		                      <div class="text-muted small" data-kpi-goal="uptime">Goal: —</div>
+		                    </div>
+		                  </div>
+		                  <div class="col-6 col-lg-3">
+		                    <div class="border rounded p-2" data-kpi="optical" data-surv-optical-open data-bs-toggle="modal" data-bs-target="#surv-optical-modal" title="View optical history">
+		                      <div class="d-flex align-items-center justify-content-between">
+		                        <div class="text-muted small">Optical RX</div>
+		                        <span class="badge bg-secondary-lt text-secondary" data-kpi-badge="optical">—</span>
+		                      </div>
+		                      <div class="fw-semibold">
+                            <span data-surv-field="optical_rx">—</span>
+                            <span class="text-muted small ms-1" data-surv-optical-time data-bs-toggle="tooltip" data-bs-placement="top"></span>
+                          </div>
+		                      <div class="text-muted small" data-kpi-goal="optical">Goal: —</div>
+		                    </div>
+		                  </div>
+			                </div>
+
+			                  <div class="mt-3">
+			                    <div id="surv-under-chart" style="height: 300px;"></div>
+			                    <div class="text-muted small mt-2">Latency and loss history based on raw ping results for the selected window.</div>
+			                    <div class="text-muted small mt-1" data-surv-range-label="under"></div>
+			                  <div class="mt-3" data-surv-timeline-wrap="under">
+			                    <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
+			                      <div class="fw-semibold">Daily Healing Timeline (7 Days)</div>
+			                      <div class="text-muted small">Day 0 is 7D overview. Day 1 is the day the account was added to Surveillance.</div>
+			                    </div>
+			                    <div class="d-flex gap-2 overflow-auto pt-2 pb-1" data-surv-timeline="under"></div>
+			                    <div class="mt-2" data-surv-timeline-total="under"></div>
+			                    <div class="text-muted small mt-1">“Downtime” is estimated from Loss% (equivalent time at 100% loss).</div>
+			                  </div>
+		                </div>
+	              </div>
+	            </div>
+	          </div>
+	        </div>
+	      </div>
+      </div>
+
+	      <div class="tab-pane {% if active_tab == 'level2' %}active{% endif %}" id="surv-level2">
+	        <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
+	          <div>
+	            <h4 class="mb-1 text-danger">Level II Suspect Detected</h4>
+	            <div class="text-muted small">Accounts that did not meet the stability requirements within the configured window.</div>
+	            <div class="mt-2">
+	              {% set level2_total = level2_rows|length %}
+	              {% set level2_auto = level2_rows|selectattr('added_mode', 'equalto', 'auto')|list|length %}
+	              {% set level2_manual = level2_total - level2_auto %}
+	              <span class="badge bg-indigo-lt text-indigo me-1">Total: {{ level2_total }}</span>
+	              <span class="badge bg-azure-lt text-azure me-1">Auto: {{ level2_auto }}</span>
+	              <span class="badge bg-cyan-lt text-cyan">Manual: {{ level2_manual }}</span>
+	            </div>
+	          </div>
+		          <div class="d-flex align-items-center gap-2 flex-wrap">
+		            <div class="border rounded px-2 py-1">
+		              <label class="form-check form-switch m-0">
+		                <input class="form-check-input" type="checkbox" data-surv-multiselect-toggle="level2" />
+		                <span class="form-check-label">Select multiple</span>
+		              </label>
+		            </div>
+		            <button type="button" class="btn btn-outline-success btn-sm d-none" disabled data-surv-bulk-fixed-btn="level2" title="Mark selected accounts as fixed">
+		              <i class="ti ti-check me-1"></i>Account Fixed
+		            </button>
+		            <form method="post" action="/surveillance/remove_many" class="d-inline d-none" data-surv-bulk-form="level2">
+		              <input type="hidden" name="tab" value="level2" />
+		              <input type="hidden" name="pppoes" value="[]" data-surv-bulk-input="level2" />
+		              <button type="submit" class="btn btn-outline-danger btn-sm" disabled data-surv-bulk-btn="level2" title="Delete selected accounts">
+		                <i class="ti ti-trash me-1"></i>Delete Selected
+		              </button>
+		            </form>
+		            <div class="input-icon">
+		              <input class="form-control form-control-sm" type="text" placeholder="Search PPPoE / IP" data-surv-search="level2" autocomplete="off" />
+	              <span class="input-icon-addon"><i class="ti ti-search"></i></span>
+	            </div>
+		            <a class="btn btn-outline-secondary btn-sm" href="/surveillance?tab=level2">Refresh</a>
+		          </div>
+		        </div>
+
+	        <div data-surv-pane="level2" data-surv-view="table">
+	          <div class="table-responsive" style="max-height: 70vh; overflow: auto;">
+		            <table class="table table-vcenter table-hover" data-surv-list-full="level2">
+		              <thead>
+		                <tr>
+		                  <th class="w-1 d-none" data-surv-select-col="level2">
+		                    <label class="form-check m-0">
+		                      <input class="form-check-input" type="checkbox" data-surv-select-all="level2" aria-label="Select all" />
+		                    </label>
+		                  </th>
+		                  <th>PPPoE</th>
+		                  <th>IPv4</th>
+			                  <th>Ping</th>
+		                  <th>Loss</th>
+		                  <th>Latency</th>
+		                  <th>Added By</th>
+		                  <th>Under For</th>
+		                  <th>Down For</th>
+		                  <th>Last Ping</th>
+		                  <th>Optical RX</th>
+	                  <th>Optical Last</th>
+	                  <th class="text-end">Actions</th>
+	                </tr>
+	              </thead>
+	              <tbody>
+		                {% for row in level2_rows %}
+		                  <tr
+		                    class="surv-row-full"
+		                    data-pppoe="{{ row.pppoe }}"
+		                    data-ip="{{ row.ip or '' }}"
+		                    data-added-mode="{{ row.added_mode or '' }}"
+		                    data-ok="{{ 1 if row.ok else 0 }}"
+		                    data-loss="{{ row.loss if row.loss is not none else '' }}"
+		                    data-avg-ms="{{ row.avg_ms if row.avg_ms is not none else '' }}"
+	                    data-uptime-pct="{{ '%.1f'|format(row.uptime_pct) }}"
+	                    data-stable-total="{{ row.stable_total or 0 }}"
+	                    data-stable-failures="{{ row.stable_failures or 0 }}"
+	                    data-stable-loss-avg="{{ row.stable_loss_avg if row.stable_loss_avg is not none else '' }}"
+	                    data-stable-avg-ms-avg="{{ row.stable_avg_ms_avg if row.stable_avg_ms_avg is not none else '' }}"
+	                    data-down-for="{{ row.down_for or '' }}"
+	                    data-down-since="{{ row.down_since_iso or '' }}"
+	                    data-last-check="{{ row.last_check or '' }}"
+	                    data-optical-rx="{{ row.optical_rx if row.optical_rx is not none else '' }}"
+		                    data-optical-last="{{ row.optical_last or '' }}"
+		                    data-optical-last-iso="{{ row.optical_last_iso or '' }}"
+			                    data-optical-device-id="{{ row.optical_device_id or '' }}"
+			                    data-mode="{{ row.mode or '' }}"
+			                    data-added-at="{{ row.added_at_iso }}">
+		                    <td class="d-none" data-surv-select-col="level2">
+		                      <label class="form-check m-0">
+		                        <input class="form-check-input" type="checkbox" data-surv-select-item="level2" value="{{ row.pppoe }}" aria-label="Select {{ row.pppoe }}" />
+		                      </label>
+		                    </td>
+				                    <td class="fw-semibold">
+				                      {{ row.pppoe }}
+				                    </td>
+		                    <td>{{ row.ip or 'n/a' }}</td>
+		                    <td>
+		                      {% if row.ok %}
+		                        <span class="badge bg-yellow-lt">Monitor</span>
+		                      {% else %}
+		                        <span class="badge bg-red-lt">Down</span>
+		                      {% endif %}
+		                    </td>
+		                    <td>{{ row.loss is not none and ("%.1f"|format(row.loss) ~ "%") or "n/a" }}</td>
+		                    <td>{{ row.avg_ms is not none and ("%.1f"|format(row.avg_ms) ~ "ms") or "n/a" }}</td>
+		                    <td>
+			                      {% if row.added_mode == 'auto' %}
+			                        <span class="badge bg-azure-lt text-azure"
+			                              title="Auto added by system{% if row.auto_source %} ({{ row.auto_source }}){% endif %}{% if row.auto_reason %}: {{ row.auto_reason }}{% endif %}">
+			                          <i class="ti ti-bolt me-1"></i>Auto
+			                        </span>
+			                      {% else %}
+			                        <span class="badge bg-secondary-lt text-secondary" title="Added manually by user">
+			                          <i class="ti ti-user me-1"></i>Manual
+		                        </span>
+		                      {% endif %}
+		                    </td>
+		                    <td><span class="surv-live-duration text-muted small">—</span></td>
+		                    <td>{{ row.down_for or "—" }}</td>
+		                    <td>{{ row.last_check or "n/a" }}</td>
+	                    <td>{{ row.optical_rx is not none and ("%.2f"|format(row.optical_rx) ~ " dBm") or "n/a" }}</td>
+	                    <td>{{ row.optical_last or "n/a" }}</td>
+			                    <td class="text-end">
+			                      <button type="button"
+			                              class="badge bg-green-lt text-green header-icon-badge border-0 surv-fixed-btn"
+			                              title="Account Fixed"
+			                              aria-label="Account Fixed"
+			                              data-pppoe="{{ row.pppoe }}"
+			                              data-surv-row-fixed="level2">
+			                        <i class="ti ti-check"></i>
+			                      </button>
+				                      <form method="post" action="/surveillance/remove" class="d-inline ms-2" data-surv-row-delete="level2">
+				                        <input type="hidden" name="pppoe" value="{{ row.pppoe }}" />
+				                        <input type="hidden" name="tab" value="level2" />
+			                        <button type="submit" class="badge bg-red-lt text-red header-icon-badge border-0" title="Remove" aria-label="Remove">
+			                          <i class="ti ti-trash"></i>
+		                        </button>
+		                      </form>
+		                    </td>
+	                  </tr>
+		                {% else %}
+		                  <tr>
+		                    <td colspan="13" class="text-muted p-3">No Level II suspects yet.</td>
+		                  </tr>
+		                {% endfor %}
+		              </tbody>
+		            </table>
+	          </div>
+	        </div>
+
+	        <div class="d-none" data-surv-pane="level2" data-surv-view="split">
+	          <div class="row g-3">
+	          <div class="col-12 col-lg-4">
+	            <div class="card">
+	              <div class="card-body p-0">
+	                <div class="table-responsive" data-surv-list="level2" style="max-height: 70vh; overflow: auto;">
+		                  <table class="table table-vcenter table-hover table-sm mb-0">
+		                    <thead>
+		                      <tr>
+		                        <th>PPPoE</th>
+		                        <th>Ping</th>
+		                        <th>Added</th>
+		                        <th>Down For</th>
+		                        <th class="text-end"> </th>
+		                      </tr>
+		                    </thead>
+	                    <tbody>
+	                      {% for row in level2_rows %}
+	                        <tr
+                          class="surv-row"
+                          data-pppoe="{{ row.pppoe }}"
+                          data-ip="{{ row.ip or '' }}"
+                          data-ok="{{ 1 if row.ok else 0 }}"
+                          data-loss="{{ row.loss if row.loss is not none else '' }}"
+                          data-avg-ms="{{ row.avg_ms if row.avg_ms is not none else '' }}"
+                          data-uptime-pct="{{ '%.1f'|format(row.uptime_pct) }}"
+                          data-stable-total="{{ row.stable_total or 0 }}"
+                          data-stable-failures="{{ row.stable_failures or 0 }}"
+                          data-stable-loss-avg="{{ row.stable_loss_avg if row.stable_loss_avg is not none else '' }}"
+                          data-stable-avg-ms-avg="{{ row.stable_avg_ms_avg if row.stable_avg_ms_avg is not none else '' }}"
+                          data-down-for="{{ row.down_for or '' }}"
+                          data-down-since="{{ row.down_since_iso or '' }}"
+                          data-last-check="{{ row.last_check or '' }}"
+                          data-optical-rx="{{ row.optical_rx if row.optical_rx is not none else '' }}"
+	                          data-optical-last="{{ row.optical_last or '' }}"
+	                          data-optical-last-iso="{{ row.optical_last_iso or '' }}"
+	                          data-optical-device-id="{{ row.optical_device_id or '' }}"
+	                          data-mode="{{ row.mode or '' }}"
+	                          data-added-at="{{ row.added_at_iso }}">
+		                          <td class="fw-semibold text-truncate" style="max-width: 180px;">
+		                            {{ row.pppoe }}
+		                          </td>
+	                          <td>
+	                            {% if row.ok %}
+	                              <span class="badge bg-yellow-lt">Monitor</span>
+	                            {% else %}
+	                              <span class="badge bg-red-lt">Down</span>
+	                            {% endif %}
+		                          </td>
+			                          <td>
+			                            {% if row.added_mode == 'auto' %}
+			                              <span class="badge bg-azure-lt text-azure"
+			                                    title="Auto added by system{% if row.auto_source %} ({{ row.auto_source }}){% endif %}{% if row.auto_reason %}: {{ row.auto_reason }}{% endif %}">
+			                                <i class="ti ti-bolt me-1"></i>Auto
+			                              </span>
+			                            {% else %}
+			                              <span class="badge bg-secondary-lt text-secondary" title="Added manually by user">
+			                                <i class="ti ti-user me-1"></i>Manual
+			                              </span>
+			                            {% endif %}
+			                          </td>
+		                          <td class="text-muted small">{{ row.down_for or "—" }}</td>
+			                          <td class="text-end">
+			                            <button type="button"
+		                                    class="btn btn-sm btn-success btn-icon surv-fixed-btn"
+		                                    title="Account Fixed"
+		                                    aria-label="Account Fixed"
+		                                    data-pppoe="{{ row.pppoe }}">
+		                              <i class="ti ti-check"></i>
+		                            </button>
+		                            <form method="post" action="/surveillance/remove" class="d-inline ms-1">
+		                              <input type="hidden" name="pppoe" value="{{ row.pppoe }}" />
+		                              <input type="hidden" name="tab" value="level2" />
+		                              <button type="submit" class="btn btn-sm btn-outline-danger btn-icon" title="Remove" aria-label="Remove">
+		                                <i class="ti ti-trash"></i>
+		                              </button>
+		                            </form>
+		                          </td>
+	                        </tr>
+	                      {% else %}
+	                        <tr>
+	                          <td colspan="5" class="text-muted p-3">No Level II suspects yet.</td>
+	                        </tr>
+	                      {% endfor %}
+	                    </tbody>
+	                  </table>
+	                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="col-12 col-lg-8">
+            <div class="card"
+                 data-surv-detail="level2"
+                 data-thr-uptime="{{ settings.stability.uptime_threshold_pct }}"
+                 data-thr-latency="{{ settings.stability.latency_max_ms }}"
+                 data-thr-loss="{{ settings.stability.loss_max_pct if settings.stability.loss_max_pct is defined else 100.0 }}"
+                 data-thr-optical="{{ settings.stability.optical_rx_min_dbm }}"
+	                 data-require-optical="1"
+                 data-stable-window-min="{{ settings.stability.stable_window_minutes }}">
+              <div class="card-body">
+                <div class="d-flex align-items-start justify-content-between flex-wrap gap-2">
+                  <div>
+                    <div class="d-flex align-items-center gap-2 flex-wrap">
+                      <span class="badge bg-red-lt text-red header-icon-badge" title="LEVEL II SUSPECT" aria-label="LEVEL II SUSPECT">
+                        <i class="ti ti-eye"></i>
+                      </span>
+                      <h3 class="m-0">
+                        <span data-surv-field="pppoe">Select an account</span>
+                      </h3>
+                      <span class="badge bg-secondary-lt text-secondary" data-surv-health-badge>—</span>
+                    </div>
+                    <div class="text-muted small mt-1">
+                      <span data-surv-field="ip"></span>
+                      <span class="ms-2">· Added <span class="surv-detail-underfor">—</span> ago</span>
+                      <span class="ms-2">· Last ping <span data-surv-field="last_check">—</span></span>
+                    </div>
+                  </div>
+		                  <div class="d-flex align-items-center gap-2">
+                        <span class="badge bg-secondary-lt text-secondary" title="Down For">
+                          <i class="ti ti-clock me-1"></i><span data-surv-field="down_for">—</span>
+                        </span>
+                        <span class="badge bg-secondary-lt text-secondary" title="Mode">
+                          <i class="ti ti-adjustments me-1"></i><span data-surv-field="mode">—</span>
+                        </span>
+		                    <div class="dropdown">
+		                      <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" data-surv-window-btn="level2">Filter</button>
+		                      <div class="dropdown-menu dropdown-menu-end">
+		                        <button class="dropdown-item" type="button" data-surv-window="1">Last 1h</button>
+	                        <button class="dropdown-item" type="button" data-surv-window="6">Last 6h</button>
+	                        <button class="dropdown-item" type="button" data-surv-window="12">Last 12h</button>
+	                        <button class="dropdown-item" type="button" data-surv-window="24">Last 24h</button>
+		                        <button class="dropdown-item" type="button" data-surv-window="168">Last 7d</button>
+		                      </div>
+		                    </div>
+			                    <button type="button"
+			                            class="badge bg-green-lt text-green header-icon-badge border-0 surv-fixed-btn"
+			                            title="Account Fixed"
+			                            aria-label="Account Fixed"
+			                            data-pppoe=""
+			                            data-surv-action-pppoe>
+			                      <i class="ti ti-check"></i>
+			                    </button>
+			                    <button type="button" class="badge bg-secondary-lt text-secondary header-icon-badge border-0" data-surv-close="level2" title="Close" aria-label="Close">
+			                      <i class="ti ti-x"></i>
+			                    </button>
+			                  </div>
+	                </div>
+
+		                <div class="row g-2 mt-3">
+	                  <div class="col-6 col-lg-3">
+	                    <div class="border rounded p-2" data-kpi="ping">
+	                      <div class="d-flex align-items-center justify-content-between">
+	                        <div class="text-muted small">Ping</div>
+	                        <span class="badge bg-secondary-lt text-secondary" data-kpi-badge="ping">—</span>
+	                      </div>
+	                      <div class="fw-semibold" data-surv-field="ping_state">—</div>
+	                      <div class="text-muted small" data-kpi-goal="ping">Goal: Up</div>
+	                    </div>
+	                  </div>
+	                  <div class="col-6 col-lg-3">
+	                    <div class="border rounded p-2" data-kpi="latency">
+	                      <div class="d-flex align-items-center justify-content-between">
+	                        <div class="text-muted small">Latency</div>
+	                        <span class="badge bg-secondary-lt text-secondary" data-kpi-badge="latency">—</span>
+	                      </div>
+	                      <div class="fw-semibold"><span data-surv-field="avg_ms">—</span></div>
+	                      <div class="text-muted small" data-kpi-goal="latency">Goal: —</div>
+	                    </div>
+	                  </div>
+	                  <div class="col-6 col-lg-3">
+	                    <div class="border rounded p-2" data-kpi="loss">
+	                      <div class="d-flex align-items-center justify-content-between">
+	                        <div class="text-muted small">Loss</div>
+	                        <span class="badge bg-secondary-lt text-secondary" data-kpi-badge="loss">—</span>
+	                      </div>
+	                      <div class="fw-semibold"><span data-surv-field="loss">—</span></div>
+	                      <div class="text-muted small" data-kpi-goal="loss">Goal: —</div>
+	                    </div>
+	                  </div>
+		                  <div class="col-6 col-lg-3">
+		                    <div class="border rounded p-2" data-kpi="uptime">
+		                      <div class="d-flex align-items-center justify-content-between">
+			                        <div class="text-muted small">Uptime ({{ stable_window_days|round(3) }}d)</div>
+		                        <span class="badge bg-secondary-lt text-secondary" data-kpi-badge="uptime">—</span>
+		                      </div>
+		                      <div class="fw-semibold"><span data-surv-field="uptime_pct">—</span></div>
+		                      <div class="text-muted small" data-kpi-goal="uptime">Goal: —</div>
+		                    </div>
+		                  </div>
+		                  <div class="col-6 col-lg-3">
+		                    <div class="border rounded p-2" data-kpi="optical" data-surv-optical-open data-bs-toggle="modal" data-bs-target="#surv-optical-modal" title="View optical history">
+		                      <div class="d-flex align-items-center justify-content-between">
+		                        <div class="text-muted small">Optical RX</div>
+		                        <span class="badge bg-secondary-lt text-secondary" data-kpi-badge="optical">—</span>
+		                      </div>
+		                      <div class="fw-semibold">
+                            <span data-surv-field="optical_rx">—</span>
+                            <span class="text-muted small ms-1" data-surv-optical-time data-bs-toggle="tooltip" data-bs-placement="top"></span>
+                          </div>
+		                      <div class="text-muted small" data-kpi-goal="optical">Goal: —</div>
+		                    </div>
+		                  </div>
+		                </div>
+
+			                <div class="mt-3">
+			                  <div id="surv-level2-chart" style="height: 300px;"></div>
+			                  <div class="text-muted small mt-2">Latency and loss history based on raw ping results for the selected window.</div>
+			                  <div class="text-muted small mt-1" data-surv-range-label="level2"></div>
+			                  <div class="mt-3" data-surv-timeline-wrap="level2">
+			                    <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
+			                      <div class="fw-semibold">Daily Healing Timeline (7 Days)</div>
+			                      <div class="text-muted small">Day 0 is 7D overview. Day 1 is the day the account was added to Surveillance.</div>
+			                    </div>
+			                    <div class="d-flex gap-2 overflow-auto pt-2 pb-1" data-surv-timeline="level2"></div>
+			                    <div class="mt-2" data-surv-timeline-total="level2"></div>
+			                    <div class="text-muted small mt-1">“Downtime” is estimated from Loss% (equivalent time at 100% loss).</div>
+			                  </div>
+			                </div>
+		          </div>
+		        </div>
+		      </div>
+	      </div>
+	        </div>
+	      </div>
+
+	      <div class="tab-pane {% if active_tab == 'history' %}active{% endif %}" id="surv-history">
+	        <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
+	          <div>
+	            <h4 class="mb-1">History</h4>
+	            <div class="text-muted small">Tracks when accounts were placed under surveillance and how the investigation ended.</div>
+	            <div class="mt-2">
+	              <span class="badge bg-indigo-lt text-indigo">Total: {{ (history_pagination.total if history_pagination else (history_rows|length)) }}</span>
+	            </div>
+	          </div>
+	          <div class="d-flex align-items-center gap-2">
+	            <div class="input-icon">
+	              <input class="form-control form-control-sm" id="surv-history-search" type="text" placeholder="Search PPPoE" autocomplete="off" value="{{ history_query or '' }}" />
+	              <span class="input-icon-addon"><i class="ti ti-search"></i></span>
+	            </div>
+	            <a class="btn btn-outline-secondary btn-sm" href="/surveillance?tab=history#surv-history">Refresh</a>
+	          </div>
+	        </div>
+
+	        <div class="table-responsive">
+	          <table class="table table-vcenter table-hover">
+	            <thead>
+	              <tr>
+	                <th>Account</th>
+	                <th>Last IP</th>
+	                <th>State</th>
+	                <th>Started</th>
+	                <th>Ended</th>
+	                <th>Duration</th>
+	                <th>Final Action</th>
+	                <th class="text-end">View</th>
+	              </tr>
+	            </thead>
+	            <tbody>
+	              {% for row in history_rows %}
+	                <tr data-surv-history-start="{{ row.started_at_iso }}" data-surv-history-end="{{ row.ended_at_iso or '' }}">
+	                  <td class="fw-semibold">
+	                    {% if row.observed_count and row.observed_count > 0 %}
+	                      <span class="badge bg-yellow-lt text-yellow me-2" title="Observed {{ row.observed_count }}x">
+	                        <i class="ti ti-eye me-1"></i>{{ row.observed_count }}x
+	                      </span>
+	                    {% endif %}
+	                    {{ row.pppoe }}
+	                    {% if row.source %}
+	                      <span class="text-muted small ms-2">{{ row.source }}</span>
+	                    {% endif %}
 	                  </td>
-                </tr>
-              {% else %}
-                <tr>
-                  <td colspan="12" class="text-muted">No accounts under surveillance yet.</td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div class="tab-pane {% if active_tab == 'level2' %}active{% endif %}" id="surv-level2">
-        <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
-          <div>
-            <h4 class="mb-1 text-danger">Level II Suspect Detected</h4>
-            <div class="text-muted small">Accounts that did not meet the stability requirements within the configured window.</div>
-          </div>
-          <a class="btn btn-outline-secondary btn-sm" href="/surveillance?tab=level2">Refresh</a>
-        </div>
-
-        <div class="table-responsive">
-          <table class="table table-vcenter">
-            <thead>
-              <tr>
-                <th>PPPoE</th>
-                <th>IPv4</th>
-                <th>Ping</th>
-                <th>Loss</th>
-                <th>Latency</th>
-                <th>Uptime %</th>
-                <th>Down For</th>
-                <th>Last Ping</th>
-                <th>Optical RX</th>
-                <th>Optical Last</th>
-                <th class="text-end">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for row in level2_rows %}
-                <tr data-pppoe="{{ row.pppoe }}" data-added-at="{{ row.added_at_iso }}">
-                  <td class="fw-semibold">{{ row.pppoe }}</td>
-                  <td>{{ row.ip or 'n/a' }}</td>
-                  <td>
-                    {% if row.ok %}
-                      <span class="badge bg-yellow-lt">Monitor</span>
-                    {% else %}
-                      <span class="badge bg-red-lt">Down</span>
-                    {% endif %}
-                  </td>
-                  <td>{{ row.loss is not none and ("%.1f"|format(row.loss) ~ "%") or "n/a" }}</td>
-                  <td>{{ row.avg_ms is not none and ("%.1f"|format(row.avg_ms) ~ "ms") or "n/a" }}</td>
-                  <td>{{ "%.1f"|format(row.uptime_pct) }}</td>
-                  <td>{{ row.down_for or "—" }}</td>
-                  <td>{{ row.last_check or "n/a" }}</td>
-	                  <td>{{ row.optical_rx is not none and ("%.2f"|format(row.optical_rx) ~ " dBm") or "n/a" }}</td>
-	                  <td>{{ row.optical_last or "n/a" }}</td>
-	                  <td class="text-end">
-	                    <form method="post" action="/surveillance/fixed" class="d-inline">
-	                      <input type="hidden" name="pppoe" value="{{ row.pppoe }}" />
-	                      <button type="submit" class="badge bg-green-lt text-green header-icon-badge border-0" title="Account Fixed" aria-label="Account Fixed">
-	                        <i class="ti ti-check"></i>
-	                      </button>
-	                    </form>
-	                    <form method="post" action="/surveillance/remove" class="d-inline ms-2">
-	                      <input type="hidden" name="pppoe" value="{{ row.pppoe }}" />
-	                      <input type="hidden" name="tab" value="level2" />
-	                      <button type="submit" class="badge bg-red-lt text-red header-icon-badge border-0" title="Remove" aria-label="Remove">
-	                        <i class="ti ti-trash"></i>
-	                      </button>
-	                    </form>
+	                  <td>{{ row.last_ip or '—' }}</td>
+	                  <td>
+	                    {% if row.last_state == 'level2' %}
+	                      <span class="badge bg-red-lt text-red">Level II</span>
+	                    {% else %}
+	                      <span class="badge bg-yellow-lt text-yellow">Under</span>
+	                    {% endif %}
 	                  </td>
-                </tr>
-              {% else %}
-                <tr>
-                  <td colspan="11" class="text-muted">No Level II suspects yet.</td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-      </div>
+	                  <td>{{ row.started_at_ph or '—' }}</td>
+	                  <td>{{ row.ended_at_ph or '—' }}</td>
+	                  <td><span class="surv-history-duration text-muted small">—</span></td>
+	                  <td>
+	                    {% if row.end_reason == 'healed' %}
+	                      <span class="badge bg-green-lt text-green">Auto Healed</span>
+	                    {% elif row.end_reason == 'fixed' %}
+	                      <span class="badge bg-blue-lt text-blue" {% if row.end_note %}title="{{ row.end_note }}"{% endif %}>Fixed</span>
+	                    {% else %}
+	                      <span class="badge bg-secondary-lt text-secondary">Removed</span>
+	                    {% endif %}
+	                  </td>
+	                  <td class="text-end">
+	                    {% if row.currently_active %}
+	                      <a class="btn btn-sm btn-outline-secondary btn-icon" href="/surveillance?focus={{ row.pppoe|urlencode }}" title="View" aria-label="View">
+	                        <i class="ti ti-external-link"></i>
+	                      </a>
+	                    {% else %}
+	                      <span class="btn btn-sm btn-outline-secondary btn-icon disabled" aria-disabled="true" title="Not active">
+	                        <i class="ti ti-external-link"></i>
+	                      </span>
+	                    {% endif %}
+	                  </td>
+	                </tr>
+	              {% else %}
+	                <tr>
+	                  <td colspan="8" class="text-muted p-3">No history yet.</td>
+	                </tr>
+	              {% endfor %}
+	            </tbody>
+	          </table>
+	        </div>
 
-      <div class="tab-pane {% if active_tab == 'settings' %}active{% endif %}" id="surv-settings">
-        <form method="post" action="/surveillance/settings">
-          <div class="row g-3">
-            <div class="col-12">
-              <label class="form-label">Enable Surveillance <span class="info" data-tip="When enabled, accounts in Under Surveillance are pinged at the configured interval.">i</span></label>
-              <label class="form-check form-switch">
-                <input class="form-check-input" type="checkbox" name="enabled" {% if settings.enabled %}checked{% endif %} />
-                <span class="form-check-label">Enabled</span>
-              </label>
-            </div>
+	        {% if history_pagination and history_pagination.pages > 1 %}
+	          <div class="d-flex align-items-center justify-content-between mt-3">
+	            <div class="text-muted small">
+	              Page {{ history_pagination.page }} of {{ history_pagination.pages }} · {{ history_pagination.total }} total
+	            </div>
+	            <div class="btn-group">
+	              {% set prev_page = history_pagination.page - 1 %}
+	              {% set next_page = history_pagination.page + 1 %}
+	              <a class="btn btn-sm btn-outline-secondary {% if history_pagination.page <= 1 %}disabled{% endif %}"
+	                 href="/surveillance?tab=history&page={{ prev_page }}&q={{ history_query|urlencode }}#surv-history">Prev</a>
+	              <a class="btn btn-sm btn-outline-secondary {% if history_pagination.page >= history_pagination.pages %}disabled{% endif %}"
+	                 href="/surveillance?tab=history&page={{ next_page }}&q={{ history_query|urlencode }}#surv-history">Next</a>
+	            </div>
+	          </div>
+	        {% endif %}
+	      </div>
 
-            <div class="col-12"><h5 class="mb-1">Ping</h5></div>
-            <div class="col-md-3">
-              <label class="form-label">Interval (seconds) <span class="info" data-tip="How often to ping accounts under surveillance (seconds). Recommended: 1.">i</span></label>
-              <input class="form-control" type="number" name="interval_seconds" min="1" value="{{ settings.ping.interval_seconds }}" />
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Count <span class="info" data-tip="ICMP echo count per normal check.">i</span></label>
-              <input class="form-control" type="number" name="ping_count" min="1" value="{{ settings.ping.count }}" />
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Timeout (seconds) <span class="info" data-tip="Timeout per ICMP echo request (seconds).">i</span></label>
-              <input class="form-control" type="number" name="ping_timeout_seconds" min="1" value="{{ settings.ping.timeout_seconds }}" />
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Max Parallel <span class="info" data-tip="Maximum concurrent pings for surveillance.">i</span></label>
-              <input class="form-control" type="number" name="max_parallel" min="1" value="{{ settings.ping.max_parallel }}" />
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Burst Count <span class="info" data-tip="ICMP echo count when in burst mode.">i</span></label>
-              <input class="form-control" type="number" name="burst_count" min="1" value="{{ settings.ping.burst_count }}" />
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Burst Timeout (seconds) <span class="info" data-tip="Timeout per ICMP echo request in burst mode.">i</span></label>
-              <input class="form-control" type="number" name="burst_timeout_seconds" min="1" value="{{ settings.ping.burst_timeout_seconds }}" />
-            </div>
+			      <div class="modal modal-blur fade" id="surv-fixed-modal" tabindex="-1" role="dialog" aria-hidden="true">
+			        <div class="modal-dialog modal-md modal-dialog-centered" role="document">
+				          <div class="modal-content">
+				            <form method="post" action="/surveillance/fixed" id="surv-fixed-form">
+		              <div class="modal-header">
+		                <h5 class="modal-title">Mark Account as Fixed</h5>
+		                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+		              </div>
+		              <div class="modal-body">
+		                <input type="hidden" name="pppoe" value="" id="surv-fixed-pppoe" />
+		                <input type="hidden" name="pppoes" value="" id="surv-fixed-pppoes" />
+		                <div class="alert alert-warning">
+		                  <div class="d-flex align-items-start">
+		                    <span class="me-2"><i class="ti ti-alert-triangle"></i></span>
+		                    <div>
+	                      You are marking this account as fixed even though one or more health checks may still be failing.
+	                      Add a short note so other staff know what action was taken.
+			          </div>
+			        </div>
+			      </div>
 
-            <div class="col-12"><h5 class="mb-1 mt-2">Burst</h5></div>
-            <div class="col-md-4">
-              <label class="form-label">Enable Burst <span class="info" data-tip="When enabled, Accounts Ping can temporarily burst (1s checks) when issues are detected.">i</span></label>
-              <label class="form-check form-switch">
-                <input class="form-check-input" type="checkbox" name="burst_enabled" {% if settings.burst.enabled %}checked{% endif %} />
-                <span class="form-check-label">Enabled</span>
-              </label>
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Burst Interval (seconds) <span class="info" data-tip="Polling interval while in burst mode (seconds).">i</span></label>
-              <input class="form-control" type="number" name="burst_interval_seconds" min="1" value="{{ settings.burst.burst_interval_seconds }}" />
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Burst Duration (seconds) <span class="info" data-tip="How long to keep burst mode enabled after an issue is detected (seconds).">i</span></label>
-              <input class="form-control" type="number" name="burst_duration_seconds" min="5" value="{{ settings.burst.burst_duration_seconds }}" />
-            </div>
-            <div class="col-md-6">
-              <label class="form-label">Trigger bursts on issues <span class="info" data-tip="Start burst mode when loss/latency exceeds thresholds (even if not fully down).">i</span></label>
-              <label class="form-check form-switch">
-                <input class="form-check-input" type="checkbox" name="trigger_on_issue" {% if settings.burst.trigger_on_issue %}checked{% endif %} />
-                <span class="form-check-label">Enabled</span>
-              </label>
-            </div>
+			      <div class="modal modal-blur fade" id="surv-optical-modal" tabindex="-1" role="dialog" aria-hidden="true">
+			        <div class="modal-dialog modal-lg modal-dialog-centered" role="document">
+			          <div class="modal-content">
+			            <div class="modal-header">
+			              <h5 class="modal-title" id="surv-optical-title">Optical Trend</h5>
+			              <div class="dropdown ms-auto">
+			                <button class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" id="surv-optical-modal-window-button">Filter</button>
+			                <div class="dropdown-menu dropdown-menu-end" id="surv-optical-modal-window-menu">
+			                  {% for label, hours in optical_window_options %}
+			                    <button class="dropdown-item surv-optical-modal-window-option" type="button" data-hours="{{ hours }}" data-label="{{ label }}">{{ label }}</button>
+			                  {% endfor %}
+			                </div>
+			              </div>
+			              <button type="button" class="btn-close ms-2" data-bs-dismiss="modal" aria-label="Close"></button>
+			            </div>
+			            <div class="modal-body">
+			              <div id="surv-optical-modal-chart" class="rto-spark-modal-chart"></div>
+			              <div class="text-muted small mt-2">RX/TX history for the selected window.</div>
+			              <div class="text-muted small mt-1" id="surv-optical-modal-range"></div>
+			            </div>
+			          </div>
+			        </div>
+			      </div>
+	                <div class="mb-2">
+	                  <div class="text-muted small">Account</div>
+	                  <div class="fw-semibold" id="surv-fixed-pppoe-label">—</div>
+	                </div>
+	                <div>
+	                  <label class="form-label">Reason / Action taken</label>
+	                  <textarea class="form-control" name="reason" id="surv-fixed-reason" rows="3" placeholder="Example: Replaced drop fiber, rebooted ONU, moved to new port..." required></textarea>
+	                  <div class="text-muted small mt-1">Required.</div>
+	                </div>
+	              </div>
+	              <div class="modal-footer">
+	                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+	                <button type="submit" class="btn btn-primary">Confirm Fixed</button>
+	              </div>
+	            </form>
+		          </div>
+		        </div>
+		      </div>
 
-            <div class="col-12"><h5 class="mb-1 mt-2">Backoff</h5></div>
-            <div class="col-md-4">
-              <label class="form-label">Long-down seconds <span class="info" data-tip="If an account stays down longer than this, the system slows down polling using Long-down interval.">i</span></label>
-              <input class="form-control" type="number" name="long_down_seconds" min="60" value="{{ settings.backoff.long_down_seconds }}" />
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Long-down interval (seconds) <span class="info" data-tip="Polling interval while an account is long-down (seconds).">i</span></label>
-              <input class="form-control" type="number" name="long_down_interval_seconds" min="5" value="{{ settings.backoff.long_down_interval_seconds }}" />
-            </div>
+			      <div class="tab-pane {% if active_tab == 'settings' %}active{% endif %}" id="surv-settings">
+			        <form method="post" action="/surveillance/settings">
+			          <ul class="nav nav-tabs" data-bs-toggle="tabs">
+			            <li class="nav-item">
+	              <a href="#surv-settings-general" class="nav-link active" data-bs-toggle="tab">General</a>
+	            </li>
+	            <li class="nav-item">
+	              <a href="#surv-settings-ping" class="nav-link" data-bs-toggle="tab">Ping</a>
+	            </li>
+	            <li class="nav-item">
+	              <a href="#surv-settings-burst" class="nav-link" data-bs-toggle="tab">Burst</a>
+	            </li>
+	            <li class="nav-item">
+	              <a href="#surv-settings-backoff" class="nav-link" data-bs-toggle="tab">Backoff</a>
+	            </li>
+		            <li class="nav-item">
+		              <a href="#surv-settings-stability" class="nav-link" data-bs-toggle="tab">Stability</a>
+		            </li>
+		            <li class="nav-item">
+		              <a href="#surv-settings-autoadd" class="nav-link" data-bs-toggle="tab">Auto Add</a>
+		            </li>
+		          </ul>
 
-            <div class="col-12"><h5 class="mb-1 mt-2">Stability Requirements</h5></div>
-            <div class="col-md-4">
-              <label class="form-label">Stable Window (minutes) <span class="info" data-tip="How long the account must meet the stability thresholds before it is auto-removed from Under Surveillance.">i</span></label>
-              <input class="form-control" type="number" name="stable_window_minutes" min="1" value="{{ settings.stability.stable_window_minutes }}" />
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Uptime Threshold (%) <span class="info" data-tip="Minimum uptime percentage within the Stable Window to be considered healed (e.g., 95 or 100).">i</span></label>
-              <input class="form-control" type="number" step="0.1" name="uptime_threshold_pct" value="{{ settings.stability.uptime_threshold_pct }}" />
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Latency Max (ms) <span class="info" data-tip="Maximum average latency (ms) for the latest sample to be considered healed.">i</span></label>
-              <input class="form-control" type="number" step="0.1" name="latency_max_ms" value="{{ settings.stability.latency_max_ms }}" />
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Optical RX Min (dBm) <span class="info" data-tip="Minimum acceptable RX reading (e.g., -24). Higher (less negative) is better.">i</span></label>
-              <input class="form-control" type="number" step="0.1" name="optical_rx_min_dbm" value="{{ settings.stability.optical_rx_min_dbm }}" />
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Require Optical <span class="info" data-tip="When enabled, the RX threshold must be met to count an account as healed.">i</span></label>
-              <label class="form-check form-switch">
-                <input class="form-check-input" type="checkbox" name="require_optical" {% if settings.stability.require_optical %}checked{% endif %} />
-                <span class="form-check-label">Enabled</span>
-              </label>
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Escalate After (minutes) <span class="info" data-tip="If not healed within this duration after being added, move it to Level II Suspect Detected.">i</span></label>
-              <input class="form-control" type="number" name="escalate_after_minutes" min="1" value="{{ settings.stability.escalate_after_minutes }}" />
-            </div>
-          </div>
+	          <div class="tab-content pt-3">
+	            <div class="tab-pane active" id="surv-settings-general">
+	              <div class="card">
+	                <div class="card-body">
+	                  <h4 class="mb-3">General</h4>
+	                  <div class="row g-3">
+	                    <div class="col-12">
+	                      <label class="form-label">Enable Surveillance <span class="info" data-tip="When enabled, accounts in Under Surveillance are pinged at the configured interval.">i</span></label>
+	                      <label class="form-check form-switch">
+	                        <input class="form-check-input" type="checkbox" name="enabled" {% if settings.enabled %}checked{% endif %} />
+	                        <span class="form-check-label">Enabled</span>
+	                      </label>
+	                    </div>
+	                    <div class="col-md-4">
+	                      <label class="form-label">Interval (seconds) <span class="info" data-tip="How often to ping accounts under surveillance (seconds). Recommended: 1.">i</span></label>
+	                      <input class="form-control" type="number" name="interval_seconds" min="1" value="{{ settings.ping.interval_seconds }}" />
+	                    </div>
+	                    <div class="col-md-4">
+	                      <label class="form-label">Max Parallel <span class="info" data-tip="Maximum concurrent pings for surveillance.">i</span></label>
+	                      <input class="form-control" type="number" name="max_parallel" min="1" value="{{ settings.ping.max_parallel }}" />
+	                    </div>
+	                  </div>
+	                </div>
+	              </div>
+	            </div>
 
-          <div class="mt-4 d-flex justify-content-end">
-            <button type="submit" class="btn btn-primary">Save Surveillance Settings</button>
-          </div>
-        </form>
-      </div>
+	            <div class="tab-pane" id="surv-settings-ping">
+	              <div class="card">
+	                <div class="card-body">
+	                  <h4 class="mb-3">Ping</h4>
+	                  <div class="row g-3">
+	                    <div class="col-md-4">
+	                      <label class="form-label">Count <span class="info" data-tip="ICMP echo count per normal check.">i</span></label>
+	                      <input class="form-control" type="number" name="ping_count" min="1" value="{{ settings.ping.count }}" />
+	                    </div>
+	                    <div class="col-md-4">
+	                      <label class="form-label">Timeout (seconds) <span class="info" data-tip="Timeout per ICMP echo request (seconds).">i</span></label>
+	                      <input class="form-control" type="number" name="ping_timeout_seconds" min="1" value="{{ settings.ping.timeout_seconds }}" />
+	                    </div>
+	                    <div class="col-md-4">
+	                      <label class="form-label">Burst Count <span class="info" data-tip="ICMP echo count when in burst mode.">i</span></label>
+	                      <input class="form-control" type="number" name="burst_count" min="1" value="{{ settings.ping.burst_count }}" />
+	                    </div>
+	                    <div class="col-md-4">
+	                      <label class="form-label">Burst Timeout (seconds) <span class="info" data-tip="Timeout per ICMP echo request in burst mode.">i</span></label>
+	                      <input class="form-control" type="number" name="burst_timeout_seconds" min="1" value="{{ settings.ping.burst_timeout_seconds }}" />
+	                    </div>
+	                  </div>
+	                </div>
+	              </div>
+	            </div>
+
+	            <div class="tab-pane" id="surv-settings-burst">
+	              <div class="card">
+	                <div class="card-body">
+	                  <h4 class="mb-3">Burst</h4>
+	                  <div class="alert alert-info">
+	                    <div class="d-flex">
+	                      <span class="me-2"><i class="ti ti-info-circle"></i></span>
+	                      <div>
+	                        Burst is a temporary “zoom in” mode. When an account starts acting up, the system checks it more frequently for a short time so you can see if it’s getting worse or recovering.
+	                        After the burst duration ends, it goes back to the normal interval automatically.
+	                      </div>
+	                    </div>
+	                  </div>
+	                  <div class="row g-3">
+	                    <div class="col-md-6">
+	                      <label class="form-label">Enable Burst <span class="info" data-tip="When enabled, surveillance can temporarily increase polling frequency when issues are detected.">i</span></label>
+	                      <label class="form-check form-switch">
+	                        <input class="form-check-input" type="checkbox" name="burst_enabled" {% if settings.burst.enabled %}checked{% endif %} />
+	                        <span class="form-check-label">Enabled</span>
+	                      </label>
+	                    </div>
+	                    <div class="col-md-6">
+	                      <label class="form-label">Trigger bursts on issues <span class="info" data-tip="Start burst mode when loss/latency exceeds thresholds (even if not fully down).">i</span></label>
+	                      <label class="form-check form-switch">
+	                        <input class="form-check-input" type="checkbox" name="trigger_on_issue" {% if settings.burst.trigger_on_issue %}checked{% endif %} />
+	                        <span class="form-check-label">Enabled</span>
+	                      </label>
+	                    </div>
+	                    <div class="col-md-4">
+	                      <label class="form-label">Burst Interval (seconds) <span class="info" data-tip="Polling interval while in burst mode (seconds).">i</span></label>
+	                      <input class="form-control" type="number" name="burst_interval_seconds" min="1" value="{{ settings.burst.burst_interval_seconds }}" />
+	                    </div>
+	                    <div class="col-md-4">
+	                      <label class="form-label">Burst Duration (seconds) <span class="info" data-tip="How long to keep burst mode enabled after an issue is detected (seconds).">i</span></label>
+	                      <input class="form-control" type="number" name="burst_duration_seconds" min="5" value="{{ settings.burst.burst_duration_seconds }}" />
+	                    </div>
+	                  </div>
+	                </div>
+	              </div>
+	            </div>
+
+	            <div class="tab-pane" id="surv-settings-backoff">
+	              <div class="card">
+	                <div class="card-body">
+	                  <h4 class="mb-3">Backoff</h4>
+	                  <div class="alert alert-info">
+	                    <div class="d-flex">
+	                      <span class="me-2"><i class="ti ti-info-circle"></i></span>
+	                      <div>
+	                        Backoff helps avoid “wasting checks” on accounts that have been down for a long time (for example: customer is out of town or power is off).
+	                        The account stays in Under Surveillance, but the system checks it less often until it starts coming back.
+	                      </div>
+	                    </div>
+	                  </div>
+	                  <div class="row g-3">
+	                    <div class="col-md-6">
+	                      <label class="form-label">Long-down seconds <span class="info" data-tip="If an account stays down longer than this, the system slows down polling using Long-down interval.">i</span></label>
+	                      <input class="form-control" type="number" name="long_down_seconds" min="60" value="{{ settings.backoff.long_down_seconds }}" />
+	                    </div>
+	                    <div class="col-md-6">
+	                      <label class="form-label">Long-down interval (seconds) <span class="info" data-tip="Polling interval while an account is long-down (seconds).">i</span></label>
+	                      <input class="form-control" type="number" name="long_down_interval_seconds" min="5" value="{{ settings.backoff.long_down_interval_seconds }}" />
+	                    </div>
+	                  </div>
+	                </div>
+	              </div>
+	            </div>
+
+		            <div class="tab-pane" id="surv-settings-stability">
+		              <div class="card">
+		                <div class="card-body">
+		                  <h4 class="mb-3">Stability Requirements</h4>
+	                  {% set stable_window_days_val = ((settings.stability.stable_window_minutes or 10) / 1440.0) %}
+	                  {% set escalate_after_days_val = ((settings.stability.escalate_after_minutes or (settings.stability.stable_window_minutes or 10)) / 1440.0) %}
+	                  {% set level2_autofix_days_val = ((settings.stability.level2_autofix_after_minutes or 30) / 1440.0) %}
+	                  <div class="row g-3">
+	                    <div class="col-md-4">
+	                      <label class="form-label">Stable Window (days) <span class="info" data-tip="How long the account must meet the checker criteria before it is auto-healed (auto-removed) from Under Surveillance.">i</span></label>
+	                      <input class="form-control" type="number" name="stable_window_days" min="0.001" step="0.001" value="{{ stable_window_days_val|round(3) }}" />
+	                    </div>
+	                    <div class="col-md-4">
+	                      <label class="form-label">Escalate After (days) <span class="info" data-tip="If not healed within this duration after being added, move it to Level II Suspect Detected.">i</span></label>
+	                      <input class="form-control" type="number" name="escalate_after_days" min="0.001" step="0.001" value="{{ escalate_after_days_val|round(3) }}" />
+	                    </div>
+	                    <div class="col-md-4">
+	                      <label class="form-label">Level II auto-fix after (days) <span class="info" data-tip="When an account is in Level II, the system will keep checking it. If it meets the checker criteria after this many days in Level II, it will be moved back to Under Surveillance automatically.">i</span></label>
+	                      <input class="form-control" type="number" name="level2_autofix_after_days" min="0.001" step="0.001" value="{{ level2_autofix_days_val|round(3) }}" />
+	                    </div>
+	                  </div>
+	                </div>
+	              </div>
+
+		              <div class="card mt-3">
+		                <div class="card-body">
+		                  <h4 class="mb-3">Checker Criteria</h4>
+	                  <div class="text-muted small mb-3">
+	                    These are the health check rules used by the system. When all checks pass for the full Stable Window, the account can be auto-healed.
+	                  </div>
+	                  <div class="row g-3">
+	                    <div class="col-md-4">
+	                      <label class="form-label">Ping <span class="info" data-tip="Ping must be Up.">i</span></label>
+	                      <input class="form-control" type="text" readonly value="Must be Up for {{ stable_window_days_val|round(3) }} days" />
+	                    </div>
+	                    <div class="col-md-4">
+	                      <label class="form-label">Latency Max (ms) <span class="info" data-tip="Maximum average latency (ms) for the latest sample to be considered healthy.">i</span></label>
+	                      <input class="form-control" type="number" step="0.1" name="latency_max_ms" value="{{ settings.stability.latency_max_ms }}" />
+	                    </div>
+	                    <div class="col-md-4">
+	                      <label class="form-label">Loss Max (%) <span class="info" data-tip="Maximum average packet loss percentage within the Stable Window to be considered healthy. Default is 100 (no loss gating).">i</span></label>
+	                      <input class="form-control" type="number" step="0.1" min="0" max="100" name="loss_max_pct" value="{{ settings.stability.loss_max_pct if settings.stability.loss_max_pct is defined else 100.0 }}" />
+	                    </div>
+	                    <div class="col-md-4">
+	                      <label class="form-label">Uptime Threshold (%) <span class="info" data-tip="Minimum uptime percentage within the Stable Window to be considered healthy (e.g., 95 or 100).">i</span></label>
+	                      <input class="form-control" type="number" step="0.1" name="uptime_threshold_pct" value="{{ settings.stability.uptime_threshold_pct }}" />
+	                    </div>
+	                    <div class="col-md-4">
+	                      <label class="form-label">Optical RX Min (dBm) <span class="info" data-tip="Minimum acceptable RX reading (e.g., -24). Higher (less negative) is better.">i</span></label>
+	                      <input class="form-control" type="number" step="0.1" name="optical_rx_min_dbm" value="{{ settings.stability.optical_rx_min_dbm }}" />
+			                </div>
+			              </div>
+			            </div>
+			          </div>
+		            </div>
+			
+		            <div class="tab-pane" id="surv-settings-autoadd">
+		              <div class="card">
+		                <div class="card-body">
+			                  <h4 class="mb-3">Auto Add Accounts to Surveillance</h4>
+			                  <div class="text-muted small mb-3">
+			                    When enabled, the system scans Accounts Ping and auto-adds accounts into Under Surveillance when they show frequent full-down interruptions (intermittent connection).
+			                    Auto-added accounts will be marked with an “Auto” badge in the tables.
+			                  </div>
+			                  <div class="row g-3">
+		                    <div class="col-md-6">
+		                      <label class="form-label">Enable Auto Add <span class="info" data-tip="Automatically add accounts into Under Surveillance when they meet the criteria below.">i</span></label>
+		                      <label class="form-check form-switch">
+		                        <input class="form-check-input" type="checkbox" name="auto_add_enabled" {% if settings.auto_add.enabled %}checked{% endif %} />
+		                        <span class="form-check-label">Enabled</span>
+		                      </label>
+		                    </div>
+			                    <div class="col-md-6">
+			                      <label class="form-label">Source: Accounts Ping <span class="info" data-tip="Use Accounts Ping history to decide which accounts to auto-add.">i</span></label>
+			                      <label class="form-check form-switch">
+			                        <input class="form-check-input" type="checkbox" name="auto_add_source_accounts_ping" {% if settings.auto_add.sources.accounts_ping %}checked{% endif %} />
+			                        <span class="form-check-label">Enabled</span>
+			                      </label>
+			                    </div>
+		                    <div class="col-md-4">
+		                      <label class="form-label">Window (days) <span class="info" data-tip="All auto-add criteria are computed over this rolling lookback window (days).">i</span></label>
+		                      <input class="form-control" type="number" min="0.1" step="0.1" name="auto_add_window_days" value="{{ settings.auto_add.window_days }}" />
+		                    </div>
+		                    <div class="col-md-4">
+		                      <label class="form-label">Min Down Events (count) <span class="info" data-tip="Auto-add only if the account has frequent full-down flaps within the Window. A Down Event is counted when Loss% is 100% for a minute and the previous minute was not 100%.">i</span></label>
+		                      <input class="form-control" type="number" min="1" name="auto_add_min_down_events" value="{{ settings.auto_add.min_down_events }}" />
+		                    </div>
+			                    <div class="col-md-4">
+			                      <label class="form-label">Scan Interval (minutes) <span class="info" data-tip="How often the system scans all accounts to find candidates for auto-add. Recommended: 5.">i</span></label>
+			                      <input class="form-control" type="number" min="1" name="auto_add_scan_interval_minutes" value="{{ settings.auto_add.scan_interval_minutes }}" />
+			                    </div>
+				                    <div class="col-md-4">
+				                      <label class="form-label">Max Auto Adds per Scan <span class="info" data-tip="Safety limit for how many accounts the system can auto-add in a single scan run. Set to 0 for no limit.">i</span></label>
+				                      <input class="form-control" type="number" min="0" name="auto_add_max_add_per_eval" value="{{ settings.auto_add.max_add_per_eval }}" />
+				                    </div>
+			                  </div>
+			                </div>
+			              </div>
+			            </div>
+		          </div>
+	            </div>
+	          </div>
+
+		          <div class="mt-4 d-flex justify-content-end {% if active_tab != 'settings' %}d-none{% endif %}" data-surv-settings-save-bar>
+		            <button type="submit" class="btn btn-primary">Save Surveillance Settings</button>
+		          </div>
+		        </form>
+		      </div>
     </div>
   </div>
 </div>
 
 <script>
-  document.addEventListener("DOMContentLoaded", () => {
-    const tabs = document.querySelectorAll('#surv-under, #surv-level2, #surv-settings');
-    const links = document.querySelectorAll('a[data-bs-toggle="tab"]');
-    links.forEach((link) => {
-      link.addEventListener("shown.bs.tab", (event) => {
-        const href = event.target.getAttribute("href") || "";
-        const tab = href === "#surv-level2" ? "level2" : href === "#surv-settings" ? "settings" : "under";
-        const url = new URL(window.location.href);
-        url.searchParams.set("tab", tab);
-        history.replaceState(null, "", url.toString());
-      });
-    });
+	  document.addEventListener("DOMContentLoaded", () => {
+		    const settingsSaveBar = document.querySelector('[data-surv-settings-save-bar]');
+		    const setSettingsSaveBar = (tab) => {
+		      if (!settingsSaveBar) return;
+		      if (tab === "settings") settingsSaveBar.classList.remove("d-none");
+		      else settingsSaveBar.classList.add("d-none");
+		    };
+		    try {
+		      const url = new URL(window.location.href);
+		      setSettingsSaveBar((url.searchParams.get("tab") || "under").toLowerCase());
+		    } catch (e) {
+		      // ignore
+		    }
+		    const tabs = document.querySelectorAll('#surv-under, #surv-level2, #surv-history, #surv-settings');
+		    const links = document.querySelectorAll('a[data-bs-toggle="tab"]');
+		    links.forEach((link) => {
+		      link.addEventListener("shown.bs.tab", (event) => {
+		        const href = event.target.getAttribute("href") || "";
+		        if (!["#surv-under", "#surv-level2", "#surv-history", "#surv-settings"].includes(href)) return;
+		        const tab = href === "#surv-level2" ? "level2" : href === "#surv-history" ? "history" : href === "#surv-settings" ? "settings" : "under";
+		        setSettingsSaveBar(tab);
+		        const url = new URL(window.location.href);
+		        url.searchParams.set("tab", tab);
+		        if (tab !== "history") {
+		          url.searchParams.delete("q");
+	          url.searchParams.delete("page");
+	        }
+	        history.replaceState(null, "", url.toString());
+	      });
+	    });
 
-    const formatDuration = (seconds) => {
+    const settingsTabKey = "surveillance_settings_active_tab";
+    const settingsLinks = document.querySelectorAll('#surv-settings a[data-bs-toggle="tab"]');
+    const storedSettingsTab = localStorage.getItem(settingsTabKey);
+    if (storedSettingsTab) {
+      const target = document.querySelector(`#surv-settings a[href="${storedSettingsTab}"]`);
+      if (target && window.bootstrap?.Tab) {
+        new window.bootstrap.Tab(target).show();
+      }
+    }
+		    settingsLinks.forEach((link) => {
+		      link.addEventListener("shown.bs.tab", (event) => {
+		        const href = event.target.getAttribute("href");
+		        if (href) localStorage.setItem(settingsTabKey, href);
+		      });
+		    });
+
+		        const fixedModalEl = document.getElementById("surv-fixed-modal");
+		        const fixedModalForm = document.getElementById("surv-fixed-form");
+		        const fixedModalPppoe = document.getElementById("surv-fixed-pppoe");
+		        const fixedModalPppoes = document.getElementById("surv-fixed-pppoes");
+		        const fixedModalPppoeLabel = document.getElementById("surv-fixed-pppoe-label");
+		        const fixedModalReason = document.getElementById("surv-fixed-reason");
+		        const fixedModal = fixedModalEl && window.bootstrap?.Modal ? new window.bootstrap.Modal(fixedModalEl) : null;
+
+		        document.querySelectorAll(".surv-fixed-btn").forEach((btn) => {
+		          btn.addEventListener("click", () => {
+		            const pppoe = (btn.getAttribute("data-pppoe") || "").trim();
+		            if (!pppoe) return;
+		            if (fixedModalForm) fixedModalForm.setAttribute("action", "/surveillance/fixed");
+	            if (fixedModalPppoe) fixedModalPppoe.value = pppoe;
+	            if (fixedModalPppoes) fixedModalPppoes.value = "";
+	            if (fixedModalPppoeLabel) fixedModalPppoeLabel.textContent = pppoe;
+	            if (fixedModalReason) fixedModalReason.value = "";
+	            if (fixedModal) fixedModal.show();
+	          });
+	        });
+        if (fixedModalEl) {
+          fixedModalEl.addEventListener("shown.bs.modal", () => {
+            if (fixedModalReason) fixedModalReason.focus();
+          });
+        }
+
+		    const historySearch = document.getElementById("surv-history-search");
+		    if (historySearch) {
+		      let lastValue = (historySearch.value || "").trim();
+	      let timer = null;
+	      const submit = () => {
+	        const q = (historySearch.value || "").trim();
+	        if (q === lastValue) return;
+	        lastValue = q;
+	        if (q && q.length < 2) return;
+	        const url = new URL(window.location.href);
+	        url.searchParams.set("tab", "history");
+	        url.searchParams.set("page", "1");
+	        if (q) url.searchParams.set("q", q);
+	        else url.searchParams.delete("q");
+	        url.hash = "#surv-history";
+	        window.location.href = url.toString();
+	      };
+	      historySearch.addEventListener("input", () => {
+	        if (timer) clearTimeout(timer);
+	        timer = setTimeout(submit, 350);
+	      });
+	      historySearch.addEventListener("keydown", (event) => {
+	        if (event.key === "Enter") {
+	          event.preventDefault();
+	          if (timer) clearTimeout(timer);
+	          submit();
+	        }
+	      });
+	    }
+
+	    const formatDuration = (seconds) => {
       const total = Math.max(Math.floor(seconds), 0);
       const days = Math.floor(total / 86400);
       const hours = Math.floor((total % 86400) / 3600);
@@ -295,28 +1306,1384 @@
       return `${secs}s`;
     };
 
-    const updateDurations = () => {
-      document.querySelectorAll('tr[data-added-at]').forEach((row) => {
-        const sinceRaw = row.getAttribute("data-added-at") || "";
-        const el = row.querySelector(".surv-live-duration");
-        if (!el) return;
-        const ts = Date.parse(sinceRaw);
-        if (!Number.isFinite(ts)) return;
-        el.textContent = formatDuration((Date.now() - ts) / 1000);
-      });
-    };
+	    const updateDurations = () => {
+	      document.querySelectorAll('tr[data-added-at]').forEach((row) => {
+	        const sinceRaw = row.getAttribute("data-added-at") || "";
+	        const el = row.querySelector(".surv-live-duration");
+	        if (!el) return;
+	        const ts = Date.parse(sinceRaw);
+	        if (!Number.isFinite(ts)) return;
+	        el.textContent = formatDuration((Date.now() - ts) / 1000);
+	      });
+		      document.querySelectorAll("[data-surv-detail] .surv-detail-underfor").forEach((el) => {
+		        const panel = el.closest("[data-surv-detail]");
+		        const tsRaw = panel ? (panel.getAttribute("data-selected-added-at") || "") : "";
+		        if (!tsRaw) return;
+		        const ts = Date.parse(tsRaw);
+		        if (!Number.isFinite(ts)) return;
+		        el.textContent = formatDuration((Date.now() - ts) / 1000);
+		        updateKpiSummary(panel, getSelectedMetrics(panel));
+		      });
+		      document.querySelectorAll("[data-surv-history-start]").forEach((row) => {
+		        const startRaw = row.getAttribute("data-surv-history-start") || "";
+		        const endRaw = row.getAttribute("data-surv-history-end") || "";
+		        const el = row.querySelector(".surv-history-duration");
+		        if (!el) return;
+		        const startTs = Date.parse(startRaw);
+		        if (!Number.isFinite(startTs)) return;
+		        const endTs = endRaw ? Date.parse(endRaw) : Date.now();
+		        if (!Number.isFinite(endTs)) return;
+		        el.textContent = formatDuration((endTs - startTs) / 1000);
+		      });
+		    };
     updateDurations();
     setInterval(updateDurations, 1000);
 
-    const focus = new URLSearchParams(window.location.search).get("focus");
-    if (focus) {
-      const target = document.querySelector(`tr[data-pppoe="${CSS.escape(focus)}"]`);
-      if (target) {
-        target.scrollIntoView({ block: "center", behavior: "smooth" });
-        target.classList.add("table-primary");
-        setTimeout(() => target.classList.remove("table-primary"), 4000);
-      }
-    }
+    const setText = (panel, name, value) => {
+      panel.querySelectorAll(`[data-surv-field="${name}"]`).forEach((el) => {
+        el.textContent = value;
+      });
+    };
+
+			    const setActionPppoe = (panel, pppoe) => {
+			      panel.querySelectorAll("[data-surv-action-pppoe]").forEach((el) => {
+			        if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT") {
+			          el.value = pppoe;
+			        } else {
+			          el.setAttribute("data-pppoe", pppoe);
+			        }
+			      });
+			    };
+
+	    const getSelectedMetrics = (panel) => {
+	      return {
+	        pingOk: panel.getAttribute("data-selected-ping-ok") === "1",
+	        uptimePct: parseFloat(panel.getAttribute("data-selected-uptime-pct") || "NaN"),
+	        latencyAvgMs: parseFloat(panel.getAttribute("data-selected-latency-avg-ms") || "NaN"),
+	        lossAvgPct: parseFloat(panel.getAttribute("data-selected-loss-avg-pct") || "NaN"),
+	        lossLatestPct: parseFloat(panel.getAttribute("data-selected-loss-latest-pct") || "NaN"),
+	        opticalRxDbm: parseFloat(panel.getAttribute("data-selected-optical-rx") || "NaN"),
+	        addedAtIso: panel.getAttribute("data-selected-added-at") || "",
+	      };
+	    };
+
+	    const setKpiBadge = (panel, key, state) => {
+	      const el = panel.querySelector(`[data-kpi-badge="${key}"]`);
+	      if (!el) return;
+	      el.className = "badge";
+	      if (state === "pass") {
+	        el.classList.add("bg-green-lt", "text-green");
+	        el.innerHTML = `<i class="ti ti-check"></i>`;
+	        el.title = "Pass";
+	      } else if (state === "fail") {
+	        el.classList.add("bg-secondary-lt", "text-secondary");
+	        el.innerHTML = `<i class="ti ti-x"></i>`;
+	        el.title = "Fail";
+	      } else {
+	        el.classList.add("bg-secondary-lt", "text-secondary");
+	        el.innerHTML = `<i class="ti ti-minus"></i>`;
+	        el.title = "Not enforced / n/a";
+	      }
+	    };
+
+	    const setKpiCardState = (panel, key, state) => {
+	      const card = panel.querySelector(`[data-kpi="${key}"]`);
+	      if (!card) return;
+	      card.classList.remove("bg-green-lt", "bg-secondary-lt");
+	      if (state === "pass") {
+	        card.classList.add("bg-green-lt");
+	      } else if (state === "fail") {
+	        card.classList.add("bg-secondary-lt");
+	      }
+	    };
+
+	    const setKpiGoal = (panel, key, text) => {
+	      const el = panel.querySelector(`[data-kpi-goal="${key}"]`);
+	      if (!el) return;
+	      el.textContent = text || "";
+	    };
+
+	    const updateKpiSummary = (panel, metrics) => {
+	      if (!panel) return;
+	      const uptimeThr = parseFloat(panel.getAttribute("data-thr-uptime") || "95");
+	      const latencyThr = parseFloat(panel.getAttribute("data-thr-latency") || "15");
+	      const lossThr = parseFloat(panel.getAttribute("data-thr-loss") || "100");
+	      const opticalThr = parseFloat(panel.getAttribute("data-thr-optical") || "-24");
+	      const requireOptical = panel.getAttribute("data-require-optical") === "1";
+	      const stableWindowMin = parseFloat(panel.getAttribute("data-stable-window-min") || "10");
+
+	      const now = Date.now();
+	      const addedTs = metrics.addedAtIso ? Date.parse(metrics.addedAtIso) : NaN;
+	      const underSeconds = Number.isFinite(addedTs) ? Math.max(0, (now - addedTs) / 1000) : 0;
+	      const windowOk = Number.isFinite(addedTs) ? underSeconds >= stableWindowMin * 60.0 : false;
+
+	      const pingOk = !!metrics.pingOk;
+
+	      const uptimePct = Number.isFinite(metrics.uptimePct) ? metrics.uptimePct : NaN;
+	      const uptimeOk = Number.isFinite(uptimePct) ? uptimePct >= uptimeThr : false;
+	      const uptimeOkOverall = uptimeOk && windowOk;
+
+	      const latencyAvg = Number.isFinite(metrics.latencyAvgMs) ? metrics.latencyAvgMs : NaN;
+	      const latencyOk = pingOk && Number.isFinite(latencyAvg) ? latencyAvg <= latencyThr : false;
+
+	      const lossEnforced = Number.isFinite(lossThr) && lossThr < 100;
+	      const lossAvg = Number.isFinite(metrics.lossAvgPct) ? metrics.lossAvgPct : NaN;
+	      let lossState = "na";
+	      if (lossEnforced) {
+	        if (!pingOk) lossState = "fail";
+	        else if (Number.isFinite(lossAvg)) lossState = lossAvg <= lossThr ? "pass" : "fail";
+	        else lossState = "fail";
+	      }
+
+	      const rx = Number.isFinite(metrics.opticalRxDbm) ? metrics.opticalRxDbm : NaN;
+	      let opticalState = "na";
+	      if (requireOptical) {
+	        opticalState = Number.isFinite(rx) ? (rx >= opticalThr ? "pass" : "fail") : "fail";
+	      }
+
+	      setKpiBadge(panel, "ping", pingOk ? "pass" : "fail");
+	      setKpiCardState(panel, "ping", pingOk ? "pass" : "fail");
+	      setKpiGoal(panel, "ping", "Goal: Up");
+
+	      setKpiBadge(panel, "uptime", uptimeOkOverall ? "pass" : "fail");
+	      setKpiCardState(panel, "uptime", uptimeOkOverall ? "pass" : "fail");
+	      const windowText = stableWindowMin
+	        ? `Window: ${Math.floor(underSeconds / 60)}m/${Math.round(stableWindowMin)}m`
+	        : "";
+	      setKpiGoal(panel, "uptime", `Goal: ≥${uptimeThr.toFixed(1)}% · ${windowText}`.trim());
+
+	      setKpiBadge(panel, "latency", latencyOk ? "pass" : "fail");
+	      setKpiCardState(panel, "latency", latencyOk ? "pass" : "fail");
+	      const latencyLabel = Number.isFinite(latencyAvg) ? `${latencyAvg.toFixed(1)}ms` : "n/a";
+	      setKpiGoal(panel, "latency", `Goal: ≤${latencyThr.toFixed(1)}ms · Avg: ${latencyLabel}`);
+
+	      setKpiBadge(panel, "loss", lossState);
+	      setKpiCardState(panel, "loss", lossState);
+	      if (!lossEnforced) {
+	        setKpiGoal(panel, "loss", "Goal: not enforced");
+	      } else {
+	        const lossLabel = Number.isFinite(lossAvg) ? `${lossAvg.toFixed(1)}%` : "n/a";
+	        setKpiGoal(panel, "loss", `Goal: ≤${lossThr.toFixed(1)}% · Avg: ${lossLabel}`);
+	      }
+
+	      setKpiBadge(panel, "optical", opticalState);
+	      setKpiCardState(panel, "optical", opticalState);
+	      if (!requireOptical) {
+	        setKpiGoal(panel, "optical", `Goal: optional (≥${opticalThr.toFixed(1)} dBm)`);
+	      } else {
+	        const rxLabel = Number.isFinite(rx) ? `${rx.toFixed(2)} dBm` : "n/a";
+	        setKpiGoal(panel, "optical", `Goal: ≥${opticalThr.toFixed(1)} dBm · Now: ${rxLabel}`);
+	      }
+
+	      const checks = [
+	        { ok: pingOk },
+	        { ok: uptimeOkOverall },
+	        { ok: latencyOk },
+	      ];
+	      if (lossEnforced) checks.push({ ok: lossState === "pass" });
+	      if (requireOptical) checks.push({ ok: opticalState === "pass" });
+
+	      const passCount = checks.filter((c) => c.ok).length;
+	      const totalCount = checks.length;
+	      const allOk = passCount === totalCount && totalCount > 0;
+	      const hb = panel.querySelector("[data-surv-health-badge]");
+	      if (hb) {
+	        hb.className = "badge";
+	        if (allOk) {
+	          hb.classList.add("bg-green-lt", "text-green");
+	          hb.innerHTML = `<i class="ti ti-check me-1"></i>Healthy (${passCount}/${totalCount})`;
+	        } else {
+	          hb.classList.add("bg-yellow-lt", "text-yellow");
+	          hb.innerHTML = `<i class="ti ti-alert-triangle me-1"></i>Not ready (${passCount}/${totalCount})`;
+	        }
+	      }
+	    };
+
+    const getDefaultHours = () => {
+      const stored = localStorage.getItem("surveillance_detail_window_hours");
+      const parsed = parseInt(stored || "24", 10);
+      return Number.isNaN(parsed) ? 24 : parsed;
+    };
+
+		    const setWindowLabel = (btn, hoursOrLabel) => {
+		      if (!btn) return;
+		      const raw = hoursOrLabel === null || hoursOrLabel === undefined ? "" : String(hoursOrLabel);
+		      const trimmed = raw.trim();
+		      // Allow an explicit label override (used when a Day tile is selected).
+		      if (trimmed && !/^\d+(\.\d+)?$/.test(trimmed)) {
+		        btn.textContent = trimmed;
+		        return;
+		      }
+		      const hours = Number(trimmed);
+		      if (!Number.isFinite(hours)) return;
+		      const label = hours === 168 ? "Last 7d" : `Last ${hours}h`;
+		      btn.textContent = label;
+		    };
+
+		    const formatTsPHT = (value) => {
+		      const dt = new Date(value);
+		      if (Number.isNaN(dt.getTime())) return "";
+		      return dt.toLocaleString("en-PH", {
+		        timeZone: "Asia/Manila",
+		        month: "short",
+		        day: "2-digit",
+		        year: "numeric",
+		        hour: "2-digit",
+	        minute: "2-digit",
+	        hour12: true,
+	      });
+	    };
+
+		    const formatTimePHT = (value) => {
+		      const dt = new Date(value);
+		      if (Number.isNaN(dt.getTime())) return "";
+		      return dt.toLocaleString("en-PH", {
+		        timeZone: "Asia/Manila",
+		        hour: "2-digit",
+		        minute: "2-digit",
+		        hour12: true,
+		      });
+		    };
+
+		    const setRangeLabel = (key, sinceIso, untilIso) => {
+		      const el = document.querySelector(`[data-surv-range-label="${key}"]`);
+		      if (!el) return;
+		      const s = sinceIso ? Date.parse(String(sinceIso)) : NaN;
+		      const u = untilIso ? Date.parse(String(untilIso)) : NaN;
+		      if (!Number.isFinite(s) || !Number.isFinite(u)) {
+		        el.textContent = "";
+		        return;
+		      }
+		      el.textContent = `Showing: ${formatTsPHT(s)} – ${formatTsPHT(u)} (PHT)`;
+		    };
+
+		    const setTimelineOverride = (key, windowBtn, active) => {
+		      if (windowBtn) {
+		        windowBtn.disabled = !!active;
+		        windowBtn.classList.toggle("disabled", !!active);
+		      }
+		    };
+
+	    const setOpticalTime = (panel, opticalLastIso, opticalLastDisplay) => {
+	      const timeEls = panel.querySelectorAll("[data-surv-optical-time]");
+	      if (!timeEls.length) return;
+	      const candidate = opticalLastIso || opticalLastDisplay || "";
+	      const ts = candidate ? Date.parse(candidate) : NaN;
+	      const hasTs = Number.isFinite(ts);
+	      const timeText = hasTs ? formatTimePHT(ts) : "";
+	      const fullText = hasTs ? formatTsPHT(ts) : (opticalLastDisplay || "");
+	      timeEls.forEach((el) => {
+	        if (!hasTs) {
+	          el.textContent = "";
+	          el.removeAttribute("title");
+	          el.removeAttribute("data-bs-original-title");
+	          return;
+	        }
+	        el.textContent = `(${timeText})`;
+	        el.setAttribute("title", `Optical last: ${fullText}`);
+	        if (window.bootstrap && window.bootstrap.Tooltip) {
+	          try {
+	            window.bootstrap.Tooltip.getOrCreateInstance(el);
+	          } catch (e) {
+	            // ignore
+	          }
+	        }
+	      });
+	    };
+
+		    const renderChart = async (chartEl, pppoe, hours, chartsState) => {
+		      if (!chartEl) return;
+		      chartEl.innerHTML = "<div class='text-muted'>Loading…</div>";
+		      if (chartsState.chart) {
+		        try { chartsState.chart.destroy(); } catch (e) {}
+		        chartsState.chart = null;
+		      }
+		      try {
+		        if (!window.ApexCharts) throw new Error("ApexCharts not loaded");
+		        const params = new URLSearchParams({ pppoe: pppoe, window: String(hours) });
+		        const res = await fetch(`/surveillance/series?${params.toString()}`, { headers: { "Accept": "application/json" }, cache: "no-store" });
+		        if (!res.ok) throw new Error("fetch failed");
+		        const payload = await res.json();
+		        const untilIso = payload.until || new Date().toISOString();
+		        const sinceIso = payload.since || new Date(Date.now() - (Number(hours) * 3600 * 1000)).toISOString();
+		        chartsState.lastWindow = { since: String(sinceIso), until: String(untilIso), hours: Number(hours) };
+		        setRangeLabel(chartsState.key || "", sinceIso, untilIso);
+		        const points = (payload.series || []).map((row) => {
+		          const ts = row.ts ? Date.parse(String(row.ts)) : NaN;
+		          if (!Number.isFinite(ts)) return null;
+		          return {
+		            x: ts,
+		            loss: row.loss === null || row.loss === undefined ? null : Number(row.loss),
+		            avg_ms: row.avg_ms === null || row.avg_ms === undefined ? null : Number(row.avg_ms),
+		          };
+		        }).filter(Boolean);
+		        if (!points.length) throw new Error("no data");
+		        const latency = points.map((p) => ({ x: p.x, y: p.avg_ms }));
+		        const loss = points.map((p) => ({ x: p.x, y: p.loss }));
+		        chartEl.innerHTML = "";
+		        chartsState.chart = new window.ApexCharts(chartEl, {
+		          chart: { type: "line", height: 300, toolbar: { show: false }, zoom: { enabled: false } },
+		          stroke: { width: 2 },
+		          markers: { size: 0 },
+		          series: [
+		            { name: "Latency (ms)", data: latency },
+		            { name: "Loss (%)", data: loss },
+		          ],
+		          colors: ["#206bc4", "#d63939"],
+		          xaxis: { type: "datetime" },
+		          yaxis: [
+		            {
+		              title: { text: "ms" },
+		              tickAmount: 4,
+			              labels: { formatter: (v) => { const n = Number(v); return Number.isFinite(n) ? n.toFixed(1) : ""; } },
+		            },
+		            {
+		              opposite: true,
+		              min: 0,
+		              max: 100,
+		              tickAmount: 5,
+		              title: { text: "%" },
+			              labels: { formatter: (v) => { const n = Number(v); return Number.isFinite(n) ? n.toFixed(0) : ""; } },
+		            },
+		          ],
+		          tooltip: {
+		            shared: true,
+		            intersect: false,
+		            x: { formatter: (value) => formatTsPHT(value) },
+		          },
+		          grid: { strokeDashArray: 4 },
+		          legend: { position: "top" },
+		        });
+		        chartsState.chart.render();
+		      } catch (err) {
+		        chartEl.innerHTML = "<div class='text-muted'>No data available.</div>";
+		      }
+		    };
+
+			    const renderChartRange = async (chartEl, pppoe, sinceIso, untilIso, chartsState) => {
+	      if (!chartEl) return;
+	      chartEl.innerHTML = "<div class='text-muted'>Loading…</div>";
+	      if (chartsState.chart) {
+	        try { chartsState.chart.destroy(); } catch (e) {}
+	        chartsState.chart = null;
+	      }
+		      try {
+		        if (!window.ApexCharts) throw new Error("ApexCharts not loaded");
+		        setRangeLabel(chartsState.key || "", sinceIso, untilIso);
+		        const params = new URLSearchParams({ pppoe: pppoe, since: String(sinceIso), until: String(untilIso) });
+		        const res = await fetch(`/surveillance/series_range?${params.toString()}`, { headers: { "Accept": "application/json" }, cache: "no-store" });
+		        if (!res.ok) throw new Error("fetch failed");
+		        const payload = await res.json();
+	        const points = (payload.series || []).map((row) => {
+	          const ts = row.ts ? Date.parse(String(row.ts)) : NaN;
+	          if (!Number.isFinite(ts)) return null;
+	          return {
+	            x: ts,
+	            loss: row.loss === null || row.loss === undefined ? null : Number(row.loss),
+	            avg_ms: row.avg_ms === null || row.avg_ms === undefined ? null : Number(row.avg_ms),
+	          };
+	        }).filter(Boolean);
+	        if (!points.length) throw new Error("no data");
+	        const latency = points.map((p) => ({ x: p.x, y: p.avg_ms }));
+	        const loss = points.map((p) => ({ x: p.x, y: p.loss }));
+	        chartEl.innerHTML = "";
+		        chartsState.chart = new window.ApexCharts(chartEl, {
+		          chart: { type: "line", height: 300, toolbar: { show: false }, zoom: { enabled: false } },
+		          stroke: { width: 2 },
+		          markers: { size: 0 },
+	          series: [
+	            { name: "Latency (ms)", data: latency },
+	            { name: "Loss (%)", data: loss },
+	          ],
+	          colors: ["#206bc4", "#d63939"],
+		          xaxis: { type: "datetime" },
+		          yaxis: [
+		            {
+		              title: { text: "ms" },
+		              tickAmount: 4,
+			              labels: { formatter: (v) => { const n = Number(v); return Number.isFinite(n) ? n.toFixed(1) : ""; } },
+		            },
+		            {
+		              opposite: true,
+		              min: 0,
+		              max: 100,
+		              tickAmount: 5,
+		              title: { text: "%" },
+			              labels: { formatter: (v) => { const n = Number(v); return Number.isFinite(n) ? n.toFixed(0) : ""; } },
+		            },
+		          ],
+		          tooltip: {
+		            shared: true,
+		            intersect: false,
+		            x: { formatter: (value) => formatTsPHT(value) },
+	          },
+	          grid: { strokeDashArray: 4 },
+	          legend: { position: "top" },
+	        });
+	        chartsState.chart.render();
+	      } catch (err) {
+	        chartEl.innerHTML = "<div class='text-muted'>No data available.</div>";
+	      }
+		    };
+
+			    const destroyMiniCharts = (chartsState) => {
+			      (chartsState.miniCharts || []).forEach((c) => {
+			        try { c.destroy(); } catch (e) {}
+			      });
+			      chartsState.miniCharts = [];
+			    };
+
+			    const formatFullLossTime = (seconds) => {
+			      if (!Number.isFinite(seconds)) return "—";
+			      return formatDuration(seconds);
+			    };
+
+				    const computeHealthScore = (stats) => {
+				      if (!stats) return null;
+				      const uptime = Number.isFinite(stats.uptime_pct) ? Number(stats.uptime_pct) : 0;
+				      const loss = Number.isFinite(stats.avg_loss_pct) ? Number(stats.avg_loss_pct) : 0;
+				      const latency = Number.isFinite(stats.avg_latency_ms) ? Number(stats.avg_latency_ms) : 0;
+				      const downtimeSeconds = Number.isFinite(stats.downtime_seconds) ? Number(stats.downtime_seconds) : Number(stats.loss100_seconds || 0);
+				      const downtimeHours = downtimeSeconds / 3600.0;
+				      // Higher score is healthier. Heavily penalize 100% loss time.
+				      return uptime - (loss * 1.5) - (Math.min(latency, 200) / 10.0) - (downtimeHours * 5.0);
+				    };
+
+			    const trendForStats = (prev, cur) => {
+			      const a = computeHealthScore(prev);
+			      const b = computeHealthScore(cur);
+			      if (a === null || b === null) return "flat";
+			      const diff = b - a;
+			      if (diff > 1.0) return "up";
+			      if (diff < -1.0) return "down";
+			      return "flat";
+			    };
+
+			    const makeTrendBadge = (trend) => {
+			      const span = document.createElement("span");
+			      span.className = "badge";
+			      span.setAttribute("data-surv-trend-badge", "1");
+			      if (trend === "up") {
+			        span.classList.add("bg-green-lt", "text-green");
+			        span.title = "Improving vs previous day";
+			        span.innerHTML = '<i class="ti ti-trending-up"></i>';
+			      } else if (trend === "down") {
+			        span.classList.add("bg-red-lt", "text-red");
+			        span.title = "Worsening vs previous day";
+			        span.innerHTML = '<i class="ti ti-trending-down"></i>';
+			      } else {
+			        span.classList.add("bg-secondary-lt", "text-secondary");
+			        span.title = "No clear change vs previous day";
+			        span.innerHTML = '<i class="ti ti-minus"></i>';
+			      }
+			      return span;
+			    };
+
+			    const asNumberOrNull = (value) => {
+			      const n = Number(value);
+			      return Number.isFinite(n) ? n : null;
+			    };
+
+			    const kpiBadge = (state) => {
+			      const span = document.createElement("span");
+			      span.className = "badge";
+			      if (state === "pass") {
+			        span.classList.add("bg-green-lt", "text-green");
+			        span.innerHTML = '<i class="ti ti-check"></i>';
+			      } else if (state === "warn") {
+			        span.classList.add("bg-yellow-lt", "text-yellow");
+			        span.innerHTML = '<i class="ti ti-alert-triangle"></i>';
+			      } else {
+			        span.classList.add("bg-secondary-lt", "text-secondary");
+			        span.innerHTML = '<i class="ti ti-minus"></i>';
+			      }
+			      return span;
+			    };
+
+			    const buildSummaryKpis = (stats, thresholds) => {
+			      const thr = thresholds || {};
+			      const thrLoss = asNumberOrNull(thr.loss_max_pct);
+			      const thrLatency = asNumberOrNull(thr.latency_max_ms);
+			      const thrUptime = asNumberOrNull(thr.uptime_threshold_pct);
+
+			      const loss = asNumberOrNull(stats?.avg_loss_pct);
+			      const latency = asNumberOrNull(stats?.avg_latency_ms);
+			      const uptime = asNumberOrNull(stats?.uptime_pct);
+				      const downtimeSec = asNumberOrNull(stats?.downtime_seconds ?? stats?.loss100_seconds) ?? 0;
+
+			      const lossState = loss === null ? "na" : (thrLoss !== null && loss <= thrLoss ? "pass" : "warn");
+			      const latencyState = latency === null ? "na" : (thrLatency !== null && latency <= thrLatency ? "pass" : "warn");
+			      const uptimeState = uptime === null ? "na" : (thrUptime !== null && uptime >= thrUptime ? "pass" : "warn");
+			      const downtimeState = downtimeSec <= 0 ? "pass" : "warn";
+
+			      const makeKpi = (label, valueText, state, helpText) => {
+			        const col = document.createElement("div");
+			        col.className = "col-6 col-lg-3";
+			        const box = document.createElement("div");
+			        box.className = "border rounded p-2";
+			        const head = document.createElement("div");
+			        head.className = "d-flex align-items-center justify-content-between";
+			        const lab = document.createElement("div");
+			        lab.className = "text-muted small";
+			        lab.textContent = label;
+			        const badge = kpiBadge(state);
+			        if (helpText) badge.title = helpText;
+			        head.appendChild(lab);
+			        head.appendChild(badge);
+			        const val = document.createElement("div");
+			        val.className = "fw-semibold";
+			        val.textContent = valueText;
+			        if (state === "pass") val.classList.add("text-green");
+			        if (state === "warn") val.classList.add("text-yellow");
+			        box.appendChild(head);
+			        box.appendChild(val);
+			        col.appendChild(box);
+			        return col;
+			      };
+
+			      const lossTxt = loss === null ? "—" : `${loss.toFixed(1)}%`;
+			      const latencyTxt = latency === null ? "—" : `${latency.toFixed(1)}ms`;
+			      const uptimeTxt = uptime === null ? "—" : `${uptime.toFixed(1)}%`;
+			      const downtimeTxt = formatDuration(downtimeSec);
+
+				      return [
+				        makeKpi("Loss", lossTxt, lossState, thrLoss !== null ? `Goal: ≤ ${thrLoss}%` : ""),
+				        makeKpi("Downtime", downtimeTxt, downtimeState, "Estimated from Loss% (equivalent time at 100% loss, minute buckets)."),
+				        makeKpi("Latency", latencyTxt, latencyState, thrLatency !== null ? `Goal: ≤ ${thrLatency}ms` : ""),
+				        makeKpi("Uptime", uptimeTxt, uptimeState, thrUptime !== null ? `Goal: ≥ ${thrUptime}%` : ""),
+				      ];
+				    };
+
+				    const formatStatLine = (stats) => {
+				      if (!stats) return "No data";
+				      const lossAvg = Number.isFinite(stats.avg_loss_pct) ? `${stats.avg_loss_pct.toFixed(1)}% loss` : "n/a loss";
+				      const downtimeSeconds = Number.isFinite(stats.downtime_seconds) ? Number(stats.downtime_seconds) : Number(stats.loss100_seconds || 0);
+				      const down = formatFullLossTime(downtimeSeconds);
+				      const latency = Number.isFinite(stats.avg_latency_ms) ? `${stats.avg_latency_ms.toFixed(1)}ms avg` : "n/a avg";
+				      const up = Number.isFinite(stats.uptime_pct) ? `${stats.uptime_pct.toFixed(1)}% uptime` : "n/a uptime";
+				      return `${lossAvg} · Downtime ${down} · ${latency} · ${up}`;
+				    };
+
+			    const renderMiniChart = (el, series, height = 70) => {
+			      if (!el || !window.ApexCharts) return null;
+			      const points = (series || []).map((row) => {
+			        const ts = row.ts ? Date.parse(String(row.ts)) : NaN;
+			        if (!Number.isFinite(ts)) return null;
+		        return {
+		          x: ts,
+		          loss: row.loss === null || row.loss === undefined ? null : Number(row.loss),
+		          avg_ms: row.avg_ms === null || row.avg_ms === undefined ? null : Number(row.avg_ms),
+		        };
+		      }).filter(Boolean);
+			      const latency = points.map((p) => ({ x: p.x, y: p.avg_ms }));
+			      const loss = points.map((p) => ({ x: p.x, y: p.loss }));
+			      const chart = new window.ApexCharts(el, {
+			        chart: { type: "line", height: height, sparkline: { enabled: true }, animations: { enabled: false } },
+			        stroke: { width: 2 },
+			        markers: { size: 0 },
+			        series: [
+			          { name: "Latency (ms)", data: latency },
+		          { name: "Loss (%)", data: loss },
+		        ],
+		        colors: ["#206bc4", "#d63939"],
+		        tooltip: { enabled: false },
+		      });
+		      chart.render();
+			      return chart;
+			    };
+
+			    const renderTimelineCards = (containerEl, key, pppoe, payload, chartEl, windowBtn, chartsState, opts = {}) => {
+			      if (!containerEl) return;
+			      const days = payload.days || [];
+			      const miniHeight = Number.isFinite(opts.miniHeight) ? opts.miniHeight : 70;
+			      const enableDaySelect = opts.enableDaySelect !== false;
+			      const chartsList = opts.chartsList || chartsState.miniCharts || [];
+			      const selectedDay = Number.isFinite(opts.selectedDay) ? opts.selectedDay : NaN;
+			      const totalEl = opts.totalEl || null;
+			      const onClear = typeof opts.onClear === "function" ? opts.onClear : null;
+
+			      containerEl.innerHTML = "";
+			      if (totalEl) totalEl.innerHTML = "";
+
+			      const makeCard = (title, subtitle) => {
+			        const card = document.createElement("div");
+			        card.className = "card card-sm";
+			        card.style.minWidth = opts.minWidth ? String(opts.minWidth) : "220px";
+			        const body = document.createElement("div");
+			        body.className = "card-body py-2";
+			        const h = document.createElement("div");
+			        h.className = "d-flex align-items-center justify-content-between";
+			        const left = document.createElement("div");
+			        left.innerHTML = `<div class="fw-semibold">${title}</div><div class="text-muted small">${subtitle || ""}</div>`;
+			        const right = document.createElement("div");
+			        right.className = "d-flex align-items-center gap-1";
+			        right.setAttribute("data-surv-card-actions", "1");
+			        h.appendChild(left);
+			        h.appendChild(right);
+			        body.appendChild(h);
+			        card.appendChild(body);
+			        return { card, body };
+			      };
+
+			      const setActiveCard = (activeIdx) => {
+			        containerEl.querySelectorAll("[data-day-idx]").forEach((el) => {
+			          el.classList.remove("border-primary");
+			          el.classList.remove("bg-blue-lt");
+			          el.classList.remove("shadow-sm");
+			          const actions = el.querySelector("[data-surv-card-actions]");
+			          if (actions) {
+			            actions.querySelectorAll("[data-surv-clear-btn]").forEach((n) => n.remove());
+			          }
+			        });
+			        if (!Number.isFinite(activeIdx)) return;
+			        const el = containerEl.querySelector(`[data-day-idx="${activeIdx}"]`);
+			        if (el) {
+			          el.classList.add("border-primary", "bg-blue-lt", "shadow-sm");
+			          const actions = el.querySelector("[data-surv-card-actions]");
+			          if (actions && onClear) {
+			            const btn = document.createElement("button");
+			            btn.type = "button";
+			            btn.className = "btn btn-sm btn-outline-secondary btn-icon";
+			            btn.title = "Clear timeline filter";
+			            btn.setAttribute("aria-label", "Clear timeline filter");
+			            btn.setAttribute("data-surv-clear-btn", "1");
+			            btn.innerHTML = '<i class="ti ti-x"></i>';
+			            btn.addEventListener("click", (event) => {
+			              event.preventDefault();
+			              event.stopPropagation();
+			              onClear();
+			            });
+			            actions.appendChild(btn);
+			          }
+			        }
+			      };
+
+			      if (totalEl) {
+			        // Overall trend badge is based on the latest 2 available (non-future) days.
+			        const availableDays = (days || []).filter((d) => d && d.kind !== "future" && d.stats);
+			        const last = availableDays.length ? availableDays[availableDays.length - 1] : null;
+			        const prev = availableDays.length > 1 ? availableDays[availableDays.length - 2] : null;
+			        const overallTrend = prev && last ? trendForStats(prev.stats, last.stats) : "flat";
+
+			        const wrap = document.createElement("div");
+			        wrap.className = "card card-sm";
+			        const body = document.createElement("div");
+			        body.className = "card-body py-2";
+			        const header = document.createElement("div");
+			        header.className = "d-flex align-items-center justify-content-between";
+			        header.innerHTML = `<div class="fw-semibold">Healing summary since added:</div>`;
+			        header.appendChild(makeTrendBadge(overallTrend));
+			        body.appendChild(header);
+			        const thresholds = chartsState.thresholds || {};
+			        const kpiRow = document.createElement("div");
+			        kpiRow.className = "row g-2 mt-2";
+			        buildSummaryKpis(payload.total, thresholds).forEach((node) => kpiRow.appendChild(node));
+			        body.appendChild(kpiRow);
+			        wrap.appendChild(body);
+			        totalEl.innerHTML = "";
+			        totalEl.appendChild(wrap);
+			      }
+
+			      // Day 0: 7D overview (stats + mini chart)
+			      const day0 = payload.day0 || null;
+			      if (day0) {
+				        const title = day0.label || "Day 0";
+				        const { card, body } = makeCard(title, day0.title || "7D Overview");
+				        card.setAttribute("data-day-idx", "0");
+				        card.classList.add("border");
+				        const actions0 = card.querySelector("[data-surv-card-actions]");
+				        if (actions0) actions0.appendChild(makeTrendBadge("flat"));
+
+				        const chartWrap = document.createElement("div");
+				        chartWrap.className = "mt-1";
+				        const chartElMini = document.createElement("div");
+				        chartElMini.style.height = `${miniHeight}px`;
+				        chartWrap.appendChild(chartElMini);
+				        body.appendChild(chartWrap);
+
+				        const statsEl = document.createElement("div");
+				        statsEl.className = "text-muted small mt-1";
+				        statsEl.textContent = `7D stats: ${formatStatLine(day0.stats)}`;
+				        body.appendChild(statsEl);
+
+				        const c = renderMiniChart(chartElMini, day0.series || [], miniHeight);
+				        if (c) chartsList.push(c);
+
+				        if (enableDaySelect) {
+				          card.style.cursor = "pointer";
+				          card.addEventListener("click", async () => {
+				            chartsState.timelineSelected = { pppoe: pppoe, idx: 0 };
+				            setActiveCard(0);
+				            setWindowLabel(windowBtn, "Day 0 · 7D");
+				            setTimelineOverride(key, windowBtn, true);
+				            // Match the dropdown's "Last 7d" by using the same raw-series endpoint (window=168).
+				            await renderChart(chartEl, pppoe, 168, chartsState);
+				          });
+				        }
+
+				        containerEl.appendChild(card);
+				      }
+
+				      days.forEach((day) => {
+				        const idx = Number(day.index);
+				        const dateLabel = day.date_label || day.date || "";
+				        const kind = day.kind || "future";
+			        let subtitle = dateLabel;
+			        if (kind === "today") {
+			          const h = Number.isFinite(day.hours_so_far) ? `${day.hours_so_far}h` : "";
+			          subtitle = `Today · ${h}`;
+			        } else if (kind === "future") {
+			          subtitle = `${dateLabel} · Upcoming`;
+			        }
+
+				        const title = `${day.label || ("Day " + idx)}`;
+				        const { card, body } = makeCard(title, subtitle);
+				        card.setAttribute("data-day-idx", String(idx));
+				        card.classList.add("border");
+				        if (kind === "future") {
+				          card.classList.add("opacity-50");
+				        }
+				        const actions = card.querySelector("[data-surv-card-actions]");
+				        if (actions) {
+				          if (kind === "future") {
+				            const b = document.createElement("span");
+				            b.className = "badge bg-secondary-lt text-secondary";
+				            b.title = "Upcoming day";
+				            b.innerHTML = '<i class="ti ti-clock"></i>';
+				            actions.appendChild(b);
+				          } else {
+				            const prevDay = (days || []).find((d) => Number(d.index) === idx - 1 && d && d.stats);
+				            const trend = (prevDay && prevDay.stats && day.stats) ? trendForStats(prevDay.stats, day.stats) : "flat";
+				            actions.appendChild(makeTrendBadge(trend));
+				          }
+				        }
+
+			        const chartWrap = document.createElement("div");
+			        chartWrap.className = "mt-1";
+			        const chartElMini = document.createElement("div");
+			        chartElMini.style.height = `${miniHeight}px`;
+			        chartWrap.appendChild(chartElMini);
+			        body.appendChild(chartWrap);
+
+			        const statsEl = document.createElement("div");
+			        statsEl.className = "text-muted small mt-1";
+			        if (kind === "future") {
+			          statsEl.textContent = "Not reached yet.";
+				        } else {
+				          statsEl.textContent = `1D stats: ${formatStatLine(day.stats)}`;
+				        }
+			        body.appendChild(statsEl);
+
+			        if (kind !== "future") {
+			          const c = renderMiniChart(chartElMini, day.series || [], miniHeight);
+			          if (c) chartsList.push(c);
+			        }
+
+				        if (kind !== "future" && enableDaySelect) {
+				          card.style.cursor = "pointer";
+				          card.addEventListener("click", async () => {
+				            chartsState.timelineSelected = { pppoe: pppoe, idx: idx };
+				            setActiveCard(idx);
+				            setWindowLabel(windowBtn, `${day.label} · ${dateLabel}`);
+				            setTimelineOverride(key, windowBtn, true);
+				            await renderChartRange(chartEl, pppoe, day.start_iso, day.until_iso, chartsState);
+				          });
+				        }
+
+			        containerEl.appendChild(card);
+			      });
+
+			      setActiveCard(selectedDay);
+			    };
+
+				    const renderTimeline = async (timelineEl, key, pppoe, chartEl, windowBtn, chartsState) => {
+				      if (!timelineEl) return;
+				      destroyMiniCharts(chartsState);
+				      timelineEl.innerHTML = "<div class='text-muted small'>Loading…</div>";
+					      try {
+					        const params = new URLSearchParams({ pppoe: pppoe });
+					        // Anchor Day 0 "Last 7d" stats to the same window used by the big chart.
+					        if (chartsState.lastWindow && chartsState.lastWindow.until) {
+					          params.set("until", String(chartsState.lastWindow.until));
+					        }
+					        const res = await fetch(`/surveillance/timeline?${params.toString()}`, { headers: { "Accept": "application/json" }, cache: "no-store" });
+					        if (!res.ok) throw new Error("fetch failed");
+					        const payload = await res.json();
+				        chartsState.lastTimelinePayload = payload;
+				        chartsState.lastTimelinePppoe = pppoe;
+				        const active = (chartsState.timelineSelected && chartsState.timelineSelected.pppoe === pppoe) ? chartsState.timelineSelected.idx : NaN;
+				        const totalEl = document.querySelector(`[data-surv-timeline-total="${key}"]`);
+				        const onClear = async () => {
+				          chartsState.timelineSelected = null;
+				          setTimelineOverride(key, windowBtn, false);
+				          const hours = getDefaultHours();
+				          setWindowLabel(windowBtn, hours);
+				          await renderChart(chartEl, pppoe, hours, chartsState);
+				          await renderTimeline(timelineEl, key, pppoe, chartEl, windowBtn, chartsState);
+				        };
+				        renderTimelineCards(
+				          timelineEl,
+				          key,
+				          pppoe,
+				          payload,
+				          chartEl,
+				          windowBtn,
+				          chartsState,
+				          { miniHeight: 70, chartsList: chartsState.miniCharts, enableDaySelect: true, selectedDay: active, totalEl: totalEl, onClear: onClear }
+				        );
+				      } catch (e) {
+				        timelineEl.innerHTML = "<div class='text-muted small'>Unable to load timeline.</div>";
+				      }
+				    };
+
+	      const initPane = (key) => {
+	      const tableView = document.querySelector(`[data-surv-pane="${key}"][data-surv-view="table"]`);
+	      const splitView = document.querySelector(`[data-surv-pane="${key}"][data-surv-view="split"]`);
+	      const list = splitView ? splitView.querySelector(`[data-surv-list="${key}"]`) : null;
+	      const panel = splitView ? splitView.querySelector(`[data-surv-detail="${key}"]`) : null;
+	      const fullTable = tableView ? tableView.querySelector(`[data-surv-list-full="${key}"]`) : null;
+	      const search = document.querySelector(`[data-surv-search="${key}"]`);
+	      const multiToggle = document.querySelector(`[data-surv-multiselect-toggle="${key}"]`);
+	      const bulkForm = document.querySelector(`[data-surv-bulk-form="${key}"]`);
+	      const bulkInput = document.querySelector(`[data-surv-bulk-input="${key}"]`);
+	      const bulkBtn = document.querySelector(`[data-surv-bulk-btn="${key}"]`);
+	      const bulkFixedBtn = document.querySelector(`[data-surv-bulk-fixed-btn="${key}"]`);
+	      if (!tableView || !splitView || !list || !panel || !fullTable) return;
+
+			      const chartEl = document.getElementById(key === "under" ? "surv-under-chart" : "surv-level2-chart");
+			      const windowBtn = document.querySelector(`[data-surv-window-btn="${key}"]`);
+			      const timelineEl = splitView.querySelector(`[data-surv-timeline="${key}"]`);
+				      const chartsState = { chart: null, miniCharts: [], key: key, timelineSelected: null, thresholds: null, lastWindow: null };
+				      if (key === "under") window.__survChartsUnder = chartsState;
+				      if (key === "level2") window.__survChartsLevel2 = chartsState;
+
+	      const isInteractiveClick = (target) => {
+	        return !!(target && target.closest && target.closest("a,button,input,select,textarea,form,label"));
+	      };
+
+	      const destroyChart = () => {
+	        if (chartsState.chart) {
+	          try { chartsState.chart.destroy(); } catch (e) {}
+	          chartsState.chart = null;
+	        }
+	        if (chartEl) chartEl.innerHTML = "";
+	      };
+
+			      const applySelection = async (rowEl, { scrollIntoView } = {}) => {
+	        if (!rowEl || !rowEl.getAttribute) return;
+	        list.querySelectorAll("tr.surv-row").forEach((tr) => tr.classList.remove("table-active"));
+	        rowEl.classList.add("table-active");
+        if (scrollIntoView) rowEl.scrollIntoView({ block: "center", behavior: "smooth" });
+
+	        const pppoe = rowEl.getAttribute("data-pppoe") || "";
+	        const ip = rowEl.getAttribute("data-ip") || "";
+		        const ok = rowEl.getAttribute("data-ok") === "1";
+		        const lossRaw = rowEl.getAttribute("data-loss");
+		        const avgRaw = rowEl.getAttribute("data-avg-ms");
+		        const uptimePct = rowEl.getAttribute("data-uptime-pct") || "0.0";
+	        const lossAvgRaw = rowEl.getAttribute("data-stable-loss-avg");
+	        const latencyAvgRaw = rowEl.getAttribute("data-stable-avg-ms-avg");
+	        const downFor = rowEl.getAttribute("data-down-for") || "";
+	        const lastCheck = rowEl.getAttribute("data-last-check") || "";
+		        const opticalRxRaw = rowEl.getAttribute("data-optical-rx");
+		        const opticalLast = rowEl.getAttribute("data-optical-last") || "";
+		        const opticalLastIso = rowEl.getAttribute("data-optical-last-iso") || "";
+		        const opticalDeviceId = rowEl.getAttribute("data-optical-device-id") || "";
+		        const mode = rowEl.getAttribute("data-mode") || "";
+		        const addedAtIso = rowEl.getAttribute("data-added-at") || "";
+
+	        panel.setAttribute("data-selected-added-at", addedAtIso);
+	        panel.setAttribute("data-selected-pppoe", pppoe);
+	        setText(panel, "pppoe", pppoe);
+	        setText(panel, "ip", ip ? `(${ip})` : "");
+        setText(panel, "last_check", lastCheck || "—");
+        setText(panel, "ping_state", ok ? (key === "level2" ? "Monitor" : "Up") : "Down");
+        setText(panel, "avg_ms", avgRaw ? `${avgRaw}ms` : "—");
+        setText(panel, "loss", lossRaw ? `${lossRaw}%` : "—");
+        setText(panel, "uptime_pct", `${uptimePct}%`);
+        setText(panel, "down_for", downFor || "—");
+		        setText(panel, "mode", mode || "—");
+		        setText(panel, "optical_rx", opticalRxRaw ? `${opticalRxRaw} dBm` : "—");
+		        setOpticalTime(panel, opticalLastIso, opticalLast);
+		        setActionPppoe(panel, pppoe);
+	        panel.setAttribute("data-selected-ping-ok", ok ? "1" : "0");
+	        panel.setAttribute("data-selected-uptime-pct", String(uptimePct));
+	        panel.setAttribute("data-selected-latency-avg-ms", String(latencyAvgRaw || avgRaw || ""));
+		        panel.setAttribute("data-selected-loss-avg-pct", String(lossAvgRaw || ""));
+		        panel.setAttribute("data-selected-loss-latest-pct", String(lossRaw || ""));
+		        panel.setAttribute("data-selected-optical-rx", String(opticalRxRaw || ""));
+		        panel.setAttribute("data-selected-optical-device-id", String(opticalDeviceId || ""));
+		        updateKpiSummary(panel, getSelectedMetrics(panel));
+
+			        // Default view uses dropdown filter. Timeline filter is opt-in.
+			        chartsState.timelineSelected = null;
+			        setTimelineOverride(key, windowBtn, false);
+			        if (!chartsState.thresholds) {
+			          chartsState.thresholds = {
+			            uptime_threshold_pct: asNumberOrNull(panel.getAttribute("data-thr-uptime")),
+			            latency_max_ms: asNumberOrNull(panel.getAttribute("data-thr-latency")),
+			            loss_max_pct: asNumberOrNull(panel.getAttribute("data-thr-loss")),
+			          };
+			        }
+			        const hours = getDefaultHours();
+			        setWindowLabel(windowBtn, hours);
+			        await renderChart(chartEl, pppoe, hours, chartsState);
+			        await renderTimeline(timelineEl, key, pppoe, chartEl, windowBtn, chartsState);
+		      };
+
+		      // Optical KPI modal (RX/TX history). Opened via Bootstrap data attributes on the KPI card.
+		      const opticalModalEl = document.getElementById("surv-optical-modal");
+		      const opticalModalTitle = document.getElementById("surv-optical-title");
+		      const opticalModalChart = document.getElementById("surv-optical-modal-chart");
+		      const opticalModalWindowButton = document.getElementById("surv-optical-modal-window-button");
+		      const opticalModalWindowOptions = document.querySelectorAll(".surv-optical-modal-window-option");
+		      const opticalChartMin = {{ surv_optical_chart_min_dbm }};
+		      const opticalChartMax = {{ surv_optical_chart_max_dbm }};
+		      const opticalTxRealisticMin = {{ surv_optical_tx_realistic_min_dbm }};
+		      const opticalTxRealisticMax = {{ surv_optical_tx_realistic_max_dbm }};
+		      if (opticalModalEl && opticalModalEl.parentElement !== document.body) {
+		        document.body.appendChild(opticalModalEl);
+		      }
+		      const opticalModalState = window.__survOpticalModalState || { pppoe: "", deviceId: "", hours: 24, stateColor: "#2fb344", chart: null };
+		      window.__survOpticalModalState = opticalModalState;
+
+			      const renderOpticalModalChart = async ({ pppoe, deviceId, hours, stateColor }) => {
+			        if (!opticalModalChart) return;
+			        if (!window.ApexCharts) {
+			          opticalModalChart.innerHTML = "<div class='text-muted'>Chart library not loaded.</div>";
+			          return;
+			        }
+			        const label = hours >= 24 ? `${Math.floor(hours / 24)}D` : `${hours}H`;
+			        const rangeEl = document.getElementById("surv-optical-modal-range");
+			        const untilMs = Date.now();
+			        const sinceMs = untilMs - (Number(hours) * 3600 * 1000);
+			        if (rangeEl && Number.isFinite(sinceMs) && Number.isFinite(untilMs)) {
+			          rangeEl.textContent = `Showing: ${formatTsPHT(sinceMs)} – ${formatTsPHT(untilMs)} (PHT)`;
+			        }
+			        if (opticalModalTitle) opticalModalTitle.textContent = `${pppoe || "Optical"} · ${label} Trend`;
+			        if (opticalModalWindowButton) opticalModalWindowButton.textContent = `Filter: ${label}`;
+			        if (opticalModalState.chart) {
+			          try { opticalModalState.chart.destroy(); } catch (e) {}
+			          opticalModalState.chart = null;
+		        }
+		        if (!deviceId) {
+		          opticalModalChart.innerHTML = "<div class='text-muted'>No optical data available for this account.</div>";
+		          return;
+		        }
+		        opticalModalChart.innerHTML = "<div class='text-muted'>Loading chart...</div>";
+		        try {
+		          const params = new URLSearchParams({ device_id: deviceId, window: String(hours) });
+		          const res = await fetch(`/optical/series?${params.toString()}`, { headers: { "Accept": "application/json" } });
+		          if (!res.ok) {
+		            opticalModalChart.innerHTML = "<div class='text-muted'>No data available.</div>";
+		            return;
+		          }
+		          const payload = await res.json();
+		          const toNumberOrNull = (value) => {
+		            if (value === null || value === undefined) return null;
+		            const parsed = Number(value);
+		            return Number.isFinite(parsed) ? parsed : null;
+		          };
+		          const points = (payload.series || [])
+		            .map((item) => {
+		              const ts = item.ts ?? item.timestamp ?? null;
+		              const parsedTs = ts ? Date.parse(String(ts)) : NaN;
+		              if (!Number.isFinite(parsedTs)) return null;
+		              const txRaw = toNumberOrNull(item.tx);
+		              const txPlot =
+		                txRaw === null || txRaw === undefined
+		                  ? null
+		                  : Number(txRaw) < opticalTxRealisticMin || Number(txRaw) > opticalTxRealisticMax
+		                    ? null
+		                    : txRaw;
+		              return { x: parsedTs, rx: toNumberOrNull(item.rx), tx: txPlot, tx_raw: txRaw };
+		            })
+		            .filter((item) => item !== null);
+		          if (!points.length) {
+		            opticalModalChart.innerHTML = "<div class='text-muted'>No data available.</div>";
+		            return;
+		          }
+
+			          const rxSeries = points.map((item) => ({ x: item.x, y: item.rx }));
+			          const txSeries = points.map((item) => ({ x: item.x, y: item.tx }));
+			          opticalModalChart.innerHTML = "";
+
+			          const formatDatePHTShort = (value) => {
+			            const dt = new Date(value);
+			            if (Number.isNaN(dt.getTime())) return "";
+			            return dt.toLocaleString("en-PH", {
+			              timeZone: "Asia/Manila",
+			              month: "short",
+			              day: "2-digit",
+			            });
+			          };
+				          const xLabelFormatter = (value) => {
+				            // Show dates when the window spans multiple days.
+				            if (Number(hours) >= 48) return formatDatePHTShort(value);
+				            return formatTimePHT(value);
+				          };
+				          const calcTickAmount = (hoursValue) => {
+				            const h = Number(hoursValue);
+				            if (!Number.isFinite(h) || h <= 0) return undefined;
+				            if (h <= 6) return 6;
+				            if (h <= 12) return 6;
+				            if (h <= 24) return 8;
+				            if (h <= 48) return 8;
+				            if (h <= 168) return 7;
+				            return 10;
+				          };
+				          const tickAmount = calcTickAmount(hours);
+			          const formatDbmTooltip = (value) => {
+			            if (value === null || value === undefined || Number.isNaN(Number(value))) return "n/a";
+			            return `${Number(value).toFixed(1)} dBm`;
+			          };
+
+			          const stroke = stateColor || "#2fb344";
+			          opticalModalState.chart = new window.ApexCharts(opticalModalChart, {
+		            chart: {
+		              type: "line",
+		              height: 280,
+		              toolbar: { show: false },
+		              animations: { enabled: false },
+		              zoom: { enabled: false },
+		            },
+		            colors: [stroke, "#206bc4"],
+		            series: [
+		              { name: "RX (dBm)", data: rxSeries },
+		              { name: "TX (dBm)", data: txSeries },
+		            ],
+		            stroke: { width: 2 },
+			            markers: { size: 0, hover: { size: 4 } },
+				            xaxis: {
+				              type: "datetime",
+				              min: Number.isFinite(sinceMs) ? sinceMs : undefined,
+				              max: Number.isFinite(untilMs) ? untilMs : undefined,
+				              tickAmount,
+				              labels: {
+				                formatter: xLabelFormatter,
+				                rotate: Number(hours) >= 48 ? -45 : 0,
+				                hideOverlappingLabels: true,
+				              },
+				              tooltip: { enabled: false },
+				            },
+		            yaxis: {
+		              min: opticalChartMin,
+		              max: opticalChartMax,
+		              tickAmount: 5,
+		              labels: { formatter: (value) => `${value.toFixed(1)} dBm` },
+		            },
+			            tooltip: {
+			              shared: true,
+			              intersect: false,
+			              followCursor: true,
+			              x: { formatter: (value) => formatTsPHT(value) },
+			              y: {
+			                formatter: (value, { seriesIndex, dataPointIndex }) => {
+			                  const point = points?.[dataPointIndex] || null;
+			                  if (!point) {
+			                    return value === null || value === undefined || Number.isNaN(Number(value)) ? "n/a" : formatDbmTooltip(value);
+		                  }
+		                  if (seriesIndex === 1) {
+		                    const txValue = point.tx_raw;
+		                    if (txValue === null || txValue === undefined || Number.isNaN(Number(txValue))) return "Missing";
+		                    if (Number(txValue) < opticalTxRealisticMin || Number(txValue) > opticalTxRealisticMax) {
+		                      return `${formatDbmTooltip(txValue)} (unrealistic)`;
+		                    }
+		                    return formatDbmTooltip(txValue);
+		                  }
+		                  const rxValue = point.rx;
+		                  return rxValue === null || rxValue === undefined ? "n/a" : formatDbmTooltip(rxValue);
+		                },
+		              },
+		            },
+		            legend: { position: "top" },
+		            grid: { borderColor: "#e9ecef" },
+		          });
+		          await opticalModalState.chart.render();
+		          window.dispatchEvent(new Event("resize"));
+		          setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
+		        } catch (e) {
+		          opticalModalChart.innerHTML = "<div class='text-muted'>No data available.</div>";
+		        }
+		      };
+
+		      if (opticalModalEl && !window.__survOpticalModalInit) {
+		        window.__survOpticalModalInit = true;
+		        opticalModalEl.addEventListener("show.bs.modal", (ev) => {
+		          const trigger = ev.relatedTarget;
+		          const panelEl = trigger && trigger.closest ? trigger.closest("[data-surv-detail]") : null;
+		          if (!panelEl) return;
+		          const pppoe = (panelEl.getAttribute("data-selected-pppoe") || "").trim();
+		          const deviceId = (panelEl.getAttribute("data-selected-optical-device-id") || "").trim();
+		          opticalModalState.pppoe = pppoe;
+		          opticalModalState.deviceId = deviceId;
+		          const thrOpt = parseFloat(panelEl.getAttribute("data-thr-optical") || "-24");
+		          const rx = parseFloat(panelEl.getAttribute("data-selected-optical-rx") || "NaN");
+		          const ok = Number.isFinite(rx) && Number.isFinite(thrOpt) ? rx >= thrOpt : false;
+		          opticalModalState.stateColor = ok ? "#2fb344" : "#d63939";
+		        });
+		        opticalModalEl.addEventListener("shown.bs.modal", () => {
+		          renderOpticalModalChart({
+		            pppoe: opticalModalState.pppoe,
+		            deviceId: opticalModalState.deviceId,
+		            hours: opticalModalState.hours,
+		            stateColor: opticalModalState.stateColor,
+		          });
+		        });
+		        opticalModalEl.addEventListener("hidden.bs.modal", () => {
+		          if (opticalModalState.chart) {
+		            try { opticalModalState.chart.destroy(); } catch (e) {}
+		            opticalModalState.chart = null;
+		          }
+		          if (opticalModalChart) opticalModalChart.innerHTML = "";
+		        });
+		      }
+
+		      if (opticalModalWindowOptions && opticalModalWindowOptions.length) {
+		        opticalModalWindowOptions.forEach((btn) => {
+		          btn.addEventListener("click", async () => {
+		            const hours = parseInt(btn.getAttribute("data-hours") || "24", 10);
+		            if (!Number.isFinite(hours)) return;
+		            opticalModalState.hours = hours;
+		            await renderOpticalModalChart({
+		              pppoe: opticalModalState.pppoe,
+		              deviceId: opticalModalState.deviceId,
+		              hours: opticalModalState.hours,
+		              stateColor: opticalModalState.stateColor,
+		            });
+		          });
+		        });
+		      }
+
+		      const openSplit = async (pppoe, { scrollIntoView } = {}) => {
+		        tableView.classList.add("d-none");
+		        splitView.classList.remove("d-none");
+
+	        let target = null;
+	        if (pppoe) {
+	          target = list.querySelector(`tr.surv-row[data-pppoe="${CSS.escape(pppoe)}"]`);
+	        }
+	        if (!target) {
+	          target = list.querySelector("tr.surv-row");
+	        }
+	        if (!target) return;
+	        await applySelection(target, { scrollIntoView });
+	      };
+
+	      const closeSplit = () => {
+	        splitView.classList.add("d-none");
+	        tableView.classList.remove("d-none");
+	        setActionPppoe(panel, "");
+	        panel.setAttribute("data-selected-added-at", "");
+	        panel.setAttribute("data-selected-ping-ok", "");
+	        panel.setAttribute("data-selected-uptime-pct", "");
+	        panel.setAttribute("data-selected-latency-avg-ms", "");
+		        panel.setAttribute("data-selected-loss-avg-pct", "");
+		        panel.setAttribute("data-selected-loss-latest-pct", "");
+		        panel.setAttribute("data-selected-optical-rx", "");
+		        panel.setAttribute("data-selected-optical-device-id", "");
+		        panel.setAttribute("data-selected-pppoe", "");
+		        destroyChart();
+		      };
+
+	      document.querySelectorAll(`[data-surv-close="${key}"]`).forEach((btn) => {
+	        btn.addEventListener("click", (event) => {
+	          event.preventDefault();
+	          closeSplit();
+	        });
+	      });
+
+	      list.querySelectorAll("tr.surv-row").forEach((rowEl) => {
+	        rowEl.addEventListener("click", (event) => {
+	          if (isInteractiveClick(event.target)) return;
+	          applySelection(rowEl);
+	        });
+	      });
+
+		      fullTable.querySelectorAll("tr.surv-row-full").forEach((rowEl) => {
+		        rowEl.addEventListener("click", (event) => {
+		          if (isInteractiveClick(event.target)) return;
+		          if (multiToggle && multiToggle.checked) {
+		            const cb = rowEl.querySelector(`input[data-surv-select-item="${key}"]`);
+		            if (cb) {
+		              cb.checked = !cb.checked;
+		              cb.dispatchEvent(new Event("change", { bubbles: true }));
+		            }
+		            return;
+		          }
+		          const pppoe = rowEl.getAttribute("data-pppoe") || "";
+		          if (!pppoe) return;
+		          openSplit(pppoe, { scrollIntoView: true });
+		        });
+		      });
+
+		      if (search) {
+		        search.addEventListener("input", () => {
+		          const q = (search.value || "").trim().toLowerCase();
+		          fullTable.querySelectorAll("tr.surv-row-full").forEach((tr) => {
+		            const hay = `${tr.getAttribute("data-pppoe") || ""} ${tr.getAttribute("data-ip") || ""}`.toLowerCase();
+		            tr.style.display = !q || hay.includes(q) ? "" : "none";
+		          });
+		          list.querySelectorAll("tr.surv-row").forEach((tr) => {
+		            const hay = `${tr.getAttribute("data-pppoe") || ""} ${tr.getAttribute("data-ip") || ""}`.toLowerCase();
+		            tr.style.display = !q || hay.includes(q) ? "" : "none";
+		          });
+		        });
+		      }
+
+		      // Bulk selection (table view only)
+		      const selectedRows = new Set();
+		      const selectAll = fullTable.querySelector(`input[data-surv-select-all="${key}"]`);
+
+		      const visibleRowChecks = () => {
+		        const out = [];
+		        fullTable.querySelectorAll(`tbody tr.surv-row-full`).forEach((tr) => {
+		          if (tr.style.display === "none") return;
+		          const cb = tr.querySelector(`input[data-surv-select-item="${key}"]`);
+		          if (cb) out.push({ tr, cb });
+		        });
+		        return out;
+		      };
+
+			      const updateBulkUi = () => {
+			        if (bulkInput) bulkInput.value = JSON.stringify(Array.from(selectedRows.values()));
+			        if (bulkBtn) {
+			          bulkBtn.disabled = selectedRows.size === 0;
+			          bulkBtn.innerHTML = `<i class="ti ti-trash me-1"></i>Delete Selected${selectedRows.size ? ` (${selectedRows.size})` : ""}`;
+			        }
+			        if (bulkFixedBtn) {
+			          bulkFixedBtn.disabled = selectedRows.size === 0;
+			          bulkFixedBtn.innerHTML = `<i class="ti ti-check me-1"></i>Account Fixed${selectedRows.size ? ` (${selectedRows.size})` : ""}`;
+			        }
+			        if (selectAll) {
+			          const rows = visibleRowChecks();
+			          const total = rows.length;
+			          const checked = rows.filter((r) => r.cb.checked).length;
+		          selectAll.checked = total > 0 && checked === total;
+		          selectAll.indeterminate = checked > 0 && checked < total;
+		        }
+		      };
+
+		      const setRowSelected = (tr, checked) => {
+		        const cb = tr.querySelector(`input[data-surv-select-item="${key}"]`);
+		        if (!cb) return;
+		        cb.checked = !!checked;
+		        const p = (cb.value || "").trim();
+		        if (p) {
+		          if (cb.checked) selectedRows.add(p);
+		          else selectedRows.delete(p);
+		        }
+		        tr.classList.toggle("table-active", cb.checked);
+		      };
+
+		      fullTable.addEventListener("change", (event) => {
+		        const t = event.target;
+		        if (!t || !t.matches) return;
+		        if (t.matches(`input[data-surv-select-all="${key}"]`)) {
+		          visibleRowChecks().forEach(({ tr }) => setRowSelected(tr, t.checked));
+		          updateBulkUi();
+		          return;
+		        }
+		        if (t.matches(`input[data-surv-select-item="${key}"]`)) {
+		          const p = (t.value || "").trim();
+		          if (p) {
+		            if (t.checked) selectedRows.add(p);
+		            else selectedRows.delete(p);
+		          }
+		          const tr = t.closest("tr");
+		          if (tr) tr.classList.toggle("table-active", t.checked);
+		          updateBulkUi();
+		        }
+		      });
+
+			      if (bulkForm) {
+			        bulkForm.addEventListener("submit", (event) => {
+			          if (selectedRows.size === 0) {
+			            event.preventDefault();
+			            return;
+			          }
+			          updateBulkUi();
+			        });
+			      }
+
+			      if (bulkFixedBtn) {
+			        bulkFixedBtn.addEventListener("click", () => {
+			          if (selectedRows.size === 0) return;
+			          if (fixedModalForm) fixedModalForm.setAttribute("action", "/surveillance/fixed_many");
+			          if (fixedModalPppoe) fixedModalPppoe.value = "";
+			          if (fixedModalPppoes) fixedModalPppoes.value = JSON.stringify(Array.from(selectedRows.values()));
+			          if (fixedModalPppoeLabel) fixedModalPppoeLabel.textContent = `${selectedRows.size} account(s) selected`;
+			          if (fixedModalReason) fixedModalReason.value = "";
+			          if (fixedModal) fixedModal.show();
+			        });
+			      }
+
+			      const setMultiSelectEnabled = (enabled) => {
+			        fullTable.querySelectorAll(`[data-surv-select-col="${key}"]`).forEach((el) => {
+			          el.classList.toggle("d-none", !enabled);
+			        });
+			        if (bulkForm) bulkForm.classList.toggle("d-none", !enabled);
+			        if (bulkFixedBtn) bulkFixedBtn.classList.toggle("d-none", !enabled);
+			        fullTable.querySelectorAll(`[data-surv-row-delete="${key}"]`).forEach((el) => {
+			          el.classList.toggle("d-none", !!enabled);
+			        });
+			        fullTable.querySelectorAll(`[data-surv-row-fixed="${key}"]`).forEach((el) => {
+			          el.classList.toggle("d-none", !!enabled);
+			        });
+			        if (!enabled) {
+			          selectedRows.clear();
+			          fullTable.querySelectorAll(`input[data-surv-select-item="${key}"]`).forEach((cb) => {
+			            cb.checked = false;
+			          });
+			          if (selectAll) {
+			            selectAll.checked = false;
+			            selectAll.indeterminate = false;
+			          }
+			          fullTable.querySelectorAll("tr.surv-row-full.table-active").forEach((tr) => tr.classList.remove("table-active"));
+			        }
+			        updateBulkUi();
+			      };
+
+			      if (multiToggle) {
+			        setMultiSelectEnabled(!!multiToggle.checked);
+			        multiToggle.addEventListener("change", () => setMultiSelectEnabled(!!multiToggle.checked));
+			      } else {
+			        setMultiSelectEnabled(false);
+			      }
+
+				      panel.querySelectorAll("[data-surv-window]").forEach((btn) => {
+			        btn.addEventListener("click", async () => {
+			          const hours = parseInt(btn.getAttribute("data-surv-window") || "24", 10);
+			          if (Number.isNaN(hours)) return;
+			          chartsState.timelineSelected = null;
+			          setTimelineOverride(key, windowBtn, false);
+			          localStorage.setItem("surveillance_detail_window_hours", String(hours));
+			          setWindowLabel(windowBtn, hours);
+			          const selected = list.querySelector("tr.surv-row.table-active") || list.querySelector("tr.surv-row");
+			          if (!selected) return;
+			          await renderChart(chartEl, selected.getAttribute("data-pppoe") || "", hours, chartsState);
+			          await renderTimeline(timelineEl, key, selected.getAttribute("data-pppoe") || "", chartEl, windowBtn, chartsState);
+			        });
+			      });
+
+	      const focus = new URLSearchParams(window.location.search).get("focus");
+	      if (focus) {
+	        const existsHere = !!fullTable.querySelector(`tr.surv-row-full[data-pppoe="${CSS.escape(focus)}"]`);
+	        if (existsHere) {
+	          openSplit(focus, { scrollIntoView: true }).then(() => {
+	            const initial = list.querySelector(`tr.surv-row[data-pppoe="${CSS.escape(focus)}"]`);
+	            if (initial) {
+	              initial.classList.add("table-primary");
+	              setTimeout(() => initial.classList.remove("table-primary"), 4000);
+	            }
+	          });
+	        }
+	      }
+	    };
+
+    initPane("under");
+    initPane("level2");
+
   });
 </script>
 
