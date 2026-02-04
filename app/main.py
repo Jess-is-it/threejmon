@@ -3897,6 +3897,7 @@ async def profile_review(request: Request):
         "sources": [],
         "accounts_ping": None,
         "optical": None,
+        "usage": None,
         "classification": {
             "tx_realistic_min_dbm": float(optical_settings.get("classification", {}).get("tx_realistic_min_dbm", OPTICAL_DEFAULTS["classification"]["tx_realistic_min_dbm"])),
             "tx_realistic_max_dbm": float(optical_settings.get("classification", {}).get("tx_realistic_max_dbm", OPTICAL_DEFAULTS["classification"]["tx_realistic_max_dbm"])),
@@ -4037,7 +4038,121 @@ async def profile_review(request: Request):
 	                }
 	                for item in recent_rows
 	            ],
-	        }
+		        }
+
+    if profile["pppoe"]:
+        usage_settings = get_settings("usage", USAGE_DEFAULTS)
+        usage_enabled = bool(usage_settings.get("enabled"))
+        usage = {
+            "enabled": usage_enabled,
+            "active": False,
+            "router_id": "",
+            "router_name": "",
+            "address": "",
+            "uptime": "",
+            "session_id": "",
+            "last_seen": "n/a",
+            "dl_bps": None,
+            "ul_bps": None,
+            "dl_bps_fmt": "n/a",
+            "ul_bps_fmt": "n/a",
+            "dl_total_bytes": None,
+            "ul_total_bytes": None,
+            "dl_total_fmt": "n/a",
+            "ul_total_fmt": "n/a",
+            "devices": 0,
+            "hostnames": [],
+            "issue": False,
+            "issue_peak": False,
+            "issue_anytime": False,
+            "idle_kbps_to": float((usage_settings.get("detection") or {}).get("total_kbps_to", 8) or 8),
+        }
+        if usage_enabled:
+            try:
+                state = get_state("usage_state", {})
+                active_rows = state.get("active_rows") if isinstance(state.get("active_rows"), list) else []
+                hosts = state.get("pppoe_hosts") if isinstance(state.get("pppoe_hosts"), dict) else {}
+                anytime_issues = state.get("anytime_issues") if isinstance(state.get("anytime_issues"), dict) else {}
+
+                pppoe_key = profile["pppoe"].strip().lower()
+                row = next(
+                    (
+                        r
+                        for r in active_rows
+                        if (r.get("pppoe") or "").strip().lower() == pppoe_key
+                        or (r.get("name") or "").strip().lower() == pppoe_key
+                    ),
+                    None,
+                )
+                host_info = hosts.get(profile["pppoe"]) or hosts.get(pppoe_key) or {}
+                host_count = int(host_info.get("host_count") or 0)
+                hostnames = host_info.get("hostnames") if isinstance(host_info.get("hostnames"), list) else []
+                hostnames = [str(x).strip() for x in hostnames if str(x or "").strip()]
+
+                usage["devices"] = host_count
+                usage["hostnames"] = hostnames
+
+                if row:
+                    ul_bps = row.get("rx_bps")
+                    dl_bps = row.get("tx_bps")
+                    total_bps = float(ul_bps or 0.0) + float(dl_bps or 0.0)
+
+                    detect = usage_settings.get("detection") if isinstance(usage_settings.get("detection"), dict) else {}
+                    peak_enabled = bool(detect.get("peak_enabled", True))
+                    min_devices = max(int(detect.get("min_connected_devices", 2) or 2), 1)
+                    kbps_from = detect.get("total_kbps_from")
+                    kbps_to = detect.get("total_kbps_to")
+                    if kbps_from is None:
+                        kbps_from = 0
+                    if kbps_to is None:
+                        kbps_to = detect.get("min_total_kbps", 8)
+                    kbps_from = max(float(kbps_from or 0.0), 0.0)
+                    kbps_to = max(float(kbps_to or 0.0), 0.0)
+                    if kbps_to < kbps_from:
+                        kbps_from, kbps_to = kbps_to, kbps_from
+                    range_from_bps = kbps_from * 1000.0
+                    range_to_bps = kbps_to * 1000.0
+                    start_ph = (detect.get("peak_start_ph") or "17:30").strip()
+                    end_ph = (detect.get("peak_end_ph") or "21:00").strip()
+                    now_ph = datetime.now(PH_TZ)
+                    in_peak = is_time_window_ph(now_ph, start_ph, end_ph)
+                    peak_issue = bool(
+                        peak_enabled
+                        and in_peak
+                        and host_count >= min_devices
+                        and (range_from_bps <= total_bps <= range_to_bps)
+                    )
+                    router_id = (row.get("router_id") or "").strip()
+                    anytime_issue = bool(anytime_issues.get(f"{router_id}|{pppoe_key}"))
+
+                    usage.update(
+                        {
+                            "active": True,
+                            "router_id": router_id,
+                            "router_name": (row.get("router_name") or router_id or "").strip(),
+                            "address": (row.get("address") or "").strip(),
+                            "uptime": (row.get("uptime") or "").strip(),
+                            "session_id": (row.get("session_id") or "").strip(),
+                            "last_seen": format_ts_ph(row.get("timestamp")),
+                            "dl_bps": dl_bps,
+                            "ul_bps": ul_bps,
+                            "dl_bps_fmt": format_bps(dl_bps),
+                            "ul_bps_fmt": format_bps(ul_bps),
+                            "dl_total_bytes": row.get("bytes_out"),
+                            "ul_total_bytes": row.get("bytes_in"),
+                            "dl_total_fmt": format_bytes(row.get("bytes_out")),
+                            "ul_total_fmt": format_bytes(row.get("bytes_in")),
+                            "issue_peak": peak_issue,
+                            "issue_anytime": anytime_issue,
+                            "issue": bool(peak_issue or anytime_issue),
+                        }
+                    )
+            except Exception:
+                pass
+
+        profile["usage"] = usage
+        if usage_enabled:
+            profile["sources"].append("usage")
 
     profile["sources"] = sorted({*profile["sources"]})
     if not profile["name"]:

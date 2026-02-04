@@ -24,7 +24,7 @@
           <div class="dropdown-menu w-100" id="profile-suggest" style="max-height: 320px; overflow: auto;"></div>
         </div>
       </div>
-    </div>
+	  </div>
   </div>
 </div>
 
@@ -43,6 +43,8 @@
                   <span class="badge bg-azure-lt text-azure"><i class="ti ti-sun me-1"></i>Optical</span>
                 {% elif src == "accounts_ping" %}
                   <span class="badge bg-indigo-lt text-indigo"><i class="ti ti-wifi me-1"></i>ACC-Ping</span>
+                {% elif src == "usage" %}
+                  <span class="badge bg-teal-lt text-teal"><i class="ti ti-chart-bar me-1"></i>Usage</span>
                 {% endif %}
               {% endfor %}
             </div>
@@ -110,7 +112,156 @@
               <i class="ti ti-x me-1"></i>Clear
             </a>
           </div>
-        </div>
+	  </div>
+  </div>
+</div>
+  </div>
+
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header">
+        <h3 class="card-title"><i class="ti ti-chart-bar me-2"></i>Usage</h3>
+        {% if profile.usage and not profile.usage.enabled %}
+          <span class="badge bg-secondary-lt ms-auto">Disabled</span>
+        {% elif profile.usage and profile.usage.active %}
+          {% if profile.usage.issue %}
+            <span class="badge bg-yellow-lt ms-auto"><i class="ti ti-eye me-1"></i>Monitor</span>
+          {% else %}
+            <span class="badge bg-green-lt ms-auto"><i class="ti ti-check me-1"></i>Active</span>
+          {% endif %}
+        {% else %}
+          <span class="badge bg-secondary-lt ms-auto">No live session</span>
+        {% endif %}
+      </div>
+      <div class="card-body">
+        {% if not profile.pppoe %}
+          <div class="empty">
+            <div class="empty-icon"><i class="ti ti-user-off"></i></div>
+            <p class="empty-title">No PPPoE detected</p>
+            <p class="empty-subtitle text-muted">Usage history and live session matching require a PPPoE username.</p>
+          </div>
+        {% elif not profile.usage or not profile.usage.enabled %}
+          <div class="empty">
+            <div class="empty-icon"><i class="ti ti-plug-off"></i></div>
+            <p class="empty-title">Usage collector is disabled</p>
+            <p class="empty-subtitle text-muted">Enable it in Settings → Usage to see MikroTik usage and device trends here.</p>
+          </div>
+        {% elif not profile.usage.active %}
+          <div class="d-flex align-items-start gap-2 text-muted">
+            <i class="ti ti-info-circle mt-1"></i>
+            <div>
+              <div class="fw-semibold text-reset">No usage detected for this account right now.</div>
+              <div class="small">This usually means the PPPoE session is offline or not matched. Check <a class="link-secondary" href="/settings/usage">Settings → Usage</a> for live sessions, router connectivity, and PPPoE username matching.</div>
+            </div>
+          </div>
+        {% else %}
+          <div class="row g-2 mb-3">
+            <div class="col-6 col-md-3">
+              <div class="text-muted small">DL Rate</div>
+              <div class="h3 m-0">{{ profile.usage.dl_bps_fmt }}</div>
+            </div>
+            <div class="col-6 col-md-3">
+              <div class="text-muted small">UL Rate</div>
+              <div class="h3 m-0">{{ profile.usage.ul_bps_fmt }}</div>
+            </div>
+            <div class="col-6 col-md-3">
+              <div class="text-muted small">Connected Devices</div>
+              <div class="h3 m-0">{{ profile.usage.devices }}</div>
+            </div>
+            <div class="col-6 col-md-3">
+              <div class="text-muted small">Last Seen</div>
+              <div class="fw-semibold">{{ profile.usage.last_seen }}</div>
+            </div>
+          </div>
+
+          <div class="row g-2 mb-3">
+            <div class="col-6 col-md-3">
+              <div class="text-muted small">DL Total</div>
+              <div class="fw-semibold">{{ profile.usage.dl_total_fmt }}</div>
+            </div>
+            <div class="col-6 col-md-3">
+              <div class="text-muted small">UL Total</div>
+              <div class="fw-semibold">{{ profile.usage.ul_total_fmt }}</div>
+            </div>
+            <div class="col-6 col-md-3">
+              <div class="text-muted small">Router</div>
+              <div class="fw-semibold">{{ profile.usage.router_name or 'n/a' }}</div>
+            </div>
+            <div class="col-6 col-md-3">
+              <div class="text-muted small">Session</div>
+              <div class="fw-semibold">{{ profile.usage.uptime or 'n/a' }}</div>
+            </div>
+          </div>
+
+          <div class="row g-3">
+            <div class="col-lg-8">
+              <div class="row g-2 mb-2">
+                <div class="col-6 col-md-3">
+                  <div class="text-muted small">Transfer (est)</div>
+                  <div class="fw-semibold" id="profile-usage-stat-transfer">n/a</div>
+                </div>
+                <div class="col-6 col-md-3">
+                  <div class="text-muted small">Max Rate</div>
+                  <div class="fw-semibold" id="profile-usage-stat-max">n/a</div>
+                </div>
+                <div class="col-6 col-md-3">
+                  <div class="text-muted small">Avg Rate</div>
+                  <div class="fw-semibold" id="profile-usage-stat-avg">n/a</div>
+                </div>
+                <div class="col-6 col-md-3">
+                  <div class="text-muted small">Idle</div>
+                  <div class="fw-semibold" id="profile-usage-stat-idle">n/a</div>
+                </div>
+              </div>
+              <div class="border rounded p-2">
+                <div id="profile-usage-chart" style="height: 260px;"></div>
+              </div>
+              <div class="text-muted small mt-2">History from stored usage samples (Window: {{ profile.window_label }}). Tooltip shows devices connected at that time.</div>
+            </div>
+            <div class="col-lg-4">
+              <div class="card card-sm">
+                <div class="card-body">
+                  <div class="d-flex align-items-center justify-content-between mb-2">
+                    <div class="fw-semibold">Active Devices</div>
+                    <span class="badge bg-secondary-lt">{{ profile.usage.devices }}</span>
+                  </div>
+                  {% set names = profile.usage.hostnames or [] %}
+                  {% if names %}
+                    <div class="table-responsive" style="max-height: 280px; overflow: auto;">
+                      <table class="table table-sm table-vcenter">
+                        <thead>
+                          <tr>
+                            <th>Hostname</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {% for n in names %}
+                            <tr><td class="text-muted">{{ n }}</td></tr>
+                          {% endfor %}
+                        </tbody>
+                      </table>
+                    </div>
+                  {% else %}
+                    <div class="text-muted small">No devices detected from GenieACS host table.</div>
+                  {% endif %}
+                  {% if profile.usage.issue_peak or profile.usage.issue_anytime %}
+                    <div class="mt-3">
+                      <div class="fw-semibold mb-1">Detection</div>
+                      <div class="d-flex flex-wrap gap-1">
+                        {% if profile.usage.issue_peak %}
+                          <span class="badge bg-yellow-lt">Peak-hour low-usage</span>
+                        {% endif %}
+                        {% if profile.usage.issue_anytime %}
+                          <span class="badge bg-yellow-lt">Anytime no-usage window</span>
+                        {% endif %}
+                      </div>
+                    </div>
+                  {% endif %}
+                </div>
+              </div>
+            </div>
+          </div>
+        {% endif %}
       </div>
     </div>
   </div>
@@ -272,8 +423,8 @@
           </div>
         {% endif %}
       </div>
-    </div>
-  </div>
+	    </div>
+		</div>
 </div>
 {% else %}
 <div class="empty">
@@ -331,12 +482,14 @@
       suggestMenu.classList.add("show");
     };
 
-    const iconFor = (sources) => {
-      if ((sources || []).includes("optical") && (sources || []).includes("accounts_ping")) return "ti ti-layers";
-      if ((sources || []).includes("optical")) return "ti ti-sun";
-      if ((sources || []).includes("accounts_ping")) return "ti ti-wifi";
-      return "ti ti-user";
-    };
+	    const iconFor = (sources) => {
+	      if ((sources || []).includes("optical") && (sources || []).includes("accounts_ping") && (sources || []).includes("usage")) return "ti ti-layers";
+	      if ((sources || []).includes("optical") && (sources || []).includes("accounts_ping")) return "ti ti-layers";
+	      if ((sources || []).includes("optical")) return "ti ti-sun";
+	      if ((sources || []).includes("accounts_ping")) return "ti ti-wifi";
+	      if ((sources || []).includes("usage")) return "ti ti-chart-bar";
+	      return "ti ti-user";
+	    };
 
     const statusBadgeHtml = (item) => {
       const status = String(item?.meta?.status || "").toLowerCase();
@@ -567,7 +720,7 @@
       }
     };
 
-    const renderOpticalChart = async () => {
+	    const renderOpticalChart = async () => {
       const el = document.getElementById("profile-optical-chart");
       if (!el || !profile?.optical?.device_id) return;
       try {
@@ -629,14 +782,145 @@
       } catch (err) {
         // ignore
       }
-    };
+	    };
 
-    renderAccPingChart();
-    renderOpticalChart();
+	    const fmtBytes = (value) => {
+	      const num = Number(value);
+	      if (!Number.isFinite(num)) return "n/a";
+	      const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+	      let size = Math.max(0, num);
+	      let idx = 0;
+	      while (size >= 1024 && idx < units.length - 1) {
+	        size /= 1024;
+	        idx++;
+	      }
+	      if (idx === 0) return `${Math.floor(size)} ${units[idx]}`;
+	      return `${size.toFixed(2)} ${units[idx]}`;
+	    };
 
-    if (top10Wrap && !profile?.ip && !profile?.device_id) {
-      fetchSuggest();
-    }
+	    const fmtBps = (value) => {
+	      const num = Number(value);
+	      if (!Number.isFinite(num)) return "n/a";
+	      const units = ["bps", "kbps", "Mbps", "Gbps"];
+	      let size = Math.max(0, num);
+	      let idx = 0;
+	      while (size >= 1000 && idx < units.length - 1) {
+	        size /= 1000;
+	        idx++;
+	      }
+	      if (idx === 0) return `${Math.floor(size)} ${units[idx]}`;
+	      if (size >= 100) return `${size.toFixed(0)} ${units[idx]}`;
+	      if (size >= 10) return `${size.toFixed(1)} ${units[idx]}`;
+	      return `${size.toFixed(2)} ${units[idx]}`;
+	    };
+
+	    const renderUsageChart = async () => {
+	      const el = document.getElementById("profile-usage-chart");
+	      if (!el || !profile?.pppoe || !profile?.usage?.enabled || !profile?.usage?.active) return;
+	      const kpiTransfer = document.getElementById("profile-usage-stat-transfer");
+	      const kpiMax = document.getElementById("profile-usage-stat-max");
+	      const kpiAvg = document.getElementById("profile-usage-stat-avg");
+	      const kpiIdle = document.getElementById("profile-usage-stat-idle");
+	      try {
+	        const hours = Number(profile.window_hours || 24) || 24;
+	        const params = new URLSearchParams({ pppoe: String(profile.pppoe), hours: String(hours) });
+	        const res = await fetch(`/usage/series?${params.toString()}`, { headers: { "Accept": "application/json" } });
+	        if (!res.ok) return;
+	        const payload = await res.json().catch(() => null);
+	        const seriesRaw = Array.isArray(payload?.series) ? payload.series : [];
+	        const nowMs = Date.now();
+	        const windowStartMs = nowMs - (hours * 3600 * 1000);
+	        const windowEndMs = nowMs;
+
+	        const points = seriesRaw
+	          .map((p) => {
+	            const ts = Date.parse(String(p?.ts || ""));
+	            if (!Number.isFinite(ts)) return null;
+	            const dl = p?.dl_bps === null || p?.dl_bps === undefined ? null : Number(p.dl_bps);
+	            const ul = p?.ul_bps === null || p?.ul_bps === undefined ? null : Number(p.ul_bps);
+	            const devicesRaw = p?.devices;
+	            const devices = (devicesRaw === null || devicesRaw === undefined || devicesRaw === "") ? null : Number(devicesRaw);
+	            return { x: ts, dl: Number.isFinite(dl) ? dl : null, ul: Number.isFinite(ul) ? ul : null, devices: Number.isFinite(devices) ? devices : null };
+	          })
+	          .filter((p) => p !== null)
+	          .sort((a, b) => a.x - b.x);
+
+	        let dlSeries = points.map((p) => ({ x: p.x, y: p.dl, devices: p.devices }));
+	        let ulSeries = points.map((p) => ({ x: p.x, y: p.ul, devices: p.devices }));
+	        if (!dlSeries.length) dlSeries = [{ x: windowStartMs, y: null, devices: null }, { x: windowEndMs, y: null, devices: null }];
+	        if (!ulSeries.length) ulSeries = [{ x: windowStartMs, y: null, devices: null }, { x: windowEndMs, y: null, devices: null }];
+
+	        // Stats (approx) based on samples.
+	        const idleBps = Math.max(0, Number(profile?.usage?.idle_kbps_to || 8) * 1000);
+	        let maxTotal = 0;
+	        let sumTotal = 0;
+	        let countTotal = 0;
+	        let idleCount = 0;
+	        let bytesEst = 0;
+	        for (let i = 0; i < points.length; i++) {
+	          const cur = points[i];
+	          const dl = Number(cur.dl || 0);
+	          const ul = Number(cur.ul || 0);
+	          const total = Math.max(0, dl + ul);
+	          maxTotal = Math.max(maxTotal, total);
+	          sumTotal += total;
+	          countTotal += 1;
+	          if (total <= idleBps) idleCount += 1;
+	          if (i > 0) {
+	            const prev = points[i - 1];
+	            const dt = Math.max(0, (cur.x - prev.x) / 1000);
+	            const prevTotal = Math.max(0, Number(prev.dl || 0) + Number(prev.ul || 0));
+	            // trapezoid integration of bps -> bytes
+	            bytesEst += ((prevTotal + total) / 2) * dt / 8;
+	          }
+	        }
+	        if (kpiTransfer) kpiTransfer.textContent = points.length ? fmtBytes(bytesEst) : "n/a";
+	        if (kpiMax) kpiMax.textContent = points.length ? fmtBps(maxTotal) : "n/a";
+	        if (kpiAvg) kpiAvg.textContent = points.length ? fmtBps(sumTotal / Math.max(1, countTotal)) : "n/a";
+	        if (kpiIdle) kpiIdle.textContent = points.length ? `${((idleCount / Math.max(1, countTotal)) * 100).toFixed(0)}%` : "n/a";
+
+	        const chart = new window.ApexCharts(el, {
+	          chart: { type: "line", height: 260, toolbar: { show: false }, zoom: { enabled: false }, animations: { enabled: false } },
+	          series: [
+	            { name: "DL", data: dlSeries },
+	            { name: "UL", data: ulSeries },
+	          ],
+	          colors: ["#206bc4", "#2fb344"],
+	          stroke: { width: 2, curve: "smooth" },
+	          markers: { size: 0 },
+	          xaxis: { type: "datetime", min: windowStartMs, max: windowEndMs, tooltip: { enabled: false } },
+	          yaxis: { labels: { formatter: (val) => fmtBps(val) } },
+	          tooltip: {
+	            shared: true,
+	            intersect: false,
+	            followCursor: true,
+	            y: {
+	              formatter: (val, { seriesIndex, dataPointIndex, w }) => {
+	                const formatted = fmtBps(val);
+	                const devices = w?.config?.series?.[seriesIndex]?.data?.[dataPointIndex]?.devices ?? null;
+	                if (devices === null || devices === undefined || devices === "") return formatted;
+	                const n = Number(devices);
+	                if (!Number.isFinite(n)) return formatted;
+	                return `${formatted} · Devices: ${n}`;
+	              },
+	            },
+	          },
+	          grid: { borderColor: "#e9ecef" },
+	          legend: { position: "top" },
+	        });
+	        chart.render();
+	      } catch (err) {
+	        // ignore
+	      }
+	    };
+
+	    renderAccPingChart();
+	    renderOpticalChart();
+	    renderUsageChart();
+
+	    if (top10Wrap && !profile?.ip && !profile?.device_id) {
+	      fetchSuggest();
+	    }
   });
 </script>
 
