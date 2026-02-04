@@ -31,12 +31,14 @@ from .notifiers import optical as optical_notifier
 from .notifiers import isp_ping as isp_ping_notifier
 from .notifiers import wan_ping as wan_ping_notifier
 from .notifiers import rto as rto_notifier
+from .notifiers import offline as offline_notifier
 from .notifiers import usage as usage_notifier
 from .notifiers.isp_ping import ping_with_source
 from .notifiers.telegram import TelegramError, get_updates, send_telegram
 from .settings_defaults import (
     ACCOUNTS_PING_DEFAULTS,
     ISP_PING_DEFAULTS,
+    OFFLINE_DEFAULTS,
     OPTICAL_DEFAULTS,
     SURVEILLANCE_DEFAULTS,
     USAGE_DEFAULTS,
@@ -60,6 +62,7 @@ class JobsManager:
             threading.Thread(target=self._wan_ping_loop, daemon=True),
             threading.Thread(target=self._accounts_ping_loop, daemon=True),
             threading.Thread(target=self._usage_loop, daemon=True),
+            threading.Thread(target=self._offline_loop, daemon=True),
         ]
         for thread in self.threads:
             thread.start()
@@ -1392,6 +1395,223 @@ class JobsManager:
                     client.close()
                 except Exception:
                     pass
+
+    def _offline_loop(self):
+        """
+        Offline accounts collector.
+        - Mode secrets: MikroTik secrets minus /ppp/active
+        - Mode radius: Radius list minus /ppp/active
+        Routers are shared from Usage settings.
+        """
+        clients = {}
+        client_sigs = {}
+        while not self.stop_event.is_set():
+            cfg = get_settings("offline", OFFLINE_DEFAULTS)
+            if not cfg.get("enabled"):
+                time_module.sleep(5)
+                continue
+
+            poll_seconds = int((cfg.get("general") or {}).get("poll_interval_seconds", 15) or 15)
+            poll_seconds = max(poll_seconds, 5)
+            timeout_seconds = 5
+
+            mode = (cfg.get("mode") or "secrets").strip().lower()
+            if mode not in ("secrets", "radius"):
+                mode = "secrets"
+
+            usage_cfg = get_settings("usage", USAGE_DEFAULTS)
+            routers = (usage_cfg.get("mikrotik") or {}).get("routers") or []
+
+            now_iso = utc_now_iso()
+            update_job_status("offline", last_run_at=now_iso)
+            state = get_state("offline_state", {})
+            offline_rows = []
+            router_status = []
+            router_errors = []
+            active_users_all = set()
+            active_users_by_router = {}
+
+            # Prefer Usage collector cache when available (avoids extra RouterOS logins).
+            usage_state = get_state("usage_state", {})
+            use_cache = False
+            try:
+                last = usage_state.get("last_check_at")
+                if last:
+                    last_dt = datetime.fromisoformat(str(last).replace("Z", ""))
+                    if datetime.utcnow() - last_dt <= timedelta(seconds=poll_seconds * 3):
+                        use_cache = True
+            except Exception:
+                use_cache = False
+
+            try:
+                if use_cache:
+                    active_rows = usage_state.get("active_rows") if isinstance(usage_state.get("active_rows"), list) else []
+                    for row in active_rows:
+                        user = (row.get("pppoe") or row.get("name") or "").strip()
+                        rid = (row.get("router_id") or "").strip() or "router"
+                        if not user:
+                            continue
+                        active_users_all.add(user)
+                        active_users_by_router.setdefault(rid, set()).add(user)
+                    router_status = usage_state.get("routers") if isinstance(usage_state.get("routers"), list) else []
+
+                    if mode == "secrets":
+                        offline_rows = usage_state.get("offline_rows") if isinstance(usage_state.get("offline_rows"), list) else []
+                else:
+                    enabled_router_ids = set()
+                    for router in routers:
+                        if not isinstance(router, dict):
+                            continue
+                        if not router.get("enabled", True):
+                            continue
+                        router_id = (router.get("id") or "").strip()
+                        router_name = (router.get("name") or router_id or "router").strip()
+                        host = (router.get("host") or "").strip()
+                        if not router_id or not host:
+                            continue
+                        enabled_router_ids.add(router_id)
+
+                        port = int(router.get("port", 8728) or 8728)
+                        username = router.get("username", "")
+                        password = router.get("password", "")
+                        sig = (host, port, username, password, timeout_seconds)
+
+                        client = clients.get(router_id)
+                        if client is None or client_sigs.get(router_id) != sig:
+                            try:
+                                if client is not None:
+                                    client.close()
+                            except Exception:
+                                pass
+                            client = RouterOSClient(host, port, username, password, timeout=timeout_seconds)
+                            clients[router_id] = client
+                            client_sigs[router_id] = sig
+
+                        router_error = ""
+                        router_active = []
+                        router_secrets = []
+                        connected = False
+                        try:
+                            if client.sock is None:
+                                client.connect()
+                            connected = True
+                            router_active = usage_notifier.fetch_pppoe_active(client)
+                            if mode == "secrets":
+                                router_secrets = usage_notifier.fetch_pppoe_secrets(client)
+                        except Exception as exc:
+                            router_error = str(exc)
+                            try:
+                                client.close()
+                            except Exception:
+                                pass
+                            clients[router_id] = RouterOSClient(host, port, username, password, timeout=timeout_seconds)
+                            client_sigs[router_id] = sig
+                            try:
+                                clients[router_id].connect()
+                                connected = True
+                                router_active = usage_notifier.fetch_pppoe_active(clients[router_id])
+                                if mode == "secrets":
+                                    router_secrets = usage_notifier.fetch_pppoe_secrets(clients[router_id])
+                                router_error = ""
+                            except Exception as exc2:
+                                router_error = str(exc2)
+                                try:
+                                    clients[router_id].close()
+                                except Exception:
+                                    pass
+                                connected = False
+
+                        active_set = set()
+                        for row in router_active:
+                            user = (row.get("name") or "").strip()
+                            if not user:
+                                continue
+                            active_set.add(user)
+                            active_users_all.add(user)
+                            active_users_by_router.setdefault(router_id, set()).add(user)
+
+                        if mode == "secrets":
+                            for secret in router_secrets:
+                                name = (secret.get("name") or "").strip()
+                                if not name or name in active_set:
+                                    continue
+                                offline_rows.append(
+                                    {
+                                        "router_id": router_id,
+                                        "router_name": router_name,
+                                        "pppoe": name,
+                                        "disabled": str(secret.get("disabled") or "").strip().lower() in ("yes", "true", "1"),
+                                        "profile": (secret.get("profile") or "").strip(),
+                                        "last_logged_out": (secret.get("last-logged-out") or "").strip(),
+                                    }
+                                )
+
+                        router_status.append(
+                            {
+                                "router_id": router_id,
+                                "router_name": router_name,
+                                "active_count": len(active_set),
+                                "connected": bool(connected),
+                                "error": router_error,
+                            }
+                        )
+                        if router_error:
+                            router_errors.append(f"{router_name}: {router_error}")
+
+                    # Close connections for routers that were removed/disabled.
+                    for rid in list(clients.keys()):
+                        if rid not in enabled_router_ids:
+                            try:
+                                clients[rid].close()
+                            except Exception:
+                                pass
+                            clients.pop(rid, None)
+                            client_sigs.pop(rid, None)
+
+                radius_error = ""
+                radius_accounts = {}
+                if mode == "radius":
+                    radius_cfg = cfg.get("radius") if isinstance(cfg.get("radius"), dict) else {}
+                    if not radius_cfg.get("enabled"):
+                        radius_error = "Radius mode is selected but Radius settings are disabled."
+                    else:
+                        try:
+                            radius_accounts = offline_notifier.fetch_radius_accounts(radius_cfg)
+                        except Exception as exc:
+                            radius_error = str(exc)
+                            radius_accounts = {}
+
+                    offline_rows = []
+                    for user, status in (radius_accounts or {}).items():
+                        if user in active_users_all:
+                            continue
+                        offline_rows.append(
+                            {
+                                "router_id": "",
+                                "router_name": "Radius",
+                                "pppoe": user,
+                                "radius_status": status or "",
+                            }
+                        )
+                else:
+                    radius_error = ""
+
+                state.update(
+                    {
+                        "mode": mode,
+                        "rows": offline_rows,
+                        "routers": router_status,
+                        "router_errors": router_errors,
+                        "radius_error": radius_error,
+                        "last_check_at": now_iso,
+                    }
+                )
+                save_state("offline_state", state)
+                update_job_status("offline", last_success_at=utc_now_iso(), last_error="", last_error_at="")
+            except Exception as exc:
+                update_job_status("offline", last_error=str(exc), last_error_at=utc_now_iso())
+
+            time_module.sleep(poll_seconds)
 
 
 def parse_time(value):

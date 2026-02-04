@@ -427,6 +427,33 @@ USAGE_DEFAULTS = {
     },
 }
 
+OFFLINE_DEFAULTS = {
+    "enabled": False,
+    # "secrets": MikroTik PPPoE secrets vs /ppp/active
+    # "radius": MikroTik /ppp/active vs Radius server (SSH query)
+    "mode": "secrets",
+    "general": {
+        "poll_interval_seconds": 15,
+    },
+    "radius": {
+        "enabled": False,
+        "ssh": {
+            "host": "",
+            "port": 22,
+            "user": "",
+            "password": "",
+            "use_key": False,
+            "key_path": "/data/id_rsa",
+        },
+        # Command must print one account per line.
+        # Supported formats:
+        # - username,status
+        # - username|status
+        # - username status
+        "list_command": "",
+    },
+}
+
 WAN_PING_DEFAULTS = {
     "enabled": False,
     "telegram": {

@@ -72,6 +72,7 @@ from .notifiers.telegram import TelegramError, send_telegram
 from .settings_defaults import (
     ACCOUNTS_PING_DEFAULTS,
     ISP_PING_DEFAULTS,
+    OFFLINE_DEFAULTS,
     OPTICAL_DEFAULTS,
     SURVEILLANCE_DEFAULTS,
     USAGE_DEFAULTS,
@@ -2247,6 +2248,23 @@ async def usage_series(pppoe: str, router_id: str = "", hours: int = 24):
     return JSONResponse({"hours": hours, "points": len(series), "series": series})
 
 
+@app.get("/offline/summary")
+async def offline_summary():
+    state = get_state("offline_state", {})
+    rows = state.get("rows") if isinstance(state.get("rows"), list) else []
+    return JSONResponse(
+        {
+            "updated_at": utc_now_iso(),
+            "last_check": format_ts_ph(state.get("last_check_at")),
+            "mode": (state.get("mode") or "").strip() or "secrets",
+            "counts": {"offline": len(rows)},
+            "rows": rows,
+            "router_errors": state.get("router_errors") if isinstance(state.get("router_errors"), list) else [],
+            "radius_error": (state.get("radius_error") or "").strip(),
+        }
+    )
+
+
 @app.get("/pulsewatch/summary")
 async def pulsewatch_summary(target: str = "all", loss_minutes: int = 120):
     isp_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
@@ -3573,6 +3591,133 @@ async def usage_format(request: Request):
                     "genieacs_last_refresh": format_ts_ph(state.get("last_genieacs_refresh_at")),
                     "genieacs_error": (state.get("genieacs_error") or "").strip(),
                 },
+            },
+        ),
+    )
+
+
+@app.get("/settings/offline", response_class=HTMLResponse)
+async def offline_settings(request: Request):
+    settings = get_settings("offline", OFFLINE_DEFAULTS)
+    active_tab = (request.query_params.get("tab") or "status").strip().lower()
+    if active_tab not in ("status", "settings"):
+        active_tab = "status"
+    settings_tab = (request.query_params.get("settings_tab") or "general").strip().lower()
+    if settings_tab not in ("general", "routers", "radius"):
+        settings_tab = "general"
+
+    job_status = {item["job_name"]: dict(item) for item in get_job_status()}
+    offline_job = job_status.get("offline", {})
+    offline_job = {
+        "last_run_at_ph": format_ts_ph(offline_job.get("last_run_at")),
+        "last_success_at_ph": format_ts_ph(offline_job.get("last_success_at")),
+        "last_error": (offline_job.get("last_error") or "").strip(),
+        "last_error_at_ph": format_ts_ph(offline_job.get("last_error_at")),
+    }
+
+    state = get_state("offline_state", {})
+    offline_state = {
+        "last_check": format_ts_ph(state.get("last_check_at")),
+        "router_errors": state.get("router_errors") if isinstance(state.get("router_errors"), list) else [],
+        "radius_error": (state.get("radius_error") or "").strip(),
+    }
+    usage_settings = get_settings("usage", USAGE_DEFAULTS)
+    return templates.TemplateResponse(
+        "settings_offline.html",
+        make_context(
+            request,
+            {
+                "settings": settings,
+                "message": "",
+                "active_tab": active_tab,
+                "settings_tab": settings_tab,
+                "offline_job": offline_job,
+                "offline_state": offline_state,
+                "usage_settings": usage_settings,
+            },
+        ),
+    )
+
+
+@app.post("/settings/offline", response_class=HTMLResponse)
+async def offline_settings_save(request: Request):
+    form = await request.form()
+    settings_tab = (form.get("settings_tab") or "general").strip() or "general"
+    settings = get_settings("offline", OFFLINE_DEFAULTS)
+
+    settings["general"] = settings.get("general") if isinstance(settings.get("general"), dict) else {}
+    settings["radius"] = settings.get("radius") if isinstance(settings.get("radius"), dict) else {}
+    settings["radius"]["ssh"] = (
+        settings["radius"].get("ssh") if isinstance(settings["radius"].get("ssh"), dict) else {}
+    )
+
+    try:
+        if settings_tab == "general":
+            settings["enabled"] = parse_bool(form, "enabled")
+            mode = (form.get("mode") or settings.get("mode") or "secrets").strip().lower()
+            if mode not in ("secrets", "radius"):
+                mode = "secrets"
+            settings["mode"] = mode
+            settings["general"]["poll_interval_seconds"] = parse_int(
+                form,
+                "poll_interval_seconds",
+                int(settings["general"].get("poll_interval_seconds", OFFLINE_DEFAULTS["general"]["poll_interval_seconds"])),
+            )
+        elif settings_tab == "routers":
+            pass
+        elif settings_tab == "radius":
+            settings["radius"]["enabled"] = parse_bool(form, "radius_enabled")
+            ssh = settings["radius"]["ssh"]
+            ssh["host"] = (form.get("radius_host") or "").strip()
+            ssh["port"] = parse_int(form, "radius_port", int(ssh.get("port", 22) or 22))
+            ssh["user"] = (form.get("radius_user") or "").strip()
+            ssh["password"] = (form.get("radius_password") or "").strip()
+            ssh["use_key"] = parse_bool(form, "radius_use_key")
+            ssh["key_path"] = (form.get("radius_key_path") or "").strip()
+            settings["radius"]["list_command"] = (form.get("radius_list_command") or "").strip()
+        else:
+            pass
+        save_settings("offline", settings)
+    except Exception:
+        # avoid leaking secrets in messages; just fall through to redirect.
+        save_settings("offline", settings)
+
+    return RedirectResponse(
+        url=f"/settings/offline?tab=settings&settings_tab={settings_tab}#offline-{settings_tab}",
+        status_code=302,
+    )
+
+
+@app.post("/settings/offline/test-radius", response_class=HTMLResponse)
+async def offline_test_radius(request: Request):
+    settings = get_settings("offline", OFFLINE_DEFAULTS)
+    message = ""
+    try:
+        from .notifiers import offline as offline_notifier
+
+        accounts = offline_notifier.fetch_radius_accounts(settings.get("radius") or {})
+        message = f"Radius OK: {len(accounts)} accounts returned."
+    except Exception as exc:
+        message = f"Radius test failed: {exc}"
+    usage_settings = get_settings("usage", USAGE_DEFAULTS)
+    state = get_state("offline_state", {})
+    offline_state = {
+        "last_check": format_ts_ph(state.get("last_check_at")),
+        "router_errors": state.get("router_errors") if isinstance(state.get("router_errors"), list) else [],
+        "radius_error": (state.get("radius_error") or "").strip(),
+    }
+    return templates.TemplateResponse(
+        "settings_offline.html",
+        make_context(
+            request,
+            {
+                "settings": settings,
+                "message": message,
+                "active_tab": "settings",
+                "settings_tab": "radius",
+                "offline_job": {"last_run_at_ph": "n/a", "last_success_at_ph": "n/a", "last_error": "", "last_error_at_ph": ""},
+                "offline_state": offline_state,
+                "usage_settings": usage_settings,
             },
         ),
     )
