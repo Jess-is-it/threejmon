@@ -26,6 +26,7 @@
               Last poll: <span id="offline-last-check">{{ offline_state.last_check or 'n/a' }}</span> ·
               Mode: <span id="offline-mode">{{ settings.mode }}</span>
             </div>
+            <div class="text-muted small">Minimum offline duration: <span id="offline-min">{{ settings.general.min_offline_value }} {{ settings.general.min_offline_unit }}(s)</span></div>
             <div class="text-muted small">
               Job last run: {{ offline_job.last_run_at_ph or 'n/a' }} · Last success: {{ offline_job.last_success_at_ph or 'n/a' }}
             </div>
@@ -41,6 +42,7 @@
           </div>
           <div class="d-flex gap-2 align-items-center">
             <span class="badge bg-secondary-lt" id="offline-count">Offline: 0</span>
+            <span class="badge bg-azure-lt" id="offline-history-count">History: 0</span>
             <div class="dropdown">
               <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" id="offline-limit-button">Show: 100</button>
               <div class="dropdown-menu dropdown-menu-end" id="offline-limit-menu">
@@ -62,34 +64,73 @@
           </div>
         </div>
 
-        <div class="d-flex align-items-center justify-content-end mb-2">
-          <div class="input-icon" style="max-width: 320px;">
-            <input class="form-control form-control-sm" id="offline-status-search" type="text" placeholder="Search" autocomplete="off" />
-            <span class="input-icon-addon">
-              <i class="ti ti-search"></i>
-            </span>
-          </div>
-        </div>
+        <ul class="nav nav-tabs" data-bs-toggle="tabs">
+          <li class="nav-item">
+            <a href="#offline-current" class="nav-link active" data-bs-toggle="tab">Offline</a>
+          </li>
+          <li class="nav-item">
+            <a href="#offline-history" class="nav-link" data-bs-toggle="tab">History</a>
+          </li>
+          <li class="nav-item ms-auto">
+            <div class="px-2 py-2">
+              <div class="input-icon">
+                <input class="form-control form-control-sm" id="offline-status-search" type="text" placeholder="Search" autocomplete="off" />
+                <span class="input-icon-addon">
+                  <i class="ti ti-search"></i>
+                </span>
+              </div>
+            </div>
+          </li>
+        </ul>
 
-        <div class="rto-table-shell">
-          <div class="rto-table-wrap" id="offline-table">
-            <table class="table table-vcenter rto-table">
-              <thead>
-                <tr>
-                  <th class="rto-sort" data-table="offline" data-sort-key="pppoe" aria-sort="none">PPPoE <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                  <th class="rto-sort" data-table="offline" data-sort-key="router_name" aria-sort="none">Router <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                  <th class="rto-sort" data-table="offline" data-sort-key="radius_status" aria-sort="none">Status <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                  <th class="rto-sort" data-table="offline" data-sort-key="disabled" aria-sort="none">Disabled <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                  <th class="rto-sort" data-table="offline" data-sort-key="profile" aria-sort="none">Profile <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                  <th class="rto-sort" data-table="offline" data-sort-key="last_logged_out" aria-sort="none">Last Logged Out <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                </tr>
-              </thead>
-              <tbody id="offline-body">
-                <tr><td colspan="6" class="text-muted">Loading…</td></tr>
-              </tbody>
-            </table>
+        <div class="tab-content pt-3">
+          <div class="tab-pane active" id="offline-current">
+            <div class="rto-table-shell">
+              <div class="rto-table-wrap" id="offline-current-table">
+                <table class="table table-vcenter rto-table">
+                  <thead>
+                    <tr>
+                      <th class="rto-sort" data-table="current" data-sort-key="pppoe" aria-sort="none">PPPoE <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort" data-table="current" data-sort-key="router_name" aria-sort="none">Router <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort" data-table="current" data-sort-key="radius_status" aria-sort="none">Status <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort" data-table="current" data-sort-key="disabled" aria-sort="none">Disabled <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort" data-table="current" data-sort-key="profile" aria-sort="none">Profile <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort" data-table="current" data-sort-key="last_logged_out" aria-sort="none">Last Logged Out <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort" data-table="current" data-sort-key="offline_since" aria-sort="none">Offline Since <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    </tr>
+                  </thead>
+                  <tbody id="offline-current-body">
+                    <tr><td colspan="7" class="text-muted">Loading…</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="rto-resize-handle" data-target="offline-current-table"></div>
+            </div>
           </div>
-          <div class="rto-resize-handle" data-target="offline-table"></div>
+
+          <div class="tab-pane" id="offline-history">
+            <div class="rto-table-shell">
+              <div class="rto-table-wrap" id="offline-history-table">
+                <table class="table table-vcenter rto-table">
+                  <thead>
+                    <tr>
+                      <th class="rto-sort" data-table="history" data-sort-key="pppoe" aria-sort="none">PPPoE <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort" data-table="history" data-sort-key="router_name" aria-sort="none">Router <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort" data-table="history" data-sort-key="mode" aria-sort="none">Mode <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort" data-table="history" data-sort-key="offline_started_at" aria-sort="none">Offline Since <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort" data-table="history" data-sort-key="offline_ended_at" aria-sort="none">Back Online <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort" data-table="history" data-sort-key="duration_seconds" aria-sort="none">Duration <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    </tr>
+                  </thead>
+                  <tbody id="offline-history-body">
+                    <tr><td colspan="6" class="text-muted">Loading…</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="rto-resize-handle" data-target="offline-history-table"></div>
+              <div class="text-muted small mt-2">History shows accounts that were offline (past threshold) and later became active again.</div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -135,6 +176,22 @@
                       <label class="form-label">Poll Interval (seconds)</label>
                       <input class="form-control" type="number" name="poll_interval_seconds" value="{{ settings.general.poll_interval_seconds }}" />
                       <div class="text-muted small mt-1">How often to refresh the offline accounts list.</div>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Minimum Offline Duration</label>
+                      <div class="input-group">
+                        <input class="form-control" type="number" name="min_offline_value" value="{{ settings.general.min_offline_value }}" min="0" />
+                        <select class="form-select" name="min_offline_unit">
+                          <option value="hour" {% if settings.general.min_offline_unit == 'hour' %}selected{% endif %}>Hour(s)</option>
+                          <option value="day" {% if settings.general.min_offline_unit != 'hour' %}selected{% endif %}>Day(s)</option>
+                        </select>
+                      </div>
+                      <div class="text-muted small mt-1">Accounts will appear in the Offline table only after being continuously offline for at least this long.</div>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">History Retention (days)</label>
+                      <input class="form-control" type="number" name="history_retention_days" value="{{ settings.general.history_retention_days }}" min="1" />
+                      <div class="text-muted small mt-1">How long to keep Offline History entries.</div>
                     </div>
                     <div class="col-md-4">
                       <label class="form-label">Mode</label>
@@ -280,10 +337,13 @@
     const escMap = { "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" };
     const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => escMap[c] || c);
 
-    const bodyEl = document.getElementById("offline-body");
+    const currentBody = document.getElementById("offline-current-body");
+    const historyBody = document.getElementById("offline-history-body");
     const countEl = document.getElementById("offline-count");
+    const historyCountEl = document.getElementById("offline-history-count");
     const lastCheckEl = document.getElementById("offline-last-check");
     const modeEl = document.getElementById("offline-mode");
+    const minEl = document.getElementById("offline-min");
 
     const searchInput = document.getElementById("offline-status-search");
     const limitButton = document.getElementById("offline-limit-button");
@@ -297,10 +357,11 @@
     const limitStateKey = "offline_status_limit_v1";
     const routerFilterKey = "offline_status_router_filters_v1";
 
-    const numericKeys = new Set([]);
+    const numericKeys = new Set(["duration_seconds"]);
     const booleanKeys = new Set(["disabled"]);
 
-    let tableData = [];
+    let currentData = [];
+    let historyData = [];
     let searchQuery = "";
     let showLimit = 100;
     let selectedRouters = [];
@@ -364,8 +425,8 @@
 
     function asString(value) { return String(value ?? "").toLowerCase(); }
 
-    function sortRows(rows) {
-      const s = getSort("offline");
+    function sortRows(rows, tableKey) {
+      const s = getSort(tableKey);
       if (!s.key || !s.dir) return rows;
       const dir = s.dir === "desc" ? -1 : 1;
       const key = s.key;
@@ -452,7 +513,7 @@
 
     function renderRouterFilterMenu() {
       if (!filterRouters) return;
-      const routers = uniqueRouters(tableData);
+      const routers = uniqueRouters([...currentData, ...historyData]);
       if (!routers.length) {
         filterRouters.innerHTML = '<div class="text-muted small">No routers yet.</div>';
         return;
@@ -470,10 +531,11 @@
         .join("");
     }
 
-    function renderRow(row) {
+    function renderCurrentRow(row) {
       const disabled = row.disabled ? '<span class="badge bg-secondary-lt">Yes</span>' : '<span class="badge bg-green-lt">No</span>';
       const status = String(row.radius_status || "").trim();
       const statusCell = status ? `<span class="badge bg-secondary-lt">${esc(status)}</span>` : '<span class="text-muted small">—</span>';
+      const since = row.offline_since ? esc(row.offline_since) : "—";
       return `
         <tr>
           <td class="fw-semibold">${esc(row.pppoe || "")}</td>
@@ -482,14 +544,35 @@
           <td>${row.disabled === undefined ? '<span class="text-muted small">—</span>' : disabled}</td>
           <td class="text-muted">${esc(row.profile || "—")}</td>
           <td class="text-muted">${esc(row.last_logged_out || "—")}</td>
+          <td class="text-muted">${since}</td>
         </tr>
       `;
     }
 
-    function renderTable() {
-      if (!bodyEl) return;
-      const filtered = applyLimit(sortRows(filterRows(tableData)));
-      bodyEl.innerHTML = filtered.length ? filtered.map(renderRow).join("") : '<tr><td colspan="6" class="text-muted">No offline accounts found.</td></tr>';
+    function renderHistoryRow(row) {
+      const mode = String(row.mode || "").trim() || "—";
+      const duration = String(row.duration || "").trim() || "—";
+      return `
+        <tr>
+          <td class="fw-semibold">${esc(row.pppoe || "")}</td>
+          <td class="text-muted">${esc(row.router_name || row.router_id || "")}</td>
+          <td><span class="badge bg-secondary-lt">${esc(mode)}</span></td>
+          <td class="text-muted">${esc(row.offline_started || "—")}</td>
+          <td class="text-muted">${esc(row.offline_ended || "—")}</td>
+          <td class="text-muted">${esc(duration)}</td>
+        </tr>
+      `;
+    }
+
+    function renderAllTables() {
+      if (currentBody) {
+        const filtered = applyLimit(sortRows(filterRows(currentData), "current"));
+        currentBody.innerHTML = filtered.length ? filtered.map(renderCurrentRow).join("") : '<tr><td colspan="7" class="text-muted">No offline accounts found.</td></tr>';
+      }
+      if (historyBody) {
+        const filtered = applyLimit(sortRows(filterRows(historyData), "history"));
+        historyBody.innerHTML = filtered.length ? filtered.map(renderHistoryRow).join("") : '<tr><td colspan="6" class="text-muted">No history yet.</td></tr>';
+      }
       updateSortIndicators();
     }
 
@@ -513,11 +596,31 @@
         if (countEl) countEl.textContent = `Offline: ${counts.offline || 0}`;
         if (lastCheckEl) lastCheckEl.textContent = data.last_check || "n/a";
         if (modeEl) modeEl.textContent = data.mode || "secrets";
-        tableData = Array.isArray(data.rows) ? data.rows : [];
+        const minMinutes = Number(data.min_offline_minutes || 0) || 0;
+        if (minEl && minMinutes) {
+          const days = minMinutes >= 1440 ? (minMinutes / 1440) : null;
+          const hours = minMinutes >= 60 ? (minMinutes / 60) : null;
+          minEl.textContent = days && Number.isFinite(days) && days >= 1 ? `${days} day(s)` : (hours && Number.isFinite(hours) ? `${hours} hour(s)` : `${minMinutes} min`);
+        }
+        currentData = Array.isArray(data.rows) ? data.rows : [];
         renderRouterFilterMenu();
-        renderTable();
+        renderAllTables();
       } catch (err) {
-        if (bodyEl) bodyEl.innerHTML = '<tr><td colspan="6" class="text-danger">Failed to load offline summary.</td></tr>';
+        if (currentBody) currentBody.innerHTML = '<tr><td colspan="7" class="text-danger">Failed to load offline summary.</td></tr>';
+      }
+    }
+
+    async function refreshHistory() {
+      try {
+        const res = await fetch("/offline/history?days=30&limit=500", { headers: { "Accept": "application/json" } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (historyCountEl) historyCountEl.textContent = `History: ${data.count || 0}`;
+        historyData = Array.isArray(data.rows) ? data.rows : [];
+        renderRouterFilterMenu();
+        renderAllTables();
+      } catch (err) {
+        if (historyBody) historyBody.innerHTML = '<tr><td colspan="6" class="text-danger">Failed to load offline history.</td></tr>';
       }
     }
 
@@ -534,7 +637,7 @@
       let timer = null;
       const apply = () => {
         saveJson(searchStateKey, searchQuery);
-        renderTable();
+        renderAllTables();
       };
       searchInput.addEventListener("input", () => {
         searchQuery = searchInput.value || "";
@@ -550,7 +653,7 @@
         showLimit = n;
         saveJson(limitStateKey, showLimit);
         updateLimitButton();
-        renderTable();
+        renderAllTables();
       });
     });
 
@@ -566,7 +669,7 @@
         selectedRouters = Array.from(next);
         saveJson(routerFilterKey, selectedRouters);
         updateFilterButton();
-        renderTable();
+        renderAllTables();
       });
     }
     if (filterClear) {
@@ -576,7 +679,7 @@
         saveJson(routerFilterKey, selectedRouters);
         updateFilterButton();
         renderRouterFilterMenu();
-        renderTable();
+        renderAllTables();
       });
     }
 
@@ -611,9 +714,10 @@
 
     initFromStorage();
     refresh();
+    refreshHistory();
     setInterval(refresh, 5000);
+    setInterval(refreshHistory, 15000);
   });
 </script>
 
 {% endblock %}
-

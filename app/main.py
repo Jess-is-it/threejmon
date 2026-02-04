@@ -53,6 +53,7 @@ from .db import (
     get_ping_latency_trend_window,
     get_ping_rollup_history_map,
     get_ping_stability_counts,
+    get_offline_history_since,
     get_pppoe_usage_series_since,
     get_recent_optical_readings,
     init_db,
@@ -2252,17 +2253,59 @@ async def usage_series(pppoe: str, router_id: str = "", hours: int = 24):
 async def offline_summary():
     state = get_state("offline_state", {})
     rows = state.get("rows") if isinstance(state.get("rows"), list) else []
+    payload_rows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        offline_since_ts = row.get("offline_since")
+        payload_rows.append(
+            {
+                **row,
+                "offline_since_ts": offline_since_ts,
+                "offline_since": format_ts_ph(offline_since_ts) if offline_since_ts else "",
+            }
+        )
     return JSONResponse(
         {
             "updated_at": utc_now_iso(),
             "last_check": format_ts_ph(state.get("last_check_at")),
             "mode": (state.get("mode") or "").strip() or "secrets",
-            "counts": {"offline": len(rows)},
-            "rows": rows,
+            "counts": {"offline": len(payload_rows)},
+            "rows": payload_rows,
             "router_errors": state.get("router_errors") if isinstance(state.get("router_errors"), list) else [],
             "radius_error": (state.get("radius_error") or "").strip(),
+            "min_offline_minutes": int(state.get("min_offline_minutes") or 0),
         }
     )
+
+
+@app.get("/offline/history", response_class=JSONResponse)
+async def offline_history(days: int = 30, limit: int = 500):
+    days = max(min(int(days or 30), 3650), 1)
+    limit = max(min(int(limit or 500), 2000), 1)
+    since_iso = (datetime.utcnow() - timedelta(days=days)).replace(microsecond=0).isoformat() + "Z"
+    rows = get_offline_history_since(since_iso, limit=limit)
+    payload = []
+    for row in rows:
+        payload.append(
+            {
+                "pppoe": (row.get("pppoe") or "").strip(),
+                "router_id": (row.get("router_id") or "").strip(),
+                "router_name": (row.get("router_name") or row.get("router_id") or "").strip(),
+                "mode": (row.get("mode") or "").strip(),
+                "offline_started_at": row.get("offline_started_at"),
+                "offline_ended_at": row.get("offline_ended_at"),
+                "offline_started": format_ts_ph(row.get("offline_started_at")),
+                "offline_ended": format_ts_ph(row.get("offline_ended_at")),
+                "duration_seconds": row.get("duration_seconds"),
+                "duration": _format_duration_short(row.get("duration_seconds")),
+                "radius_status": (row.get("radius_status") or "").strip(),
+                "disabled": bool(row.get("disabled")) if row.get("disabled") is not None else None,
+                "profile": (row.get("profile") or "").strip(),
+                "last_logged_out": (row.get("last_logged_out") or "").strip(),
+            }
+        )
+    return JSONResponse({"days": days, "count": len(payload), "rows": payload})
 
 
 @app.get("/pulsewatch/summary")
@@ -3662,6 +3705,20 @@ async def offline_settings_save(request: Request):
                 form,
                 "poll_interval_seconds",
                 int(settings["general"].get("poll_interval_seconds", OFFLINE_DEFAULTS["general"]["poll_interval_seconds"])),
+            )
+            min_val = parse_int(form, "min_offline_value", int(settings["general"].get("min_offline_value", 1) or 1))
+            if min_val is None:
+                min_val = int(settings["general"].get("min_offline_value", 1) or 1)
+            min_val = max(int(min_val or 0), 0)
+            min_unit = (form.get("min_offline_unit") or settings["general"].get("min_offline_unit") or "day").strip().lower()
+            if min_unit not in ("hour", "day"):
+                min_unit = "day"
+            settings["general"]["min_offline_value"] = min_val
+            settings["general"]["min_offline_unit"] = min_unit
+            settings["general"]["history_retention_days"] = parse_int(
+                form,
+                "history_retention_days",
+                int(settings["general"].get("history_retention_days", OFFLINE_DEFAULTS["general"]["history_retention_days"])),
             )
         elif settings_tab == "routers":
             pass

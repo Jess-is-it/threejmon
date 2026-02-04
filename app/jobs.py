@@ -11,9 +11,11 @@ except Exception:
 
 from .db import (
     delete_optical_results_older_than,
+    delete_offline_history_older_than,
     delete_pppoe_usage_samples_older_than,
     get_pppoe_usage_window_stats_since,
     insert_pppoe_usage_sample,
+    insert_offline_history_event,
     update_job_status,
     utc_now_iso,
     get_accounts_ping_window_stats,
@@ -1414,6 +1416,15 @@ class JobsManager:
             poll_seconds = int((cfg.get("general") or {}).get("poll_interval_seconds", 15) or 15)
             poll_seconds = max(poll_seconds, 5)
             timeout_seconds = 5
+            general_cfg = cfg.get("general") if isinstance(cfg.get("general"), dict) else {}
+            min_value = int(general_cfg.get("min_offline_value", 1) or 1)
+            min_value = max(min_value, 0)
+            min_unit = (general_cfg.get("min_offline_unit") or "day").strip().lower()
+            if min_unit not in ("hour", "day"):
+                min_unit = "day"
+            min_offline_minutes = min_value * (60 if min_unit == "hour" else 1440)
+            history_retention_days = int(general_cfg.get("history_retention_days", 365) or 365)
+            history_retention_days = max(history_retention_days, 1)
 
             mode = (cfg.get("mode") or "secrets").strip().lower()
             if mode not in ("secrets", "radius"):
@@ -1425,6 +1436,7 @@ class JobsManager:
             now_iso = utc_now_iso()
             update_job_status("offline", last_run_at=now_iso)
             state = get_state("offline_state", {})
+            tracker = state.get("tracker") if isinstance(state.get("tracker"), dict) else {}
             offline_rows = []
             router_status = []
             router_errors = []
@@ -1444,6 +1456,17 @@ class JobsManager:
                 use_cache = False
 
             try:
+                # Retention for history (once per day).
+                try:
+                    last_prune = state.get("last_prune_at")
+                    last_prune_dt = datetime.fromisoformat(last_prune.replace("Z", "")) if last_prune else None
+                    if not last_prune_dt or last_prune_dt + timedelta(hours=24) < datetime.utcnow():
+                        cutoff = datetime.utcnow() - timedelta(days=history_retention_days)
+                        delete_offline_history_older_than(cutoff.replace(microsecond=0).isoformat() + "Z")
+                        state["last_prune_at"] = now_iso
+                except Exception:
+                    pass
+
                 if use_cache:
                     active_rows = usage_state.get("active_rows") if isinstance(usage_state.get("active_rows"), list) else []
                     for row in active_rows:
@@ -1596,6 +1619,103 @@ class JobsManager:
                 else:
                     radius_error = ""
 
+                # Offline threshold + history tracking.
+                now_dt = datetime.utcnow()
+
+                def _parse_dt(iso):
+                    if not iso:
+                        return None
+                    raw = str(iso).strip()
+                    if raw.endswith("Z"):
+                        raw = raw[:-1]
+                    try:
+                        return datetime.fromisoformat(raw)
+                    except Exception:
+                        return None
+
+                def _minutes_since(iso):
+                    dt = _parse_dt(iso)
+                    if not dt:
+                        return 0
+                    return int((now_dt - dt).total_seconds() / 60)
+
+                candidates = {}
+                active_keys = set()
+                if mode == "secrets":
+                    for rid, users in active_users_by_router.items():
+                        for user in users:
+                            active_keys.add(f"{rid}|{user.strip().lower()}")
+                    for row in offline_rows:
+                        rid = (row.get("router_id") or "").strip()
+                        user = (row.get("pppoe") or "").strip()
+                        if not rid or not user:
+                            continue
+                        key = f"{rid}|{user.lower()}"
+                        candidates[key] = row
+                else:
+                    for user in active_users_all:
+                        active_keys.add(f"radius|{user.strip().lower()}")
+                    for row in offline_rows:
+                        user = (row.get("pppoe") or "").strip()
+                        if not user:
+                            continue
+                        key = f"radius|{user.lower()}"
+                        candidates[key] = row
+
+                # Update tracker for current offline candidates.
+                for key, row in candidates.items():
+                    item = tracker.get(key) if isinstance(tracker.get(key), dict) else {}
+                    if not item.get("first_offline_at"):
+                        item["first_offline_at"] = now_iso
+                    item["last_offline_at"] = now_iso
+                    item["mode"] = mode
+                    # Keep latest meta for rendering / history.
+                    item["meta"] = row
+                    minutes = _minutes_since(item.get("first_offline_at"))
+                    if minutes >= min_offline_minutes:
+                        item["listed"] = True
+                    tracker[key] = item
+
+                # Resolve tracker entries that are no longer offline; write history if they were listed and became active.
+                for key in list(tracker.keys()):
+                    if key in candidates:
+                        continue
+                    item = tracker.get(key) if isinstance(tracker.get(key), dict) else {}
+                    if not item:
+                        tracker.pop(key, None)
+                        continue
+                    was_listed = bool(item.get("listed"))
+                    became_active = key in active_keys
+                    if was_listed and became_active:
+                        started = item.get("first_offline_at") or now_iso
+                        started_dt = _parse_dt(started) or now_dt
+                        duration_sec = int(max(0, (now_dt - started_dt).total_seconds()))
+                        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+                        insert_offline_history_event(
+                            pppoe=(meta.get("pppoe") or "").strip(),
+                            router_id=(meta.get("router_id") or "").strip(),
+                            router_name=(meta.get("router_name") or meta.get("router_id") or "").strip(),
+                            mode=mode,
+                            offline_started_at=started,
+                            offline_ended_at=now_iso,
+                            duration_seconds=duration_sec,
+                            radius_status=meta.get("radius_status"),
+                            disabled=meta.get("disabled"),
+                            profile=meta.get("profile"),
+                            last_logged_out=meta.get("last_logged_out"),
+                        )
+                    tracker.pop(key, None)
+
+                # Build displayed offline rows (only after threshold).
+                displayed = []
+                for key, row in candidates.items():
+                    item = tracker.get(key) if isinstance(tracker.get(key), dict) else {}
+                    if not item.get("listed"):
+                        continue
+                    started = item.get("first_offline_at") or now_iso
+                    displayed.append({**row, "offline_since": started})
+                offline_rows = displayed
+
                 state.update(
                     {
                         "mode": mode,
@@ -1603,6 +1723,8 @@ class JobsManager:
                         "routers": router_status,
                         "router_errors": router_errors,
                         "radius_error": radius_error,
+                        "tracker": tracker,
+                        "min_offline_minutes": int(min_offline_minutes),
                         "last_check_at": now_iso,
                     }
                 )

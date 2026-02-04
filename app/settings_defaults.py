@@ -434,6 +434,12 @@ OFFLINE_DEFAULTS = {
     "mode": "secrets",
     "general": {
         "poll_interval_seconds": 15,
+        # Only list an account as "offline" after this duration has elapsed.
+        # Stored as value + unit for easy UI editing.
+        "min_offline_value": 1,
+        "min_offline_unit": "day",  # hour|day
+        # History retention (days).
+        "history_retention_days": 365,
     },
     "radius": {
         "enabled": False,

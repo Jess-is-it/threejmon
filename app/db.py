@@ -359,6 +359,24 @@ def init_db():
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS offline_history (
+                    id BIGSERIAL PRIMARY KEY,
+                    pppoe TEXT NOT NULL,
+                    router_id TEXT,
+                    router_name TEXT,
+                    mode TEXT NOT NULL,
+                    offline_started_at TEXT NOT NULL,
+                    offline_ended_at TEXT NOT NULL,
+                    duration_seconds INTEGER,
+                    radius_status TEXT,
+                    disabled BOOLEAN,
+                    profile TEXT,
+                    last_logged_out TEXT
+                )
+                """
+            )
         else:
             conn.execute(
                 """
@@ -559,6 +577,24 @@ def init_db():
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS offline_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    pppoe TEXT NOT NULL,
+                    router_id TEXT,
+                    router_name TEXT,
+                    mode TEXT NOT NULL,
+                    offline_started_at TEXT NOT NULL,
+                    offline_ended_at TEXT NOT NULL,
+                    duration_seconds INTEGER,
+                    radius_status TEXT,
+                    disabled INTEGER,
+                    profile TEXT,
+                    last_logged_out TEXT
+                )
+                """
+            )
 
         conn.execute(
             """
@@ -582,6 +618,12 @@ def init_db():
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_surveillance_sessions_active ON surveillance_sessions (ended_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_offline_history_pppoe_ended ON offline_history (pppoe, offline_ended_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_offline_history_router_ended ON offline_history (router_id, offline_ended_at)"
         )
         # Lightweight schema upgrade for existing installs.
         try:
@@ -607,6 +649,89 @@ def init_db():
         except Exception:
             pass
     conn.close()
+
+
+def insert_offline_history_event(
+    pppoe,
+    router_id,
+    router_name,
+    mode,
+    offline_started_at,
+    offline_ended_at,
+    duration_seconds=None,
+    radius_status=None,
+    disabled=None,
+    profile=None,
+    last_logged_out=None,
+):
+    pppoe = (pppoe or "").strip()
+    if not pppoe:
+        return
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO offline_history (
+                    pppoe, router_id, router_name, mode,
+                    offline_started_at, offline_ended_at, duration_seconds,
+                    radius_status, disabled, profile, last_logged_out
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    pppoe,
+                    (router_id or "").strip(),
+                    (router_name or "").strip(),
+                    (mode or "").strip(),
+                    (offline_started_at or "").strip(),
+                    (offline_ended_at or "").strip(),
+                    int(duration_seconds) if duration_seconds is not None else None,
+                    (radius_status or "").strip() if radius_status is not None else None,
+                    bool(disabled) if disabled is not None else None,
+                    (profile or "").strip() if profile is not None else None,
+                    (last_logged_out or "").strip() if last_logged_out is not None else None,
+                ),
+            )
+    finally:
+        conn.close()
+
+
+def get_offline_history_since(since_iso, limit=500):
+    since_iso = (since_iso or "").strip()
+    limit = max(min(int(limit or 500), 2000), 1)
+    if not since_iso:
+        return []
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                id, pppoe, router_id, router_name, mode,
+                offline_started_at, offline_ended_at, duration_seconds,
+                radius_status, disabled, profile, last_logged_out
+            FROM offline_history
+            WHERE offline_ended_at >= ?
+            ORDER BY offline_ended_at DESC
+            LIMIT ?
+            """,
+            (since_iso, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def delete_offline_history_older_than(cutoff_iso):
+    cutoff_iso = (cutoff_iso or "").strip()
+    if not cutoff_iso:
+        return
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM offline_history WHERE offline_ended_at < ?", (cutoff_iso,))
+    finally:
+        conn.close()
 
 
 def get_json(table, key, default):
