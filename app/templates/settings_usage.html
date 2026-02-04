@@ -1,0 +1,1411 @@
+{% extends "base.html" %}
+{% block title %}Usage{% endblock %}
+{% block header_title %}Usage{% endblock %}
+{% block header_badge %}
+  <span class="badge bg-indigo-lt text-indigo header-icon-badge"><i class="ti ti-chart-bar"></i></span>
+{% endblock %}
+{% block content %}
+{% if message %}
+  {% set msg_lower = message|lower %}
+  {% if 'saved' in msg_lower or 'successfully' in msg_lower or 'formatted' in msg_lower %}
+    <div class="alert alert-success">
+      <div class="d-flex align-items-start">
+        <span class="me-2"><i class="ti ti-check"></i></span>
+        <div>{{ message }}</div>
+      </div>
+    </div>
+  {% elif 'please confirm' in msg_lower %}
+    <div class="alert alert-warning">
+      <div class="d-flex align-items-start">
+        <span class="me-2"><i class="ti ti-alert-triangle"></i></span>
+        <div>{{ message }}</div>
+      </div>
+    </div>
+  {% elif 'failed' in msg_lower or 'error' in msg_lower %}
+    <div class="alert alert-danger">
+      <div class="d-flex align-items-start">
+        <span class="me-2"><i class="ti ti-alert-circle"></i></span>
+        <div>{{ message }}</div>
+      </div>
+    </div>
+  {% else %}
+    <div class="alert alert-info">
+      <div class="d-flex align-items-start">
+        <span class="me-2"><i class="ti ti-info-circle"></i></span>
+        <div>{{ message }}</div>
+      </div>
+    </div>
+  {% endif %}
+{% endif %}
+
+<div class="card">
+  <div class="card-body">
+    <ul class="nav nav-tabs" data-bs-toggle="tabs">
+      <li class="nav-item">
+        <a href="#usage-status" class="nav-link {% if active_tab == 'status' %}active{% endif %}" data-bs-toggle="tab">Usage Status</a>
+      </li>
+      <li class="nav-item">
+        <a href="#usage-settings" class="nav-link {% if active_tab != 'status' %}active{% endif %}" data-bs-toggle="tab">Settings</a>
+      </li>
+    </ul>
+
+    <div class="tab-content pt-4">
+      <div class="tab-pane {% if active_tab == 'status' %}active{% endif %}" id="usage-status">
+	        <div class="d-flex flex-wrap align-items-center justify-content-between mb-3 gap-2">
+	          <div>
+	            <h4 class="mb-1">PPPoE Usage</h4>
+		            <div class="text-muted small">
+		              Last poll: <span id="usage-last-check">{{ usage_state.last_check or 'n/a' }}</span> ·
+		              GenieACS refresh: <span id="usage-genieacs-refresh">{{ usage_state.genieacs_last_refresh or 'n/a' }}</span>
+		            </div>
+		            <div class="text-muted small">
+		              Job last run: {{ usage_job.last_run_at_ph or 'n/a' }} · Last success: {{ usage_job.last_success_at_ph or 'n/a' }}
+		            </div>
+	            {% if usage_state.genieacs_error %}
+	              <div class="text-danger small mt-1">GenieACS error: {{ usage_state.genieacs_error }}</div>
+	            {% endif %}
+	          </div>
+		          <div class="d-flex gap-2 align-items-center">
+		            <span class="badge bg-red-lt" id="usage-issues-count">Issues: 0</span>
+		            <span class="badge bg-green-lt" id="usage-stable-count">Stable: 0</span>
+		            <span class="badge bg-azure-lt" id="usage-peak-badge">Peak: --</span>
+	              <div class="dropdown">
+                <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" id="usage-limit-button">Show: 100</button>
+                <div class="dropdown-menu dropdown-menu-end" id="usage-limit-menu">
+                  <div class="dropdown-item usage-limit-row" data-limit="25">25</div>
+                  <div class="dropdown-item usage-limit-row" data-limit="50">50</div>
+                  <div class="dropdown-item usage-limit-row" data-limit="100">100</div>
+                  <div class="dropdown-item usage-limit-row" data-limit="200">200</div>
+                </div>
+              </div>
+              <div class="dropdown">
+                <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" id="usage-filter-button">Filter</button>
+                <div class="dropdown-menu dropdown-menu-end p-2" style="min-width: 260px;" id="usage-filter-menu">
+                  <div class="small text-muted mb-2">Routers</div>
+                  <div id="usage-filter-routers" class="d-grid gap-1"></div>
+                  <div class="dropdown-divider my-2"></div>
+                  <button type="button" class="btn btn-sm btn-outline-secondary w-100" id="usage-filter-clear">Clear filters</button>
+                </div>
+              </div>
+	          </div>
+	        </div>
+
+		        <ul class="nav nav-tabs" data-bs-toggle="tabs">
+		          <li class="nav-item">
+		            <a href="#usage-issues" class="nav-link active" data-bs-toggle="tab">Usage Issues</a>
+		          </li>
+			          <li class="nav-item">
+			            <a href="#usage-stable" class="nav-link" data-bs-toggle="tab">Stable Usage</a>
+			          </li>
+		            <li class="nav-item ms-auto">
+		              <div class="px-2 py-2">
+                    <div class="d-flex align-items-center gap-2">
+                      <div id="usage-router-kpis" class="usage-router-kpis d-flex flex-nowrap gap-1 overflow-auto"></div>
+                      <div class="input-icon">
+                        <input class="form-control form-control-sm" id="usage-status-search" type="text" placeholder="Search" autocomplete="off" />
+                        <span class="input-icon-addon">
+                          <i class="ti ti-search"></i>
+                        </span>
+                      </div>
+                    </div>
+	              </div>
+	            </li>
+		        </ul>
+
+	        <div class="tab-content pt-3">
+	          <div class="tab-pane active" id="usage-issues">
+              <div class="rto-table-shell">
+                <div class="rto-table-wrap" id="usage-issues-table">
+	              <table class="table table-vcenter rto-table">
+	                <thead>
+	                  <tr>
+	                    <th class="rto-tip rto-sort" data-table="issues" data-sort-key="pppoe" aria-sort="none" title="PPPoE username (subscriber)." data-tip="PPPoE username (subscriber).">PPPoE <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-tip rto-sort" data-table="issues" data-sort-key="router_name" aria-sort="none" title="MikroTik router name." data-tip="MikroTik router name.">Router <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-tip rto-sort text-end" data-table="issues" data-sort-key="dl_bps" aria-sort="none" title="Download rate (router→client)." data-tip="Download rate (router→client).">DL Rate <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-tip rto-sort text-end" data-table="issues" data-sort-key="ul_bps" aria-sort="none" title="Upload rate (client→router)." data-tip="Upload rate (client→router).">UL Rate <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-tip rto-sort text-end" data-table="issues" data-sort-key="dl_total_bytes" aria-sort="none" title="Total downloaded bytes (router→client)." data-tip="Total downloaded bytes (router→client).">DL Total <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-tip rto-sort text-end" data-table="issues" data-sort-key="ul_total_bytes" aria-sort="none" title="Total uploaded bytes (client→router)." data-tip="Total uploaded bytes (client→router).">UL Total <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-tip rto-sort text-end" data-table="issues" data-sort-key="host_count" aria-sort="none" title="Connected devices (active only)." data-tip="Connected devices (active only). Click for list.">Devices <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-tip" title="Recent usage trend (client-side, from live polling)." data-tip="Recent usage trend (client-side, from live polling). Click to expand.">Trend</th>
+	                    <th class="rto-tip rto-sort" data-table="issues" data-sort-key="last_seen_ts" aria-sort="none" title="Last seen timestamp from polling." data-tip="Last seen timestamp from polling.">Last Seen <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                  </tr>
+	                </thead>
+	                <tbody id="usage-issues-body">
+	                  <tr><td colspan="9" class="text-muted">Loading…</td></tr>
+	                </tbody>
+	              </table>
+                </div>
+                <div class="rto-resize-handle" data-target="usage-issues-table"></div>
+              </div>
+	          </div>
+
+	          <div class="tab-pane" id="usage-stable">
+              <div class="rto-table-shell">
+                <div class="rto-table-wrap" id="usage-stable-table">
+	              <table class="table table-vcenter rto-table">
+	                <thead>
+	                  <tr>
+	                    <th class="rto-tip rto-sort" data-table="stable" data-sort-key="pppoe" aria-sort="none" title="PPPoE username (subscriber)." data-tip="PPPoE username (subscriber).">PPPoE <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-tip rto-sort" data-table="stable" data-sort-key="router_name" aria-sort="none" title="MikroTik router name." data-tip="MikroTik router name.">Router <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-tip rto-sort text-end" data-table="stable" data-sort-key="dl_bps" aria-sort="none" title="Download rate (router→client)." data-tip="Download rate (router→client).">DL Rate <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-tip rto-sort text-end" data-table="stable" data-sort-key="ul_bps" aria-sort="none" title="Upload rate (client→router)." data-tip="Upload rate (client→router).">UL Rate <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-tip rto-sort text-end" data-table="stable" data-sort-key="dl_total_bytes" aria-sort="none" title="Total downloaded bytes (router→client)." data-tip="Total downloaded bytes (router→client).">DL Total <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-tip rto-sort text-end" data-table="stable" data-sort-key="ul_total_bytes" aria-sort="none" title="Total uploaded bytes (client→router)." data-tip="Total uploaded bytes (client→router).">UL Total <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-tip rto-sort text-end" data-table="stable" data-sort-key="host_count" aria-sort="none" title="Connected devices (active only)." data-tip="Connected devices (active only). Click for list.">Devices <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-tip" title="Recent usage trend (client-side, from live polling)." data-tip="Recent usage trend (client-side, from live polling). Click to expand.">Trend</th>
+	                    <th class="rto-tip rto-sort" data-table="stable" data-sort-key="last_seen_ts" aria-sort="none" title="Last seen timestamp from polling." data-tip="Last seen timestamp from polling.">Last Seen <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                  </tr>
+	                </thead>
+	                <tbody id="usage-stable-body">
+	                  <tr><td colspan="9" class="text-muted">Loading…</td></tr>
+	                </tbody>
+	              </table>
+                </div>
+                <div class="rto-resize-handle" data-target="usage-stable-table"></div>
+              </div>
+	          </div>
+
+		        </div>
+		      </div>
+
+      <div class="tab-pane {% if active_tab != 'status' %}active{% endif %}" id="usage-settings">
+        <div class="d-flex flex-wrap align-items-center justify-content-between mb-2 gap-2">
+          <h4 class="mb-0">Usage Settings</h4>
+          <span class="text-muted small">Configure MikroTik routers, GenieACS sources, detection rules, and storage.</span>
+        </div>
+
+        <ul class="nav nav-tabs" data-bs-toggle="tabs">
+          <li class="nav-item">
+            <a href="#usage-general" class="nav-link {% if settings_tab == 'general' %}active{% endif %}" data-bs-toggle="tab">General</a>
+          </li>
+          <li class="nav-item">
+            <a href="#usage-routers" class="nav-link {% if settings_tab == 'routers' %}active{% endif %}" data-bs-toggle="tab">Routers</a>
+          </li>
+          <li class="nav-item">
+            <a href="#usage-data" class="nav-link {% if settings_tab == 'data' %}active{% endif %}" data-bs-toggle="tab">Data Source</a>
+          </li>
+          <li class="nav-item">
+            <a href="#usage-detection" class="nav-link {% if settings_tab == 'detection' %}active{% endif %}" data-bs-toggle="tab">Detection</a>
+          </li>
+          <li class="nav-item">
+            <a href="#usage-storage" class="nav-link {% if settings_tab == 'storage' %}active{% endif %}" data-bs-toggle="tab">Storage</a>
+          </li>
+          <li class="nav-item">
+            <a href="#usage-danger" class="nav-link {% if settings_tab == 'danger' %}active{% endif %}" data-bs-toggle="tab">Danger</a>
+          </li>
+        </ul>
+
+        <div class="tab-content pt-4">
+          <div class="tab-pane {% if settings_tab == 'general' %}active{% endif %}" id="usage-general">
+            <form method="post" action="/settings/usage">
+              <input type="hidden" name="active_tab" value="settings" />
+              <input type="hidden" name="settings_tab" value="general" />
+              <div class="card mb-3">
+                <div class="card-body">
+                  <h4 class="mb-3">General</h4>
+                  <div class="row g-3">
+                    <div class="col-md-4">
+                      <label class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" name="enabled" {% if settings.enabled %}checked{% endif %} />
+                        <span class="form-check-label">Enable Usage Collector</span>
+                      </label>
+                      <div class="text-muted small mt-1">Polls MikroTik PPPoE sessions for live usage and stores samples based on Storage settings.</div>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Poll Interval (seconds)</label>
+                      <input class="form-control" type="number" name="poll_interval_seconds" value="{{ settings.mikrotik.poll_interval_seconds }}" />
+                      <div class="text-muted small mt-1">How often to refresh live PPPoE usage from MikroTik.</div>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Router Timeout (seconds)</label>
+                      <input class="form-control" type="number" name="timeout_seconds" value="{{ settings.mikrotik.timeout_seconds }}" />
+                      <div class="text-muted small mt-1">Socket timeout for MikroTik API reads/writes. If too low, the collector may reconnect frequently (you’ll see “logged in/logged out” in MikroTik logs).</div>
+                    </div>
+	                    <div class="col-md-4">
+	                      <label class="form-label">Secrets Refresh (minutes)</label>
+	                      <input class="form-control" type="number" name="secrets_refresh_minutes" value="{{ settings.mikrotik.secrets_refresh_minutes }}" />
+	                      <div class="text-muted small mt-1">How often to refresh the PPPoE secrets cache from `/ppp/secret` (used for metadata/matching).</div>
+	                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">DB Sample Interval (seconds)</label>
+                      <input class="form-control" type="number" name="sample_interval_seconds" value="{{ settings.storage.sample_interval_seconds }}" />
+                      <div class="text-muted small mt-1">Saves at most one snapshot batch per interval.</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="d-flex gap-2">
+                <button type="submit" class="btn btn-primary">Save General Settings</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="tab-pane {% if settings_tab == 'routers' %}active{% endif %}" id="usage-routers">
+            <div class="card mb-3">
+              <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                  <h4 class="mb-0">MikroTik Routers</h4>
+                  <form method="post" action="/settings/usage/routers/add">
+                    <button type="submit" class="btn btn-outline-primary">Add Router</button>
+                  </form>
+                </div>
+                <form method="post" action="/settings/usage/routers">
+                  <input type="hidden" name="router_count" value="{{ settings.mikrotik.routers|length }}" />
+                  <div style="overflow-x:auto;">
+                    <table class="table table-vcenter">
+                      <thead>
+                        <tr>
+                          <th>Name</th>
+                          <th>Host</th>
+                          <th>Port</th>
+                          <th>Username</th>
+                          <th>Password</th>
+                          <th>Enabled</th>
+                          <th>Test</th>
+                          <th>Remove</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {% for router in settings.mikrotik.routers %}
+                          <tr>
+                            <input type="hidden" name="router_{{ loop.index0 }}_id" value="{{ router.id }}" />
+                            <td><input class="form-control" type="text" name="router_{{ loop.index0 }}_name" value="{{ router.name }}" /></td>
+                            <td><input class="form-control" type="text" name="router_{{ loop.index0 }}_host" value="{{ router.host }}" /></td>
+                            <td><input class="form-control" type="number" name="router_{{ loop.index0 }}_port" value="{{ router.port or 8728 }}" /></td>
+                            <td><input class="form-control" type="text" name="router_{{ loop.index0 }}_username" value="{{ router.username }}" /></td>
+                            <td><input class="form-control" type="password" name="router_{{ loop.index0 }}_password" value="{{ router.password }}" /></td>
+                            <td>
+                              <label class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" name="router_{{ loop.index0 }}_enabled" {% if router.enabled %}checked{% endif %} />
+                              </label>
+                            </td>
+                            <td>
+                              <button type="submit" class="btn btn-outline-primary btn-sm" formaction="/settings/usage/routers/test/{{ router.id|urlencode }}" formmethod="post">Test</button>
+                            </td>
+                            <td>
+                              <label class="form-check">
+                                <input class="form-check-input" type="checkbox" name="router_{{ loop.index0 }}_remove" />
+                                <span class="form-check-label text-muted">Remove</span>
+                              </label>
+                            </td>
+                          </tr>
+                        {% endfor %}
+                      </tbody>
+                    </table>
+                  </div>
+                  {% if not settings.mikrotik.routers %}
+                    <div class="text-muted">No routers added.</div>
+                  {% endif %}
+                  <div class="d-flex justify-content-end mt-3">
+                    <button type="submit" class="btn btn-primary">Save Routers</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+
+          <div class="tab-pane {% if settings_tab == 'data' %}active{% endif %}" id="usage-data">
+            <form method="post" action="/settings/usage">
+              <input type="hidden" name="active_tab" value="settings" />
+              <input type="hidden" name="settings_tab" value="data" />
+              <div class="card mb-3">
+                <div class="card-body">
+                  <h4 class="mb-3">GenieACS Data Source</h4>
+                  <div class="row g-3">
+                    <div class="col-md-6">
+                      <label class="form-label">GenieACS Base URL</label>
+                      <input class="form-control" type="text" name="genieacs_base_url" value="{{ settings.genieacs.base_url }}" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Username</label>
+                      <input class="form-control" type="text" name="genieacs_username" value="{{ settings.genieacs.username }}" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Password</label>
+                      <input class="form-control" type="password" name="genieacs_password" value="{{ settings.genieacs.password }}" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Page Size</label>
+                      <input class="form-control" type="number" name="genieacs_page_size" value="{{ settings.genieacs.page_size }}" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Refresh (minutes)</label>
+                      <input class="form-control" type="number" name="genieacs_refresh_minutes" value="{{ settings.source.refresh_minutes }}" />
+                    </div>
+                  </div>
+                  <hr class="my-4" />
+                  <div class="row g-3">
+                    <div class="col-md-6">
+                      <label class="form-label">PPPoE Username Paths</label>
+                      <textarea class="form-control" name="pppoe_paths" rows="5">{% for p in settings.device.pppoe_paths %}{{ p }}{% if not loop.last %}{{ "\n" }}{% endif %}{% endfor %}</textarea>
+                      <div class="text-muted small mt-1">Used to map GenieACS devices to PPPoE username.</div>
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label">Connected Device Count Paths</label>
+                      <textarea class="form-control" name="host_count_paths" rows="5">{% for p in settings.device.host_count_paths %}{{ p }}{% if not loop.last %}{{ "\n" }}{% endif %}{% endfor %}</textarea>
+                      <div class="text-muted small mt-1">Preferred: `InternetGatewayDevice.LANDevice.1.Hosts.HostNumberOfEntries`.</div>
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label">HostName Paths</label>
+                      <textarea class="form-control" name="host_name_paths" rows="5">{% for p in settings.device.host_name_paths %}{{ p }}{% if not loop.last %}{{ "\n" }}{% endif %}{% endfor %}</textarea>
+                      <div class="text-muted small mt-1">
+                        Example: `InternetGatewayDevice.LANDevice.1.Hosts.Host.1.HostName`.
+                        You only need to provide a single “Host.1” example — the system auto-enumerates all existing
+                        `Hosts.Host.<n>` entries (even if the indexes jump like 1, 3, 6… or go up to 50+).
+                      </div>
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label">Host IP Paths</label>
+                      <textarea class="form-control" name="host_ip_paths" rows="5">{% for p in settings.device.host_ip_paths %}{{ p }}{% if not loop.last %}{{ "\n" }}{% endif %}{% endfor %}</textarea>
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label">Host Active Paths</label>
+                      <textarea class="form-control" name="host_active_paths" rows="5">{% for p in settings.device.host_active_paths %}{{ p }}{% if not loop.last %}{{ "\n" }}{% endif %}{% endfor %}</textarea>
+                      <div class="text-muted small mt-1">
+                        If present, filters the enumerated host list to only Active = true. Same rule applies: only one “Host.1” example is needed.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="d-flex gap-2">
+                <button type="submit" class="btn btn-primary">Save Data Source</button>
+                <button type="submit" class="btn btn-outline-primary" formaction="/settings/usage/test_genieacs" formmethod="post">Test GenieACS</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="tab-pane {% if settings_tab == 'detection' %}active{% endif %}" id="usage-detection">
+            <form method="post" action="/settings/usage">
+              <input type="hidden" name="active_tab" value="settings" />
+              <input type="hidden" name="settings_tab" value="detection" />
+              <div class="card mb-3">
+                <div class="card-body">
+                  <h4 class="mb-3">Detection Rules</h4>
+                  <div class="alert alert-info">
+                    <div class="d-flex align-items-start">
+                      <span class="me-2"><i class="ti ti-info-circle"></i></span>
+                      <div>Flags accounts with multiple connected devices (from GenieACS) but near-zero usage (from MikroTik).</div>
+                    </div>
+                  </div>
+                  <div class="card mb-3">
+                    <div class="card-body">
+                      <div class="d-flex align-items-center justify-content-between mb-2">
+                        <div class="fw-semibold">Rule 1: Peak Hours</div>
+                        <label class="form-check form-switch m-0">
+                          <input class="form-check-input" type="checkbox" name="peak_enabled" {% if settings.detection.peak_enabled %}checked{% endif %} />
+                          <span class="form-check-label">Enabled</span>
+                        </label>
+                      </div>
+                      <div class="row g-3">
+                        <div class="col-md-3">
+                          <label class="form-label">Peak Start (PHT)</label>
+                          <input class="form-control" type="text" name="peak_start_ph" value="{{ settings.detection.peak_start_ph }}" />
+                          <div class="text-muted small mt-1">Format: HH:MM (24h)</div>
+                        </div>
+                        <div class="col-md-3">
+                          <label class="form-label">Peak End (PHT)</label>
+                          <input class="form-control" type="text" name="peak_end_ph" value="{{ settings.detection.peak_end_ph }}" />
+                        </div>
+                        <div class="col-md-3">
+                          <label class="form-label">Min Connected Devices</label>
+                          <input class="form-control" type="number" name="min_connected_devices" value="{{ settings.detection.min_connected_devices }}" />
+                        </div>
+                        <div class="col-md-3">
+                          <label class="form-label">Total Usage Range (kbps)</label>
+                          {% set usage_from = settings.detection.total_kbps_from if settings.detection.total_kbps_from is not none else 0 %}
+                          {% set usage_to = settings.detection.total_kbps_to if settings.detection.total_kbps_to is not none else settings.detection.min_total_kbps %}
+                          <div class="input-group">
+                            <input class="form-control" type="number" name="total_kbps_from" value="{{ usage_from }}" placeholder="From" />
+                            <span class="input-group-text">to</span>
+                            <input class="form-control" type="number" name="total_kbps_to" value="{{ usage_to }}" placeholder="To" />
+                          </div>
+                          <div class="text-muted small mt-1">Triggers only during peak hours.</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="card">
+                    <div class="card-body">
+                      <div class="d-flex align-items-center justify-content-between mb-2">
+                        <div class="fw-semibold">Rule 2: Anytime No-Usage Window</div>
+                        <label class="form-check form-switch m-0">
+                          <input class="form-check-input" type="checkbox" name="anytime_enabled" {% if settings.detection.anytime_enabled %}checked{% endif %} />
+                          <span class="form-check-label">Enabled</span>
+                        </label>
+                      </div>
+                      <div class="row g-3">
+                        <div class="col-md-3">
+                          <label class="form-label">Working Start (PHT)</label>
+                          <input class="form-control" type="text" name="anytime_work_start_ph" value="{{ settings.detection.anytime_work_start_ph }}" />
+                          <div class="text-muted small mt-1">Format: HH:MM (24h)</div>
+                        </div>
+                        <div class="col-md-3">
+                          <label class="form-label">Working End (PHT)</label>
+                          <input class="form-control" type="text" name="anytime_work_end_ph" value="{{ settings.detection.anytime_work_end_ph }}" />
+                          <div class="text-muted small mt-1">Set `00:00`–`23:59` to evaluate all day.</div>
+                        </div>
+                        <div class="col-md-3">
+                          <label class="form-label">No Usage Window (minutes)</label>
+                          <input class="form-control" type="number" name="anytime_no_usage_minutes" value="{{ settings.detection.anytime_no_usage_minutes }}" />
+                          <div class="text-muted small mt-1">Example: 120 = 2 hours</div>
+                        </div>
+                        <div class="col-md-3">
+                          <label class="form-label">Min Connected Devices</label>
+                          <input class="form-control" type="number" name="anytime_min_connected_devices" value="{{ settings.detection.anytime_min_connected_devices }}" />
+                          <div class="text-muted small mt-1">Evaluates continuously (not peak-based).</div>
+                        </div>
+                        <div class="col-md-6">
+                          <label class="form-label">Total Usage Range (kbps)</label>
+                          <div class="input-group">
+                            <input class="form-control" type="number" name="anytime_total_kbps_from" value="{{ settings.detection.anytime_total_kbps_from }}" placeholder="From" />
+                            <span class="input-group-text">to</span>
+                            <input class="form-control" type="number" name="anytime_total_kbps_to" value="{{ settings.detection.anytime_total_kbps_to }}" placeholder="To" />
+                          </div>
+                          <div class="text-muted small mt-1">Triggers when the max total usage (DL+UL) stays within this range for the whole window.</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="d-flex gap-2">
+                <button type="submit" class="btn btn-primary">Save Detection Settings</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="tab-pane {% if settings_tab == 'storage' %}active{% endif %}" id="usage-storage">
+            <form method="post" action="/settings/usage">
+              <input type="hidden" name="active_tab" value="settings" />
+              <input type="hidden" name="settings_tab" value="storage" />
+              <div class="card mb-3">
+                <div class="card-body">
+                  <h4 class="mb-3">Storage</h4>
+                  <div class="row g-3">
+                    <div class="col-md-4">
+                      <label class="form-label">Raw Retention Days</label>
+                      <input class="form-control" type="number" name="raw_retention_days" value="{{ settings.storage.raw_retention_days }}" />
+                      <div class="text-muted small mt-1">Deletes usage history older than this many days.</div>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">DB Sample Interval (seconds)</label>
+                      <input class="form-control" type="number" name="sample_interval_seconds" value="{{ settings.storage.sample_interval_seconds }}" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="d-flex gap-2">
+                <button type="submit" class="btn btn-primary">Save Storage Settings</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="tab-pane {% if settings_tab == 'danger' %}active{% endif %}" id="usage-danger">
+              <div class="card mb-3 border-danger">
+                <div class="card-body">
+                  <h4 class="text-danger mb-3">Format Usage Database</h4>
+                  <div class="alert alert-warning">Formatting clears all stored PPPoE usage history. Settings will be preserved.</div>
+                  <div class="d-flex align-items-center gap-3">
+                    <label class="form-check">
+                      <input class="form-check-input" type="checkbox" name="confirm_format" form="usage-format-form" />
+                      <span class="form-check-label">Confirm format</span>
+                    </label>
+                    <button type="submit" class="btn btn-danger" form="usage-format-form">Format Usage Database</button>
+                  </div>
+                </div>
+              </div>
+          </div>
+        </div>
+        <form id="usage-format-form" method="post" action="/settings/usage/format"></form>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal modal-blur fade" id="usage-spark-modal" tabindex="-1" role="dialog" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-centered" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="usage-spark-title">Usage Trend</h5>
+        <div class="dropdown ms-auto">
+          <button class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" id="usage-modal-window-button">Filter</button>
+          <div class="dropdown-menu dropdown-menu-end" id="usage-modal-window-menu">
+            <button class="dropdown-item usage-modal-window-option" data-hours="6" data-label="6H">6H</button>
+            <button class="dropdown-item usage-modal-window-option" data-hours="12" data-label="12H">12H</button>
+            <button class="dropdown-item usage-modal-window-option" data-hours="24" data-label="1D">1D</button>
+            <button class="dropdown-item usage-modal-window-option" data-hours="168" data-label="7D">7D</button>
+            <button class="dropdown-item usage-modal-window-option" data-hours="360" data-label="15D">15D</button>
+            <button class="dropdown-item usage-modal-window-option" data-hours="720" data-label="30D">30D</button>
+          </div>
+        </div>
+        <button type="button" class="btn-close ms-2" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div id="usage-spark-modal-chart" class="rto-spark-modal-chart"></div>
+        <div class="text-muted small mt-2">DL/UL history from stored usage samples.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  document.addEventListener("DOMContentLoaded", () => {
+    const escMap = { "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" };
+    const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => escMap[c] || c);
+
+    const fmtBytes = (value) => {
+      const num = Number(value);
+      if (!Number.isFinite(num)) return "n/a";
+      const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+      let size = Math.max(0, num);
+      let idx = 0;
+      while (size >= 1024 && idx < units.length - 1) {
+        size /= 1024;
+        idx++;
+      }
+      if (idx === 0) return `${Math.floor(size)} ${units[idx]}`;
+      return `${size.toFixed(2)} ${units[idx]}`;
+    };
+
+    const fmtBps = (value) => {
+      const num = Number(value);
+      if (!Number.isFinite(num)) return "n/a";
+      const units = ["bps", "kbps", "Mbps", "Gbps"];
+      let size = Math.max(0, num);
+      let idx = 0;
+      while (size >= 1000 && idx < units.length - 1) {
+        size /= 1000;
+        idx++;
+      }
+      if (idx === 0) return `${Math.floor(size)} ${units[idx]}`;
+      if (size >= 100) return `${size.toFixed(0)} ${units[idx]}`;
+      if (size >= 10) return `${size.toFixed(1)} ${units[idx]}`;
+      return `${size.toFixed(2)} ${units[idx]}`;
+    };
+
+	    const issuesBody = document.getElementById("usage-issues-body");
+	    const stableBody = document.getElementById("usage-stable-body");
+
+	    const issuesCount = document.getElementById("usage-issues-count");
+	    const stableCount = document.getElementById("usage-stable-count");
+	    const peakBadge = document.getElementById("usage-peak-badge");
+	    const lastCheck = document.getElementById("usage-last-check");
+	    const genieRefresh = document.getElementById("usage-genieacs-refresh");
+
+	    const searchInput = document.getElementById("usage-status-search");
+	    const routerKpisEl = document.getElementById("usage-router-kpis");
+	    const limitButton = document.getElementById("usage-limit-button");
+	    const limitRows = document.querySelectorAll(".usage-limit-row");
+	    const filterButton = document.getElementById("usage-filter-button");
+    const filterMenu = document.getElementById("usage-filter-menu");
+    const filterRouters = document.getElementById("usage-filter-routers");
+    const filterClear = document.getElementById("usage-filter-clear");
+
+    const sortStateKey = "usage_sort_state_v1";
+    const searchStateKey = "usage_status_search_v1";
+    const limitStateKey = "usage_status_limit_v1";
+    const routerFilterKey = "usage_status_router_filters_v1";
+	    const statusTabKey = "usage_status_active_tab_v1";
+
+		    const numericKeys = new Set(["dl_bps", "ul_bps", "dl_total_bytes", "ul_total_bytes", "host_count"]);
+		    const booleanKeys = new Set([]);
+
+		    let issuesData = [];
+		    let stableData = [];
+
+    const trendCache = new Map();
+    const trendKeepMinutes = 60; // keep last 60 minutes in-memory for sparklines
+    const sparkWidth = 120;
+    const sparkHeight = 30;
+
+    function keyForRow(row) {
+      const rid = String(row?.router_id || "").trim();
+      const pppoe = String(row?.pppoe || "").trim();
+      return `${rid}|${pppoe}`;
+    }
+
+    function parseTsMs(value) {
+      const raw = String(value || "").trim();
+      if (!raw) return null;
+      const ms = Date.parse(raw);
+      return Number.isFinite(ms) ? ms : null;
+    }
+
+    function updateTrendCacheFromLive(rows) {
+      const now = Date.now();
+      const cutoff = now - trendKeepMinutes * 60 * 1000;
+      (rows || []).forEach((row) => {
+        const k = keyForRow(row);
+        if (!k || k.endsWith("|")) return;
+        const tsMs = parseTsMs(row?.last_seen_ts || row?.timestamp);
+        if (!tsMs) return;
+        const dl = Number(row?.dl_bps ?? row?.tx_bps ?? 0) || 0;
+        const ul = Number(row?.ul_bps ?? row?.rx_bps ?? 0) || 0;
+        const total = Math.max(0, dl + ul);
+        const arr = trendCache.get(k) || [];
+        const last = arr.length ? arr[arr.length - 1] : null;
+        if (last && last.t === tsMs) {
+          last.v = total;
+        } else {
+          arr.push({ t: tsMs, v: total });
+        }
+        while (arr.length && arr[0].t < cutoff) arr.shift();
+        if (arr.length > 1000) arr.splice(0, arr.length - 1000);
+        trendCache.set(k, arr);
+      });
+    }
+
+    function sparkPointsForKey(k) {
+      const arr = trendCache.get(k) || [];
+      if (arr.length < 2) return null;
+      const points = arr.slice(-60);
+      const values = points.map((p) => p.v);
+      const minV = Math.min(...values);
+      const maxV = Math.max(...values);
+      const range = Math.max(1, maxV - minV);
+      const xStep = sparkWidth / Math.max(1, points.length - 1);
+      return points
+        .map((p, idx) => {
+          const x = idx * xStep;
+          const norm = (p.v - minV) / range;
+          const y = (sparkHeight - 2) - norm * (sparkHeight - 4);
+          return `${x.toFixed(1)},${y.toFixed(1)}`;
+        })
+        .join(" ");
+    }
+
+    function loadJson(key, fallback) {
+      try {
+        const raw = localStorage.getItem(key);
+        if (!raw) return fallback;
+        const parsed = JSON.parse(raw);
+        return parsed ?? fallback;
+      } catch {
+        return fallback;
+      }
+    }
+
+    function saveJson(key, value) {
+      try {
+        localStorage.setItem(key, JSON.stringify(value));
+      } catch {
+        // ignore
+      }
+    }
+
+    function loadSortState() {
+      const parsed = loadJson(sortStateKey, {});
+      return (parsed && typeof parsed === "object") ? parsed : {};
+    }
+
+    function saveSortState(state) {
+      saveJson(sortStateKey, state);
+    }
+
+    let sortState = loadSortState();
+
+    function getSort(table) {
+      const s = sortState[table];
+      if (!s || typeof s !== "object") return { key: "", dir: "" };
+      return { key: String(s.key || ""), dir: String(s.dir || "") };
+    }
+
+    function setSort(table, key) {
+      const current = getSort(table);
+      let dir = "asc";
+      if (current.key === key) {
+        dir = current.dir === "asc" ? "desc" : "asc";
+      }
+      sortState = { ...sortState, [table]: { key, dir } };
+      saveSortState(sortState);
+      updateSortIndicators();
+      renderAllTables();
+    }
+
+    function clearSort(table) {
+      sortState = { ...sortState, [table]: { key: "", dir: "" } };
+      saveSortState(sortState);
+      updateSortIndicators();
+      renderAllTables();
+    }
+
+    function updateSortIndicators() {
+      document.querySelectorAll("th.rto-sort[data-table]").forEach((th) => {
+        const table = (th.dataset.table || "").trim();
+        const key = (th.dataset.sortKey || "").trim();
+        const indicator = th.querySelector(".rto-sort-indicator");
+        const s = getSort(table);
+        th.classList.remove("rto-sorted-asc", "rto-sorted-desc");
+        th.setAttribute("aria-sort", "none");
+        if (!table || !key || s.key !== key || !s.dir) {
+          if (indicator) indicator.textContent = "";
+          return;
+        }
+        th.classList.add(s.dir === "asc" ? "rto-sorted-asc" : "rto-sorted-desc");
+        th.setAttribute("aria-sort", s.dir === "asc" ? "ascending" : "descending");
+        if (indicator) indicator.textContent = s.dir === "asc" ? "▲" : "▼";
+      });
+    }
+
+    function asNumber(value) {
+      const num = Number(value);
+      return Number.isFinite(num) ? num : null;
+    }
+
+    function asString(value) {
+      return String(value ?? "").toLowerCase();
+    }
+
+    function sortRows(rows, table) {
+      const s = getSort(table);
+      if (!s.key || !s.dir) return rows;
+      const dir = s.dir === "desc" ? -1 : 1;
+      const key = s.key;
+      const withIndex = rows.map((row, idx) => ({ row, idx }));
+      withIndex.sort((a, b) => {
+        const av = a.row?.[key];
+        const bv = b.row?.[key];
+
+        // nulls always last
+        const aNull = av === null || av === undefined || av === "";
+        const bNull = bv === null || bv === undefined || bv === "";
+        if (aNull && bNull) return a.idx - b.idx;
+        if (aNull) return 1;
+        if (bNull) return -1;
+
+        if (booleanKeys.has(key)) {
+          const aa = av ? 1 : 0;
+          const bb = bv ? 1 : 0;
+          if (aa !== bb) return dir * (aa - bb);
+          return a.idx - b.idx;
+        }
+
+        if (numericKeys.has(key)) {
+          const aa = asNumber(av);
+          const bb = asNumber(bv);
+          if (aa === null && bb === null) return a.idx - b.idx;
+          if (aa === null) return 1;
+          if (bb === null) return -1;
+          if (aa !== bb) return dir * (aa - bb);
+          return a.idx - b.idx;
+        }
+
+        const aa = asString(av);
+        const bb = asString(bv);
+        const cmp = aa.localeCompare(bb);
+        if (cmp !== 0) return dir * cmp;
+        return a.idx - b.idx;
+      });
+      return withIndex.map((x) => x.row);
+    }
+
+    let searchQuery = String(loadJson(searchStateKey, "") || "");
+    let showLimit = Number(loadJson(limitStateKey, 100));
+    if (!Number.isFinite(showLimit) || showLimit <= 0) showLimit = 100;
+    let selectedRouters = loadJson(routerFilterKey, []);
+    if (!Array.isArray(selectedRouters)) selectedRouters = [];
+
+    function updateLimitButton() {
+      if (!limitButton) return;
+      limitButton.textContent = `Show: ${showLimit}`;
+    }
+
+    function updateFilterButton() {
+      if (!filterButton) return;
+      const count = selectedRouters.length;
+      filterButton.textContent = count ? `Filter: ${count}` : "Filter";
+    }
+
+    function setShowLimit(limit) {
+      const n = Number(limit);
+      if (!Number.isFinite(n) || n <= 0) return;
+      showLimit = n;
+      saveJson(limitStateKey, showLimit);
+      updateLimitButton();
+      renderAllTables();
+    }
+
+    function setSelectedRouters(list) {
+      selectedRouters = Array.isArray(list) ? list.filter((x) => typeof x === "string" && x.trim()) : [];
+      saveJson(routerFilterKey, selectedRouters);
+      updateFilterButton();
+      renderAllTables();
+    }
+
+    function getRowRouterName(row) {
+      return String(row?.router_name || row?.router_id || "").trim();
+    }
+
+    function rowMatchesRouters(row) {
+      if (!selectedRouters.length) return true;
+      const r = getRowRouterName(row);
+      return selectedRouters.includes(r);
+    }
+
+	    function rowMatchesSearch(row, table) {
+	      const q = (searchQuery || "").trim().toLowerCase();
+	      if (!q) return true;
+	      const hay = [];
+	      hay.push(row?.pppoe, row?.router_name, row?.router_id, row?.address, row?.last_seen);
+	      const names = Array.isArray(row?.hostnames) ? row.hostnames : [];
+	      hay.push(names.join(" "));
+	      return hay
+	        .filter((x) => x !== null && x !== undefined)
+	        .map((x) => String(x).toLowerCase())
+        .some((x) => x.includes(q));
+    }
+
+    function filterRows(rows, table) {
+      return (rows || []).filter((row) => rowMatchesRouters(row) && rowMatchesSearch(row, table));
+    }
+
+    function applyLimit(rows) {
+      if (!showLimit || showLimit <= 0) return rows;
+      return rows.slice(0, showLimit);
+    }
+
+	    function uniqueRoutersFromData() {
+	      const all = [...issuesData, ...stableData];
+	      const set = new Set();
+	      all.forEach((row) => {
+	        const r = getRowRouterName(row);
+        if (r) set.add(r);
+      });
+      return Array.from(set).sort((a, b) => a.localeCompare(b));
+    }
+
+	    function renderRouterFilterMenu() {
+	      if (!filterRouters) return;
+	      const routers = uniqueRoutersFromData();
+	      if (!routers.length) {
+        filterRouters.innerHTML = '<div class="text-muted small">No routers yet.</div>';
+        return;
+      }
+      filterRouters.innerHTML = routers
+        .map((r) => {
+          const checked = selectedRouters.includes(r) ? "checked" : "";
+          return `
+            <label class="form-check m-0">
+              <input class="form-check-input usage-router-filter" type="checkbox" value="${esc(r)}" ${checked} />
+              <span class="form-check-label">${esc(r)}</span>
+            </label>
+          `;
+        })
+	        .join("");
+	    }
+
+	    function renderRouterKpis() {
+	      if (!routerKpisEl) return;
+	      const counts = new Map();
+	      [...issuesData, ...stableData].forEach((row) => {
+	        const name = getRowRouterName(row);
+	        if (!name) return;
+	        counts.set(name, (counts.get(name) || 0) + 1);
+	      });
+	      const sorted = Array.from(counts.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+	      if (!sorted.length) {
+	        routerKpisEl.innerHTML = '<span class="text-muted small">No routers</span>';
+	        return;
+	      }
+	      routerKpisEl.innerHTML = sorted
+	        .map(([name, count]) => {
+	          return `<span class="badge bg-secondary-lt text-secondary usage-router-kpi" title="${esc(name)}">${esc(name)}: ${count}</span>`;
+	        })
+	        .join("");
+	    }
+
+	    function renderActiveRow(row) {
+	      const names = Array.isArray(row.hostnames) ? row.hostnames : [];
+	      const hostCount = Number(row.host_count || 0);
+      let devicesCell = `${hostCount}`;
+      if (names.length) {
+        const shown = names.map((n) => String(n ?? "").trim()).filter(Boolean);
+        const badgeClass = hostCount > 0 ? "bg-azure-lt text-azure" : "bg-secondary-lt text-secondary";
+        const headerHtml = `
+          <div class="d-flex align-items-center justify-content-between mb-2">
+            <div class="fw-semibold">Connected Devices</div>
+            <span class="badge bg-azure-lt text-azure">Total: ${hostCount}</span>
+          </div>
+        `;
+        const rowsHtml = shown
+          .map((n, idx) => `<tr><td class="text-muted">${idx + 1}</td><td class="text-truncate" style="max-width: 280px;">${esc(n)}</td></tr>`)
+          .join("");
+        const tableHtml = `
+          <div class="table-responsive" style="max-height: 260px; overflow:auto;">
+            <table class="table table-sm table-vcenter mb-0">
+              <thead>
+                <tr><th style="width: 40px;">#</th><th>Device</th></tr>
+              </thead>
+              <tbody>
+                ${rowsHtml || `<tr><td colspan="2" class="text-muted">No device names available.</td></tr>`}
+              </tbody>
+            </table>
+          </div>
+        `;
+        const contentHtml = `
+          <div class="card card-sm m-0 border-0">
+            <div class="card-body p-2">
+              ${headerHtml}
+              ${tableHtml}
+            </div>
+          </div>
+        `;
+        devicesCell = `<span class="badge ${badgeClass} usage-devices-popover" role="button" tabindex="0">
+          <i class="ti ti-devices me-1"></i>${hostCount}</span>
+          <div class="d-none usage-devices-popover-content">${contentHtml}</div>`;
+      } else {
+        const badgeClass = hostCount > 0 ? "bg-azure-lt text-azure" : "bg-secondary-lt text-secondary";
+        const contentHtml = `
+          <div class="card card-sm m-0 border-0">
+            <div class="card-body p-2">
+              <div class="d-flex align-items-center justify-content-between">
+                <div class="fw-semibold">Connected Devices</div>
+                <span class="badge bg-azure-lt text-azure">Total: ${hostCount}</span>
+              </div>
+              <div class="text-muted small mt-2">No device names available.</div>
+            </div>
+          </div>
+        `;
+        devicesCell = `<span class="badge ${badgeClass} usage-devices-popover" role="button" tabindex="0">
+          <i class="ti ti-devices me-1"></i>${hostCount}</span>
+          <div class="d-none usage-devices-popover-content">${contentHtml}</div>`;
+      }
+      const k = keyForRow(row);
+      const pts = sparkPointsForKey(k);
+	      const trendCell = pts
+	        ? `<button type="button"
+	                   class="btn btn-link p-0 rto-spark-btn usage-spark-btn"
+	                   data-pppoe="${esc(row.pppoe)}"
+	                   data-router-id="${esc(row.router_id || "")}"
+	                   data-status="${esc(row.issue ? "issue" : "stable")}"
+	                   data-bs-toggle="modal"
+	                   data-bs-target="#usage-spark-modal">
+             <svg class="rto-sparkline" width="${sparkWidth}" height="${sparkHeight}" viewBox="0 0 ${sparkWidth} ${sparkHeight}" preserveAspectRatio="none">
+               <polyline points="${pts}" fill="none" stroke="${row.issue ? "#d63939" : "#2fb344"}" stroke-width="2"></polyline>
+             </svg>
+           </button>`
+        : `<span class="text-muted small">n/a</span>`;
+
+      return `
+        <tr>
+          <td>${esc(row.pppoe)}</td>
+          <td>${esc(row.router_name || row.router_id || "")}</td>
+          <td class="text-end">${esc(fmtBps(row.dl_bps))}</td>
+          <td class="text-end">${esc(fmtBps(row.ul_bps))}</td>
+          <td class="text-end">${esc(fmtBytes(row.dl_total_bytes))}</td>
+          <td class="text-end">${esc(fmtBytes(row.ul_total_bytes))}</td>
+          <td class="text-end">${devicesCell}</td>
+          <td>${trendCell}</td>
+          <td>${esc(row.last_seen || "n/a")}</td>
+        </tr>
+      `;
+	    }
+
+    async function refresh() {
+      try {
+        const res = await fetch("/usage/summary", { headers: { "Accept": "application/json" } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+	        const counts = data.counts || {};
+	        issuesCount.textContent = `Issues: ${counts.issues || 0}`;
+	        stableCount.textContent = `Stable: ${counts.stable || 0}`;
+
+        const peak = data.peak || {};
+        const peakText = `${peak.start || "--"}–${peak.end || "--"}${peak.in_peak ? " (NOW)" : ""}`;
+        peakBadge.textContent = `Peak: ${peakText}`;
+        peakBadge.classList.toggle("bg-yellow-lt", !!peak.in_peak);
+        peakBadge.classList.toggle("bg-azure-lt", !peak.in_peak);
+
+        lastCheck.textContent = data.last_check || "n/a";
+        genieRefresh.textContent = data.genieacs_last_refresh || "n/a";
+
+	        const rows = data.rows || {};
+	        issuesData = Array.isArray(rows.issues) ? rows.issues : [];
+	        stableData = Array.isArray(rows.stable) ? rows.stable : [];
+	        updateTrendCacheFromLive([...issuesData, ...stableData]);
+	        renderRouterFilterMenu();
+	        renderRouterKpis();
+	        renderAllTables();
+	      } catch (err) {
+	        issuesBody.innerHTML = '<tr><td colspan="9" class="text-danger">Failed to load usage summary.</td></tr>';
+	      }
+	    }
+
+	    function renderAllTables() {
+	      const issues = applyLimit(sortRows(filterRows(issuesData, "issues"), "issues"));
+	      const stable = applyLimit(sortRows(filterRows(stableData, "stable"), "stable"));
+
+	      issuesBody.innerHTML = issues.length ? issues.map(renderActiveRow).join("") : '<tr><td colspan="9" class="text-muted">No usage issues detected yet.</td></tr>';
+	      stableBody.innerHTML = stable.length ? stable.map(renderActiveRow).join("") : '<tr><td colspan="9" class="text-muted">No stable usage rows yet.</td></tr>';
+
+	      initDeviceClickcards();
+	      updateSortIndicators();
+	    }
+
+    const hoverCard = document.createElement("div");
+    hoverCard.className = "usage-hovercard";
+    hoverCard.style.display = "none";
+    // Inline the critical positioning styles so the hover card still works even if the browser
+    // caches an older `/static/style.css`.
+    hoverCard.style.position = "fixed";
+    hoverCard.style.zIndex = "2050";
+    hoverCard.style.width = "420px";
+    hoverCard.style.maxWidth = "calc(100vw - 20px)";
+    hoverCard.style.pointerEvents = "auto";
+    document.body.appendChild(hoverCard);
+
+    let openAnchor = null;
+
+    function hideHoverCard() {
+      openAnchor = null;
+      hoverCard.style.display = "none";
+      hoverCard.innerHTML = "";
+    }
+
+    function showHoverCard(anchorEl) {
+      if (!anchorEl) return;
+      const contentEl = anchorEl.nextElementSibling;
+      if (!contentEl || !contentEl.classList || !contentEl.classList.contains("usage-devices-popover-content")) return;
+      const html = contentEl.innerHTML || "";
+      if (!html.trim()) return;
+
+      openAnchor = anchorEl;
+      hoverCard.innerHTML = html;
+      hoverCard.style.display = "block";
+
+      const rect = anchorEl.getBoundingClientRect();
+      // Position near the badge, keep inside viewport.
+      const margin = 10;
+      const cardRect = hoverCard.getBoundingClientRect();
+
+      let top = rect.bottom + 8;
+      let left = rect.left;
+
+      if (left + cardRect.width > window.innerWidth - margin) {
+        left = Math.max(margin, window.innerWidth - margin - cardRect.width);
+      }
+      if (top + cardRect.height > window.innerHeight - margin) {
+        top = rect.top - 8 - cardRect.height;
+      }
+      top = Math.max(margin, Math.min(top, window.innerHeight - margin - cardRect.height));
+
+      hoverCard.style.left = `${left}px`;
+      hoverCard.style.top = `${top}px`;
+    }
+
+    function toggleDeviceCard(el) {
+      if (!el) return;
+      if (hoverCard.style.display !== "none" && openAnchor === el) {
+        hideHoverCard();
+        return;
+      }
+      showHoverCard(el);
+    }
+
+    function initDeviceClickcards() {
+      document.querySelectorAll(".usage-devices-popover").forEach((el) => {
+        if (el.dataset.hcBound === "1") return;
+        el.dataset.hcBound = "1";
+        el.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          toggleDeviceCard(el);
+        });
+        el.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            event.stopPropagation();
+            toggleDeviceCard(el);
+          }
+        });
+      });
+    }
+
+    hoverCard.addEventListener("click", (event) => {
+      // Keep open when interacting inside.
+      event.stopPropagation();
+    });
+
+    document.addEventListener("click", (event) => {
+      if (hoverCard.style.display === "none") return;
+      const target = event.target;
+      if (hoverCard.contains(target)) return;
+      if (openAnchor && openAnchor.contains && openAnchor.contains(target)) return;
+      hideHoverCard();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && hoverCard.style.display !== "none") {
+        hideHoverCard();
+      }
+    });
+
+    window.addEventListener("scroll", () => {
+      if (hoverCard.style.display !== "none" && openAnchor) showHoverCard(openAnchor);
+    }, { passive: true });
+    window.addEventListener("resize", () => {
+      if (hoverCard.style.display !== "none" && openAnchor) showHoverCard(openAnchor);
+    });
+
+    // Persist active status sub-tab (Issues/Stable/Offline).
+    const statusTabs = document.querySelectorAll('#usage-status ul.nav-tabs a[data-bs-toggle="tab"]');
+    if (window.location.hash) {
+      const target = document.querySelector(`#usage-status a[href="${window.location.hash}"]`);
+      if (target && window.bootstrap?.Tab) new window.bootstrap.Tab(target).show();
+    } else {
+      const stored = localStorage.getItem(statusTabKey);
+      const target = stored ? document.querySelector(`#usage-status a[href="${stored}"]`) : null;
+      if (target && window.bootstrap?.Tab) new window.bootstrap.Tab(target).show();
+    }
+    statusTabs.forEach((link) => {
+      link.addEventListener("shown.bs.tab", (event) => {
+        const href = event.target.getAttribute("href");
+        if (href) {
+          localStorage.setItem(statusTabKey, href);
+          history.replaceState(null, "", href);
+        }
+      });
+    });
+
+    // Sorting via header click (client-side).
+    document.addEventListener("click", (event) => {
+      const th = event.target.closest("th.rto-sort");
+      if (!th) return;
+      const table = (th.dataset.table || "").trim();
+      const key = (th.dataset.sortKey || "").trim();
+      if (!table || !key) return;
+      setSort(table, key);
+    });
+
+    // Usage trend modal (ApexCharts) similar to Optical page.
+    const modalEl = document.getElementById("usage-spark-modal");
+    const modalTitle = document.getElementById("usage-spark-title");
+    const modalChartEl = document.getElementById("usage-spark-modal-chart");
+    const modalWindowButton = document.getElementById("usage-modal-window-button");
+    const modalWindowOptions = document.querySelectorAll(".usage-modal-window-option");
+    const modalDefaultKey = "usage_modal_default_window_hours_v1";
+	    let modalChart = null;
+	    let modalPppoe = "";
+	    let modalRouterId = "";
+	    let modalHours = Number(localStorage.getItem(modalDefaultKey) || "24") || 24;
+
+    if (modalEl && modalEl.parentElement !== document.body) {
+      document.body.appendChild(modalEl);
+    }
+
+    function modalWindowLabel(hours) {
+      if (hours >= 24) return `${Math.floor(hours / 24)}D`;
+      return `${hours}H`;
+    }
+
+	    async function renderUsageModalChart() {
+	      if (!modalChartEl || !modalPppoe) return;
+	      const label = modalWindowLabel(modalHours);
+	      if (modalTitle) {
+	        modalTitle.textContent = `${modalPppoe} · ${label} Trend`;
+	      }
+	      if (modalWindowButton) modalWindowButton.textContent = `Filter: ${label}`;
+
+      modalChartEl.innerHTML = '<div class="text-muted small">Loading…</div>';
+      const url = new URL("/usage/series", window.location.origin);
+      url.searchParams.set("pppoe", modalPppoe);
+      if (modalRouterId) url.searchParams.set("router_id", modalRouterId);
+      url.searchParams.set("hours", String(modalHours));
+      let payload = null;
+      try {
+        const res = await fetch(url.toString(), { headers: { "Accept": "application/json" } });
+        payload = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(payload?.error || `HTTP ${res.status}`);
+      } catch (err) {
+        modalChartEl.innerHTML = '<div class="text-danger small">Failed to load usage series.</div>';
+        return;
+      }
+
+      const nowMs = Date.now();
+      const windowStartMs = nowMs - (Number(modalHours || 24) * 3600 * 1000);
+      const windowEndMs = nowMs;
+
+      const seriesRaw = Array.isArray(payload?.series) ? payload.series : [];
+      const toPoint = (p, key) => {
+        const ts = Date.parse(String(p?.ts || ""));
+        if (!Number.isFinite(ts)) return null;
+        const devicesRaw = p?.devices;
+        const devicesNum = (devicesRaw === null || devicesRaw === undefined || devicesRaw === "") ? null : Number(devicesRaw);
+        const raw = p?.[key];
+        if (raw === null || raw === undefined || raw === "") {
+          return { x: ts, y: null, devices: Number.isFinite(devicesNum) ? devicesNum : null };
+        }
+        const num = Number(raw);
+        return { x: ts, y: Number.isFinite(num) ? num : null, devices: Number.isFinite(devicesNum) ? devicesNum : null };
+      };
+      let dl = seriesRaw.map((p) => toPoint(p, "dl_bps")).filter((x) => x !== null);
+      let ul = seriesRaw.map((p) => toPoint(p, "ul_bps")).filter((x) => x !== null);
+      // Keep axis range consistent with selected filter even if data is incomplete.
+      if (!dl.length) dl = [{ x: windowStartMs, y: null, devices: null }, { x: windowEndMs, y: null, devices: null }];
+      if (!ul.length) ul = [{ x: windowStartMs, y: null, devices: null }, { x: windowEndMs, y: null, devices: null }];
+
+      if (modalChart) {
+        try { modalChart.destroy(); } catch {}
+        modalChart = null;
+      }
+
+      modalChartEl.innerHTML = "";
+      modalChart = new ApexCharts(modalChartEl, {
+        chart: {
+          type: "line",
+          height: 320,
+          toolbar: { show: false },
+          animations: { enabled: false },
+        },
+        stroke: { width: 2, curve: "smooth" },
+        markers: { size: 0 },
+        series: [
+          { name: "DL", data: dl },
+          { name: "UL", data: ul },
+        ],
+        xaxis: { type: "datetime", min: windowStartMs, max: windowEndMs },
+        yaxis: {
+          labels: {
+            formatter: (val) => fmtBps(val),
+          },
+        },
+	        tooltip: {
+	          shared: true,
+	          intersect: false,
+	          followCursor: true,
+	          x: { format: "yyyy-MM-dd HH:mm" },
+	          y: {
+	            formatter: (val, { seriesIndex, dataPointIndex, w }) => {
+	              const formatted = fmtBps(val);
+	              if (seriesIndex !== 0) return formatted;
+	              const devices = w?.config?.series?.[0]?.data?.[dataPointIndex]?.devices ?? null;
+	              if (devices === null || devices === undefined || devices === "") return formatted;
+	              const devicesNum = Number(devices);
+	              if (!Number.isFinite(devicesNum)) return formatted;
+	              return `${formatted} · Devices: ${devicesNum}`;
+	            },
+	          },
+	        },
+        colors: ["#206bc4", "#2fb344"],
+        grid: { strokeDashArray: 3 },
+      });
+      modalChart.render();
+    }
+
+    function renderModalWhenVisible() {
+      if (!modalEl) return renderUsageModalChart();
+      if (modalEl.classList.contains("show")) return renderUsageModalChart();
+      modalEl.addEventListener("shown.bs.modal", renderUsageModalChart, { once: true });
+    }
+
+	    document.addEventListener("click", (event) => {
+	      const btn = event.target.closest(".usage-spark-btn");
+	      if (!btn) return;
+	      modalPppoe = (btn.dataset.pppoe || "").trim();
+	      modalRouterId = (btn.dataset.routerId || "").trim();
+	      renderModalWhenVisible();
+	    });
+
+    modalWindowOptions.forEach((btn) => {
+      btn.addEventListener("click", (event) => {
+        event.preventDefault();
+        const hours = Number(btn.dataset.hours || "24");
+        if (!Number.isFinite(hours) || hours <= 0) return;
+        modalHours = hours;
+        localStorage.setItem(modalDefaultKey, String(modalHours));
+        renderModalWhenVisible();
+      });
+    });
+
+    // Search
+    if (searchInput) {
+      searchInput.value = searchQuery;
+      let timer = null;
+      const apply = () => {
+        searchQuery = (searchInput.value || "").trim();
+        saveJson(searchStateKey, searchQuery);
+        renderAllTables();
+      };
+      searchInput.addEventListener("input", () => {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(apply, 200);
+      });
+      searchInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          if (timer) clearTimeout(timer);
+          apply();
+        }
+      });
+    }
+
+    // Show limit dropdown
+    updateLimitButton();
+    limitRows.forEach((row) => {
+      row.addEventListener("click", () => setShowLimit(row.dataset.limit || "100"));
+    });
+
+    // Filter dropdown interactions
+    updateFilterButton();
+    if (filterMenu) {
+      filterMenu.addEventListener("click", (event) => {
+        // Keep dropdown open when interacting inside.
+        event.stopPropagation();
+      });
+    }
+    if (filterRouters) {
+      filterRouters.addEventListener("change", () => {
+        const selected = Array.from(filterRouters.querySelectorAll("input.usage-router-filter:checked"))
+          .map((el) => String(el.value || "").trim())
+          .filter(Boolean);
+        setSelectedRouters(selected);
+      });
+    }
+    if (filterClear) {
+      filterClear.addEventListener("click", (event) => {
+        event.preventDefault();
+        setSelectedRouters([]);
+        renderRouterFilterMenu();
+      });
+    }
+
+    // Resize tables like Optical page.
+    document.querySelectorAll(".rto-table-wrap").forEach((wrap) => {
+      const stored = localStorage.getItem(`usage_${wrap.id}_height`);
+      if (stored) {
+        wrap.style.height = `${stored}px`;
+      }
+    });
+    document.querySelectorAll(".rto-resize-handle").forEach((handle) => {
+      let startY = 0;
+      let startHeight = 0;
+      const targetId = handle.dataset.target;
+      const target = targetId ? document.getElementById(targetId) : null;
+      if (!target) return;
+      const onMouseMove = (event) => {
+        const delta = event.clientY - startY;
+        const height = Math.max(startHeight + delta, 260);
+        target.style.height = `${height}px`;
+      };
+      const onMouseUp = () => {
+        document.removeEventListener("mousemove", onMouseMove);
+        document.removeEventListener("mouseup", onMouseUp);
+        localStorage.setItem(`usage_${targetId}_height`, parseInt(target.style.height || "0", 10));
+      };
+      handle.addEventListener("mousedown", (event) => {
+        startY = event.clientY;
+        startHeight = target.getBoundingClientRect().height;
+        document.addEventListener("mousemove", onMouseMove);
+        document.addEventListener("mouseup", onMouseUp);
+      });
+    });
+
+    refresh();
+    setInterval(refresh, 5000);
+
+    // no-op: settings tabs submit with explicit hidden settings_tab per form.
+  });
+</script>
+{% endblock %}

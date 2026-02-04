@@ -33,10 +33,10 @@
     <div class="card">
       <div class="card-body">
         <div class="d-flex align-items-center">
-          <span class="avatar bg-purple-lt me-3"><i class="ti ti-tower"></i></span>
+          <span class="avatar bg-indigo-lt me-3"><i class="ti ti-wifi"></i></span>
           <div>
-            <div class="fw-semibold">RTO Monitor</div>
-            {% set status = job_status.get('rto') %}
+            <div class="fw-semibold">Accounts Ping</div>
+            {% set status = job_status.get('accounts_ping') %}
             <div class="text-muted">{{ 'attention' if status and status.last_error else 'ok' }}</div>
           </div>
         </div>

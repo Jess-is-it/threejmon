@@ -11,7 +11,7 @@
     <div class="row align-items-center g-3">
       <div class="col-md">
         <h4 class="mb-1">Search Customer</h4>
-        <div class="text-muted small">Search by PPPoE, IP, device ID, or RTO name.</div>
+        <div class="text-muted small">Search by PPPoE, IP, device ID, or account name.</div>
       </div>
       <div class="col-md-6 col-lg-5">
         <div class="position-relative">
@@ -28,7 +28,7 @@
   </div>
 </div>
 
-{% if profile.ip or profile.device_id %}
+{% if profile.pppoe or profile.ip or profile.device_id %}
 <div class="row row-deck row-cards">
   <div class="col-12">
     <div class="card">
@@ -41,8 +41,8 @@
               {% for src in profile.sources %}
                 {% if src == "optical" %}
                   <span class="badge bg-azure-lt text-azure"><i class="ti ti-sun me-1"></i>Optical</span>
-                {% elif src == "rto" %}
-                  <span class="badge bg-purple-lt text-purple"><i class="ti ti-tower me-1"></i>RTO</span>
+                {% elif src == "accounts_ping" %}
+                  <span class="badge bg-indigo-lt text-indigo"><i class="ti ti-wifi me-1"></i>ACC-Ping</span>
                 {% endif %}
               {% endfor %}
             </div>
@@ -118,12 +118,14 @@
   <div class="col-lg-6">
     <div class="card">
       <div class="card-header">
-        <h3 class="card-title"><i class="ti ti-tower me-2"></i>RTO</h3>
-        {% if profile.rto %}
-          {% if profile.rto.status == "down" %}
+        <h3 class="card-title"><i class="ti ti-wifi me-2"></i>ACC-Ping</h3>
+        {% if profile.accounts_ping %}
+          {% if profile.accounts_ping.status == "down" %}
             <span class="badge bg-red-lt ms-auto"><i class="ti ti-alert-circle me-1"></i>Down</span>
-          {% elif profile.rto.status == "up" %}
-            <span class="badge bg-green-lt ms-auto"><i class="ti ti-check me-1"></i>Up</span>
+          {% elif profile.accounts_ping.status == "stable" %}
+            <span class="badge bg-green-lt ms-auto"><i class="ti ti-check me-1"></i>Stable</span>
+          {% elif profile.accounts_ping.status == "pending" %}
+            <span class="badge bg-secondary-lt ms-auto">Pending</span>
           {% else %}
             <span class="badge bg-yellow-lt ms-auto"><i class="ti ti-eye me-1"></i>Monitor</span>
           {% endif %}
@@ -132,47 +134,53 @@
         {% endif %}
       </div>
       <div class="card-body">
-        {% if profile.rto %}
+        {% if profile.accounts_ping %}
           <div class="row g-2 mb-3">
             <div class="col-6 col-md-3">
               <div class="text-muted small">Uptime</div>
-              <div class="h3 m-0">{{ "%.1f"|format(profile.rto.uptime_pct) }}%</div>
+              <div class="h3 m-0">{{ "%.1f"|format(profile.accounts_ping.uptime_pct) }}%</div>
             </div>
             <div class="col-6 col-md-3">
-              <div class="text-muted small">RTO</div>
-              <div class="h3 m-0">{{ "%.1f"|format(profile.rto.rto_pct) }}%</div>
+              <div class="text-muted small">Loss</div>
+              <div class="h3 m-0">{{ profile.accounts_ping.loss_avg is not none and ("%.1f"|format(profile.accounts_ping.loss_avg) ~ "%") or "n/a" }}</div>
             </div>
             <div class="col-6 col-md-3">
-              <div class="text-muted small">Down Streak</div>
-              <div class="h3 m-0">{{ profile.rto.streak }}</div>
+              <div class="text-muted small">Latency</div>
+              <div class="h3 m-0">{{ profile.accounts_ping.avg_ms_avg is not none and ("%.1f"|format(profile.accounts_ping.avg_ms_avg) ~ "ms") or "n/a" }}</div>
             </div>
             <div class="col-6 col-md-3">
               <div class="text-muted small">Last Check</div>
-              <div class="fw-semibold">{{ profile.rto.last_seen }}</div>
+              <div class="fw-semibold">{{ profile.accounts_ping.last_seen }}</div>
             </div>
           </div>
           <div class="border rounded p-2 mb-3">
-            <div id="profile-rto-chart" style="height: 220px;"></div>
+            <div id="profile-accping-chart" style="height: 220px;"></div>
           </div>
           <div class="table-responsive">
             <table class="table table-sm table-vcenter">
               <thead>
                 <tr>
                   <th>Timestamp</th>
-                  <th>Status</th>
+                  <th>Ping</th>
+                  <th>Loss</th>
+                  <th>Latency</th>
                 </tr>
               </thead>
               <tbody>
-                {% for row in profile.rto.recent %}
+                {% for row in profile.accounts_ping.recent %}
                   <tr>
                     <td class="text-muted">{{ row.ts }}</td>
                     <td>
-                      {% if row.ok %}
+                      {% if row.status == "pending" %}
+                        <span class="badge bg-secondary-lt">Pending</span>
+                      {% elif row.ok %}
                         <span class="badge bg-green-lt">Up</span>
                       {% else %}
                         <span class="badge bg-red-lt">Down</span>
                       {% endif %}
                     </td>
+                    <td>{{ row.loss is not none and ("%.1f"|format(row.loss) ~ "%") or "n/a" }}</td>
+                    <td>{{ row.avg_ms is not none and ("%.1f"|format(row.avg_ms) ~ "ms") or "n/a" }}</td>
                   </tr>
                 {% endfor %}
               </tbody>
@@ -181,8 +189,8 @@
         {% else %}
           <div class="empty">
             <div class="empty-icon"><i class="ti ti-database-off"></i></div>
-            <p class="empty-title">No RTO history found</p>
-            <p class="empty-subtitle text-muted">Search another account or provide an IP that exists in RTO results.</p>
+            <p class="empty-title">No ACC-Ping history found</p>
+            <p class="empty-subtitle text-muted">Search another account or provide a PPPoE/IP that exists in Accounts Ping data.</p>
           </div>
         {% endif %}
       </div>
@@ -324,9 +332,9 @@
     };
 
     const iconFor = (sources) => {
-      if ((sources || []).includes("optical") && (sources || []).includes("rto")) return "ti ti-layers";
+      if ((sources || []).includes("optical") && (sources || []).includes("accounts_ping")) return "ti ti-layers";
       if ((sources || []).includes("optical")) return "ti ti-sun";
-      if ((sources || []).includes("rto")) return "ti ti-tower";
+      if ((sources || []).includes("accounts_ping")) return "ti ti-wifi";
       return "ti ti-user";
     };
 
@@ -342,6 +350,7 @@
     const navigateTo = (item) => {
       hideTop10();
       const params = new URLSearchParams();
+      if (item.pppoe) params.set("pppoe", item.pppoe);
       if (item.ip) params.set("ip", item.ip);
       if (item.device_id) params.set("device_id", item.device_id);
       window.location.href = `/profile-review?${params.toString()}`;
@@ -380,12 +389,12 @@
               <span class="text-muted"><i class="${iconFor(item.sources)}"></i></span>
               <div class="flex-fill">
                 <div class="fw-semibold">${item.name || "Customer"}</div>
-                <div class="text-muted small">${[item.ip, item.device_id].filter(Boolean).join(" · ")}</div>
+                <div class="text-muted small">${[item.pppoe, item.ip, item.device_id].filter(Boolean).join(" · ")}</div>
               </div>
               <div class="d-flex gap-1 align-items-center flex-wrap justify-content-end">
                 ${statusBadgeHtml(item)}
                 ${(item.sources || []).includes("optical") ? '<span class="badge bg-azure-lt text-azure">Optical</span>' : ""}
-                ${(item.sources || []).includes("rto") ? '<span class="badge bg-purple-lt text-purple">RTO</span>' : ""}
+                ${(item.sources || []).includes("accounts_ping") ? '<span class="badge bg-indigo-lt text-indigo">ACC-Ping</span>' : ""}
               </div>
             </div>
           `;
@@ -415,12 +424,12 @@
             <span class="text-muted"><i class="${iconFor(item.sources)}"></i></span>
             <div class="flex-fill">
               <div class="fw-semibold">${item.name || "Customer"}</div>
-              <div class="text-muted small">${[item.ip, item.device_id].filter(Boolean).join(" · ")}</div>
+              <div class="text-muted small">${[item.pppoe, item.ip, item.device_id].filter(Boolean).join(" · ")}</div>
             </div>
             <div class="d-flex gap-1">
               ${statusBadgeHtml(item)}
               ${(item.sources || []).includes("optical") ? '<span class="badge bg-azure-lt text-azure">Optical</span>' : ""}
-              ${(item.sources || []).includes("rto") ? '<span class="badge bg-purple-lt text-purple">RTO</span>' : ""}
+              ${(item.sources || []).includes("accounts_ping") ? '<span class="badge bg-indigo-lt text-indigo">ACC-Ping</span>' : ""}
             </div>
           </div>
         `;
@@ -492,32 +501,65 @@
       });
     }
 
-    const renderRtoChart = async () => {
-      const el = document.getElementById("profile-rto-chart");
-      if (!el || !profile?.rto?.ip) return;
+    const renderAccPingChart = async () => {
+      const el = document.getElementById("profile-accping-chart");
+      if (!el || !profile?.accounts_ping?.account_id) return;
       try {
-        const params = new URLSearchParams({ ip: profile.rto.ip, window: String(profile.window_hours || 24) });
-        const res = await fetch(`/rto/series?${params.toString()}`, { headers: { "Accept": "application/json" } });
+        const params = new URLSearchParams({ account_id: profile.accounts_ping.account_id, window: String(profile.window_hours || 24) });
+        const res = await fetch(`/accounts-ping/series?${params.toString()}`, { headers: { "Accept": "application/json" } });
         if (!res.ok) return;
         const payload = await res.json();
         const points = (payload.series || [])
           .map((row) => {
             const ts = row.ts ? Date.parse(String(row.ts)) : NaN;
             if (!Number.isFinite(ts)) return null;
-            return { x: ts, y: Number(row.value) };
+            const loss = row.loss === null || row.loss === undefined ? null : Number(row.loss);
+            const avg = row.avg_ms === null || row.avg_ms === undefined ? null : Number(row.avg_ms);
+            return { x: ts, loss, avg_ms: avg };
           })
           .filter((row) => row !== null);
         if (!points.length) return;
+        const lossSeries = points.map((p) => ({ x: p.x, y: p.loss }));
+        const latSeries = points.map((p) => ({ x: p.x, y: p.avg_ms }));
         const chart = new window.ApexCharts(el, {
-          chart: { type: "line", height: 220, toolbar: { show: false }, zoom: { enabled: false } },
-          series: [{ name: "Uptime", data: points }],
-          colors: [profile.rto.status === "down" ? "#d63939" : "#2fb344"],
+          chart: { type: "line", height: 220, toolbar: { show: false }, zoom: { enabled: false }, animations: { enabled: false } },
+          series: [
+            { name: "Latency (ms)", data: latSeries },
+            { name: "Loss (%)", data: lossSeries },
+          ],
+          colors: ["#206bc4", "#d63939"],
           stroke: { width: 2 },
           markers: { size: 0 },
-          xaxis: { type: "datetime" },
-          yaxis: { min: 0, max: 100, tickAmount: 2, labels: { formatter: (val) => `${val}%` } },
-          tooltip: { shared: false, intersect: false, followCursor: true, y: { formatter: (val) => `${val}%` } },
+          xaxis: { type: "datetime", tooltip: { enabled: false } },
+          yaxis: [
+            {
+              seriesName: "Latency (ms)",
+              min: 0,
+              labels: { formatter: (val) => `${val.toFixed(0)}ms` },
+            },
+            {
+              opposite: true,
+              seriesName: "Loss (%)",
+              min: 0,
+              max: 100,
+              tickAmount: 2,
+              labels: { formatter: (val) => `${val.toFixed(0)}%` },
+            },
+          ],
+          tooltip: {
+            shared: true,
+            intersect: false,
+            followCursor: true,
+            y: {
+              formatter: (val, opts) => {
+                const name = opts?.w?.globals?.seriesNames?.[opts.seriesIndex] || "";
+                if (name.includes("Loss")) return `${Number(val).toFixed(1)}%`;
+                return `${Number(val).toFixed(1)}ms`;
+              },
+            },
+          },
           grid: { borderColor: "#e9ecef" },
+          legend: { position: "top" },
         });
         chart.render();
       } catch (err) {
@@ -589,7 +631,7 @@
       }
     };
 
-    renderRtoChart();
+    renderAccPingChart();
     renderOpticalChart();
 
     if (top10Wrap && !profile?.ip && !profile?.device_id) {

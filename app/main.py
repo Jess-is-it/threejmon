@@ -12,7 +12,7 @@ import time
 import subprocess
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, time as dt_time
 from zoneinfo import ZoneInfo
 
 import imghdr
@@ -23,48 +23,43 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .db import (
-    clear_rto_results,
+    clear_accounts_ping_data,
+    clear_pppoe_usage_samples,
+    clear_pulsewatch_data,
+    clear_wan_history,
+    end_surveillance_session,
+    ensure_surveillance_session,
+    fetch_wan_history_map,
+    get_accounts_ping_latest_ip_since,
+    get_accounts_ping_rollups_range,
+    get_accounts_ping_rollups_since,
+    get_accounts_ping_series,
+    get_accounts_ping_series_range,
+    get_accounts_ping_window_stats,
+    get_accounts_ping_window_stats_by_ip,
     get_job_status,
+    get_latest_accounts_ping_map,
+    get_latest_optical_by_pppoe,
+    get_latest_optical_device_for_ip,
+    get_latest_optical_identity,
     get_latest_speedtest_map,
+    get_optical_latest_results_since,
+    get_optical_results_for_device_since,
+    get_optical_rx_series_for_devices_since,
+    get_optical_samples_for_devices_since,
+    get_optical_worst_candidates,
     get_ping_history_map,
     get_ping_latency_trend_map,
     get_ping_latency_trend_window,
     get_ping_rollup_history_map,
     get_ping_stability_counts,
-    get_rto_results_since,
-    get_rto_results_for_ip_since,
-    get_optical_latest_results_since,
-    get_optical_rx_series_for_devices_since,
-    get_optical_samples_for_devices_since,
-    get_optical_results_for_device_since,
-    get_latest_optical_by_pppoe,
-    get_latest_optical_device_for_ip,
-    get_latest_optical_identity,
-    get_latest_rto_identity,
+    get_pppoe_usage_series_since,
     get_recent_optical_readings,
-    get_recent_rto_results,
     init_db,
-    clear_pulsewatch_data,
-    clear_accounts_ping_data,
-    search_optical_customers,
-    search_rto_customers,
-    get_optical_worst_candidates,
-    get_rto_worst_summary,
-    get_latest_accounts_ping_map,
-    get_accounts_ping_window_stats,
-    get_accounts_ping_rollups_since,
-    get_accounts_ping_rollups_range,
-    get_accounts_ping_series,
-    get_accounts_ping_series_range,
-    get_accounts_ping_latest_ip_since,
-    get_accounts_ping_window_stats_by_ip,
-    utc_now_iso,
-    fetch_wan_history_map,
-    clear_wan_history,
-    ensure_surveillance_session,
-    touch_surveillance_session,
-    end_surveillance_session,
     list_surveillance_history,
+    search_optical_customers,
+    touch_surveillance_session,
+    utc_now_iso,
 )
 from .forms import parse_bool, parse_float, parse_int, parse_int_list, parse_lines
 from .jobs import JobsManager
@@ -78,8 +73,8 @@ from .settings_defaults import (
     ACCOUNTS_PING_DEFAULTS,
     ISP_PING_DEFAULTS,
     OPTICAL_DEFAULTS,
-    RTO_DEFAULTS,
     SURVEILLANCE_DEFAULTS,
+    USAGE_DEFAULTS,
     WAN_PING_DEFAULTS,
     WAN_MESSAGE_DEFAULTS,
     WAN_SUMMARY_DEFAULTS,
@@ -1545,35 +1540,6 @@ def _sparkline_points_fixed(values, min_val, max_val, width=120, height=30):
     return " ".join(points)
 
 
-RTO_WINDOW_OPTIONS = [
-    ("3H", 3),
-    ("6H", 6),
-    ("12H", 12),
-    ("1D", 24),
-    ("7D", 168),
-    ("15D", 360),
-    ("30D", 720),
-]
-
-
-def _normalize_rto_window(value):
-    if value is None:
-        return 24
-    raw = str(value).strip().lower()
-    if not raw:
-        return 24
-    for label, hours in RTO_WINDOW_OPTIONS:
-        if raw == label.lower():
-            return hours
-    try:
-        hours = int(raw)
-        if hours in {opt[1] for opt in RTO_WINDOW_OPTIONS}:
-            return hours
-    except ValueError:
-        pass
-    return 24
-
-
 def format_ts_ph(value):
     if not value:
         return "n/a"
@@ -1588,6 +1554,68 @@ def format_ts_ph(value):
         return dt_ph.strftime("%Y-%m-%d %I:%M %p")
     except Exception:
         return str(value)
+
+
+def format_bytes(value):
+    try:
+        value = int(value)
+    except Exception:
+        return "n/a"
+    if value < 0:
+        value = 0
+    units = ["B", "KB", "MB", "GB", "TB", "PB"]
+    size = float(value)
+    idx = 0
+    while size >= 1024 and idx < len(units) - 1:
+        size /= 1024.0
+        idx += 1
+    if idx == 0:
+        return f"{int(size)} {units[idx]}"
+    return f"{size:.2f} {units[idx]}"
+
+
+def format_bps(value):
+    try:
+        value = float(value)
+    except Exception:
+        return "n/a"
+    if value < 0:
+        value = 0.0
+    units = ["bps", "kbps", "Mbps", "Gbps"]
+    size = value
+    idx = 0
+    while size >= 1000 and idx < len(units) - 1:
+        size /= 1000.0
+        idx += 1
+    if idx == 0:
+        return f"{int(size)} {units[idx]}"
+    if size >= 100:
+        return f"{size:.0f} {units[idx]}"
+    if size >= 10:
+        return f"{size:.1f} {units[idx]}"
+    return f"{size:.2f} {units[idx]}"
+
+
+def _parse_hhmm(value, default=(0, 0)):
+    parts = (value or "").strip().split(":")
+    if len(parts) != 2:
+        return default
+    try:
+        return int(parts[0]), int(parts[1])
+    except Exception:
+        return default
+
+
+def is_time_window_ph(now_ph, start_hhmm, end_hhmm):
+    sh, sm = _parse_hhmm(start_hhmm, default=(17, 30))
+    eh, em = _parse_hhmm(end_hhmm, default=(21, 0))
+    start_t = dt_time(hour=max(min(sh, 23), 0), minute=max(min(sm, 59), 0))
+    end_t = dt_time(hour=max(min(eh, 23), 0), minute=max(min(em, 59), 0))
+    current_t = now_ph.time()
+    if start_t <= end_t:
+        return start_t <= current_t <= end_t
+    # crosses midnight
+    return current_t >= start_t or current_t <= end_t
 
 
 def build_pulsewatch_dashboard_rows(settings, isp_state, speedtests, ping_history):
@@ -2052,6 +2080,171 @@ async def wan_status():
             }
         )
     return JSONResponse({"rows": payload, "updated_at": utc_now_iso()})
+
+
+@app.get("/usage/summary")
+async def usage_summary():
+    settings = get_settings("usage", USAGE_DEFAULTS)
+    state = get_state("usage_state", {})
+    active_rows = state.get("active_rows") if isinstance(state.get("active_rows"), list) else []
+    offline_rows = state.get("offline_rows") if isinstance(state.get("offline_rows"), list) else []
+    hosts = state.get("pppoe_hosts") if isinstance(state.get("pppoe_hosts"), dict) else {}
+
+    detect = settings.get("detection") if isinstance(settings.get("detection"), dict) else {}
+    peak_enabled = bool(detect.get("peak_enabled", True))
+    min_devices = max(int(detect.get("min_connected_devices", 2) or 2), 1)
+    kbps_from = detect.get("total_kbps_from")
+    kbps_to = detect.get("total_kbps_to")
+    if kbps_from is None:
+        kbps_from = 0
+    if kbps_to is None:
+        kbps_to = detect.get("min_total_kbps", 8)
+    kbps_from = max(float(kbps_from or 0.0), 0.0)
+    kbps_to = max(float(kbps_to or 0.0), 0.0)
+    if kbps_to < kbps_from:
+        kbps_from, kbps_to = kbps_to, kbps_from
+    range_from_bps = kbps_from * 1000.0
+    range_to_bps = kbps_to * 1000.0
+    start_ph = (detect.get("peak_start_ph") or "17:30").strip()
+    end_ph = (detect.get("peak_end_ph") or "21:00").strip()
+
+    now_ph = datetime.now(PH_TZ)
+    in_peak = is_time_window_ph(now_ph, start_ph, end_ph)
+
+    anytime_issues = state.get("anytime_issues") if isinstance(state.get("anytime_issues"), dict) else {}
+
+    issues = []
+    stable = []
+    for row in active_rows:
+        pppoe = (row.get("pppoe") or "").strip()
+        if not pppoe:
+            continue
+        host_info = hosts.get(pppoe) or hosts.get(pppoe.lower()) or {}
+        host_count = int(host_info.get("host_count") or 0)
+        hostnames = host_info.get("hostnames") if isinstance(host_info.get("hostnames"), list) else []
+
+        # PPP active values are oriented relative to the router:
+        # - bytes-out / tx-rate: router -> client (download)
+        # - bytes-in / rx-rate: client -> router (upload)
+        ul_bps = row.get("rx_bps")
+        dl_bps = row.get("tx_bps")
+        total_bps = float(ul_bps or 0.0) + float(dl_bps or 0.0)
+        peak_issue = bool(
+            peak_enabled
+            and in_peak
+            and host_count >= min_devices
+            and (range_from_bps <= total_bps <= range_to_bps)
+        )
+        key = f"{(row.get('router_id') or '').strip()}|{pppoe.lower()}"
+        anytime_issue = bool(anytime_issues.get(key))
+        is_issue = bool(peak_issue or anytime_issue)
+        target = issues if is_issue else stable
+        target.append(
+            {
+                "pppoe": pppoe,
+                "router_id": row.get("router_id") or "",
+                "router_name": row.get("router_name") or row.get("router_id") or "",
+                "address": row.get("address") or "",
+                "uptime": row.get("uptime") or "",
+                "session_id": row.get("session_id") or "",
+                "dl_bps": dl_bps,
+                "ul_bps": ul_bps,
+                "dl_total_bytes": row.get("bytes_out"),
+                "ul_total_bytes": row.get("bytes_in"),
+                "host_count": host_count,
+                "hostnames": hostnames,
+                "last_seen": format_ts_ph(row.get("timestamp")),
+                "last_seen_ts": row.get("timestamp") or "",
+                "issue": is_issue,
+                "issue_peak": peak_issue,
+                "issue_anytime": anytime_issue,
+            }
+        )
+
+    return JSONResponse(
+        {
+            "updated_at": utc_now_iso(),
+            "last_check": format_ts_ph(state.get("last_check_at")),
+            "genieacs_last_refresh": format_ts_ph(state.get("last_genieacs_refresh_at")),
+            "genieacs_error": (state.get("genieacs_error") or "").strip(),
+            "peak": {
+                "in_peak": bool(in_peak),
+                "start": start_ph,
+                "end": end_ph,
+                "min_devices": min_devices,
+                "total_kbps_from": kbps_from,
+                "total_kbps_to": kbps_to,
+                "enabled": bool(peak_enabled),
+            },
+            "anytime": {
+                "enabled": bool(detect.get("anytime_enabled", False)),
+                "no_usage_minutes": int(detect.get("anytime_no_usage_minutes", 120) or 120),
+                "min_devices": int(detect.get("anytime_min_connected_devices", 2) or 2),
+                "total_kbps_from": float(detect.get("anytime_total_kbps_from", 0) or 0),
+                "total_kbps_to": float(detect.get("anytime_total_kbps_to", 8) or 8),
+                "work_start": (detect.get("anytime_work_start_ph") or "00:00").strip(),
+                "work_end": (detect.get("anytime_work_end_ph") or "23:59").strip(),
+                "last_eval": format_ts_ph(state.get("anytime_eval_at")),
+            },
+            "counts": {"issues": len(issues), "stable": len(stable), "offline": len(offline_rows)},
+            "rows": {"issues": issues, "stable": stable, "offline": offline_rows},
+        }
+    )
+
+
+@app.get("/usage/series", response_class=JSONResponse)
+async def usage_series(pppoe: str, router_id: str = "", hours: int = 24):
+    pppoe = (pppoe or "").strip()
+    router_id = (router_id or "").strip()
+    if not pppoe:
+        return JSONResponse({"hours": 0, "points": 0, "series": []}, status_code=400)
+    hours = max(int(hours or 24), 1)
+    hours = min(hours, 24 * 30)
+    since_iso = (datetime.utcnow() - timedelta(hours=hours)).replace(microsecond=0).isoformat() + "Z"
+    rows = get_pppoe_usage_series_since(router_id, pppoe, since_iso)
+    max_points = 1500
+    if len(rows) > max_points:
+        step = max(1, int(len(rows) / max_points))
+        sampled = rows[::step]
+        if rows and (not sampled or sampled[-1].get("timestamp") != rows[-1].get("timestamp")):
+            sampled.append(rows[-1])
+        rows = sampled
+    series = []
+    last_devices = None
+    for item in rows:
+        ts = item.get("timestamp")
+        if not ts:
+            continue
+        devices = item.get("host_count")
+        if devices is not None:
+            try:
+                last_devices = int(devices)
+            except Exception:
+                last_devices = last_devices
+        devices_filled = last_devices
+        series.append(
+            {
+                "ts": ts,
+                "dl_bps": item.get("tx_bps"),
+                "ul_bps": item.get("rx_bps"),
+                "dl_total_bytes": item.get("bytes_out"),
+                "ul_total_bytes": item.get("bytes_in"),
+                "devices": devices_filled,
+            }
+        )
+    # If we only started storing devices recently, backfill earlier points in this window
+    # using the first known device count in the series.
+    if series:
+        first_known = None
+        for p in series:
+            if p.get("devices") is not None:
+                first_known = p.get("devices")
+                break
+        if first_known is not None:
+            for p in series:
+                if p.get("devices") is None:
+                    p["devices"] = first_known
+    return JSONResponse({"hours": hours, "points": len(series), "series": series})
 
 
 @app.get("/pulsewatch/summary")
@@ -2935,6 +3128,456 @@ async def optical_series(device_id: str, window: int = 24):
     return JSONResponse({"hours": hours, "series": series})
 
 
+@app.get("/settings/usage", response_class=HTMLResponse)
+async def usage_settings(request: Request):
+    settings = get_settings("usage", USAGE_DEFAULTS)
+    active_tab = (request.query_params.get("tab") or "status").strip().lower()
+    if active_tab not in ("status", "settings"):
+        active_tab = "status"
+    settings_tab = (request.query_params.get("settings_tab") or "general").strip().lower()
+    if settings_tab not in ("general", "routers", "data", "detection", "storage", "danger"):
+        settings_tab = "general"
+    job_status = {item["job_name"]: dict(item) for item in get_job_status()}
+    usage_job = job_status.get("usage", {})
+    usage_job = {
+        "last_run_at_ph": format_ts_ph(usage_job.get("last_run_at")),
+        "last_success_at_ph": format_ts_ph(usage_job.get("last_success_at")),
+        "last_error": (usage_job.get("last_error") or "").strip(),
+        "last_error_at_ph": format_ts_ph(usage_job.get("last_error_at")),
+    }
+    state = get_state("usage_state", {})
+    return templates.TemplateResponse(
+        "settings_usage.html",
+        make_context(
+            request,
+            {
+                "settings": settings,
+                "message": "",
+                "active_tab": active_tab,
+                "settings_tab": settings_tab,
+                "usage_job": usage_job,
+                "usage_state": {
+                    "last_check": format_ts_ph(state.get("last_check_at")),
+                    "genieacs_last_refresh": format_ts_ph(state.get("last_genieacs_refresh_at")),
+                    "genieacs_error": (state.get("genieacs_error") or "").strip(),
+                },
+            },
+        ),
+    )
+
+
+@app.post("/settings/usage", response_class=HTMLResponse)
+async def usage_settings_save(request: Request):
+    form = await request.form()
+    settings_tab = (form.get("settings_tab") or "general").strip() or "general"
+    settings = get_settings("usage", USAGE_DEFAULTS)
+
+    settings["mikrotik"] = settings.get("mikrotik") if isinstance(settings.get("mikrotik"), dict) else {}
+    settings["genieacs"] = settings.get("genieacs") if isinstance(settings.get("genieacs"), dict) else {}
+    settings["source"] = settings.get("source") if isinstance(settings.get("source"), dict) else {}
+    settings["device"] = settings.get("device") if isinstance(settings.get("device"), dict) else {}
+    settings["detection"] = settings.get("detection") if isinstance(settings.get("detection"), dict) else {}
+    settings["storage"] = settings.get("storage") if isinstance(settings.get("storage"), dict) else {}
+
+    message = ""
+    try:
+        if settings_tab == "general":
+            settings["enabled"] = parse_bool(form, "enabled")
+            settings["mikrotik"]["poll_interval_seconds"] = parse_int(
+                form,
+                "poll_interval_seconds",
+                int(settings["mikrotik"].get("poll_interval_seconds", USAGE_DEFAULTS["mikrotik"]["poll_interval_seconds"])),
+            )
+            settings["mikrotik"]["secrets_refresh_minutes"] = parse_int(
+                form,
+                "secrets_refresh_minutes",
+                int(
+                    settings["mikrotik"].get(
+                        "secrets_refresh_minutes", USAGE_DEFAULTS["mikrotik"]["secrets_refresh_minutes"]
+                    )
+                ),
+            )
+            settings["mikrotik"]["timeout_seconds"] = parse_int(
+                form,
+                "timeout_seconds",
+                int(settings["mikrotik"].get("timeout_seconds", USAGE_DEFAULTS["mikrotik"]["timeout_seconds"])),
+            )
+            settings["storage"]["sample_interval_seconds"] = parse_int(
+                form,
+                "sample_interval_seconds",
+                int(settings["storage"].get("sample_interval_seconds", USAGE_DEFAULTS["storage"]["sample_interval_seconds"])),
+            )
+            message = "Usage settings saved."
+        elif settings_tab == "routers":
+            message = "Routers are saved in the Routers tab."
+        elif settings_tab == "data":
+            settings["genieacs"]["base_url"] = (form.get("genieacs_base_url") or "").strip()
+            settings["genieacs"]["username"] = (form.get("genieacs_username") or "").strip()
+            settings["genieacs"]["password"] = (form.get("genieacs_password") or "").strip()
+            settings["genieacs"]["page_size"] = parse_int(form, "genieacs_page_size", int(settings["genieacs"].get("page_size", 100) or 100))
+
+            settings["source"]["refresh_minutes"] = parse_int(
+                form,
+                "genieacs_refresh_minutes",
+                int(settings["source"].get("refresh_minutes", USAGE_DEFAULTS["source"]["refresh_minutes"])),
+            )
+
+            settings["device"]["pppoe_paths"] = parse_lines(form.get("pppoe_paths") or "")
+            settings["device"]["host_count_paths"] = parse_lines(form.get("host_count_paths") or "")
+            settings["device"]["host_name_paths"] = parse_lines(form.get("host_name_paths") or "")
+            settings["device"]["host_ip_paths"] = parse_lines(form.get("host_ip_paths") or "")
+            settings["device"]["host_active_paths"] = parse_lines(form.get("host_active_paths") or "")
+            message = "Data Source settings saved."
+        elif settings_tab == "detection":
+            settings["detection"]["peak_start_ph"] = (form.get("peak_start_ph") or "").strip() or "17:30"
+            settings["detection"]["peak_end_ph"] = (form.get("peak_end_ph") or "").strip() or "21:00"
+            settings["detection"]["peak_enabled"] = parse_bool(form, "peak_enabled")
+            settings["detection"]["min_connected_devices"] = parse_int(
+                form,
+                "min_connected_devices",
+                int(settings["detection"].get("min_connected_devices", USAGE_DEFAULTS["detection"]["min_connected_devices"])),
+            )
+            default_to = settings["detection"].get("total_kbps_to")
+            if default_to is None:
+                default_to = settings["detection"].get("min_total_kbps", USAGE_DEFAULTS["detection"]["min_total_kbps"])
+            settings["detection"]["total_kbps_from"] = parse_int(
+                form,
+                "total_kbps_from",
+                int(settings["detection"].get("total_kbps_from", USAGE_DEFAULTS["detection"]["total_kbps_from"])),
+            )
+            settings["detection"]["total_kbps_to"] = parse_int(
+                form,
+                "total_kbps_to",
+                int(default_to),
+            )
+            # Back-compat: keep the old single threshold in sync with the range upper bound.
+            settings["detection"]["min_total_kbps"] = int(settings["detection"]["total_kbps_to"])
+
+            settings["detection"]["anytime_enabled"] = parse_bool(form, "anytime_enabled")
+            settings["detection"]["anytime_work_start_ph"] = (form.get("anytime_work_start_ph") or "").strip() or "00:00"
+            settings["detection"]["anytime_work_end_ph"] = (form.get("anytime_work_end_ph") or "").strip() or "23:59"
+            settings["detection"]["anytime_no_usage_minutes"] = parse_int(
+                form,
+                "anytime_no_usage_minutes",
+                int(
+                    settings["detection"].get(
+                        "anytime_no_usage_minutes", USAGE_DEFAULTS["detection"]["anytime_no_usage_minutes"]
+                    )
+                ),
+            )
+            settings["detection"]["anytime_min_connected_devices"] = parse_int(
+                form,
+                "anytime_min_connected_devices",
+                int(
+                    settings["detection"].get(
+                        "anytime_min_connected_devices", USAGE_DEFAULTS["detection"]["anytime_min_connected_devices"]
+                    )
+                ),
+            )
+            settings["detection"]["anytime_total_kbps_from"] = parse_int(
+                form,
+                "anytime_total_kbps_from",
+                int(
+                    settings["detection"].get(
+                        "anytime_total_kbps_from", USAGE_DEFAULTS["detection"]["anytime_total_kbps_from"]
+                    )
+                ),
+            )
+            settings["detection"]["anytime_total_kbps_to"] = parse_int(
+                form,
+                "anytime_total_kbps_to",
+                int(
+                    settings["detection"].get(
+                        "anytime_total_kbps_to", USAGE_DEFAULTS["detection"]["anytime_total_kbps_to"]
+                    )
+                ),
+            )
+            message = "Detection settings saved."
+        elif settings_tab == "storage":
+            settings["storage"]["raw_retention_days"] = parse_int(
+                form,
+                "raw_retention_days",
+                int(settings["storage"].get("raw_retention_days", USAGE_DEFAULTS["storage"]["raw_retention_days"])),
+            )
+            settings["storage"]["sample_interval_seconds"] = parse_int(
+                form,
+                "sample_interval_seconds",
+                int(settings["storage"].get("sample_interval_seconds", USAGE_DEFAULTS["storage"]["sample_interval_seconds"])),
+            )
+            message = "Storage settings saved."
+        else:
+            message = "Settings saved."
+
+        save_settings("usage", settings)
+    except Exception as exc:
+        message = f"Save failed: {exc}"
+
+    job_status = {item["job_name"]: dict(item) for item in get_job_status()}
+    usage_job = job_status.get("usage", {})
+    usage_job = {
+        "last_run_at_ph": format_ts_ph(usage_job.get("last_run_at")),
+        "last_success_at_ph": format_ts_ph(usage_job.get("last_success_at")),
+        "last_error": (usage_job.get("last_error") or "").strip(),
+        "last_error_at_ph": format_ts_ph(usage_job.get("last_error_at")),
+    }
+    state = get_state("usage_state", {})
+    return templates.TemplateResponse(
+        "settings_usage.html",
+        make_context(
+            request,
+            {
+                "settings": settings,
+                "message": message,
+                "active_tab": "settings",
+                "settings_tab": settings_tab,
+                "usage_job": usage_job,
+                "usage_state": {
+                    "last_check": format_ts_ph(state.get("last_check_at")),
+                    "genieacs_last_refresh": format_ts_ph(state.get("last_genieacs_refresh_at")),
+                    "genieacs_error": (state.get("genieacs_error") or "").strip(),
+                },
+            },
+        ),
+    )
+
+
+@app.post("/settings/usage/test_genieacs", response_class=HTMLResponse)
+async def usage_test_genieacs(request: Request):
+    settings = get_settings("usage", USAGE_DEFAULTS)
+    message = ""
+    started = time.monotonic()
+    try:
+        base_url = (settings.get("genieacs", {}) or {}).get("base_url", "").strip().rstrip("/")
+        if not base_url:
+            raise ValueError("GenieACS Base URL is required.")
+        username = (settings.get("genieacs", {}) or {}).get("username") or ""
+        password = (settings.get("genieacs", {}) or {}).get("password") or ""
+        headers = {}
+        if username or password:
+            token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+            headers["Authorization"] = f"Basic {token}"
+
+        params = {"query": "{}", "limit": "1", "skip": "0"}
+        url = f"{base_url}/devices?{urllib.parse.urlencode(params)}"
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        count = len(payload) if isinstance(payload, list) else 0
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        message = f"GenieACS API OK ({elapsed_ms} ms). Retrieved {count} device(s)."
+    except Exception as exc:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        message = f"GenieACS test failed ({elapsed_ms} ms): {exc}"
+
+    job_status = {item["job_name"]: dict(item) for item in get_job_status()}
+    usage_job = job_status.get("usage", {})
+    usage_job = {
+        "last_run_at_ph": format_ts_ph(usage_job.get("last_run_at")),
+        "last_success_at_ph": format_ts_ph(usage_job.get("last_success_at")),
+        "last_error": (usage_job.get("last_error") or "").strip(),
+        "last_error_at_ph": format_ts_ph(usage_job.get("last_error_at")),
+    }
+    state = get_state("usage_state", {})
+    return templates.TemplateResponse(
+        "settings_usage.html",
+        make_context(
+            request,
+            {
+                "settings": settings,
+                "message": message,
+                "active_tab": "settings",
+                "settings_tab": "data",
+                "usage_job": usage_job,
+                "usage_state": {
+                    "last_check": format_ts_ph(state.get("last_check_at")),
+                    "genieacs_last_refresh": format_ts_ph(state.get("last_genieacs_refresh_at")),
+                    "genieacs_error": (state.get("genieacs_error") or "").strip(),
+                },
+            },
+        ),
+    )
+
+
+@app.post("/settings/usage/routers", response_class=HTMLResponse)
+async def usage_save_routers(request: Request):
+    form = await request.form()
+    settings = get_settings("usage", USAGE_DEFAULTS)
+    settings["mikrotik"] = settings.get("mikrotik") if isinstance(settings.get("mikrotik"), dict) else {}
+    routers = settings["mikrotik"].get("routers") if isinstance(settings["mikrotik"].get("routers"), list) else []
+    count = parse_int(form, "router_count", len(routers))
+    next_routers = []
+    for idx in range(count):
+        router_id = (form.get(f"router_{idx}_id") or "").strip()
+        if not router_id:
+            continue
+        if parse_bool(form, f"router_{idx}_remove"):
+            continue
+        next_routers.append(
+            {
+                "id": router_id,
+                "name": (form.get(f"router_{idx}_name") or "").strip(),
+                "host": (form.get(f"router_{idx}_host") or "").strip(),
+                "port": parse_int(form, f"router_{idx}_port", 8728),
+                "username": (form.get(f"router_{idx}_username") or "").strip(),
+                "password": (form.get(f"router_{idx}_password") or "").strip(),
+                "enabled": parse_bool(form, f"router_{idx}_enabled"),
+            }
+        )
+    settings["mikrotik"]["routers"] = next_routers
+    save_settings("usage", settings)
+    job_status = {item["job_name"]: dict(item) for item in get_job_status()}
+    usage_job = job_status.get("usage", {})
+    usage_job = {
+        "last_run_at_ph": format_ts_ph(usage_job.get("last_run_at")),
+        "last_success_at_ph": format_ts_ph(usage_job.get("last_success_at")),
+        "last_error": (usage_job.get("last_error") or "").strip(),
+        "last_error_at_ph": format_ts_ph(usage_job.get("last_error_at")),
+    }
+    state = get_state("usage_state", {})
+    return templates.TemplateResponse(
+        "settings_usage.html",
+        make_context(
+            request,
+            {
+                "settings": settings,
+                "message": "Routers saved.",
+                "active_tab": "settings",
+                "settings_tab": "routers",
+                "usage_job": usage_job,
+                "usage_state": {
+                    "last_check": format_ts_ph(state.get("last_check_at")),
+                    "genieacs_last_refresh": format_ts_ph(state.get("last_genieacs_refresh_at")),
+                    "genieacs_error": (state.get("genieacs_error") or "").strip(),
+                },
+            },
+        ),
+    )
+
+
+@app.post("/settings/usage/routers/add", response_class=HTMLResponse)
+async def usage_add_router(request: Request):
+    settings = get_settings("usage", USAGE_DEFAULTS)
+    settings["mikrotik"] = settings.get("mikrotik") if isinstance(settings.get("mikrotik"), dict) else {}
+    routers = settings["mikrotik"].get("routers") if isinstance(settings["mikrotik"].get("routers"), list) else []
+    existing_ids = {r.get("id") for r in routers if isinstance(r, dict) and r.get("id")}
+    next_idx = 1
+    while f"router{next_idx}" in existing_ids:
+        next_idx += 1
+    routers.append(
+        {
+            "id": f"router{next_idx}",
+            "name": f"Router {next_idx}",
+            "host": "",
+            "port": 8728,
+            "username": "",
+            "password": "",
+            "enabled": True,
+        }
+    )
+    settings["mikrotik"]["routers"] = routers
+    save_settings("usage", settings)
+    return RedirectResponse(url="/settings/usage?tab=settings&settings_tab=routers#usage-routers", status_code=302)
+
+
+@app.post("/settings/usage/routers/test/{router_id}", response_class=HTMLResponse)
+async def usage_test_router(request: Request, router_id: str):
+    settings = get_settings("usage", USAGE_DEFAULTS)
+    routers = (settings.get("mikrotik") or {}).get("routers") or []
+    router = next((r for r in routers if isinstance(r, dict) and (r.get("id") or "").strip() == (router_id or "").strip()), None)
+    message = ""
+    if not router:
+        message = "Router not found."
+    else:
+        host = (router.get("host") or "").strip()
+        if not host:
+            message = "Router host is required."
+        else:
+            client = RouterOSClient(
+                host,
+                int(router.get("port", 8728) or 8728),
+                router.get("username", ""),
+                router.get("password", ""),
+            )
+            try:
+                client.connect()
+                message = f"Router {router.get('name') or router_id} connected successfully."
+            except Exception as exc:
+                message = f"Router test failed: {exc}"
+            finally:
+                client.close()
+
+    job_status = {item["job_name"]: dict(item) for item in get_job_status()}
+    usage_job = job_status.get("usage", {})
+    usage_job = {
+        "last_run_at_ph": format_ts_ph(usage_job.get("last_run_at")),
+        "last_success_at_ph": format_ts_ph(usage_job.get("last_success_at")),
+        "last_error": (usage_job.get("last_error") or "").strip(),
+        "last_error_at_ph": format_ts_ph(usage_job.get("last_error_at")),
+    }
+    state = get_state("usage_state", {})
+    return templates.TemplateResponse(
+        "settings_usage.html",
+        make_context(
+            request,
+            {
+                "settings": settings,
+                "message": message,
+                "active_tab": "settings",
+                "settings_tab": "routers",
+                "usage_job": usage_job,
+                "usage_state": {
+                    "last_check": format_ts_ph(state.get("last_check_at")),
+                    "genieacs_last_refresh": format_ts_ph(state.get("last_genieacs_refresh_at")),
+                    "genieacs_error": (state.get("genieacs_error") or "").strip(),
+                },
+            },
+        ),
+    )
+
+
+@app.post("/settings/usage/format", response_class=HTMLResponse)
+async def usage_format(request: Request):
+    form = await request.form()
+    settings = get_settings("usage", USAGE_DEFAULTS)
+    message = ""
+    if not parse_bool(form, "confirm_format"):
+        message = "Please confirm format to proceed."
+    else:
+        try:
+            clear_pppoe_usage_samples()
+            message = "Usage database formatted."
+        except Exception as exc:
+            message = f"Format failed: {exc}"
+
+    job_status = {item["job_name"]: dict(item) for item in get_job_status()}
+    usage_job = job_status.get("usage", {})
+    usage_job = {
+        "last_run_at_ph": format_ts_ph(usage_job.get("last_run_at")),
+        "last_success_at_ph": format_ts_ph(usage_job.get("last_success_at")),
+        "last_error": (usage_job.get("last_error") or "").strip(),
+        "last_error_at_ph": format_ts_ph(usage_job.get("last_error_at")),
+    }
+    state = get_state("usage_state", {})
+    return templates.TemplateResponse(
+        "settings_usage.html",
+        make_context(
+            request,
+            {
+                "settings": settings,
+                "message": message,
+                "active_tab": "settings",
+                "settings_tab": "danger",
+                "usage_job": usage_job,
+                "usage_state": {
+                    "last_check": format_ts_ph(state.get("last_check_at")),
+                    "genieacs_last_refresh": format_ts_ph(state.get("last_genieacs_refresh_at")),
+                    "genieacs_error": (state.get("genieacs_error") or "").strip(),
+                },
+            },
+        ),
+    )
+
+
 @app.get("/profile-review/suggest", response_class=JSONResponse)
 async def profile_review_suggest(q: str = "", limit: int = 12):
     query = (q or "").strip()
@@ -2942,36 +3585,87 @@ async def profile_review_suggest(q: str = "", limit: int = 12):
     if len(query) < 2:
         since_iso = (datetime.utcnow() - timedelta(hours=24)).replace(microsecond=0).isoformat() + "Z"
         optical_settings = get_settings("optical", OPTICAL_DEFAULTS)
-        rto_settings = get_settings("rto", RTO_DEFAULTS)
+        accounts_ping_settings = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
+        ping_state = get_state("accounts_ping_state", {"accounts": {}, "devices": []})
+        devices = ping_state.get("devices") if isinstance(ping_state.get("devices"), list) else []
+        state_accounts = ping_state.get("accounts") if isinstance(ping_state.get("accounts"), dict) else {}
 
-        rto_rows = get_rto_worst_summary(since_iso, limit=10)
-        rto_items = []
-        stable_rto_pct = float(rto_settings.get("classification", {}).get("stable_rto_pct", RTO_DEFAULTS["classification"]["stable_rto_pct"]))
-        for row in rto_rows:
-            ip = (row.get("ip") or "").strip()
+        cls = accounts_ping_settings.get("classification", {}) or {}
+        issue_loss_pct = float(cls.get("issue_loss_pct", ACCOUNTS_PING_DEFAULTS["classification"]["issue_loss_pct"]) or 20.0)
+        issue_latency_ms = float(cls.get("issue_latency_ms", ACCOUNTS_PING_DEFAULTS["classification"]["issue_latency_ms"]) or 200.0)
+        stable_fail_pct = float(cls.get("stable_rto_pct", ACCOUNTS_PING_DEFAULTS["classification"]["stable_rto_pct"]) or 2.0)
+        issue_fail_pct = float(cls.get("issue_rto_pct", ACCOUNTS_PING_DEFAULTS["classification"]["issue_rto_pct"]) or 5.0)
+
+        rows = []
+        account_ids = []
+        for dev in devices:
+            ip = (dev.get("ip") or "").strip()
             if not ip:
                 continue
-            total = int(row.get("total") or 0)
-            failures = int(row.get("failures") or 0)
-            rto_pct = float(row.get("rto_pct") or 0.0)
-            last_ok = bool(row.get("last_ok"))
-            status = "down" if not last_ok else ("monitor" if rto_pct > stable_rto_pct else "up")
-            rto_items.append(
-                {
-                    "group": "RTO",
-                    "name": (row.get("name") or "").strip() or ip,
-                    "ip": ip,
-                    "device_id": "",
-                    "sources": ["rto"],
-                    "last_seen": row.get("timestamp") or "",
-                    "meta": {
-                        "status": status,
-                        "rto_pct": rto_pct,
-                        "failures": failures,
-                        "total": total,
-                    },
-                }
+            pppoe = (dev.get("pppoe") or dev.get("name") or "").strip() or ip
+            aid = _accounts_ping_account_id_for_pppoe(pppoe)
+            if not aid:
+                continue
+            rows.append({"pppoe": pppoe, "ip": ip, "account_id": aid})
+            account_ids.append(aid)
+
+        stats_by_ip_map = get_accounts_ping_window_stats_by_ip(account_ids, since_iso) if account_ids else {}
+
+        acc_items = []
+        for row in rows:
+            aid = row["account_id"]
+            st = state_accounts.get(aid) if isinstance(state_accounts.get(aid), dict) else {}
+            chosen_ip = (st.get("last_ip") or row.get("ip") or "").strip()
+            stats = (stats_by_ip_map.get(aid) or {}).get(chosen_ip) or {}
+            total = int(stats.get("total") or 0)
+            failures = int(stats.get("failures") or 0)
+            fail_pct = (failures / total) * 100.0 if total else 0.0
+            has_recent = bool((st.get("last_check_at") or "").strip())
+            last_ok = bool(st.get("last_ok")) if has_recent else True
+            last_loss = st.get("last_loss")
+            last_avg_ms = st.get("last_avg_ms")
+
+            status = ""
+            if not has_recent:
+                status = "pending"
+            elif not last_ok:
+                status = "down"
+            else:
+                issue_hit = False
+                if last_loss is not None and float(last_loss) >= issue_loss_pct:
+                    issue_hit = True
+                if last_avg_ms is not None and float(last_avg_ms) >= issue_latency_ms:
+                    issue_hit = True
+                if total and fail_pct >= issue_fail_pct:
+                    issue_hit = True
+                if total and fail_pct > stable_fail_pct:
+                    issue_hit = True
+                status = "monitor" if issue_hit else "stable"
+
+            if status in ("down", "monitor"):
+                acc_items.append(
+                    {
+                        "group": "ACC-Ping",
+                        "name": row.get("pppoe") or chosen_ip,
+                        "pppoe": row.get("pppoe") or "",
+                        "ip": chosen_ip,
+                        "device_id": "",
+                        "sources": ["accounts_ping"],
+                        "last_seen": st.get("last_check_at") or "",
+                        "meta": {"status": status, "loss": last_loss, "avg_ms": last_avg_ms, "fail_pct": fail_pct},
+                    }
+                )
+
+        acc_items.sort(
+            key=lambda x: (
+                x.get("meta", {}).get("status") != "down",
+                -(float(x.get("meta", {}).get("loss") or 0.0)),
+                -(float(x.get("meta", {}).get("avg_ms") or 0.0)),
+                -(float(x.get("meta", {}).get("fail_pct") or 0.0)),
+                str(x.get("name") or "").lower(),
             )
+        )
+        acc_items = acc_items[:10]
 
         classification = optical_settings.get("classification", {})
         issue_rx = float(classification.get("issue_rx_dbm", OPTICAL_DEFAULTS["classification"]["issue_rx_dbm"]))
@@ -3045,22 +3739,26 @@ async def profile_review_suggest(q: str = "", limit: int = 12):
             {
                 "mode": "top10",
                 "header": "TOP10 - Critical Connections (Last 24h)",
-                "items": rto_items + optical_items,
+                "items": acc_items + optical_items,
             }
         )
     since_iso = (datetime.utcnow() - timedelta(days=120)).replace(microsecond=0).isoformat() + "Z"
 
     optical_hits = search_optical_customers(query, since_iso, limit=limit)
-    rto_hits = search_rto_customers(query, since_iso, limit=limit)
+    ping_state = get_state("accounts_ping_state", {"accounts": {}, "devices": []})
+    devices = ping_state.get("devices") if isinstance(ping_state.get("devices"), list) else []
+    state_accounts = ping_state.get("accounts") if isinstance(ping_state.get("accounts"), dict) else {}
 
     merged = {}
     for row in optical_hits:
         ip = (row.get("ip") or "").strip()
-        key = f"ip:{ip}" if ip else f"dev:{row.get('device_id')}"
+        pppoe = (row.get("pppoe") or "").strip()
+        key = f"ppp:{pppoe}" if pppoe else (f"ip:{ip}" if ip else f"dev:{row.get('device_id')}")
         merged.setdefault(
             key,
             {
-                "name": (row.get("pppoe") or "").strip(),
+                "name": pppoe,
+                "pppoe": pppoe,
                 "ip": ip,
                 "device_id": row.get("device_id") or "",
                 "sources": set(),
@@ -3073,26 +3771,32 @@ async def profile_review_suggest(q: str = "", limit: int = 12):
         if not merged[key]["name"] and row.get("pppoe"):
             merged[key]["name"] = row.get("pppoe")
 
-    for row in rto_hits:
-        ip = (row.get("ip") or "").strip()
+    for dev in devices:
+        ip = (dev.get("ip") or "").strip()
         if not ip:
             continue
-        key = f"ip:{ip}"
+        pppoe = (dev.get("pppoe") or dev.get("name") or "").strip() or ip
+        hay = f"{pppoe} {ip}".lower()
+        if query.lower() not in hay:
+            continue
+        aid = _accounts_ping_account_id_for_pppoe(pppoe)
+        st = state_accounts.get(aid) if isinstance(state_accounts.get(aid), dict) else {}
+        last_seen = (st.get("last_check_at") or "").strip()
+        key = f"ppp:{pppoe}"
         merged.setdefault(
             key,
             {
-                "name": (row.get("name") or "").strip(),
+                "name": pppoe,
+                "pppoe": pppoe,
                 "ip": ip,
                 "device_id": "",
                 "sources": set(),
-                "last_seen": row.get("timestamp") or "",
+                "last_seen": last_seen or "",
             },
         )
-        merged[key]["sources"].add("rto")
-        if row.get("timestamp") and row.get("timestamp") > merged[key]["last_seen"]:
-            merged[key]["last_seen"] = row.get("timestamp")
-        if not merged[key]["name"] and row.get("name"):
-            merged[key]["name"] = row.get("name")
+        merged[key]["sources"].add("accounts_ping")
+        if last_seen and last_seen > (merged[key]["last_seen"] or ""):
+            merged[key]["last_seen"] = last_seen
 
     items = []
     for value in merged.values():
@@ -3100,6 +3804,7 @@ async def profile_review_suggest(q: str = "", limit: int = 12):
         items.append(
             {
                 "name": value.get("name") or value.get("ip") or value.get("device_id") or "Customer",
+                "pppoe": value.get("pppoe") or "",
                 "ip": value.get("ip") or "",
                 "device_id": value.get("device_id") or "",
                 "sources": sources,
@@ -3112,20 +3817,49 @@ async def profile_review_suggest(q: str = "", limit: int = 12):
 
 @app.get("/profile-review", response_class=HTMLResponse)
 async def profile_review(request: Request):
+    pppoe = (request.query_params.get("pppoe") or "").strip()
     ip = (request.query_params.get("ip") or "").strip()
     device_id = (request.query_params.get("device_id") or "").strip()
     window_hours = _normalize_wan_window(request.query_params.get("window"))
     window_label = next((label for label, hours in WAN_STATUS_WINDOW_OPTIONS if hours == window_hours), "1D")
 
     optical_settings = get_settings("optical", OPTICAL_DEFAULTS)
-    rto_settings = get_settings("rto", RTO_DEFAULTS)
+    accounts_ping_settings = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
+    ping_state = get_state("accounts_ping_state", {"accounts": {}, "devices": []})
+    devices = ping_state.get("devices") if isinstance(ping_state.get("devices"), list) else []
+    state_accounts = ping_state.get("accounts") if isinstance(ping_state.get("accounts"), dict) else {}
+
+    if pppoe and not device_id:
+        try:
+            opt_map = get_latest_optical_by_pppoe([pppoe])
+            hit = opt_map.get(pppoe) or {}
+            if hit and not device_id:
+                device_id = (hit.get("device_id") or "").strip()
+            if hit and not ip:
+                ip = (hit.get("ip") or "").strip()
+        except Exception:
+            pass
+
+    if pppoe and not ip:
+        aid = _accounts_ping_account_id_for_pppoe(pppoe)
+        st = state_accounts.get(aid) if isinstance(state_accounts.get(aid), dict) else {}
+        ip = (st.get("last_ip") or "").strip() or ip
 
     if ip and not device_id:
         device_id = get_latest_optical_device_for_ip(ip) or ""
     optical_ident = get_latest_optical_identity(device_id) if device_id else None
     if optical_ident and not ip:
         ip = (optical_ident.get("ip") or "").strip()
-    rto_ident = get_latest_rto_identity(ip) if ip else None
+    if optical_ident:
+        optical_pppoe = (optical_ident.get("pppoe") or "").strip()
+        if optical_pppoe and not pppoe:
+            pppoe = optical_pppoe
+
+    if not pppoe and ip:
+        for dev in devices:
+            if (dev.get("ip") or "").strip() == ip:
+                pppoe = (dev.get("pppoe") or dev.get("name") or "").strip() or pppoe
+                break
 
     genie_base = ""
     try:
@@ -3159,9 +3893,9 @@ async def profile_review(request: Request):
         "device_id": device_id,
         "device_url": genie_device_url(genie_base, device_id) if device_id else "",
         "name": "",
-        "pppoe": "",
+        "pppoe": pppoe,
         "sources": [],
-        "rto": None,
+        "accounts_ping": None,
         "optical": None,
         "classification": {
             "tx_realistic_min_dbm": float(optical_settings.get("classification", {}).get("tx_realistic_min_dbm", OPTICAL_DEFAULTS["classification"]["tx_realistic_min_dbm"])),
@@ -3228,46 +3962,86 @@ async def profile_review(request: Request):
             },
         }
 
-    if rto_ident:
-        rto_name = (rto_ident.get("name") or "").strip()
-        if rto_name and not profile["pppoe"]:
-            profile["pppoe"] = rto_name
-        profile["name"] = (profile["name"] or rto_name).strip()
-        profile["sources"].append("rto")
-        recent = get_recent_rto_results(ip, since_iso, limit=60)
-        recent_asc = list(reversed(recent))
-        total = len(recent_asc)
-        failures = sum(1 for item in recent_asc if not item.get("ok"))
-        rto_pct = (failures / total) * 100.0 if total else 0.0
-        uptime_pct = 100.0 - rto_pct
-        streak = 0
-        for item in recent_asc[::-1]:
-            if not item.get("ok"):
-                streak += 1
+    if profile["pppoe"]:
+        cls = accounts_ping_settings.get("classification", {}) or {}
+        issue_loss_pct = float(cls.get("issue_loss_pct", ACCOUNTS_PING_DEFAULTS["classification"]["issue_loss_pct"]) or 20.0)
+        issue_latency_ms = float(cls.get("issue_latency_ms", ACCOUNTS_PING_DEFAULTS["classification"]["issue_latency_ms"]) or 200.0)
+        stable_fail_pct = float(cls.get("stable_rto_pct", ACCOUNTS_PING_DEFAULTS["classification"]["stable_rto_pct"]) or 2.0)
+        issue_fail_pct = float(cls.get("issue_rto_pct", ACCOUNTS_PING_DEFAULTS["classification"]["issue_rto_pct"]) or 5.0)
+
+        account_id = _accounts_ping_account_id_for_pppoe(profile["pppoe"])
+        st = state_accounts.get(account_id) if isinstance(state_accounts.get(account_id), dict) else {}
+        has_recent = bool((st.get("last_check_at") or "").strip())
+        last_ok = bool(st.get("last_ok")) if has_recent else True
+        last_loss = st.get("last_loss")
+        last_avg_ms = st.get("last_avg_ms")
+        last_seen = format_ts_ph(st.get("last_check_at")) if has_recent else "n/a"
+
+        stats_map = get_accounts_ping_window_stats([account_id], since_iso)
+        stats = stats_map.get(account_id) or {}
+        total = int(stats.get("total") or 0)
+        failures = int(stats.get("failures") or 0)
+        fail_pct = (failures / total) * 100.0 if total else 0.0
+        uptime_pct = (100.0 - fail_pct) if total else 0.0
+
+        status = "pending"
+        if has_recent:
+            if not last_ok:
+                status = "down"
             else:
-                break
-        stable_rto_pct = float(rto_settings.get("classification", {}).get("stable_rto_pct", RTO_DEFAULTS["classification"]["stable_rto_pct"]))
-        last_ok = bool(rto_ident.get("ok"))
-        status = "down" if not last_ok else ("up" if rto_pct <= stable_rto_pct else "monitor")
-        profile["rto"] = {
-            "ip": ip,
-            "name": (rto_ident.get("name") or "").strip(),
-            "last_seen": format_ts_ph(rto_ident.get("timestamp")),
+                issue_hit = False
+                if last_loss is not None and float(last_loss) >= issue_loss_pct:
+                    issue_hit = True
+                if last_avg_ms is not None and float(last_avg_ms) >= issue_latency_ms:
+                    issue_hit = True
+                if total and fail_pct >= issue_fail_pct:
+                    issue_hit = True
+                if total and fail_pct > stable_fail_pct:
+                    issue_hit = True
+                status = "monitor" if issue_hit else "stable"
+
+        chosen_ip = (get_accounts_ping_latest_ip_since(account_id, since_iso) or "").strip()
+        if not chosen_ip:
+            chosen_ip = (st.get("last_ip") or profile.get("ip") or "").strip()
+        if chosen_ip and not profile.get("ip"):
+            profile["ip"] = chosen_ip
+
+        recent_rows = []
+        try:
+            rows = get_accounts_ping_series(account_id, since_iso)
+            if chosen_ip:
+                rows = [row for row in rows if (row.get("ip") or "").strip() == chosen_ip]
+            recent_rows = list(reversed(rows))[:12]
+        except Exception:
+            recent_rows = []
+
+        profile["sources"].append("accounts_ping")
+        profile["accounts_ping"] = {
+            "account_id": account_id,
+            "pppoe": profile["pppoe"],
+            "ip": chosen_ip,
+            "last_seen": last_seen,
             "status": status,
             "total": total,
             "failures": failures,
-            "rto_pct": rto_pct,
+            "fail_pct": fail_pct,
             "uptime_pct": uptime_pct,
-            "streak": streak,
-            "recent": [
-                {"ts": format_ts_ph(item.get("timestamp")), "ok": bool(item.get("ok"))}
-                for item in recent[:12]
-            ],
-        }
+            "loss_avg": stats.get("loss_avg"),
+            "avg_ms_avg": stats.get("avg_ms_avg"),
+	            "recent": [
+	                {
+	                    "ts": format_ts_ph(item.get("timestamp")),
+	                    "ok": bool(item.get("ok")),
+	                    "loss": item.get("loss"),
+	                    "avg_ms": item.get("avg_ms"),
+	                }
+	                for item in recent_rows
+	            ],
+	        }
 
     profile["sources"] = sorted({*profile["sources"]})
     if not profile["name"]:
-        profile["name"] = profile["ip"] or profile["device_id"] or ""
+        profile["name"] = profile["pppoe"] or profile["ip"] or profile["device_id"] or ""
     if not profile["pppoe"]:
         # keep empty when we can't confidently identify the PPPoE username
         profile["pppoe"] = ""
@@ -3281,151 +4055,6 @@ async def profile_review(request: Request):
             },
         ),
     )
-
-
-@app.get("/settings/rto", response_class=HTMLResponse)
-async def rto_settings(request: Request):
-    settings = get_settings("rto", RTO_DEFAULTS)
-    window_hours = _normalize_rto_window(request.query_params.get("window"))
-    return render_rto_response(request, settings, "", "status", "general", window_hours)
-
-
-@app.get("/rto/series", response_class=JSONResponse)
-async def rto_series(ip: str, window: int = 24):
-    hours = _normalize_rto_window(window)
-    since_iso = (datetime.utcnow() - timedelta(hours=hours)).replace(microsecond=0).isoformat() + "Z"
-    rows = get_rto_results_for_ip_since(ip, since_iso)
-    series = [{"ts": row.get("timestamp"), "value": 100 if row.get("ok") else 0} for row in rows]
-    return JSONResponse({"hours": hours, "series": series})
-
-
-def build_rto_status(settings, window_hours=24):
-    history = get_state("rto_history", {})
-    since_iso = (datetime.utcnow() - timedelta(hours=window_hours)).replace(microsecond=0).isoformat() + "Z"
-    raw_results = get_rto_results_since(since_iso)
-    rows = []
-    by_name_ip = {}
-    latest_ip_by_name = {}
-    for row in raw_results:
-        ip = row.get("ip")
-        if not ip:
-            continue
-        name = (row.get("name") or ip).strip() or ip
-        by_name_ip.setdefault(name, {}).setdefault(ip, []).append(row)
-        ts = row.get("timestamp") or ""
-        latest = latest_ip_by_name.get(name)
-        if not latest or ts > (latest.get("timestamp") or ""):
-            latest_ip_by_name[name] = {"timestamp": ts, "ip": ip}
-
-    for name, ip_map in by_name_ip.items():
-        latest_ip = (latest_ip_by_name.get(name) or {}).get("ip") or next(iter(ip_map.keys()))
-        items = ip_map.get(latest_ip) or []
-        items = sorted(items, key=lambda x: x.get("timestamp") or "")
-        total = len(items)
-        failures = sum(1 for item in items if not item.get("ok"))
-        rto_pct = (failures / total) * 100.0 if total else 0.0
-        streak = 0
-        for item in reversed(items):
-            if not item.get("ok"):
-                streak += 1
-            else:
-                break
-        last_ok = items[-1].get("ok")
-        ip = latest_ip
-        last_check = format_ts_ph(items[-1].get("timestamp"))
-        spark_values = [100 if item.get("ok") else 0 for item in items]
-        rows.append(
-            {
-                "name": name,
-                "ip": ip,
-                "total": total,
-                "failures": failures,
-                "rto_pct": rto_pct,
-                "uptime_pct": 100.0 - rto_pct,
-                "streak": streak,
-                "last_status": "down" if not last_ok else "up",
-                "last_check": last_check,
-                "spark_points_window": _sparkline_points_fixed(spark_values, 0, 100, width=120, height=30),
-                "spark_points_window_large": _sparkline_points_fixed(spark_values, 0, 100, width=640, height=200),
-            }
-        )
-    issue_rto_pct = float(settings.get("classification", {}).get("issue_rto_pct", 5.0))
-    issue_streak = int(settings.get("classification", {}).get("issue_streak", 2))
-    stable_rto_pct = float(settings.get("classification", {}).get("stable_rto_pct", 1.0))
-    since_iso = (datetime.utcnow() - timedelta(hours=24)).replace(microsecond=0).isoformat() + "Z"
-    raw_results = get_rto_results_since(since_iso)
-    spark_map = {}
-    for row in raw_results:
-        ip = row.get("ip")
-        if not ip:
-            continue
-        spark_map.setdefault(ip, []).append(100 if row.get("ok") else 0)
-
-    issue_rows = []
-    stable_rows = []
-    for row in rows:
-        spark_values = spark_map.get(row["ip"], [])
-        row["spark_points_24h"] = _sparkline_points_fixed(spark_values, 0, 100, width=140, height=28)
-        row["spark_points_24h_large"] = _sparkline_points_fixed(spark_values, 0, 100, width=640, height=200)
-        reasons = []
-        if row["last_status"] == "down":
-            reasons.append("Currently down")
-        if row["rto_pct"] >= issue_rto_pct:
-            reasons.append(f"RTO >= {issue_rto_pct:g}%")
-        if row["streak"] >= issue_streak:
-            reasons.append(f"Down streak >= {issue_streak}")
-
-        if reasons:
-            row["reasons"] = reasons
-            issue_rows.append(row)
-        elif row["last_status"] == "up" and row["rto_pct"] <= stable_rto_pct:
-            stable_rows.append(row)
-        else:
-            row["reasons"] = [f"RTO > {stable_rto_pct:g}%"]
-            issue_rows.append(row)
-
-    issue_rows = sorted(issue_rows, key=lambda x: (-x["rto_pct"], -x["streak"], x["name"].lower()))
-    stable_rows = sorted(stable_rows, key=lambda x: x["name"].lower())
-
-    window_label = next((label for label, hours in RTO_WINDOW_OPTIONS if hours == window_hours), "1D")
-    return {
-        "total": len(rows),
-        "issue_total": len(issue_rows),
-        "stable_total": len(stable_rows),
-        "issue_rows": issue_rows,
-        "stable_rows": stable_rows,
-        "window_hours": window_hours,
-        "window_label": window_label,
-        "rules": {
-            "issue_rto_pct": issue_rto_pct,
-            "issue_streak": issue_streak,
-            "stable_rto_pct": stable_rto_pct,
-        },
-    }
-
-
-def render_rto_response(request, settings, message, active_tab, settings_tab, window_hours=24):
-    status_map = {item["job_name"]: dict(item) for item in get_job_status()}
-    job_status = status_map.get("rto", {})
-    job_status["last_run_at_ph"] = format_ts_ph(job_status.get("last_run_at"))
-    job_status["last_success_at_ph"] = format_ts_ph(job_status.get("last_success_at"))
-    status = build_rto_status(settings, window_hours)
-    return templates.TemplateResponse(
-        "settings_rto.html",
-        make_context(
-            request,
-            {
-                "settings": settings,
-                "message": message,
-                "active_tab": active_tab,
-                "settings_tab": settings_tab,
-                "rto_status": status,
-                "rto_job": job_status,
-                "rto_window_options": RTO_WINDOW_OPTIONS,
-            },
-        ),
-    )
-
 
 @app.get("/settings/accounts-ping", response_class=HTMLResponse)
 async def accounts_ping_settings(request: Request):
@@ -5169,118 +5798,6 @@ async def surveillance_fixed_many(request: Request):
     settings["entries"] = list(entry_map.values())
     save_settings("surveillance", settings)
     return RedirectResponse(url="/surveillance?tab=under", status_code=303)
-
-
-@app.post("/settings/rto", response_class=HTMLResponse)
-async def rto_settings_save(request: Request):
-    form = await request.form()
-    settings = {
-        "enabled": parse_bool(form, "enabled"),
-        "ssh": {
-            "host": form.get("ssh_host", ""),
-            "port": parse_int(form, "ssh_port", 22),
-            "user": form.get("ssh_user", ""),
-            "password": form.get("ssh_password", ""),
-            "use_key": parse_bool(form, "ssh_use_key"),
-            "key_path": form.get("ssh_key_path", ""),
-            "remote_csv_path": form.get("ssh_remote_csv_path", ""),
-        },
-        "telegram": {
-            "bot_token": form.get("telegram_bot_token", ""),
-            "chat_id": form.get("telegram_chat_id", ""),
-        },
-        "ping": {
-            "count": parse_int(form, "ping_count", 5),
-            "per_ping_timeout_sec": parse_int(form, "per_ping_timeout_sec", 1),
-            "max_workers": parse_int(form, "max_workers", 64),
-        },
-        "general": {
-            "message_title": form.get("message_title", "RTO Customers"),
-            "include_header": parse_bool(form, "include_header"),
-            "output_mode": form.get("output_mode", "split"),
-            "max_chars": parse_int(form, "max_chars", 3800),
-            "max_lines": parse_int(form, "max_lines", 200),
-            "top_n": parse_int(form, "top_n", 20),
-            "ping_interval_minutes": parse_int(form, "ping_interval_minutes", 5),
-            "schedule_time_ph": form.get("schedule_time_ph", "07:00"),
-            "timezone": form.get("timezone", "Asia/Manila"),
-        },
-        "history": {
-            "window_size": parse_int(form, "window_size", 30),
-        },
-        "storage": {
-            "raw_retention_days": parse_int(form, "rto_raw_retention_days", 30),
-        },
-        "classification": {
-            "issue_rto_pct": parse_float(form, "issue_rto_pct", 5.0),
-            "issue_streak": parse_int(form, "issue_streak", 2),
-            "stable_rto_pct": parse_float(form, "stable_rto_pct", 1.0),
-        },
-    }
-    save_settings("rto", settings)
-    active_tab = form.get("active_tab", "settings")
-    settings_tab = form.get("settings_tab", "general")
-    return render_rto_response(request, settings, "Saved.", active_tab, settings_tab)
-
-
-@app.post("/settings/rto/test", response_class=HTMLResponse)
-async def rto_settings_test(request: Request):
-    settings = get_settings("rto", RTO_DEFAULTS)
-    message = ""
-    try:
-        token = settings["telegram"].get("bot_token", "")
-        chat_id = settings["telegram"].get("chat_id", "")
-        send_telegram(token, chat_id, "ThreeJ RTO test message.")
-        message = "Test message sent."
-    except TelegramError as exc:
-        message = str(exc)
-    return render_rto_response(request, settings, message, "settings", "notifications")
-
-
-@app.post("/settings/rto/run", response_class=HTMLResponse)
-async def rto_settings_run(request: Request):
-    settings = get_settings("rto", RTO_DEFAULTS)
-    message = ""
-    try:
-        history = get_state("rto_history", {})
-        history = rto_notifier.run(settings, history)
-        save_state("rto_history", history)
-        message = "Actual RTO check sent."
-    except TelegramError as exc:
-        message = str(exc)
-    except Exception as exc:
-        message = f"Run failed: {exc}"
-    return render_rto_response(request, settings, message, "status", "general")
-
-
-@app.post("/settings/rto/format", response_class=HTMLResponse)
-async def rto_settings_format(request: Request):
-    form = await request.form()
-    settings = get_settings("rto", RTO_DEFAULTS)
-    message = ""
-    if parse_bool(form, "confirm_format"):
-        save_state("rto_history", {})
-        clear_rto_results()
-        pause_minutes = int(settings.get("general", {}).get("ping_interval_minutes", 5) or 5)
-        pause_until = datetime.utcnow() + timedelta(minutes=max(pause_minutes, 1))
-        save_state(
-            "rto_state",
-            {
-                "last_run_date": None,
-                "last_ping_at": utc_now_iso(),
-                "last_report_date": None,
-                "last_prune_at": None,
-                "devices_cache": [],
-                "pause_until": pause_until.replace(microsecond=0).isoformat() + "Z",
-            },
-        )
-        message = "RTO database formatted."
-    else:
-        message = "Please confirm format before proceeding."
-    return render_rto_response(request, settings, message, "settings", "general")
-
-
-
 
 def render_wan_ping_response(request, pulse_settings, wan_settings, message, active_tab, wan_window_hours=24):
     wan_rows = build_wan_rows(pulse_settings, wan_settings)

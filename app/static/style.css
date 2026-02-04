@@ -392,3 +392,31 @@ select:not(.form-select) {
   font-size: 22px;
   line-height: 1;
 }
+
+.usage-hovercard {
+  position: fixed;
+  z-index: 2050;
+  width: 420px;
+  max-width: calc(100vw - 20px);
+  pointer-events: auto;
+}
+
+.usage-hovercard .card {
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16);
+}
+
+.usage-router-kpis {
+  max-width: min(56vw, 820px);
+}
+
+.usage-router-kpi {
+  flex: 0 0 auto;
+  height: 31px; /* roughly matches `.form-control-sm` */
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  font-weight: 500;
+  border-radius: 0.25rem;
+  white-space: nowrap;
+}

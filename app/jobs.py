@@ -10,8 +10,10 @@ except Exception:
     ZoneInfo = None
 
 from .db import (
-    delete_rto_results_older_than,
     delete_optical_results_older_than,
+    delete_pppoe_usage_samples_older_than,
+    get_pppoe_usage_window_stats_since,
+    insert_pppoe_usage_sample,
     update_job_status,
     utc_now_iso,
     get_accounts_ping_window_stats,
@@ -26,14 +28,23 @@ from .db import (
 )
 from .db import delete_accounts_ping_raw_older_than, delete_accounts_ping_rollups_older_than, insert_accounts_ping_result
 from .notifiers import optical as optical_notifier
-from .notifiers import rto as rto_notifier
 from .notifiers import isp_ping as isp_ping_notifier
 from .notifiers import wan_ping as wan_ping_notifier
+from .notifiers import rto as rto_notifier
+from .notifiers import usage as usage_notifier
 from .notifiers.isp_ping import ping_with_source
 from .notifiers.telegram import TelegramError, get_updates, send_telegram
-from .settings_defaults import ACCOUNTS_PING_DEFAULTS, ISP_PING_DEFAULTS, OPTICAL_DEFAULTS, RTO_DEFAULTS, SURVEILLANCE_DEFAULTS, WAN_PING_DEFAULTS
+from .settings_defaults import (
+    ACCOUNTS_PING_DEFAULTS,
+    ISP_PING_DEFAULTS,
+    OPTICAL_DEFAULTS,
+    SURVEILLANCE_DEFAULTS,
+    USAGE_DEFAULTS,
+    WAN_PING_DEFAULTS,
+)
 from .settings_store import get_settings, get_state, save_settings, save_state
 from .telegram_commands import handle_telegram_command
+from .mikrotik import RouterOSClient
 
 
 class JobsManager:
@@ -44,11 +55,11 @@ class JobsManager:
     def start(self):
         self.threads = [
             threading.Thread(target=self._optical_loop, daemon=True),
-            threading.Thread(target=self._rto_loop, daemon=True),
             threading.Thread(target=self._pulsewatch_loop, daemon=True),
             threading.Thread(target=self._telegram_loop, daemon=True),
             threading.Thread(target=self._wan_ping_loop, daemon=True),
             threading.Thread(target=self._accounts_ping_loop, daemon=True),
+            threading.Thread(target=self._usage_loop, daemon=True),
         ]
         for thread in self.threads:
             thread.start()
@@ -110,72 +121,6 @@ class JobsManager:
                 update_job_status("optical", last_error=str(exc), last_error_at=utc_now_iso())
             except Exception as exc:
                 update_job_status("optical", last_error=str(exc), last_error_at=utc_now_iso())
-
-            time_module.sleep(20)
-
-    def _rto_loop(self):
-        while not self.stop_event.is_set():
-            cfg = get_settings("rto", RTO_DEFAULTS)
-            if not cfg.get("enabled"):
-                time_module.sleep(5)
-                continue
-
-            try:
-                state = get_state("rto_state", {"last_run_date": None})
-                pause_until = state.get("pause_until")
-                if pause_until:
-                    pause_dt = datetime.fromisoformat(pause_until.replace("Z", ""))
-                    if datetime.utcnow() < pause_dt:
-                        time_module.sleep(5)
-                        continue
-                retention_days = int(cfg.get("storage", {}).get("raw_retention_days", 0) or 0)
-                if retention_days > 0:
-                    last_prune = state.get("last_prune_at")
-                    if not last_prune:
-                        last_prune_dt = None
-                    else:
-                        last_prune_dt = datetime.fromisoformat(last_prune.replace("Z", ""))
-                    if not last_prune_dt or last_prune_dt + timedelta(hours=24) < datetime.utcnow():
-                        cutoff = datetime.utcnow() - timedelta(days=retention_days)
-                        delete_rto_results_older_than(cutoff.replace(microsecond=0).isoformat() + "Z")
-                        state["last_prune_at"] = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-                        save_state("rto_state", state)
-
-                ping_interval_minutes = int(cfg.get("general", {}).get("ping_interval_minutes", 5) or 5)
-                last_ping_at = state.get("last_ping_at")
-                last_ping_dt = datetime.fromisoformat(last_ping_at.replace("Z", "")) if last_ping_at else None
-                now = datetime.utcnow()
-                ping_due = not last_ping_dt or now - last_ping_dt >= timedelta(minutes=ping_interval_minutes)
-                if ping_due:
-                    update_job_status("rto", last_run_at=utc_now_iso())
-                    history = get_state("rto_history", {})
-                    payload = rto_notifier.run_check(cfg, history)
-                    history = payload["history"]
-                    save_state("rto_history", history)
-                    state["last_ping_at"] = now.replace(microsecond=0).isoformat() + "Z"
-                    save_state("rto_state", state)
-                    update_job_status("rto", last_success_at=utc_now_iso(), last_error="", last_error_at="")
-
-                report_date = current_date(cfg["general"]).isoformat()
-                schedule_time = parse_time(cfg["general"].get("schedule_time_ph", "07:00"))
-                timezone = cfg["general"].get("timezone", "Asia/Manila")
-                if ZoneInfo is not None:
-                    now_local = datetime.now(ZoneInfo(timezone))
-                else:
-                    now_local = datetime.now()
-                report_due = state.get("last_report_date") != report_date and now_local.time() >= schedule_time
-                if report_due:
-                    history = get_state("rto_history", {})
-                    results = rto_notifier.build_results_from_history(history)
-                    devices = rto_notifier.build_devices_from_history(history)
-                    rto_notifier.send_report(cfg, history, results, devices)
-                    state["last_report_date"] = report_date
-                    state["last_report_at"] = utc_now_iso()
-                    save_state("rto_state", state)
-            except TelegramError as exc:
-                update_job_status("rto", last_error=str(exc), last_error_at=utc_now_iso())
-            except Exception as exc:
-                update_job_status("rto", last_error=str(exc), last_error_at=utc_now_iso())
 
             time_module.sleep(20)
 
@@ -937,6 +882,516 @@ class JobsManager:
                 update_job_status("wan_ping", last_error=str(exc), last_error_at=utc_now_iso())
             interval_seconds = int(cfg.get("general", {}).get("interval_seconds", 30) or 30)
             time_module.sleep(max(interval_seconds, 5))
+
+    def _usage_loop(self):
+        clients = {}
+        client_sigs = {}
+        genieacs_parser_version = "3"
+        usage_tz = None
+        try:
+            if ZoneInfo:
+                usage_tz = ZoneInfo("Asia/Manila")
+        except Exception:
+            usage_tz = None
+
+        def _parse_hhmm(value, default=(0, 0)):
+            parts = (value or "").strip().split(":")
+            if len(parts) != 2:
+                return default
+            try:
+                return int(parts[0]), int(parts[1])
+            except Exception:
+                return default
+
+        def _in_time_window(now_dt, start_hhmm, end_hhmm, start_default=(0, 0), end_default=(23, 59)):
+            sh, sm = _parse_hhmm(start_hhmm, default=start_default)
+            eh, em = _parse_hhmm(end_hhmm, default=end_default)
+            start_t = time(hour=max(min(sh, 23), 0), minute=max(min(sm, 59), 0))
+            end_t = time(hour=max(min(eh, 23), 0), minute=max(min(em, 59), 0))
+            current_t = now_dt.time()
+            if start_t <= end_t:
+                return start_t <= current_t <= end_t
+            return current_t >= start_t or current_t <= end_t
+
+        try:
+            while not self.stop_event.is_set():
+                cfg = get_settings("usage", USAGE_DEFAULTS)
+                if not cfg.get("enabled"):
+                    time_module.sleep(5)
+                    continue
+
+                now = datetime.utcnow().replace(microsecond=0)
+                now_iso = now.isoformat() + "Z"
+                state = get_state(
+                    "usage_state",
+                    {
+                        "last_check_at": None,
+                        "last_prune_at": None,
+                        "last_genieacs_refresh_at": None,
+                        "last_db_write_at": None,
+                        "secrets_refreshed_at": {},
+                        "secrets_cache": {},
+                        "prev_bytes": {},
+                        "pppoe_hosts": {},
+                        "anytime_issues": {},
+                        "anytime_eval_at": None,
+                    },
+                )
+
+                try:
+                    retention_days = int((cfg.get("storage") or {}).get("raw_retention_days", 0) or 0)
+                    if retention_days > 0:
+                        last_prune = state.get("last_prune_at")
+                        last_prune_dt = datetime.fromisoformat(last_prune.replace("Z", "")) if last_prune else None
+                        if not last_prune_dt or last_prune_dt + timedelta(hours=24) < now:
+                            cutoff = now - timedelta(days=retention_days)
+                            delete_pppoe_usage_samples_older_than(cutoff.isoformat() + "Z")
+                            state["last_prune_at"] = now_iso
+
+                    refresh_minutes = int((cfg.get("source") or {}).get("refresh_minutes", 15) or 15)
+                    last_genie = state.get("last_genieacs_refresh_at")
+                    last_genie_dt = datetime.fromisoformat(last_genie.replace("Z", "")) if last_genie else None
+                    if refresh_minutes < 1:
+                        refresh_minutes = 1
+                    dev_cfg = cfg.get("device") if isinstance(cfg.get("device"), dict) else {}
+                    genie_cfg = cfg.get("genieacs") if isinstance(cfg.get("genieacs"), dict) else {}
+                    genie_sig = {
+                        "v": genieacs_parser_version,
+                        "base_url": (genie_cfg.get("base_url") or "").strip().rstrip("/"),
+                        "page_size": int(genie_cfg.get("page_size", 100) or 100),
+                        "pppoe_paths": list(dev_cfg.get("pppoe_paths") or []),
+                        "host_count_paths": list(dev_cfg.get("host_count_paths") or []),
+                        "host_name_paths": list(dev_cfg.get("host_name_paths") or []),
+                        "host_ip_paths": list(dev_cfg.get("host_ip_paths") or []),
+                        "host_active_paths": list(dev_cfg.get("host_active_paths") or []),
+                    }
+                    force_refresh = state.get("genieacs_sig") != genie_sig
+                    if force_refresh:
+                        last_genie_dt = None
+                    if not last_genie_dt or last_genie_dt + timedelta(minutes=refresh_minutes) < now:
+                        try:
+                            state["pppoe_hosts"] = usage_notifier.build_pppoe_host_map(cfg)
+                            state["last_genieacs_refresh_at"] = now_iso
+                            state["genieacs_error"] = ""
+                            state["genieacs_sig"] = genie_sig
+                        except Exception as exc:
+                            state["genieacs_error"] = str(exc)
+
+                    poll_seconds = int((cfg.get("mikrotik") or {}).get("poll_interval_seconds", 10) or 10)
+                    poll_seconds = max(poll_seconds, 3)
+                    secrets_refresh_minutes = int((cfg.get("mikrotik") or {}).get("secrets_refresh_minutes", 15) or 15)
+                    if secrets_refresh_minutes < 1:
+                        secrets_refresh_minutes = 1
+                    timeout_seconds = int((cfg.get("mikrotik") or {}).get("timeout_seconds", 5) or 5)
+
+                    routers = (cfg.get("mikrotik") or {}).get("routers") or []
+                    enabled_router_ids = set()
+                    active_rows = []
+                    offline_rows = []
+                    router_status = []
+
+                    prev_bytes = state.get("prev_bytes") if isinstance(state.get("prev_bytes"), dict) else {}
+                    secrets_cache = state.get("secrets_cache") if isinstance(state.get("secrets_cache"), dict) else {}
+                    secrets_refreshed_at = (
+                        state.get("secrets_refreshed_at") if isinstance(state.get("secrets_refreshed_at"), dict) else {}
+                    )
+
+                    update_job_status("usage", last_run_at=utc_now_iso())
+                    for router in routers:
+                        if not isinstance(router, dict):
+                            continue
+                        if not router.get("enabled", True):
+                            continue
+                        router_id = (router.get("id") or "").strip()
+                        router_name = (router.get("name") or router_id or "router").strip()
+                        host = (router.get("host") or "").strip()
+                        if not router_id or not host:
+                            continue
+                        enabled_router_ids.add(router_id)
+
+                        last_secret = secrets_refreshed_at.get(router_id)
+                        last_secret_dt = datetime.fromisoformat(last_secret.replace("Z", "")) if last_secret else None
+                        secrets_due = not last_secret_dt or last_secret_dt + timedelta(minutes=secrets_refresh_minutes) < now
+
+                        port = int(router.get("port", 8728) or 8728)
+                        username = router.get("username", "")
+                        password = router.get("password", "")
+                        sig = (host, port, username, password, timeout_seconds)
+
+                        client = clients.get(router_id)
+                        if client is None or client_sigs.get(router_id) != sig:
+                            try:
+                                if client is not None:
+                                    client.close()
+                            except Exception:
+                                pass
+                            client = RouterOSClient(host, port, username, password, timeout=timeout_seconds)
+                            clients[router_id] = client
+                            client_sigs[router_id] = sig
+
+                        router_error = ""
+                        router_active = []
+                        router_queues = []
+                        router_ifaces = []
+                        connected = False
+                        try:
+                            # Keep a persistent API connection; reconnect on failure.
+                            if client.sock is None:
+                                client.connect()
+                            connected = True
+                            router_active = usage_notifier.fetch_pppoe_active(client)
+                            router_queues = usage_notifier.fetch_simple_queues(client)
+                            router_ifaces = usage_notifier.fetch_ppp_interfaces(client)
+                            if secrets_due:
+                                secrets_cache[router_id] = usage_notifier.fetch_pppoe_secrets(client)
+                                secrets_refreshed_at[router_id] = now_iso
+                        except Exception as exc:
+                            router_error = str(exc)
+                            try:
+                                client.close()
+                            except Exception:
+                                pass
+                            clients[router_id] = RouterOSClient(host, port, username, password, timeout=timeout_seconds)
+                            client_sigs[router_id] = sig
+                            # One reconnect attempt immediately (covers session expiry / dropped sockets).
+                            try:
+                                clients[router_id].connect()
+                                connected = True
+                                router_active = usage_notifier.fetch_pppoe_active(clients[router_id])
+                                router_queues = usage_notifier.fetch_simple_queues(clients[router_id])
+                                router_ifaces = usage_notifier.fetch_ppp_interfaces(clients[router_id])
+                                if secrets_due:
+                                    secrets_cache[router_id] = usage_notifier.fetch_pppoe_secrets(clients[router_id])
+                                    secrets_refreshed_at[router_id] = now_iso
+                                router_error = ""
+                            except Exception as exc2:
+                                router_error = str(exc2)
+                                try:
+                                    clients[router_id].close()
+                                except Exception:
+                                    pass
+                                connected = False
+
+                        computed = []
+                        active_set = set()
+                        queue_rows = router_queues if isinstance(router_queues, list) else []
+                        queue_match_count = 0
+                        queue_bytes_ok = 0
+                        queue_rate_ok = 0
+                        iface_rows = router_ifaces if isinstance(router_ifaces, list) else []
+                        iface_match_count = 0
+                        iface_bytes_ok = 0
+
+                        def match_queue_for_row(pppoe, address):
+                            pppoe = (pppoe or "").strip()
+                            address = (address or "").strip()
+                            if not queue_rows or (not pppoe and not address):
+                                return None
+
+                            def target_matches(q):
+                                tgt = (q.get("target") or "").strip()
+                                if not tgt or not address:
+                                    return False
+                                targets = [t.strip() for t in tgt.split(",") if t.strip()]
+                                for t in targets:
+                                    if t == address or t.startswith(address + "/"):
+                                        return True
+                                return False
+
+                            candidates = []
+                            for q in queue_rows:
+                                name = (q.get("name") or "").strip()
+                                if pppoe and (pppoe == name or pppoe in name):
+                                    candidates.append(q)
+                                    continue
+                                low = pppoe.lower()
+                                if low and low in name.lower():
+                                    candidates.append(q)
+                                    continue
+                                if target_matches(q):
+                                    candidates.append(q)
+
+                            if not candidates:
+                                return None
+
+                            def score(q):
+                                name = (q.get("name") or "").strip()
+                                # Prefer exact name match, then target match, then substring match.
+                                exact = 0 if pppoe and name == pppoe else 1
+                                tgt = 0 if target_matches(q) else 1
+                                sub = 0 if pppoe and (pppoe in name or pppoe.lower() in name.lower()) else 1
+                                return (exact, tgt, sub, len(name), name)
+
+                            return min(candidates, key=score)
+
+                        def match_iface_for_row(pppoe, iface_hint):
+                            pppoe = (pppoe or "").strip()
+                            iface_hint = (iface_hint or "").strip()
+                            if not iface_rows:
+                                return None
+                            if iface_hint:
+                                for i in iface_rows:
+                                    if (i.get("name") or "").strip().lower() == iface_hint.lower():
+                                        return i
+                            if not pppoe:
+                                return None
+                            candidates = [i for i in iface_rows if pppoe in ((i.get("name") or "").strip())]
+                            if not candidates:
+                                low = pppoe.lower()
+                                candidates = [
+                                    i for i in iface_rows if low and low in ((i.get("name") or "").strip().lower())
+                                ]
+                            if not candidates:
+                                return None
+                            return min(
+                                candidates,
+                                key=lambda i: (len((i.get("name") or "").strip()), (i.get("name") or "").strip()),
+                            )
+
+                        for row in router_active:
+                            pppoe = (row.get("name") or "").strip()
+                            if not pppoe:
+                                continue
+                            addr = (row.get("address") or "").strip()
+                            iface_hint = (row.get("interface") or "").strip()
+                            active_set.add(pppoe)
+                            key = f"{router_id}|{pppoe}"
+                            prev = prev_bytes.get(key) or {}
+                            prev_ts = prev.get("ts")
+                            prev_dt = datetime.fromisoformat(prev_ts.replace("Z", "")) if prev_ts else None
+                            prev_in = prev.get("bytes_in")
+                            prev_out = prev.get("bytes_out")
+                            # Prefer per-subscriber traffic via simple queues when available; otherwise
+                            # fall back to dynamic PPP interface counters (rx-byte/tx-byte).
+                            q = match_queue_for_row(pppoe, addr)
+                            if q:
+                                queue_match_count += 1
+                            q_bytes = usage_notifier.parse_duplex_int((q or {}).get("bytes")) if q else None
+                            q_rate = usage_notifier.parse_duplex_float((q or {}).get("rate")) if q else None
+                            if q_bytes:
+                                queue_bytes_ok += 1
+                            if q_rate:
+                                queue_rate_ok += 1
+
+                            # Convention (UI): DL = router->client, UL = client->router.
+                            # MikroTik queue "bytes" and "rate" are commonly formatted as "download/upload".
+                            now_out = q_bytes[0] if q_bytes else None  # DL total bytes
+                            now_in = q_bytes[1] if q_bytes else None  # UL total bytes
+
+                            # Dynamic PPP interface counters: rx-byte (UL), tx-byte (DL)
+                            iface = None
+                            if now_in is None or now_out is None:
+                                iface = match_iface_for_row(pppoe, iface_hint)
+                                if iface:
+                                    iface_match_count += 1
+                                    rx_b = usage_notifier._parse_int((iface or {}).get("rx-byte"))
+                                    tx_b = usage_notifier._parse_int((iface or {}).get("tx-byte"))
+                                    if rx_b is not None and tx_b is not None:
+                                        iface_bytes_ok += 1
+                                    if now_in is None:
+                                        now_in = rx_b
+                                    if now_out is None:
+                                        now_out = tx_b
+
+                            rate_dl_bps = q_rate[0] if q_rate else None
+                            rate_ul_bps = q_rate[1] if q_rate else None
+                            computed_rx_bps = None
+                            computed_tx_bps = None
+                            # Prefer queue-reported rate; fall back to delta computation if missing.
+                            if rate_ul_bps is not None:
+                                computed_rx_bps = float(rate_ul_bps)
+                            if rate_dl_bps is not None:
+                                computed_tx_bps = float(rate_dl_bps)
+
+                            if (computed_rx_bps is None or computed_tx_bps is None) and prev_dt and now_in is not None and now_out is not None and prev_in is not None and prev_out is not None:
+                                dt = (now - prev_dt).total_seconds()
+                                if dt and dt > 0:
+                                    d_in = now_in - int(prev_in)
+                                    d_out = now_out - int(prev_out)
+                                    if computed_rx_bps is None and d_in >= 0:
+                                        computed_rx_bps = (d_in * 8.0) / dt
+                                    if computed_tx_bps is None and d_out >= 0:
+                                        computed_tx_bps = (d_out * 8.0) / dt
+                            if computed_rx_bps is None and now_in is not None and prev_in is None:
+                                computed_rx_bps = 0.0
+                            if computed_tx_bps is None and now_out is not None and prev_out is None:
+                                computed_tx_bps = 0.0
+
+                            if now_in is not None or now_out is not None:
+                                prev_bytes[key] = {"ts": now_iso, "bytes_in": now_in, "bytes_out": now_out}
+
+                            norm = usage_notifier.normalize_active_row(
+                                row,
+                                timestamp=now_iso,
+                                router_id=router_id,
+                                router_name=router_name,
+                                computed_rx_bps=computed_rx_bps,
+                                computed_tx_bps=computed_tx_bps,
+                            )
+                            if norm:
+                                if now_in is not None:
+                                    norm["bytes_in"] = now_in
+                                if now_out is not None:
+                                    norm["bytes_out"] = now_out
+                                computed.append(norm)
+
+                        # Offline rows from cached secrets
+                        secrets = secrets_cache.get(router_id) if isinstance(secrets_cache.get(router_id), list) else []
+                        for secret in secrets:
+                            name = (secret.get("name") or "").strip()
+                            if not name or name in active_set:
+                                continue
+                            offline_rows.append(
+                                {
+                                    "router_id": router_id,
+                                    "router_name": router_name,
+                                    "pppoe": name,
+                                    "disabled": str(secret.get("disabled") or "").strip().lower() in ("yes", "true", "1"),
+                                    "profile": (secret.get("profile") or "").strip(),
+                                    "last_logged_out": (secret.get("last-logged-out") or "").strip(),
+                                }
+                            )
+
+                        active_rows.extend(computed)
+                        router_status.append(
+                            {
+                                "router_id": router_id,
+                                "router_name": router_name,
+                                "active_count": len(active_set),
+                                "queue_count": len(queue_rows),
+                                "queue_match_count": queue_match_count,
+                                "queue_bytes_ok": queue_bytes_ok,
+                                "queue_rate_ok": queue_rate_ok,
+                                "iface_count": len(iface_rows),
+                                "iface_match_count": iface_match_count,
+                                "iface_bytes_ok": iface_bytes_ok,
+                                "offline_count": len(
+                                    [
+                                        1
+                                        for s in (secrets or [])
+                                        if (s.get("name") or "").strip() and (s.get("name") or "").strip() not in active_set
+                                    ]
+                                ),
+                                "error": router_error,
+                                "connected": bool(connected),
+                            }
+                        )
+
+                    # Close connections for routers that were removed/disabled.
+                    for rid in list(clients.keys()):
+                        if rid not in enabled_router_ids:
+                            try:
+                                clients[rid].close()
+                            except Exception:
+                                pass
+                            clients.pop(rid, None)
+                            client_sigs.pop(rid, None)
+
+                    # Persist raw samples at a lower cadence than the live polling.
+                    sample_interval = int((cfg.get("storage") or {}).get("sample_interval_seconds", 60) or 60)
+                    sample_interval = max(sample_interval, 10)
+                    last_db = state.get("last_db_write_at")
+                    last_db_dt = datetime.fromisoformat(last_db.replace("Z", "")) if last_db else None
+                    should_write = (not last_db_dt) or (now - last_db_dt >= timedelta(seconds=sample_interval))
+                    if should_write and active_rows:
+                        hosts = state.get("pppoe_hosts") if isinstance(state.get("pppoe_hosts"), dict) else {}
+                        for row in active_rows:
+                            pppoe = (row.get("pppoe") or "").strip()
+                            host_info = hosts.get(pppoe) or hosts.get(pppoe.lower()) or {}
+                            host_count = int(host_info.get("host_count") or 0)
+                            insert_pppoe_usage_sample(
+                                row.get("timestamp"),
+                                row.get("router_id"),
+                                row.get("router_name"),
+                                row.get("pppoe"),
+                                address=row.get("address"),
+                                session_id=row.get("session_id"),
+                                uptime=row.get("uptime"),
+                                bytes_in=row.get("bytes_in"),
+                                bytes_out=row.get("bytes_out"),
+                                host_count=host_count,
+                                rx_bps=row.get("rx_bps"),
+                                tx_bps=row.get("tx_bps"),
+                            )
+                        state["last_db_write_at"] = now_iso
+
+                    # Anytime no-usage detection (window-based, not peak hours).
+                    detect = cfg.get("detection") if isinstance(cfg.get("detection"), dict) else {}
+                    anytime_enabled = bool(detect.get("anytime_enabled", False))
+                    anytime_window_min = int(detect.get("anytime_no_usage_minutes", 120) or 120)
+                    anytime_window_min = max(anytime_window_min, 5)
+                    anytime_min_devices = max(int(detect.get("anytime_min_connected_devices", 2) or 2), 1)
+                    anytime_from_bps = max(float(detect.get("anytime_total_kbps_from", 0) or 0.0) * 1000.0, 0.0)
+                    anytime_to_bps = max(float(detect.get("anytime_total_kbps_to", 8) or 8.0) * 1000.0, 0.0)
+                    if anytime_to_bps < anytime_from_bps:
+                        anytime_from_bps, anytime_to_bps = anytime_to_bps, anytime_from_bps
+                    work_start = (detect.get("anytime_work_start_ph") or "00:00").strip()
+                    work_end = (detect.get("anytime_work_end_ph") or "23:59").strip()
+
+                    last_eval = state.get("anytime_eval_at")
+                    last_eval_dt = datetime.fromisoformat(last_eval.replace("Z", "")) if last_eval else None
+                    eval_due = (not last_eval_dt) or (now - last_eval_dt >= timedelta(seconds=60))
+                    if not anytime_enabled:
+                        state["anytime_issues"] = {}
+                    elif eval_due:
+                        now_ph = datetime.now(usage_tz) if usage_tz else datetime.utcnow()
+                        if not _in_time_window(now_ph, work_start, work_end):
+                            state["anytime_issues"] = {}
+                            state["anytime_eval_at"] = now_iso
+                        else:
+                            since_iso = (now - timedelta(minutes=anytime_window_min)).isoformat() + "Z"
+                            stats_map = get_pppoe_usage_window_stats_since(since_iso)
+                            expected = int((anytime_window_min * 60) / max(sample_interval, 10))
+                            min_samples = max(3, int(expected * 0.25), 10)
+                            hosts = state.get("pppoe_hosts") if isinstance(state.get("pppoe_hosts"), dict) else {}
+                            issues_map = {}
+                            for row in active_rows:
+                                pppoe = (row.get("pppoe") or "").strip()
+                                if not pppoe:
+                                    continue
+                                router_id = (row.get("router_id") or "").strip()
+                                host_info = hosts.get(pppoe) or hosts.get(pppoe.lower()) or {}
+                                host_count = int(host_info.get("host_count") or 0)
+                                if host_count < anytime_min_devices:
+                                    continue
+                                key = f"{router_id}|{pppoe.lower()}"
+                                stat = stats_map.get(key)
+                                if not stat:
+                                    continue
+                                if int(stat.get("samples") or 0) < min_samples:
+                                    continue
+                                max_total_bps = float(stat.get("max_total_bps") or 0.0)
+                                if anytime_from_bps <= max_total_bps <= anytime_to_bps:
+                                    issues_map[key] = {
+                                        "samples": int(stat.get("samples") or 0),
+                                        "max_total_bps": max_total_bps,
+                                        "window_minutes": anytime_window_min,
+                                        "min_samples": min_samples,
+                                    }
+                            state["anytime_issues"] = issues_map
+                            state["anytime_eval_at"] = now_iso
+
+                    state["active_rows"] = active_rows
+                    state["offline_rows"] = offline_rows
+                    state["routers"] = router_status
+                    state["prev_bytes"] = prev_bytes
+                    state["secrets_cache"] = secrets_cache
+                    state["secrets_refreshed_at"] = secrets_refreshed_at
+                    state["last_check_at"] = now_iso
+                    save_state("usage_state", state)
+                    update_job_status("usage", last_success_at=utc_now_iso(), last_error="", last_error_at="")
+                except Exception as exc:
+                    update_job_status("usage", last_error=str(exc), last_error_at=utc_now_iso())
+
+                # Sleep based on configured poll interval.
+                poll_seconds = int((cfg.get("mikrotik") or {}).get("poll_interval_seconds", 10) or 10)
+                time_module.sleep(max(poll_seconds, 3))
+        finally:
+            for client in list(clients.values()):
+                try:
+                    client.close()
+                except Exception:
+                    pass
 
 
 def parse_time(value):

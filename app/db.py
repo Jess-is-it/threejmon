@@ -325,6 +325,25 @@ def init_db():
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS pppoe_usage_samples (
+                    id BIGSERIAL PRIMARY KEY,
+                    timestamp TEXT NOT NULL,
+                    router_id TEXT,
+                    router_name TEXT,
+                    pppoe TEXT NOT NULL,
+                    address TEXT,
+                    session_id TEXT,
+                    uptime TEXT,
+                    bytes_in BIGINT,
+                    bytes_out BIGINT,
+                    host_count INTEGER,
+                    rx_bps DOUBLE PRECISION,
+                    tx_bps DOUBLE PRECISION
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS surveillance_sessions (
                     id BIGSERIAL PRIMARY KEY,
                     pppoe TEXT NOT NULL,
@@ -506,6 +525,25 @@ def init_db():
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS pppoe_usage_samples (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    router_id TEXT,
+                    router_name TEXT,
+                    pppoe TEXT NOT NULL,
+                    address TEXT,
+                    session_id TEXT,
+                    uptime TEXT,
+                    bytes_in INTEGER,
+                    bytes_out INTEGER,
+                    host_count INTEGER,
+                    rx_bps REAL,
+                    tx_bps REAL
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS surveillance_sessions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     pppoe TEXT NOT NULL,
@@ -537,6 +575,8 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_ping_results_acct_ts ON accounts_ping_results (account_id, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_ping_results_ip_ts ON accounts_ping_results (ip, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_ping_rollups_acct_bucket ON accounts_ping_rollups (account_id, bucket_ts)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pppoe_usage_samples_pppoe_ts ON pppoe_usage_samples (pppoe, timestamp)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pppoe_usage_samples_router_ts ON pppoe_usage_samples (router_id, timestamp)")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_surveillance_sessions_pppoe_started ON surveillance_sessions (pppoe, started_at)"
         )
@@ -547,6 +587,7 @@ def init_db():
         try:
             if _use_postgres():
                 conn.execute("ALTER TABLE surveillance_sessions ADD COLUMN IF NOT EXISTS end_note TEXT")
+                conn.execute("ALTER TABLE pppoe_usage_samples ADD COLUMN IF NOT EXISTS host_count INTEGER")
             else:
                 cols = []
                 try:
@@ -556,6 +597,13 @@ def init_db():
                     cols = []
                 if "end_note" not in cols:
                     conn.execute("ALTER TABLE surveillance_sessions ADD COLUMN end_note TEXT")
+                try:
+                    info = conn.execute("PRAGMA table_info(pppoe_usage_samples)").fetchall()
+                    cols = [row["name"] for row in info] if info else []
+                except Exception:
+                    cols = []
+                if "host_count" not in cols:
+                    conn.execute("ALTER TABLE pppoe_usage_samples ADD COLUMN host_count INTEGER")
         except Exception:
             pass
     conn.close()
@@ -1916,6 +1964,142 @@ def clear_optical_results():
     try:
         with conn:
             conn.execute("DELETE FROM optical_results")
+    finally:
+        conn.close()
+
+
+def insert_pppoe_usage_sample(
+    timestamp,
+    router_id,
+    router_name,
+    pppoe,
+    address=None,
+    session_id=None,
+    uptime=None,
+    bytes_in=None,
+    bytes_out=None,
+    host_count=None,
+    rx_bps=None,
+    tx_bps=None,
+):
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO pppoe_usage_samples
+                    (timestamp, router_id, router_name, pppoe, address, session_id, uptime, bytes_in, bytes_out, host_count, rx_bps, tx_bps)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    timestamp,
+                    router_id,
+                    router_name,
+                    pppoe,
+                    address,
+                    session_id,
+                    uptime,
+                    bytes_in,
+                    bytes_out,
+                    host_count,
+                    rx_bps,
+                    tx_bps,
+                ),
+            )
+    finally:
+        conn.close()
+
+
+def delete_pppoe_usage_samples_older_than(cutoff_iso):
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM pppoe_usage_samples WHERE timestamp < ?", (cutoff_iso,))
+    finally:
+        conn.close()
+
+
+def clear_pppoe_usage_samples():
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM pppoe_usage_samples")
+    finally:
+        conn.close()
+
+
+def get_pppoe_usage_window_stats_since(since_iso):
+    """
+    Returns a dict keyed by "<router_id>|<pppoe_lower>" with:
+      - samples
+      - max_total_bps (max(rx_bps + tx_bps) in window)
+      - first_ts, last_ts
+    """
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                router_id,
+                pppoe,
+                COUNT(*) AS samples,
+                MAX(COALESCE(rx_bps, 0) + COALESCE(tx_bps, 0)) AS max_total_bps,
+                MIN(timestamp) AS first_ts,
+                MAX(timestamp) AS last_ts
+            FROM pppoe_usage_samples
+            WHERE timestamp >= ?
+            GROUP BY router_id, pppoe
+            """,
+            (since_iso,),
+        ).fetchall()
+        out = {}
+        for row in rows:
+            router_id = (row["router_id"] or "").strip()
+            pppoe = (row["pppoe"] or "").strip()
+            if not pppoe:
+                continue
+            key = f"{router_id}|{pppoe.lower()}"
+            out[key] = {
+                "router_id": router_id,
+                "pppoe": pppoe,
+                "samples": int(row["samples"] or 0),
+                "max_total_bps": float(row["max_total_bps"] or 0.0),
+                "first_ts": row["first_ts"],
+                "last_ts": row["last_ts"],
+            }
+        return out
+    finally:
+        conn.close()
+
+
+def get_pppoe_usage_series_since(router_id, pppoe, since_iso):
+    router_id = (router_id or "").strip()
+    pppoe = (pppoe or "").strip()
+    if not pppoe:
+        return []
+    conn = get_conn()
+    try:
+        if router_id:
+            rows = conn.execute(
+                """
+                SELECT timestamp, rx_bps, tx_bps, bytes_in, bytes_out, host_count
+                FROM pppoe_usage_samples
+                WHERE router_id = ? AND pppoe = ? AND timestamp >= ?
+                ORDER BY timestamp ASC
+                """,
+                (router_id, pppoe, since_iso),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT timestamp, rx_bps, tx_bps, bytes_in, bytes_out, host_count
+                FROM pppoe_usage_samples
+                WHERE pppoe = ? AND timestamp >= ?
+                ORDER BY timestamp ASC
+                """,
+                (pppoe, since_iso),
+            ).fetchall()
+        return [dict(row) for row in rows]
     finally:
         conn.close()
 

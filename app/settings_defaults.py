@@ -354,6 +354,79 @@ ACCOUNTS_PING_DEFAULTS = {
     },
 }
 
+USAGE_DEFAULTS = {
+    "enabled": False,
+    "mikrotik": {
+        "routers": [],
+        # Active PPPoE polling frequency (seconds).
+        "poll_interval_seconds": 10,
+        # How often to refresh /ppp/secret list for offline accounts (minutes).
+        "secrets_refresh_minutes": 15,
+        "timeout_seconds": 5,
+    },
+    "genieacs": {
+        "base_url": "http://genieacs:7557",
+        "username": "",
+        "password": "",
+        "page_size": 100,
+    },
+    "source": {
+        # How often to refresh connected-host counts from GenieACS (minutes).
+        "refresh_minutes": 15,
+    },
+    "device": {
+        # PPPoE username mapping paths in GenieACS devices.
+        "pppoe_paths": [
+            "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.Username",
+            "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.X_BROADCOM_COM_Username",
+            "VirtualParameters.pppoeUsername",
+        ],
+        # Hostname paths example. If you provide "...Hosts.Host.1.HostName", the system will auto-enumerate all Hosts.Host.<n>.
+        "host_name_paths": [
+            "InternetGatewayDevice.LANDevice.1.Hosts.Host.1.HostName",
+        ],
+        "host_ip_paths": [
+            "InternetGatewayDevice.LANDevice.1.Hosts.Host.1.IPAddress",
+        ],
+        # If set, only Active=true hosts will be shown in the Devices hover card.
+        "host_active_paths": [
+            "InternetGatewayDevice.LANDevice.1.Hosts.Host.1.Active",
+        ],
+        # If present, used directly as connected device count.
+        "host_count_paths": [
+            "InternetGatewayDevice.LANDevice.1.Hosts.HostNumberOfEntries",
+        ],
+    },
+    "detection": {
+        # Peak-hours rule (time-windowed).
+        "peak_enabled": True,
+        "peak_start_ph": "17:30",
+        "peak_end_ph": "21:00",
+        "min_connected_devices": 2,
+        # Consider "no usage" when (dl+ul) is within this range (inclusive).
+        "total_kbps_from": 0,
+        "total_kbps_to": 8,
+        # Anytime rule (duration-based).
+        "anytime_enabled": False,
+        "anytime_min_connected_devices": 2,
+        "anytime_total_kbps_from": 0,
+        "anytime_total_kbps_to": 8,
+        # Only evaluate Rule 2 during these hours (Asia/Manila).
+        # Set 00:00–23:59 to evaluate all day.
+        "anytime_work_start_ph": "00:00",
+        "anytime_work_end_ph": "23:59",
+        # Consider "no usage" when the last N minutes have max total bps within the range.
+        "anytime_no_usage_minutes": 120,
+        # Back-compat (older configs); treated as total_kbps_to when range isn't present.
+        "min_total_kbps": 8,
+    },
+    "storage": {
+        # Persist at most one sample per account per this many seconds (collector still polls for live view).
+        "sample_interval_seconds": 60,
+        "raw_retention_days": 365,
+    },
+}
+
 WAN_PING_DEFAULTS = {
     "enabled": False,
     "telegram": {

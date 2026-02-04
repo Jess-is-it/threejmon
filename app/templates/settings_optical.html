@@ -1101,37 +1101,37 @@
       });
     }
 
-    const wraps = document.querySelectorAll(".rto-table-wrap");
-    wraps.forEach((wrap) => {
-      const stored = localStorage.getItem(`optical_${wrap.id}_width`);
-      if (stored) {
-        wrap.style.maxWidth = `${stored}px`;
-      }
-    });
-    const handles = document.querySelectorAll(".rto-resize-handle");
-    handles.forEach((handle) => {
-      let startX = 0;
-      let startWidth = 0;
-      const targetId = handle.dataset.target;
-      const target = targetId ? document.getElementById(targetId) : null;
-      if (!target) return;
-      const onMouseMove = (event) => {
-        const delta = event.clientX - startX;
-        const width = Math.max(startWidth + delta, 400);
-        target.style.maxWidth = `${width}px`;
-      };
-      const onMouseUp = () => {
-        document.removeEventListener("mousemove", onMouseMove);
-        document.removeEventListener("mouseup", onMouseUp);
-        localStorage.setItem(`optical_${targetId}_width`, parseInt(target.style.maxWidth || "0", 10));
-      };
-      handle.addEventListener("mousedown", (event) => {
-        startX = event.clientX;
-        startWidth = target.getBoundingClientRect().width;
-        document.addEventListener("mousemove", onMouseMove);
-        document.addEventListener("mouseup", onMouseUp);
-      });
-    });
-  });
-</script>
+	    const wraps = document.querySelectorAll(".rto-table-wrap");
+	    wraps.forEach((wrap) => {
+	      const stored = localStorage.getItem(`optical_${wrap.id}_height`);
+	      if (stored) {
+	        wrap.style.height = `${stored}px`;
+	      }
+	    });
+	    const handles = document.querySelectorAll(".rto-resize-handle");
+	    handles.forEach((handle) => {
+	      let startY = 0;
+	      let startHeight = 0;
+	      const targetId = handle.dataset.target;
+	      const target = targetId ? document.getElementById(targetId) : null;
+	      if (!target) return;
+	      const onMouseMove = (event) => {
+	        const delta = event.clientY - startY;
+	        const height = Math.max(startHeight + delta, 260);
+	        target.style.height = `${height}px`;
+	      };
+	      const onMouseUp = () => {
+	        document.removeEventListener("mousemove", onMouseMove);
+	        document.removeEventListener("mouseup", onMouseUp);
+	        localStorage.setItem(`optical_${targetId}_height`, parseInt(target.style.height || "0", 10));
+	      };
+	      handle.addEventListener("mousedown", (event) => {
+	        startY = event.clientY;
+	        startHeight = target.getBoundingClientRect().height;
+	        document.addEventListener("mousemove", onMouseMove);
+	        document.addEventListener("mouseup", onMouseUp);
+	      });
+	    });
+	  });
+	</script>
 {% endblock %}
