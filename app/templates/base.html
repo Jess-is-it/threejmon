@@ -7,20 +7,11 @@
   {% if browser_logo_url %}
     <link rel="icon" type="{{ browser_logo_type }}" href="{{ browser_logo_url }}" />
   {% endif %}
+  <link rel="stylesheet" href="/static/tabler/css/tabler.min.css" />
   <link rel="stylesheet" href="/static/tabler/css/tabler-icons.min.css" />
-  <link rel="stylesheet" href="/static/tailwindadmin.css?v=tw1" />
-  <link rel="stylesheet" href="/static/style.css?v=tw1" />
+  <link rel="stylesheet" href="/static/style.css?v=tabler4" />
 </head>
 <body class="layout-fluid">
-  <script>
-    try {
-      if (window.self !== window.top) {
-        document.body.classList.add("threej-embedded");
-      }
-    } catch {
-      document.body.classList.add("threej-embedded");
-    }
-  </script>
   <div class="page">
     <aside class="navbar navbar-vertical navbar-expand-lg" data-bs-theme="dark">
       <div class="container-fluid">
@@ -106,9 +97,6 @@
 	      <header class="navbar navbar-expand-md navbar-light d-print-none sticky-top">
 	        <div class="container-xl">
 	          <div class="d-flex w-100 align-items-center">
-              <button class="navbar-toggler threej-sidebar-toggle me-2" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar-menu" aria-controls="sidebar-menu" aria-expanded="false" aria-label="Toggle navigation">
-                <span class="navbar-toggler-icon"></span>
-              </button>
 	            <div class="d-flex align-items-center gap-2">
 	              {% block header_badge %}{% endblock %}
 	              <div class="h3 m-0">{% block header_title %}ThreeJ Notifier Suite{% endblock %}</div>
@@ -137,7 +125,7 @@
       </div>
     </div>
   </div>
-  <script src="/static/ui.js?v=tw1"></script>
+  <script src="/static/tabler/js/tabler.min.js"></script>
   <script src="/static/vendor/apexcharts.min.js"></script>
   <script>
     document.addEventListener("submit", (event) => {

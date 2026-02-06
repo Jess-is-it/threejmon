@@ -106,8 +106,6 @@ app = FastAPI()
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
-SPA_DIR = BASE_DIR / "static" / "spa"
-
 jobs_manager = JobsManager()
 _cpu_sample = {"total": None, "idle": None}
 
@@ -121,39 +119,6 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     jobs_manager.stop()
-
-
-def _spa_index_response():
-    index_path = SPA_DIR / "index.html"
-    if not index_path.exists():
-        return HTMLResponse(
-            "<h1>UI build missing</h1><p>The React/Vite UI was not built. Rebuild the Docker image.</p>",
-            status_code=500,
-        )
-    return FileResponse(str(index_path))
-
-
-@app.get("/app", include_in_schema=False)
-async def spa_root():
-    return _spa_index_response()
-
-
-@app.get("/app/{path:path}", include_in_schema=False)
-async def spa_routes(path: str):
-    # Serve built assets directly if they exist; otherwise fall back to SPA index
-    safe_path = (path or "").lstrip("/")
-    candidate = (SPA_DIR / safe_path).resolve()
-    if SPA_DIR.exists():
-        try:
-            candidate.relative_to(SPA_DIR.resolve())
-        except Exception:
-            return Response(status_code=404)
-        if candidate.exists() and candidate.is_file():
-            return FileResponse(str(candidate))
-    # If the path looks like a file (has an extension), don't mask 404s.
-    if "." in safe_path:
-        return Response(status_code=404)
-    return _spa_index_response()
 
 
 def make_context(request, extra=None):
@@ -1901,13 +1866,8 @@ def build_wan_latency_series(rows, state, hours=24, window_start=None, window_en
     return series
 
 
-@app.get("/", include_in_schema=False)
-async def root_redirect():
-    return RedirectResponse(url="/app", status_code=302)
-
-
-@app.get("/legacy/dashboard", response_class=HTMLResponse, include_in_schema=False)
-async def legacy_dashboard(request: Request):
+@app.get("/", response_class=HTMLResponse)
+async def dashboard(request: Request):
     job_status = {item["job_name"]: dict(item) for item in get_job_status()}
     for status in job_status.values():
         status["last_run_at_ph"] = format_ts_ph(status.get("last_run_at"))
@@ -2869,48 +2829,6 @@ async def optical_settings(request: Request):
                 "settings_tab": "general",
             },
         ),
-    )
-
-
-@app.get("/api/optical/summary", response_class=JSONResponse)
-async def api_optical_summary(request: Request):
-    settings = get_settings("optical", OPTICAL_DEFAULTS)
-    window_hours = _normalize_wan_window(request.query_params.get("window"))
-    limit = _parse_table_limit(request.query_params.get("limit"), default=50)
-    issues_page = _parse_table_page(request.query_params.get("issues_page"), default=1)
-    stable_page = _parse_table_page(request.query_params.get("stable_page"), default=1)
-    issues_sort = (request.query_params.get("issues_sort") or "").strip()
-    issues_dir = (request.query_params.get("issues_dir") or "").strip().lower()
-    stable_sort = (request.query_params.get("stable_sort") or "").strip()
-    stable_dir = (request.query_params.get("stable_dir") or "").strip().lower()
-    query = (request.query_params.get("q") or "").strip()
-
-    job_status = {item["job_name"]: dict(item) for item in get_job_status()}
-    optical_job = job_status.get("optical", {})
-    optical_job = {
-        "last_run_at_ph": format_ts_ph(optical_job.get("last_run_at")),
-        "last_success_at_ph": format_ts_ph(optical_job.get("last_success_at")),
-    }
-
-    optical_status = build_optical_status(
-        settings,
-        window_hours,
-        limit,
-        issues_page,
-        stable_page,
-        issues_sort=issues_sort,
-        issues_dir=issues_dir,
-        stable_sort=stable_sort,
-        stable_dir=stable_dir,
-        query=query,
-    )
-    return JSONResponse(
-        {
-            "updated_at": utc_now_iso(),
-            "optical_job": optical_job,
-            "optical_status": optical_status,
-            "optical_window_options": OPTICAL_WINDOW_OPTIONS,
-        }
     )
 
 
@@ -5279,159 +5197,6 @@ async def surveillance_page(request: Request):
                 "surv_optical_tx_realistic_max_dbm": float(optical_class.get("tx_realistic_max_dbm", 10.0) or 10.0),
             },
         ),
-    )
-
-
-@app.get("/api/surveillance/summary", response_class=JSONResponse)
-async def api_surveillance_summary():
-    raw = get_settings("surveillance", SURVEILLANCE_DEFAULTS)
-    settings = normalize_surveillance_settings(raw)
-    entry_map = _surveillance_entry_map(settings)
-    # keep normalization stable (same behavior as HTML route)
-    save_settings("surveillance", settings)
-
-    pppoes = sorted(entry_map.keys(), key=lambda x: x.lower())
-    account_ids = [_accounts_ping_account_id_for_ip(pppoe) for pppoe in pppoes]
-
-    stab_cfg = settings.get("stability", {}) or {}
-    stable_window_minutes = max(int(stab_cfg.get("stable_window_minutes", 10) or 10), 1)
-    stable_window_days = stable_window_minutes / 1440.0
-    now = datetime.utcnow()
-    since_iso = (now - timedelta(minutes=stable_window_minutes)).replace(microsecond=0).isoformat() + "Z"
-
-    latest_map = get_latest_accounts_ping_map(account_ids)
-    stats_map = get_accounts_ping_window_stats(account_ids, since_iso)
-    optical_latest_map = get_latest_optical_by_pppoe(pppoes)
-    ping_state = get_state("accounts_ping_state", {"accounts": {}})
-    ping_accounts = ping_state.get("accounts") if isinstance(ping_state.get("accounts"), dict) else {}
-
-    def build_row(pppoe):
-        entry = entry_map.get(pppoe, {})
-        account_id = _accounts_ping_account_id_for_ip(pppoe)
-        latest = latest_map.get(account_id) or {}
-        stats = stats_map.get(account_id) or {}
-        opt = optical_latest_map.get(pppoe) or {}
-        st = ping_accounts.get(account_id) if isinstance(ping_accounts.get(account_id), dict) else {}
-
-        total = int(stats.get("total") or 0)
-        failures = int(stats.get("failures") or 0)
-        uptime_pct = (100.0 - (failures / total) * 100.0) if total else 0.0
-
-        down_since_dt = _parse_iso_z(st.get("down_since"))
-        down_for = _format_duration_short((datetime.utcnow() - down_since_dt).total_seconds()) if down_since_dt else ""
-
-        return {
-            "pppoe": pppoe,
-            "name": entry.get("name") or pppoe,
-            "optical_device_id": (opt.get("device_id") or "").strip(),
-            "ip": entry.get("ip") or latest.get("ip") or opt.get("ip") or "",
-            "status": entry.get("status") or "under",
-            "added_mode": (entry.get("added_mode") or "manual").strip().lower(),
-            "auto_source": (entry.get("auto_source") or "").strip(),
-            "auto_reason": (entry.get("auto_reason") or "").strip(),
-            "added_at": format_ts_ph(entry.get("added_at")),
-            "added_at_iso": (entry.get("added_at") or "").strip(),
-            "last_check": format_ts_ph(latest.get("timestamp")),
-            "last_check_iso": (latest.get("timestamp") or "").strip(),
-            "loss": latest.get("loss"),
-            "avg_ms": latest.get("avg_ms"),
-            "mode": latest.get("mode") or "",
-            "ok": bool(latest.get("ok")) if latest else False,
-            "uptime_pct": uptime_pct,
-            "stable_total": total,
-            "stable_failures": failures,
-            "stable_loss_avg": stats.get("loss_avg"),
-            "stable_avg_ms_avg": stats.get("avg_ms_avg"),
-            "down_for": down_for,
-            "down_since_iso": (st.get("down_since") or "").strip(),
-            "optical_rx": opt.get("rx"),
-            "optical_tx": opt.get("tx"),
-            "optical_last": format_ts_ph(opt.get("timestamp")),
-            "optical_last_iso": (opt.get("timestamp") or "").strip(),
-            "last_fixed_at_iso": (entry.get("last_fixed_at") or "").strip(),
-            "last_fixed_at_ph": format_ts_ph(entry.get("last_fixed_at")),
-            "last_fixed_reason": (entry.get("last_fixed_reason") or "").strip(),
-            "last_fixed_mode": (entry.get("last_fixed_mode") or "").strip(),
-        }
-
-    under_rows = [
-        build_row(pppoe)
-        for pppoe in pppoes
-        if (entry_map.get(pppoe, {}).get("status") or "under") == "under"
-    ]
-    level2_rows = [
-        build_row(pppoe)
-        for pppoe in pppoes
-        if (entry_map.get(pppoe, {}).get("status") or "") == "level2"
-    ]
-
-    under_total = len(under_rows)
-    under_auto = len([r for r in under_rows if (r.get("added_mode") or "") == "auto"])
-    under_manual = under_total - under_auto
-
-    return JSONResponse(
-        {
-            "updated_at": utc_now_iso(),
-            "stable_window_minutes": stable_window_minutes,
-            "stable_window_days": stable_window_days,
-            "counts": {
-                "under_total": under_total,
-                "under_auto": under_auto,
-                "under_manual": under_manual,
-                "level2_total": len(level2_rows),
-            },
-            "rows": {"under": under_rows, "level2": level2_rows},
-        }
-    )
-
-
-@app.get("/api/surveillance/history", response_class=JSONResponse)
-async def api_surveillance_history(q: str = "", page: int = 1, limit: int = 50):
-    q = (q or "").strip()
-    page = max(min(int(page or 1), 5000), 1)
-    limit = max(min(int(limit or 50), 200), 1)
-
-    raw = get_settings("surveillance", SURVEILLANCE_DEFAULTS)
-    settings = normalize_surveillance_settings(raw)
-    entry_map = _surveillance_entry_map(settings)
-    save_settings("surveillance", settings)
-
-    history = list_surveillance_history(query=q, page=page, limit=limit)
-    history_rows = []
-    for row in (history.get("rows") or []):
-        started_iso = (row.get("started_at") or "").strip()
-        ended_iso = (row.get("ended_at") or "").strip()
-        history_rows.append(
-            {
-                "id": row.get("id"),
-                "pppoe": row.get("pppoe") or "",
-                "source": row.get("source") or "",
-                "last_ip": row.get("last_ip") or "",
-                "last_state": row.get("last_state") or "",
-                "observed_count": int(row.get("observed_count") or 0),
-                "end_reason": (row.get("end_reason") or "").strip().lower(),
-                "end_note": (row.get("end_note") or "").strip(),
-                "started_at_iso": started_iso,
-                "ended_at_iso": ended_iso,
-                "started_at_ph": format_ts_ph(started_iso),
-                "ended_at_ph": format_ts_ph(ended_iso),
-                "active": not bool(ended_iso),
-                "currently_active": bool((row.get("pppoe") or "") in entry_map),
-            }
-        )
-
-    total = int(history.get("total") or 0)
-    pages = max((total + limit - 1) // limit, 1) if limit else 1
-    return JSONResponse(
-        {
-            "ok": True,
-            "query": q,
-            "page": page,
-            "pages": pages,
-            "total": total,
-            "limit": limit,
-            "rows": history_rows,
-        }
     )
 
 

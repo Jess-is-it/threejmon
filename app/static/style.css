@@ -1,19 +1,19 @@
 :root {
-  --threej-info-bg: rgba(2, 6, 23, 0.95);
+  --threej-info-bg: #0f1f2a;
 }
 
-/* Embedded legacy pages inside the React shell (iframe). */
-body.threej-embedded aside.navbar-vertical,
-body.threej-embedded header.navbar {
-  display: none !important;
+html,
+body,
+.page,
+.page-wrapper,
+.page-body {
+  background: #f9fafb !important;
 }
 
-body.threej-embedded .page-wrapper {
-  margin-left: 0 !important;
-}
-
-body.threej-embedded .page-body {
-  padding-top: 0 !important;
+.card,
+.table,
+.modal-content {
+  background: #ffffff;
 }
 
 .info {
@@ -24,12 +24,12 @@ body.threej-embedded .page-body {
   height: 18px;
   margin-left: 6px;
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  color: rgba(226, 232, 240, 0.9);
+  border: 1px solid #b5c3cf;
+  color: #43627a;
   font-size: 11px;
   cursor: help;
   position: relative;
-  background: rgba(255, 255, 255, 0.06);
+  background: #fff;
 }
 
 .info::after {
@@ -68,7 +68,7 @@ body.threej-embedded .page-body {
   bottom: 130%;
   transform: translateX(-50%);
   background: var(--threej-info-bg);
-  color: rgba(241, 245, 249, 0.95);
+  color: #f5f7fb;
   padding: 10px 12px;
   border-radius: 8px;
   font-size: 12px;
@@ -89,14 +89,14 @@ body.threej-embedded .page-body {
 .rto-table thead th {
   position: sticky;
   top: 0;
-  background: rgba(2, 6, 23, 0.9);
+  background: #ffffff;
   z-index: 2;
 }
 
 .rto-table-wrap {
   height: 520px;
   overflow: auto;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid #e5e7eb;
   border-radius: 8px;
   min-height: 260px;
 }
@@ -108,7 +108,7 @@ body.threej-embedded .page-body {
 .rto-table-wrap thead th {
   position: sticky;
   top: 0;
-  background: rgba(2, 6, 23, 0.9);
+  background: #ffffff;
   z-index: 2;
 }
 
@@ -118,7 +118,7 @@ body.threej-embedded .page-body {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: rgba(148, 163, 184, 0.9);
+  color: #6b7280;
   user-select: none;
 }
 
@@ -127,7 +127,7 @@ body.threej-embedded .page-body {
   width: 60px;
   height: 4px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.15);
+  background: #e5e7eb;
 }
 
 .rto-spark-btn {
@@ -148,7 +148,7 @@ body.threej-embedded .page-body {
 .rto-sort-indicator {
   margin-left: 6px;
   font-size: 0.75rem;
-  color: rgba(56, 189, 248, 0.9);
+  color: #206bc4;
   display: inline-block;
   min-width: 12px;
   text-align: center;
@@ -156,7 +156,7 @@ body.threej-embedded .page-body {
 
 .rto-sorted-asc .rto-sort-icon,
 .rto-sorted-desc .rto-sort-icon {
-  color: rgba(56, 189, 248, 0.9);
+  color: #206bc4;
 }
 
 .rto-spark-modal-chart {
@@ -244,7 +244,7 @@ aside.navbar .navbar-brand-logo {
 
 .help {
   font-size: 12px;
-  color: rgba(148, 163, 184, 0.9);
+  color: #6c7a86;
   margin-top: 6px;
 }
 
@@ -295,7 +295,7 @@ aside.navbar .navbar-brand-logo {
   text-align: center;
   font-weight: 600;
   font-size: 10px;
-  color: rgba(226, 232, 240, 0.9);
+  color: #4b5563;
   padding: 0 10px;
   pointer-events: none;
 }
@@ -331,22 +331,22 @@ textarea:not(.form-control),
 select:not(.form-select) {
   width: 100%;
   padding: 0.5rem 0.75rem;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid #d9e0e7;
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(226, 232, 240, 0.95);
+  background: #fff;
+  color: #1f2b3a;
 }
 
 .optical-popover {
   position: fixed;
   z-index: 1080;
   max-width: 280px;
-  background: rgba(2, 6, 23, 0.96);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #ffffff;
+  border: 1px solid #dee2e6;
   border-radius: 0.5rem;
   padding: 0.65rem 0.75rem;
   font-size: 0.875rem;
-  color: rgba(241, 245, 249, 0.95);
+  color: #182433;
   box-shadow: 0 8px 24px rgba(24, 36, 51, 0.15);
   display: none;
 }
@@ -362,9 +362,9 @@ select:not(.form-select) {
   min-height: 18px !important;
   padding: 0 !important;
   border-radius: 4px !important;
-  background: rgba(255, 255, 255, 0.08) !important;
-  border: 1px solid rgba(255, 255, 255, 0.16) !important;
-  color: rgba(226, 232, 240, 0.9) !important;
+  background: #f1f3f5 !important;
+  border: 1px solid #ced4da !important;
+  color: #6c757d !important;
   display: inline-flex !important;
   align-items: center !important;
   justify-content: center !important;
@@ -373,9 +373,9 @@ select:not(.form-select) {
 
 .optical-missing-btn:hover,
 .optical-missing-btn:focus {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.25);
-  color: rgba(241, 245, 249, 0.95);
+  background: #e9ecef;
+  border-color: #adb5bd;
+  color: #495057;
 }
 
 .header-icon-badge {
@@ -402,7 +402,7 @@ select:not(.form-select) {
 }
 
 .usage-hovercard .card {
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid #e5e7eb;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16);
 }
 
