@@ -4510,6 +4510,48 @@ async def accounts_ping_settings(request: Request):
     )
 
 
+@app.get("/api/accounts-ping/summary", response_class=JSONResponse)
+async def api_accounts_ping_summary(request: Request):
+    settings = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
+    window_hours = _normalize_wan_window(request.query_params.get("window"))
+    limit = _parse_table_limit(request.query_params.get("limit"), default=50)
+    issues_page = _parse_table_page(request.query_params.get("issues_page"), default=1)
+    stable_page = _parse_table_page(request.query_params.get("stable_page"), default=1)
+    issues_sort = (request.query_params.get("issues_sort") or "").strip()
+    issues_dir = (request.query_params.get("issues_dir") or "").strip().lower()
+    stable_sort = (request.query_params.get("stable_sort") or "").strip()
+    stable_dir = (request.query_params.get("stable_dir") or "").strip().lower()
+    query = (request.query_params.get("q") or "").strip()
+
+    status_map = {item["job_name"]: dict(item) for item in get_job_status()}
+    job_status = status_map.get("accounts_ping", {})
+    accounts_ping_job = {
+        "last_run_at_ph": format_ts_ph(job_status.get("last_run_at")),
+        "last_success_at_ph": format_ts_ph(job_status.get("last_success_at")),
+    }
+
+    accounts_ping_status = build_accounts_ping_status(
+        settings,
+        window_hours,
+        limit,
+        issues_page,
+        stable_page,
+        issues_sort=issues_sort,
+        issues_dir=issues_dir,
+        stable_sort=stable_sort,
+        stable_dir=stable_dir,
+        query=query,
+    )
+    return JSONResponse(
+        {
+            "updated_at": utc_now_iso(),
+            "accounts_ping_job": accounts_ping_job,
+            "accounts_ping_status": accounts_ping_status,
+            "accounts_ping_window_options": WAN_STATUS_WINDOW_OPTIONS,
+        }
+    )
+
+
 @app.get("/accounts-ping/series", response_class=JSONResponse)
 async def accounts_ping_series(account_id: str, window: int = 24):
     hours = _normalize_wan_window(window)
