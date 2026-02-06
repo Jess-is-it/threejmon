@@ -19,24 +19,19 @@ function formatUptime(seconds?: number) {
   return `${minutes}m`;
 }
 
-function SideLink(props: { to: string; label: string; compact?: boolean }) {
+function SideLink(props: { to: string; label: string }) {
   return (
     <NavLink
       to={props.to}
       className={({ isActive }) =>
         [
-          "flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium transition-colors",
-          props.compact ? "justify-center" : "",
-          isActive
-            ? "bg-white/10 text-white shadow-[0_0_0_1px_rgba(255,255,255,0.06)]"
-            : "text-slate-200 hover:bg-white/5 hover:text-white",
+          "block rounded-lg px-3 py-2 text-sm font-medium",
+          isActive ? "bg-white/10 text-white" : "text-slate-200 hover:bg-white/5 hover:text-white",
         ].join(" ")
       }
       end
-      title={props.compact ? props.label : undefined}
     >
-      <span className="h-2 w-2 rounded-full bg-slate-500/60" aria-hidden="true" />
-      {props.compact ? null : <span>{props.label}</span>}
+      {props.label}
     </NavLink>
   );
 }
@@ -44,7 +39,6 @@ function SideLink(props: { to: string; label: string; compact?: boolean }) {
 export function AppShell() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sys, setSys] = useState<SysResources>({});
-  const [collapsed, setCollapsed] = useState(false);
 
   const metrics = useMemo(() => {
     return [
@@ -74,24 +68,17 @@ export function AppShell() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-950 to-slate-900 text-slate-100">
+    <div className="min-h-screen bg-slate-950 text-slate-100">
       <div className="lg:flex">
         <aside
           className={[
-            "fixed inset-y-0 left-0 z-50 border-r border-white/10 bg-slate-950/60 backdrop-blur lg:static lg:block",
-            collapsed ? "w-20" : "w-72",
+            "fixed inset-y-0 left-0 z-50 w-72 border-r border-white/10 bg-slate-950/60 backdrop-blur lg:static lg:block",
             sidebarOpen ? "block" : "hidden",
           ].join(" ")}
         >
           <div className="flex items-center justify-between gap-2 px-4 py-4">
-            <a
-              href="/app"
-              className="flex items-center gap-2 text-sm font-semibold tracking-wide text-white no-underline"
-            >
-              <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-sky-500/20 text-sky-200 shadow-[0_0_0_1px_rgba(14,165,233,0.25)]">
-                3J
-              </span>
-              {collapsed ? null : <span>ThreeJ Notifier</span>}
+            <a href="/app" className="text-sm font-semibold tracking-wide text-white no-underline">
+              ThreeJ Notifier
             </a>
             <button
               type="button"
@@ -102,38 +89,24 @@ export function AppShell() {
               ✕
             </button>
           </div>
-          <div className="px-3 pb-2">
-            <button
-              type="button"
-              className="hidden w-full items-center justify-center rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-white/10 lg:flex"
-              onClick={() => setCollapsed((v) => !v)}
-              aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-            >
-              {collapsed ? "→" : "←"}
-            </button>
-          </div>
-          <nav className={["px-3 pb-6 space-y-1", collapsed ? "px-2" : ""].join(" ")}>
-            <SideLink to="/app" label="Dashboard" compact={collapsed} />
-            <SideLink to="/app/surveillance" label="Under Surveillance" compact={collapsed} />
-            <SideLink to="/app/profile-review" label="Profile Review" compact={collapsed} />
-            {collapsed ? (
-              <div className="pt-4" />
-            ) : (
-              <div className="pt-4 text-xs font-semibold tracking-wide text-slate-400 px-3">Monitoring</div>
-            )}
-            <SideLink to="/app/usage" label="Usage" compact={collapsed} />
-            <SideLink to="/app/offline" label="Offline" compact={collapsed} />
-            <SideLink to="/app/optical" label="Optical" compact={collapsed} />
-            <SideLink to="/app/accounts-ping" label="Accounts Ping" compact={collapsed} />
-            <SideLink to="/app/wan" label="WAN Ping" compact={collapsed} />
-            <SideLink to="/app/pulsewatch" label="ISP Pulsewatch" compact={collapsed} />
-            <SideLink to="/app/system" label="System Settings" compact={collapsed} />
+          <nav className="px-3 pb-6 space-y-1">
+            <SideLink to="/app" label="Dashboard" />
+            <SideLink to="/app/surveillance" label="Under Surveillance" />
+            <SideLink to="/app/profile-review" label="Profile Review" />
+            <div className="pt-4 text-xs font-semibold tracking-wide text-slate-400 px-3">Monitoring</div>
+            <SideLink to="/app/usage" label="Usage" />
+            <SideLink to="/app/offline" label="Offline" />
+            <SideLink to="/app/optical" label="Optical" />
+            <SideLink to="/app/accounts-ping" label="Accounts Ping" />
+            <SideLink to="/app/wan" label="WAN Ping" />
+            <SideLink to="/app/pulsewatch" label="ISP Pulsewatch" />
+            <SideLink to="/app/system" label="System Settings" />
           </nav>
         </aside>
 
         <div className="flex-1">
           <header className="sticky top-0 z-40 border-b border-white/10 bg-slate-950/60 backdrop-blur">
-            <div className="flex flex-wrap items-center gap-3 px-4 py-3">
+            <div className="flex items-center gap-3 px-4 py-3">
               <button
                 type="button"
                 className="inline-flex items-center justify-center rounded-lg border border-white/10 bg-white/5 px-2 py-2 text-slate-200 hover:bg-white/10 lg:hidden"
@@ -142,18 +115,10 @@ export function AppShell() {
               >
                 ☰
               </button>
-              <div className="flex items-center gap-2">
-                <div className="text-sm font-semibold tracking-tight">Unified ISP Ops</div>
-                <span className="hidden rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[11px] font-medium text-slate-300 sm:inline-flex">
-                  TailwindAdmin migration
-                </span>
-              </div>
-              <div className="ml-auto hidden items-center gap-2 lg:flex">
+              <div className="text-sm font-semibold">Unified ISP Ops</div>
+              <div className="ml-auto hidden items-center gap-4 lg:flex">
                 {metrics.map((m) => (
-                  <div
-                    key={m.label}
-                    className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-200"
-                  >
+                  <div key={m.label} className="text-xs text-slate-300">
                     <span className="text-slate-400">{m.label}</span> {m.value}
                   </div>
                 ))}
@@ -174,3 +139,4 @@ export function AppShell() {
     </div>
   );
 }
+
