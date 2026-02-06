@@ -268,63 +268,157 @@
           </div>
 
           <div class="tab-pane {% if settings_tab == 'radius' %}active{% endif %}" id="offline-radius">
-            <form method="post" action="/settings/offline">
-              <input type="hidden" name="active_tab" value="settings" />
-              <input type="hidden" name="settings_tab" value="radius" />
-              <div class="card mb-3">
-                <div class="card-body">
-                  <h4 class="mb-3">Radius Server (SSH)</h4>
-                  <div class="row g-3">
-                    <div class="col-md-4">
-                      <label class="form-check form-switch">
-                        <input class="form-check-input" type="checkbox" name="radius_enabled" {% if settings.radius.enabled %}checked{% endif %} />
-                        <span class="form-check-label">Enable Radius Mode Source</span>
-                      </label>
-                      <div class="text-muted small mt-1">Used only when Mode 2 is selected.</div>
+            <ul class="nav nav-tabs" data-bs-toggle="tabs">
+              <li class="nav-item">
+                <a href="#offline-radius-accounts" class="nav-link {% if radius_tab == 'accounts' %}active{% endif %}" data-bs-toggle="tab">Accounts</a>
+              </li>
+              <li class="nav-item">
+                <a href="#offline-radius-settings" class="nav-link {% if radius_tab != 'accounts' %}active{% endif %}" data-bs-toggle="tab">Settings</a>
+              </li>
+            </ul>
+
+            <div class="tab-content pt-4">
+              <div class="tab-pane {% if radius_tab == 'accounts' %}active{% endif %}" id="offline-radius-accounts">
+                <div class="d-flex flex-wrap align-items-center justify-content-between mb-3 gap-2">
+                  <div>
+                    <h4 class="mb-1">Radius Accounts</h4>
+                    <div class="text-muted small">
+                      Read-only view. Uses the SSH connection and the mysql options from “List Accounts Command” to query account details.
                     </div>
-                    <div class="col-md-4">
-                      <label class="form-label">Host</label>
-                      <input class="form-control" type="text" name="radius_host" value="{{ settings.radius.ssh.host }}" placeholder="radius.example.local" />
+                  </div>
+                  <div class="d-flex gap-2 align-items-center">
+                    <span class="badge bg-secondary-lt text-secondary" id="offline-radius-accounts-count">Accounts: 0</span>
+                    <div class="dropdown">
+                      <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" id="offline-radius-accounts-filter-button">Filter</button>
+                      <div class="dropdown-menu dropdown-menu-end p-2" style="min-width: 260px;">
+                        <div class="small text-muted mb-2">Status</div>
+                        <select class="form-select form-select-sm" id="offline-radius-accounts-status">
+                          <option value="all">All</option>
+                          <option value="online">Online only</option>
+                          <option value="offline">Offline only</option>
+                          <option value="reject">Reject/Disabled</option>
+                          <option value="active">Active (not Reject)</option>
+                        </select>
+                        <div class="dropdown-divider my-2"></div>
+                        <button type="button" class="btn btn-sm btn-outline-secondary w-100" id="offline-radius-accounts-clear">Clear filters</button>
+                      </div>
                     </div>
-                    <div class="col-md-4">
-                      <label class="form-label">Port</label>
-                      <input class="form-control" type="number" name="radius_port" value="{{ settings.radius.ssh.port }}" />
+                    <div class="dropdown">
+                      <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" id="offline-radius-accounts-limit-button">Show: 500</button>
+                      <div class="dropdown-menu dropdown-menu-end" id="offline-radius-accounts-limit-menu">
+                        <div class="dropdown-item offline-radius-accounts-limit-row" data-limit="200">200</div>
+                        <div class="dropdown-item offline-radius-accounts-limit-row" data-limit="500">500</div>
+                        <div class="dropdown-item offline-radius-accounts-limit-row" data-limit="1000">1000</div>
+                        <div class="dropdown-item offline-radius-accounts-limit-row" data-limit="5000">5000</div>
+                      </div>
                     </div>
-                    <div class="col-md-4">
-                      <label class="form-label">User</label>
-                      <input class="form-control" type="text" name="radius_user" value="{{ settings.radius.ssh.user }}" />
+                    <div class="input-icon">
+                      <input class="form-control form-control-sm" id="offline-radius-accounts-search" type="text" placeholder="Search" autocomplete="off" />
+                      <span class="input-icon-addon"><i class="ti ti-search"></i></span>
                     </div>
-                    <div class="col-md-4">
-                      <label class="form-label">Password</label>
-                      <input class="form-control" type="password" name="radius_password" value="{{ settings.radius.ssh.password }}" />
-                      <div class="text-muted small mt-1">Leave blank if using SSH key.</div>
-                    </div>
-                    <div class="col-md-4">
-                      <label class="form-label">Use SSH Key</label>
-                      <label class="form-check form-switch">
-                        <input class="form-check-input" type="checkbox" name="radius_use_key" {% if settings.radius.ssh.use_key %}checked{% endif %} />
-                        <span class="form-check-label">Enable key authentication</span>
-                      </label>
-                    </div>
-                    <div class="col-md-6">
-                      <label class="form-label">Key Path</label>
-                      <input class="form-control" type="text" name="radius_key_path" value="{{ settings.radius.ssh.key_path }}" placeholder="/data/id_rsa" />
-                    </div>
-                    <div class="col-12">
-                      <label class="form-label">List Accounts Command</label>
-                      <textarea class="form-control" name="radius_list_command" rows="3" placeholder="Example: mysql -N -e \"SELECT username,status FROM radcheck\"">{{ settings.radius.list_command }}</textarea>
-                      <div class="text-muted small mt-1">
-                        Output format: one account per line. Supported: <code>username,status</code> or <code>username|status</code> or <code>username status</code>.
+                  </div>
+                </div>
+
+                <div class="rto-table-shell">
+                  <div class="rto-table-wrap" id="offline-radius-accounts-table">
+                    <table class="table table-vcenter rto-table">
+                      <thead>
+                        <tr>
+                          <th class="rto-sort" data-table="radius_accounts" data-sort-key="username" aria-sort="none">Username <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                          <th class="rto-sort" data-table="radius_accounts" data-sort-key="status" aria-sort="none">Status <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                          <th class="rto-sort" data-table="radius_accounts" data-sort-key="online" aria-sort="none">Online <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                          <th class="rto-sort" data-table="radius_accounts" data-sort-key="ip" aria-sort="none">IP <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                          <th class="rto-sort" data-table="radius_accounts" data-sort-key="nas_ip" aria-sort="none">NAS <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                          <th class="rto-sort" data-table="radius_accounts" data-sort-key="groups" aria-sort="none">Groups <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                          <th class="rto-sort" data-table="radius_accounts" data-sort-key="uptime_sec" aria-sort="none">Uptime <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                          <th class="rto-sort" data-table="radius_accounts" data-sort-key="online_since" aria-sort="none">Online Since <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                          <th class="rto-sort" data-table="radius_accounts" data-sort-key="last_start" aria-sort="none">Last Start <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                          <th class="rto-sort" data-table="radius_accounts" data-sort-key="last_stop" aria-sort="none">Last Stop <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                        </tr>
+                      </thead>
+                      <tbody id="offline-radius-accounts-body">
+                        <tr><td colspan="10" class="text-muted">Click the Accounts tab to load data.</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <div class="rto-resize-handle" data-target="#offline-radius-accounts-table" title="Drag to resize"></div>
+                </div>
+
+                <div class="alert alert-info mt-3">
+                  <div class="d-flex gap-2 align-items-start">
+                    <i class="ti ti-info-circle mt-1"></i>
+                    <div>
+                      <div class="fw-semibold">Managing Radius accounts</div>
+                      <div class="small text-muted">
+                        This is a read-only viewer. Adding/editing/disabling accounts from this portal is possible, but would require write access to Radius DB and an audited change workflow (roles, confirmations, and logs). Not implemented yet.
                       </div>
                     </div>
                   </div>
                 </div>
               </div>
-              <div class="d-flex gap-2">
-                <button type="submit" class="btn btn-primary">Save Radius Settings</button>
-                <button type="submit" class="btn btn-outline-secondary" formaction="/settings/offline/test-radius">Test Radius</button>
+
+              <div class="tab-pane {% if radius_tab != 'accounts' %}active{% endif %}" id="offline-radius-settings">
+                <form method="post" action="/settings/offline">
+                  <input type="hidden" name="active_tab" value="settings" />
+                  <input type="hidden" name="settings_tab" value="radius" />
+                  <input type="hidden" name="radius_tab" value="settings" />
+                  <div class="card mb-3">
+                    <div class="card-body">
+                      <h4 class="mb-3">Radius Server (SSH)</h4>
+                      <div class="row g-3">
+                        <div class="col-md-4">
+                          <label class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" name="radius_enabled" {% if settings.radius.enabled %}checked{% endif %} />
+                            <span class="form-check-label">Enable Radius Mode Source</span>
+                          </label>
+                          <div class="text-muted small mt-1">Used only when Mode 2 is selected.</div>
+                        </div>
+                        <div class="col-md-4">
+                          <label class="form-label">Host</label>
+                          <input class="form-control" type="text" name="radius_host" value="{{ settings.radius.ssh.host }}" placeholder="radius.example.local" />
+                        </div>
+                        <div class="col-md-4">
+                          <label class="form-label">Port</label>
+                          <input class="form-control" type="number" name="radius_port" value="{{ settings.radius.ssh.port }}" />
+                        </div>
+                        <div class="col-md-4">
+                          <label class="form-label">User</label>
+                          <input class="form-control" type="text" name="radius_user" value="{{ settings.radius.ssh.user }}" />
+                        </div>
+                        <div class="col-md-4">
+                          <label class="form-label">Password</label>
+                          <input class="form-control" type="password" name="radius_password" value="{{ settings.radius.ssh.password }}" />
+                          <div class="text-muted small mt-1">Leave blank if using SSH key.</div>
+                        </div>
+                        <div class="col-md-4">
+                          <label class="form-label">Use SSH Key</label>
+                          <label class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" name="radius_use_key" {% if settings.radius.ssh.use_key %}checked{% endif %} />
+                            <span class="form-check-label">Enable key authentication</span>
+                          </label>
+                        </div>
+                        <div class="col-md-6">
+                          <label class="form-label">Key Path</label>
+                          <input class="form-control" type="text" name="radius_key_path" value="{{ settings.radius.ssh.key_path }}" placeholder="/data/id_rsa" />
+                        </div>
+                        <div class="col-12">
+                          <label class="form-label">List Accounts Command</label>
+                          <textarea class="form-control" name="radius_list_command" rows="3" placeholder="Example: mysql -N -e &quot;SELECT username,status FROM radcheck&quot;">{{ settings.radius.list_command }}</textarea>
+                          <div class="text-muted small mt-1">
+                            Output format: one account per line. Supported: <code>username,status</code> or <code>username|status</code> or <code>username status</code>.
+                            <div class="mt-1">For the Accounts view, use a <code>mysql ... -e &quot;SQL&quot;</code> command so the portal can reuse the same mysql options for details queries.</div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="d-flex gap-2">
+                    <button type="submit" class="btn btn-primary">Save Radius Settings</button>
+                    <button type="submit" class="btn btn-outline-secondary" formaction="/settings/offline/test-radius">Test Radius</button>
+                  </div>
+                </form>
               </div>
-            </form>
+            </div>
           </div>
         </div>
       </div>
@@ -352,19 +446,37 @@
     const filterRouters = document.getElementById("offline-filter-routers");
     const filterClear = document.getElementById("offline-filter-clear");
 
+    const radiusAccountsBody = document.getElementById("offline-radius-accounts-body");
+    const radiusAccountsCountEl = document.getElementById("offline-radius-accounts-count");
+    const radiusAccountsSearchInput = document.getElementById("offline-radius-accounts-search");
+    const radiusAccountsStatusSelect = document.getElementById("offline-radius-accounts-status");
+    const radiusAccountsClearBtn = document.getElementById("offline-radius-accounts-clear");
+    const radiusAccountsLimitButton = document.getElementById("offline-radius-accounts-limit-button");
+    const radiusAccountsLimitRows = document.querySelectorAll(".offline-radius-accounts-limit-row");
+
     const sortStateKey = "offline_sort_state_v1";
     const searchStateKey = "offline_status_search_v1";
     const limitStateKey = "offline_status_limit_v1";
     const routerFilterKey = "offline_status_router_filters_v1";
 
-    const numericKeys = new Set(["duration_seconds"]);
-    const booleanKeys = new Set(["disabled"]);
+    const numericKeys = new Set(["duration_seconds", "uptime_sec"]);
+    const booleanKeys = new Set(["disabled", "online"]);
 
     let currentData = [];
     let historyData = [];
+    let radiusAccountsData = [];
     let searchQuery = "";
     let showLimit = 100;
     let selectedRouters = [];
+    let radiusAccountsSearch = "";
+    let radiusAccountsStatus = "all";
+    let radiusAccountsShowLimit = 500;
+    let radiusAccountsLastFetchAt = 0;
+    let radiusAccountsFetching = false;
+
+    const radiusAccountsSearchKey = "offline_radius_accounts_search_v1";
+    const radiusAccountsStatusKey = "offline_radius_accounts_status_v1";
+    const radiusAccountsLimitKey = "offline_radius_accounts_limit_v1";
 
     function loadJson(key, fallback) {
       try {
@@ -402,7 +514,7 @@
       sortState = { ...sortState, [table]: { key, dir } };
       saveSortState(sortState);
       updateSortIndicators();
-      renderTable();
+      renderAllTables();
     }
 
     function updateSortIndicators() {
@@ -573,7 +685,85 @@
         const filtered = applyLimit(sortRows(filterRows(historyData), "history"));
         historyBody.innerHTML = filtered.length ? filtered.map(renderHistoryRow).join("") : '<tr><td colspan="6" class="text-muted">No history yet.</td></tr>';
       }
+      renderRadiusAccountsTable();
       updateSortIndicators();
+    }
+
+    function formatDurationShort(seconds) {
+      const sec = Number(seconds);
+      if (!Number.isFinite(sec) || sec <= 0) return "—";
+      const s = Math.floor(sec);
+      const d = Math.floor(s / 86400);
+      const h = Math.floor((s % 86400) / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      if (d > 0) return `${d}d ${h}h`;
+      if (h > 0) return `${h}h ${m}m`;
+      return `${m}m`;
+    }
+
+    function radiusRowMatchesSearch(row) {
+      const q = (radiusAccountsSearch || "").trim().toLowerCase();
+      if (!q) return true;
+      return [
+        row?.username,
+        row?.status,
+        row?.ip,
+        row?.nas_ip,
+        row?.groups,
+        row?.online_since,
+        row?.last_start,
+        row?.last_stop,
+      ]
+        .filter((x) => x !== null && x !== undefined)
+        .map((x) => String(x).toLowerCase())
+        .some((x) => x.includes(q));
+    }
+
+    function radiusRowMatchesFilter(row) {
+      const status = String(radiusAccountsStatus || "all").toLowerCase();
+      if (status === "all") return true;
+      if (status === "online") return !!row?.online;
+      if (status === "offline") return !row?.online;
+      if (status === "reject") return String(row?.status || "").toLowerCase() === "reject";
+      if (status === "active") return String(row?.status || "").toLowerCase() !== "reject";
+      return true;
+    }
+
+    function renderRadiusRow(row) {
+      const status = String(row?.status || "").trim().toLowerCase();
+      const statusBadge =
+        status === "reject"
+          ? '<span class="badge bg-red-lt">Reject</span>'
+          : '<span class="badge bg-green-lt">Active</span>';
+      const onlineBadge = row?.online ? '<span class="badge bg-green-lt">Online</span>' : '<span class="badge bg-secondary-lt">Offline</span>';
+      const uptime = row?.online ? formatDurationShort(row?.uptime_sec) : "—";
+      return `
+        <tr>
+          <td class="fw-semibold">${esc(row?.username || "")}</td>
+          <td>${statusBadge}</td>
+          <td>${onlineBadge}</td>
+          <td class="text-muted">${esc(row?.ip || "—")}</td>
+          <td class="text-muted">${esc(row?.nas_ip || "—")}</td>
+          <td class="text-muted">${esc(row?.groups || "—")}</td>
+          <td class="text-muted">${esc(uptime)}</td>
+          <td class="text-muted">${esc(row?.online_since || "—")}</td>
+          <td class="text-muted">${esc(row?.last_start || "—")}</td>
+          <td class="text-muted">${esc(row?.last_stop || "—")}</td>
+        </tr>
+      `;
+    }
+
+    function renderRadiusAccountsTable() {
+      if (!radiusAccountsBody) return;
+      const filtered = radiusAccountsData
+        .filter((row) => radiusRowMatchesFilter(row) && radiusRowMatchesSearch(row));
+      const sorted = sortRows(filtered, "radius_accounts");
+      const limited = radiusAccountsShowLimit > 0 ? sorted.slice(0, radiusAccountsShowLimit) : sorted;
+      radiusAccountsBody.innerHTML = limited.length
+        ? limited.map(renderRadiusRow).join("")
+        : '<tr><td colspan="10" class="text-muted">No accounts found.</td></tr>';
+      if (radiusAccountsCountEl) radiusAccountsCountEl.textContent = `Accounts: ${filtered.length}`;
+      if (radiusAccountsLimitButton) radiusAccountsLimitButton.textContent = `Show: ${radiusAccountsShowLimit}`;
     }
 
     function initFromStorage() {
@@ -585,6 +775,14 @@
       if (searchInput) searchInput.value = searchQuery;
       updateLimitButton();
       updateFilterButton();
+
+      radiusAccountsSearch = String(loadJson(radiusAccountsSearchKey, "") || "");
+      radiusAccountsStatus = String(loadJson(radiusAccountsStatusKey, "all") || "all");
+      radiusAccountsShowLimit = Number(loadJson(radiusAccountsLimitKey, 500));
+      if (!Number.isFinite(radiusAccountsShowLimit) || radiusAccountsShowLimit <= 0) radiusAccountsShowLimit = 500;
+      if (radiusAccountsSearchInput) radiusAccountsSearchInput.value = radiusAccountsSearch;
+      if (radiusAccountsStatusSelect) radiusAccountsStatusSelect.value = radiusAccountsStatus;
+      if (radiusAccountsLimitButton) radiusAccountsLimitButton.textContent = `Show: ${radiusAccountsShowLimit}`;
     }
 
     async function refresh() {
@@ -621,6 +819,40 @@
         renderAllTables();
       } catch (err) {
         if (historyBody) historyBody.innerHTML = '<tr><td colspan="6" class="text-danger">Failed to load offline history.</td></tr>';
+      }
+    }
+
+    function isRadiusAccountsTabActive() {
+      const pane = document.getElementById("offline-radius-accounts");
+      if (!pane) return false;
+      return pane.classList.contains("active") || pane.classList.contains("show");
+    }
+
+    async function refreshRadiusAccounts(force = false) {
+      if (!radiusAccountsBody) return;
+      if (!isRadiusAccountsTabActive()) return;
+      const now = Date.now();
+      if (!force && radiusAccountsLastFetchAt && now - radiusAccountsLastFetchAt < 60_000) return;
+      if (radiusAccountsFetching) return;
+      radiusAccountsFetching = true;
+      try {
+        radiusAccountsBody.innerHTML = '<tr><td colspan="10" class="text-muted">Loading…</td></tr>';
+        const res = await fetch("/offline/radius/accounts?limit=50000", { headers: { "Accept": "application/json" } });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          const msg = data?.error ? String(data.error) : `HTTP ${res.status}`;
+          throw new Error(msg);
+        }
+        const data = await res.json();
+        radiusAccountsData = Array.isArray(data.rows) ? data.rows : [];
+        radiusAccountsLastFetchAt = now;
+        renderRadiusAccountsTable();
+      } catch (err) {
+        radiusAccountsData = [];
+        if (radiusAccountsBody) radiusAccountsBody.innerHTML = `<tr><td colspan="10" class="text-danger">Failed to load radius accounts: ${esc(err?.message || err || 'unknown error')}</td></tr>`;
+        if (radiusAccountsCountEl) radiusAccountsCountEl.textContent = "Accounts: 0";
+      } finally {
+        radiusAccountsFetching = false;
       }
     }
 
@@ -683,6 +915,52 @@
       });
     }
 
+    if (radiusAccountsSearchInput) {
+      let timer = null;
+      const apply = () => {
+        saveJson(radiusAccountsSearchKey, radiusAccountsSearch);
+        renderRadiusAccountsTable();
+      };
+      radiusAccountsSearchInput.addEventListener("input", () => {
+        radiusAccountsSearch = radiusAccountsSearchInput.value || "";
+        if (timer) window.clearTimeout(timer);
+        timer = window.setTimeout(apply, 150);
+      });
+    }
+    if (radiusAccountsStatusSelect) {
+      radiusAccountsStatusSelect.addEventListener("change", () => {
+        radiusAccountsStatus = radiusAccountsStatusSelect.value || "all";
+        saveJson(radiusAccountsStatusKey, radiusAccountsStatus);
+        renderRadiusAccountsTable();
+      });
+    }
+    if (radiusAccountsClearBtn) {
+      radiusAccountsClearBtn.addEventListener("click", (event) => {
+        event.preventDefault();
+        radiusAccountsSearch = "";
+        radiusAccountsStatus = "all";
+        saveJson(radiusAccountsSearchKey, radiusAccountsSearch);
+        saveJson(radiusAccountsStatusKey, radiusAccountsStatus);
+        if (radiusAccountsSearchInput) radiusAccountsSearchInput.value = "";
+        if (radiusAccountsStatusSelect) radiusAccountsStatusSelect.value = "all";
+        renderRadiusAccountsTable();
+      });
+    }
+    radiusAccountsLimitRows.forEach((row) => {
+      row.addEventListener("click", () => {
+        const n = Number(row.dataset.limit || "500");
+        if (!Number.isFinite(n) || n <= 0) return;
+        radiusAccountsShowLimit = n;
+        saveJson(radiusAccountsLimitKey, radiusAccountsShowLimit);
+        if (radiusAccountsLimitButton) radiusAccountsLimitButton.textContent = `Show: ${radiusAccountsShowLimit}`;
+        renderRadiusAccountsTable();
+      });
+    });
+
+    document.querySelectorAll('a[data-bs-toggle="tab"][href="#offline-radius-accounts"]').forEach((tab) => {
+      tab.addEventListener("shown.bs.tab", () => refreshRadiusAccounts(true));
+    });
+
     // Resize table (vertical) like Optical/Usage.
     document.querySelectorAll(".rto-table-wrap").forEach((wrap) => {
       const stored = localStorage.getItem(`offline_${wrap.id}_height`);
@@ -691,7 +969,8 @@
     document.querySelectorAll(".rto-resize-handle").forEach((handle) => {
       let startY = 0;
       let startHeight = 0;
-      const targetId = handle.dataset.target;
+      const targetSel = String(handle.dataset.target || "");
+      const targetId = targetSel.replace(/^#/, "").trim();
       const target = targetId ? document.getElementById(targetId) : null;
       if (!target) return;
       const onMouseMove = (event) => {
@@ -702,7 +981,7 @@
       const onMouseUp = () => {
         document.removeEventListener("mousemove", onMouseMove);
         document.removeEventListener("mouseup", onMouseUp);
-        localStorage.setItem(`offline_${targetId}_height`, parseInt(target.style.height || "0", 10));
+        localStorage.setItem(`offline_${target.id}_height`, parseInt(target.style.height || "0", 10));
       };
       handle.addEventListener("mousedown", (event) => {
         startY = event.clientY;
@@ -715,8 +994,10 @@
     initFromStorage();
     refresh();
     refreshHistory();
+    refreshRadiusAccounts();
     setInterval(refresh, 5000);
     setInterval(refreshHistory, 15000);
+    setInterval(() => refreshRadiusAccounts(false), 60000);
   });
 </script>
 

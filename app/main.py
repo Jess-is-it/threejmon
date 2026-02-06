@@ -2308,6 +2308,21 @@ async def offline_history(days: int = 30, limit: int = 500):
     return JSONResponse({"days": days, "count": len(payload), "rows": payload})
 
 
+@app.get("/offline/radius/accounts", response_class=JSONResponse)
+async def offline_radius_accounts(limit: int = 5000):
+    limit = max(min(int(limit or 5000), 50000), 1)
+    settings = get_settings("offline", OFFLINE_DEFAULTS)
+    radius_cfg = settings.get("radius") if isinstance(settings.get("radius"), dict) else {}
+    try:
+        from .notifiers import offline as offline_notifier
+
+        rows = offline_notifier.fetch_radius_account_details(radius_cfg, limit=limit)
+        return JSONResponse({"ok": True, "count": len(rows), "rows": rows})
+    except Exception as exc:
+        # Do not include secrets in error output.
+        return JSONResponse({"ok": False, "error": str(exc), "count": 0, "rows": []}, status_code=400)
+
+
 @app.get("/pulsewatch/summary")
 async def pulsewatch_summary(target: str = "all", loss_minutes: int = 120):
     isp_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
@@ -3648,6 +3663,9 @@ async def offline_settings(request: Request):
     settings_tab = (request.query_params.get("settings_tab") or "general").strip().lower()
     if settings_tab not in ("general", "routers", "radius"):
         settings_tab = "general"
+    radius_tab = (request.query_params.get("radius_tab") or "settings").strip().lower()
+    if radius_tab not in ("settings", "accounts"):
+        radius_tab = "settings"
 
     job_status = {item["job_name"]: dict(item) for item in get_job_status()}
     offline_job = job_status.get("offline", {})
@@ -3674,6 +3692,7 @@ async def offline_settings(request: Request):
                 "message": "",
                 "active_tab": active_tab,
                 "settings_tab": settings_tab,
+                "radius_tab": radius_tab,
                 "offline_job": offline_job,
                 "offline_state": offline_state,
                 "usage_settings": usage_settings,
@@ -3686,6 +3705,9 @@ async def offline_settings(request: Request):
 async def offline_settings_save(request: Request):
     form = await request.form()
     settings_tab = (form.get("settings_tab") or "general").strip() or "general"
+    radius_tab = (form.get("radius_tab") or "settings").strip().lower()
+    if radius_tab not in ("settings", "accounts"):
+        radius_tab = "settings"
     settings = get_settings("offline", OFFLINE_DEFAULTS)
 
     settings["general"] = settings.get("general") if isinstance(settings.get("general"), dict) else {}
@@ -3740,7 +3762,9 @@ async def offline_settings_save(request: Request):
         save_settings("offline", settings)
 
     return RedirectResponse(
-        url=f"/settings/offline?tab=settings&settings_tab={settings_tab}#offline-{settings_tab}",
+        url=f"/settings/offline?tab=settings&settings_tab={settings_tab}"
+        + (f"&radius_tab={radius_tab}" if settings_tab == "radius" else "")
+        + f"#offline-{settings_tab}",
         status_code=302,
     )
 
@@ -3772,6 +3796,7 @@ async def offline_test_radius(request: Request):
                 "message": message,
                 "active_tab": "settings",
                 "settings_tab": "radius",
+                "radius_tab": "settings",
                 "offline_job": {"last_run_at_ph": "n/a", "last_success_at_ph": "n/a", "last_error": "", "last_error_at_ph": ""},
                 "offline_state": offline_state,
                 "usage_settings": usage_settings,
