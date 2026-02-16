@@ -989,7 +989,36 @@ class JobsManager:
                         secrets_refresh_minutes = 1
                     timeout_seconds = int((cfg.get("mikrotik") or {}).get("timeout_seconds", 5) or 5)
 
-                    routers = (cfg.get("mikrotik") or {}).get("routers") or []
+                    # Shared MikroTik routers are now managed in System Settings (wan_ping.pppoe_routers).
+                    # Back-compat: migrate legacy routers from Usage settings if System Settings is empty.
+                    wan_cfg = get_settings("wan_ping", WAN_PING_DEFAULTS)
+                    routers = wan_cfg.get("pppoe_routers") if isinstance(wan_cfg.get("pppoe_routers"), list) else []
+                    if not routers:
+                        legacy = (cfg.get("mikrotik") or {}).get("routers") or []
+                        migrated = []
+                        for item in legacy:
+                            if not isinstance(item, dict):
+                                continue
+                            rid = (item.get("id") or "").strip()
+                            host = (item.get("host") or "").strip()
+                            if not rid or not host:
+                                continue
+                            migrated.append(
+                                {
+                                    "id": rid,
+                                    "name": (item.get("name") or "").strip(),
+                                    "host": host,
+                                    "port": int(item.get("port", 8728) or 8728),
+                                    "username": item.get("username", ""),
+                                    "password": item.get("password", ""),
+                                    "use_tls": False,
+                                }
+                            )
+                        if migrated:
+                            wan_cfg.setdefault("pppoe_routers", [])
+                            wan_cfg["pppoe_routers"] = migrated
+                            save_settings("wan_ping", wan_cfg)
+                            routers = migrated
                     enabled_router_ids = set()
                     active_rows = []
                     offline_rows = []
@@ -1013,6 +1042,25 @@ class JobsManager:
                         if not router_id or not host:
                             continue
                         enabled_router_ids.add(router_id)
+                        if router.get("use_tls"):
+                            router_status.append(
+                                {
+                                    "router_id": router_id,
+                                    "router_name": router_name,
+                                    "active_count": 0,
+                                    "queue_count": 0,
+                                    "queue_match_count": 0,
+                                    "queue_bytes_ok": False,
+                                    "queue_rate_ok": False,
+                                    "iface_count": 0,
+                                    "iface_match_count": 0,
+                                    "iface_bytes_ok": False,
+                                    "offline_count": 0,
+                                    "error": "TLS/API-SSL is not supported by the current RouterOS API client. Disable TLS or use port 8728.",
+                                    "connected": False,
+                                }
+                            )
+                            continue
 
                         last_secret = secrets_refreshed_at.get(router_id)
                         last_secret_dt = datetime.fromisoformat(last_secret.replace("Z", "")) if last_secret else None
@@ -1403,7 +1451,7 @@ class JobsManager:
         Offline accounts collector.
         - Mode secrets: MikroTik secrets minus /ppp/active
         - Mode radius: Radius list minus /ppp/active
-        Routers are shared from Usage settings.
+        Routers are shared from System Settings (wan_ping.pppoe_routers).
         """
         clients = {}
         client_sigs = {}
@@ -1430,8 +1478,35 @@ class JobsManager:
             if mode not in ("secrets", "radius"):
                 mode = "secrets"
 
-            usage_cfg = get_settings("usage", USAGE_DEFAULTS)
-            routers = (usage_cfg.get("mikrotik") or {}).get("routers") or []
+            wan_cfg = get_settings("wan_ping", WAN_PING_DEFAULTS)
+            routers = wan_cfg.get("pppoe_routers") if isinstance(wan_cfg.get("pppoe_routers"), list) else []
+            if not routers:
+                usage_cfg = get_settings("usage", USAGE_DEFAULTS)
+                legacy = (usage_cfg.get("mikrotik") or {}).get("routers") or []
+                migrated = []
+                for item in legacy:
+                    if not isinstance(item, dict):
+                        continue
+                    rid = (item.get("id") or "").strip()
+                    host = (item.get("host") or "").strip()
+                    if not rid or not host:
+                        continue
+                    migrated.append(
+                        {
+                            "id": rid,
+                            "name": (item.get("name") or "").strip(),
+                            "host": host,
+                            "port": int(item.get("port", 8728) or 8728),
+                            "username": item.get("username", ""),
+                            "password": item.get("password", ""),
+                            "use_tls": False,
+                        }
+                    )
+                if migrated:
+                    wan_cfg.setdefault("pppoe_routers", [])
+                    wan_cfg["pppoe_routers"] = migrated
+                    save_settings("wan_ping", wan_cfg)
+                    routers = migrated
 
             now_iso = utc_now_iso()
             update_job_status("offline", last_run_at=now_iso)
@@ -1493,6 +1568,19 @@ class JobsManager:
                         if not router_id or not host:
                             continue
                         enabled_router_ids.add(router_id)
+                        if router.get("use_tls"):
+                            router_error = "TLS/API-SSL is not supported by the current RouterOS API client. Disable TLS or use port 8728."
+                            router_status.append(
+                                {
+                                    "router_id": router_id,
+                                    "router_name": router_name,
+                                    "active_count": 0,
+                                    "connected": False,
+                                    "error": router_error,
+                                }
+                            )
+                            router_errors.append(f"{router_name}: {router_error}")
+                            continue
 
                         port = int(router.get("port", 8728) or 8728)
                         username = router.get("username", "")

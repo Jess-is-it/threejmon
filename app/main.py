@@ -3283,7 +3283,9 @@ async def usage_settings(request: Request):
     if active_tab not in ("status", "settings"):
         active_tab = "status"
     settings_tab = (request.query_params.get("settings_tab") or "general").strip().lower()
-    if settings_tab not in ("general", "routers", "data", "detection", "storage", "danger"):
+    if settings_tab == "routers":
+        return RedirectResponse(url="/settings/system?tab=routers&routers_tab=mikrotik-routers", status_code=302)
+    if settings_tab not in ("general", "data", "detection", "storage", "danger"):
         settings_tab = "general"
     job_status = {item["job_name"]: dict(item) for item in get_job_status()}
     usage_job = job_status.get("usage", {})
@@ -3318,6 +3320,8 @@ async def usage_settings(request: Request):
 async def usage_settings_save(request: Request):
     form = await request.form()
     settings_tab = (form.get("settings_tab") or "general").strip() or "general"
+    if settings_tab == "routers":
+        return RedirectResponse(url="/settings/system?tab=routers&routers_tab=mikrotik-routers", status_code=302)
     settings = get_settings("usage", USAGE_DEFAULTS)
 
     settings["mikrotik"] = settings.get("mikrotik") if isinstance(settings.get("mikrotik"), dict) else {}
@@ -3356,8 +3360,6 @@ async def usage_settings_save(request: Request):
                 int(settings["storage"].get("sample_interval_seconds", USAGE_DEFAULTS["storage"]["sample_interval_seconds"])),
             )
             message = "Usage settings saved."
-        elif settings_tab == "routers":
-            message = "Routers are saved in the Routers tab."
         elif settings_tab == "data":
             settings["genieacs"]["base_url"] = (form.get("genieacs_base_url") or "").strip()
             settings["genieacs"]["username"] = (form.get("genieacs_username") or "").strip()
@@ -3548,66 +3550,31 @@ async def usage_test_genieacs(request: Request):
 
 @app.post("/settings/usage/routers", response_class=HTMLResponse)
 async def usage_save_routers(request: Request):
+    # Routers were moved from Usage settings to System Settings → Routers → Mikrotik Routers.
     form = await request.form()
-    settings = get_settings("usage", USAGE_DEFAULTS)
-    settings["mikrotik"] = settings.get("mikrotik") if isinstance(settings.get("mikrotik"), dict) else {}
-    routers = settings["mikrotik"].get("routers") if isinstance(settings["mikrotik"].get("routers"), list) else []
-    count = parse_int(form, "router_count", len(routers))
-    next_routers = []
-    for idx in range(count):
-        router_id = (form.get(f"router_{idx}_id") or "").strip()
-        if not router_id:
-            continue
-        if parse_bool(form, f"router_{idx}_remove"):
-            continue
-        next_routers.append(
-            {
-                "id": router_id,
-                "name": (form.get(f"router_{idx}_name") or "").strip(),
-                "host": (form.get(f"router_{idx}_host") or "").strip(),
-                "port": parse_int(form, f"router_{idx}_port", 8728),
-                "username": (form.get(f"router_{idx}_username") or "").strip(),
-                "password": (form.get(f"router_{idx}_password") or "").strip(),
-                "enabled": parse_bool(form, f"router_{idx}_enabled"),
-            }
-        )
-    settings["mikrotik"]["routers"] = next_routers
-    save_settings("usage", settings)
-    job_status = {item["job_name"]: dict(item) for item in get_job_status()}
-    usage_job = job_status.get("usage", {})
-    usage_job = {
-        "last_run_at_ph": format_ts_ph(usage_job.get("last_run_at")),
-        "last_success_at_ph": format_ts_ph(usage_job.get("last_success_at")),
-        "last_error": (usage_job.get("last_error") or "").strip(),
-        "last_error_at_ph": format_ts_ph(usage_job.get("last_error_at")),
-    }
-    state = get_state("usage_state", {})
-    return templates.TemplateResponse(
-        "settings_usage.html",
-        make_context(
-            request,
-            {
-                "settings": settings,
-                "message": "Routers saved.",
-                "active_tab": "settings",
-                "settings_tab": "routers",
-                "usage_job": usage_job,
-                "usage_state": {
-                    "last_check": format_ts_ph(state.get("last_check_at")),
-                    "genieacs_last_refresh": format_ts_ph(state.get("last_genieacs_refresh_at")),
-                    "genieacs_error": (state.get("genieacs_error") or "").strip(),
-                },
-            },
-        ),
+    wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    existing = wan_settings_data.get("pppoe_routers", [])
+    count = parse_int(form, "router_count", len(existing))
+    routers, removed_ids = _parse_wan_pppoe_routers_from_form(form, count)
+    wan_settings_data["pppoe_routers"] = routers
+    if removed_ids:
+        for wan in wan_settings_data.get("wans", []):
+            if wan.get("pppoe_router_id") in removed_ids:
+                wan["pppoe_router_id"] = ""
+    save_settings("wan_ping", wan_settings_data)
+    return render_system_settings_response(
+        request,
+        "Mikrotik routers saved.",
+        active_tab="routers",
+        routers_tab="mikrotik-routers",
     )
 
 
 @app.post("/settings/usage/routers/add", response_class=HTMLResponse)
 async def usage_add_router(request: Request):
-    settings = get_settings("usage", USAGE_DEFAULTS)
-    settings["mikrotik"] = settings.get("mikrotik") if isinstance(settings.get("mikrotik"), dict) else {}
-    routers = settings["mikrotik"].get("routers") if isinstance(settings["mikrotik"].get("routers"), list) else []
-    existing_ids = {r.get("id") for r in routers if isinstance(r, dict) and r.get("id")}
+    wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    routers = wan_settings_data.get("pppoe_routers", [])
+    existing_ids = {router.get("id") for router in routers if router.get("id")}
     next_idx = 1
     while f"router{next_idx}" in existing_ids:
         next_idx += 1
@@ -3619,67 +3586,58 @@ async def usage_add_router(request: Request):
             "port": 8728,
             "username": "",
             "password": "",
-            "enabled": True,
+            "use_tls": False,
         }
     )
-    settings["mikrotik"]["routers"] = routers
-    save_settings("usage", settings)
-    return RedirectResponse(url="/settings/usage?tab=settings&settings_tab=routers#usage-routers", status_code=302)
+    wan_settings_data["pppoe_routers"] = routers
+    save_settings("wan_ping", wan_settings_data)
+    return RedirectResponse(url="/settings/system?tab=routers&routers_tab=mikrotik-routers#sys-routers-mikrotik", status_code=302)
 
 
 @app.post("/settings/usage/routers/test/{router_id}", response_class=HTMLResponse)
 async def usage_test_router(request: Request, router_id: str):
-    settings = get_settings("usage", USAGE_DEFAULTS)
-    routers = (settings.get("mikrotik") or {}).get("routers") or []
-    router = next((r for r in routers if isinstance(r, dict) and (r.get("id") or "").strip() == (router_id or "").strip()), None)
-    message = ""
+    wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    router = next((item for item in wan_settings_data.get("pppoe_routers", []) if item.get("id") == router_id), None)
     if not router:
-        message = "Router not found."
-    else:
-        host = (router.get("host") or "").strip()
-        if not host:
-            message = "Router host is required."
-        else:
-            client = RouterOSClient(
-                host,
-                int(router.get("port", 8728) or 8728),
-                router.get("username", ""),
-                router.get("password", ""),
-            )
-            try:
-                client.connect()
-                message = f"Router {router.get('name') or router_id} connected successfully."
-            except Exception as exc:
-                message = f"Router test failed: {exc}"
-            finally:
-                client.close()
-
-    job_status = {item["job_name"]: dict(item) for item in get_job_status()}
-    usage_job = job_status.get("usage", {})
-    usage_job = {
-        "last_run_at_ph": format_ts_ph(usage_job.get("last_run_at")),
-        "last_success_at_ph": format_ts_ph(usage_job.get("last_success_at")),
-        "last_error": (usage_job.get("last_error") or "").strip(),
-        "last_error_at_ph": format_ts_ph(usage_job.get("last_error_at")),
-    }
-    state = get_state("usage_state", {})
-    return templates.TemplateResponse(
-        "settings_usage.html",
-        make_context(
+        return render_system_settings_response(
             request,
-            {
-                "settings": settings,
-                "message": message,
-                "active_tab": "settings",
-                "settings_tab": "routers",
-                "usage_job": usage_job,
-                "usage_state": {
-                    "last_check": format_ts_ph(state.get("last_check_at")),
-                    "genieacs_last_refresh": format_ts_ph(state.get("last_genieacs_refresh_at")),
-                    "genieacs_error": (state.get("genieacs_error") or "").strip(),
-                },
-            },
-        ),
+            "Router not found.",
+            active_tab="routers",
+            routers_tab="mikrotik-routers",
+        )
+    if router.get("use_tls"):
+        return render_system_settings_response(
+            request,
+            "TLS test not supported yet. Disable TLS or use port 8728.",
+            active_tab="routers",
+            routers_tab="mikrotik-routers",
+        )
+    host = (router.get("host") or "").strip()
+    if not host:
+        return render_system_settings_response(
+            request,
+            "Router host is required.",
+            active_tab="routers",
+            routers_tab="mikrotik-routers",
+        )
+    client = RouterOSClient(
+        host,
+        int(router.get("port", 8728) or 8728),
+        router.get("username", ""),
+        router.get("password", ""),
+    )
+    try:
+        client.connect()
+        message = f"Router {router.get('name') or router_id} connected successfully."
+    except Exception as exc:
+        message = f"Router test failed: {exc}"
+    finally:
+        client.close()
+    return render_system_settings_response(
+        request,
+        message,
+        active_tab="routers",
+        routers_tab="mikrotik-routers",
     )
 
 
@@ -3754,7 +3712,7 @@ async def offline_settings(request: Request):
         "router_errors": state.get("router_errors") if isinstance(state.get("router_errors"), list) else [],
         "radius_error": (state.get("radius_error") or "").strip(),
     }
-    usage_settings = get_settings("usage", USAGE_DEFAULTS)
+    wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
     return templates.TemplateResponse(
         "settings_offline.html",
         make_context(
@@ -3767,7 +3725,7 @@ async def offline_settings(request: Request):
                 "radius_tab": radius_tab,
                 "offline_job": offline_job,
                 "offline_state": offline_state,
-                "usage_settings": usage_settings,
+                "wan_settings": wan_settings,
             },
         ),
     )
@@ -3852,7 +3810,7 @@ async def offline_test_radius(request: Request):
         message = f"Radius OK: {len(accounts)} accounts returned."
     except Exception as exc:
         message = f"Radius test failed: {exc}"
-    usage_settings = get_settings("usage", USAGE_DEFAULTS)
+    wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
     state = get_state("offline_state", {})
     offline_state = {
         "last_check": format_ts_ph(state.get("last_check_at")),
@@ -3871,7 +3829,7 @@ async def offline_test_radius(request: Request):
                 "radius_tab": "settings",
                 "offline_job": {"last_run_at_ph": "n/a", "last_success_at_ph": "n/a", "last_error": "", "last_error_at_ph": ""},
                 "offline_state": offline_state,
-                "usage_settings": usage_settings,
+                "wan_settings": wan_settings,
             },
         ),
     )
@@ -7233,6 +7191,40 @@ async def system_settings(request: Request):
 def render_system_settings_response(request: Request, message: str, active_tab: str = "general", routers_tab: str = "cores"):
     pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
     wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    # Back-compat: Usage originally had its own MikroTik router list. If System Settings is empty,
+    # migrate those legacy routers into the shared list so other modules keep working.
+    if not (wan_settings_data.get("pppoe_routers") or []):
+        try:
+            usage_settings = get_settings("usage", USAGE_DEFAULTS)
+            legacy = (usage_settings.get("mikrotik") or {}).get("routers") or []
+            migrated = []
+            for item in legacy:
+                if not isinstance(item, dict):
+                    continue
+                rid = (item.get("id") or "").strip()
+                host = (item.get("host") or "").strip()
+                if not rid or not host:
+                    continue
+                try:
+                    port = int(item.get("port", 8728) or 8728)
+                except Exception:
+                    port = 8728
+                migrated.append(
+                    {
+                        "id": rid,
+                        "name": (item.get("name") or "").strip(),
+                        "host": host,
+                        "port": port,
+                        "username": item.get("username", ""),
+                        "password": item.get("password", ""),
+                        "use_tls": False,
+                    }
+                )
+            if migrated:
+                wan_settings_data["pppoe_routers"] = migrated
+                save_settings("wan_ping", wan_settings_data)
+        except Exception:
+            pass
     interfaces = get_interface_options()
     telegram_state = get_state("telegram_state", {})
 

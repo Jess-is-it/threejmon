@@ -135,7 +135,7 @@
         <a href="#sys-routers-cores" class="nav-link {% if routers_tab == 'cores' %}active{% endif %}" data-bs-toggle="tab">Cores</a>
       </li>
       <li class="nav-item">
-        <a href="#sys-routers-mikrotik" class="nav-link {% if routers_tab == 'mikrotik-routers' %}active{% endif %}" data-bs-toggle="tab">MikroTik Routers</a>
+        <a href="#sys-routers-mikrotik" class="nav-link {% if routers_tab == 'mikrotik-routers' %}active{% endif %}" data-bs-toggle="tab">Mikrotik Routers</a>
       </li>
       <li class="nav-item">
         <a href="#sys-routers-isps" class="nav-link {% if routers_tab == 'isps' %}active{% endif %}" data-bs-toggle="tab">Add ISP</a>
@@ -223,7 +223,7 @@
         <form method="post" action="/settings/system/routers/pppoe">
           <div class="card mb-4">
             <div class="card-header d-flex align-items-center">
-              <h3 class="card-title mb-0">MikroTik Routers (PPPoE / Bridge)</h3>
+              <h3 class="card-title mb-0">Mikrotik Routers</h3>
               <div class="ms-auto">
                 <button type="submit" class="btn btn-outline-primary" formaction="/settings/system/routers/pppoe/add" formmethod="post">
                   Add Router
@@ -232,7 +232,7 @@
             </div>
             <div class="card-body">
               <div class="text-muted small mb-3">
-                Used for WAN Ping <span class="fw-semibold">Bridged</span> mode (PPPoE router is the hop). If you don’t use Bridged mode, you can leave this empty.
+                Shared router list used by Usage (PPPoE usage collector), Offline, and WAN Ping <span class="fw-semibold">Bridged</span> mode. Configure each MikroTik once here.
               </div>
               <input type="hidden" name="router_count" value="{{ wan_settings.pppoe_routers|length }}" />
               <div style="overflow-x: auto;">

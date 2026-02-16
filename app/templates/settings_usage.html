@@ -171,15 +171,12 @@
       <div class="tab-pane {% if active_tab != 'status' %}active{% endif %}" id="usage-settings">
         <div class="d-flex flex-wrap align-items-center justify-content-between mb-2 gap-2">
           <h4 class="mb-0">Usage Settings</h4>
-          <span class="text-muted small">Configure MikroTik routers, GenieACS sources, detection rules, and storage.</span>
+          <span class="text-muted small">Configure GenieACS sources, detection rules, and storage.</span>
         </div>
 
         <ul class="nav nav-tabs" data-bs-toggle="tabs">
           <li class="nav-item">
             <a href="#usage-general" class="nav-link {% if settings_tab == 'general' %}active{% endif %}" data-bs-toggle="tab">General</a>
-          </li>
-          <li class="nav-item">
-            <a href="#usage-routers" class="nav-link {% if settings_tab == 'routers' %}active{% endif %}" data-bs-toggle="tab">Routers</a>
           </li>
           <li class="nav-item">
             <a href="#usage-data" class="nav-link {% if settings_tab == 'data' %}active{% endif %}" data-bs-toggle="tab">Data Source</a>
@@ -203,6 +200,15 @@
               <div class="card mb-3">
                 <div class="card-body">
                   <h4 class="mb-3">General</h4>
+                  <div class="alert alert-info">
+                    <div class="d-flex align-items-start">
+                      <span class="me-2"><i class="ti ti-info-circle"></i></span>
+                      <div>
+                        MikroTik routers are managed in <a class="link-primary" href="/settings/system?tab=routers&routers_tab=mikrotik-routers">System Settings → Routers → Mikrotik Routers</a>.
+                        <div class="small text-muted mt-1">Usage reads from that shared router list (also used by Offline and WAN Ping Bridged mode).</div>
+                      </div>
+                    </div>
+                  </div>
                   <div class="row g-3">
                     <div class="col-md-4">
                       <label class="form-check form-switch">
@@ -238,70 +244,6 @@
                 <button type="submit" class="btn btn-primary">Save General Settings</button>
               </div>
             </form>
-          </div>
-
-          <div class="tab-pane {% if settings_tab == 'routers' %}active{% endif %}" id="usage-routers">
-            <div class="card mb-3">
-              <div class="card-body">
-                <div class="d-flex justify-content-between align-items-center mb-2">
-                  <h4 class="mb-0">MikroTik Routers</h4>
-                  <form method="post" action="/settings/usage/routers/add">
-                    <button type="submit" class="btn btn-outline-primary">Add Router</button>
-                  </form>
-                </div>
-                <form method="post" action="/settings/usage/routers">
-                  <input type="hidden" name="router_count" value="{{ settings.mikrotik.routers|length }}" />
-                  <div style="overflow-x:auto;">
-                    <table class="table table-vcenter">
-                      <thead>
-                        <tr>
-                          <th>Name</th>
-                          <th>Host</th>
-                          <th>Port</th>
-                          <th>Username</th>
-                          <th>Password</th>
-                          <th>Enabled</th>
-                          <th>Test</th>
-                          <th>Remove</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {% for router in settings.mikrotik.routers %}
-                          <tr>
-                            <input type="hidden" name="router_{{ loop.index0 }}_id" value="{{ router.id }}" />
-                            <td><input class="form-control" type="text" name="router_{{ loop.index0 }}_name" value="{{ router.name }}" /></td>
-                            <td><input class="form-control" type="text" name="router_{{ loop.index0 }}_host" value="{{ router.host }}" /></td>
-                            <td><input class="form-control" type="number" name="router_{{ loop.index0 }}_port" value="{{ router.port or 8728 }}" /></td>
-                            <td><input class="form-control" type="text" name="router_{{ loop.index0 }}_username" value="{{ router.username }}" /></td>
-                            <td><input class="form-control" type="password" name="router_{{ loop.index0 }}_password" value="{{ router.password }}" /></td>
-                            <td>
-                              <label class="form-check form-switch">
-                                <input class="form-check-input" type="checkbox" name="router_{{ loop.index0 }}_enabled" {% if router.enabled %}checked{% endif %} />
-                              </label>
-                            </td>
-                            <td>
-                              <button type="submit" class="btn btn-outline-primary btn-sm" formaction="/settings/usage/routers/test/{{ router.id|urlencode }}" formmethod="post">Test</button>
-                            </td>
-                            <td>
-                              <label class="form-check">
-                                <input class="form-check-input" type="checkbox" name="router_{{ loop.index0 }}_remove" />
-                                <span class="form-check-label text-muted">Remove</span>
-                              </label>
-                            </td>
-                          </tr>
-                        {% endfor %}
-                      </tbody>
-                    </table>
-                  </div>
-                  {% if not settings.mikrotik.routers %}
-                    <div class="text-muted">No routers added.</div>
-                  {% endif %}
-                  <div class="d-flex justify-content-end mt-3">
-                    <button type="submit" class="btn btn-primary">Save Routers</button>
-                  </div>
-                </form>
-              </div>
-            </div>
           </div>
 
           <div class="tab-pane {% if settings_tab == 'data' %}active{% endif %}" id="usage-data">

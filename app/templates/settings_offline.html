@@ -137,7 +137,7 @@
       <div class="tab-pane {% if active_tab != 'status' %}active{% endif %}" id="offline-settings">
         <div class="d-flex flex-wrap align-items-center justify-content-between mb-2 gap-2">
           <h4 class="mb-0">Offline Settings</h4>
-          <span class="text-muted small">Uses routers configured in Settings → Usage.</span>
+          <span class="text-muted small">Uses routers configured in System Settings → Routers → Mikrotik Routers.</span>
         </div>
 
         {% if message %}
@@ -170,7 +170,7 @@
                         <input class="form-check-input" type="checkbox" name="enabled" {% if settings.enabled %}checked{% endif %} />
                         <span class="form-check-label">Enable Offline Collector</span>
                       </label>
-                      <div class="text-muted small mt-1">Builds an offline list based on the selected Mode and routers from Usage settings.</div>
+                      <div class="text-muted small mt-1">Builds an offline list based on the selected Mode and routers from System Settings.</div>
                     </div>
                     <div class="col-md-4">
                       <label class="form-label">Poll Interval (seconds)</label>
@@ -216,10 +216,10 @@
               <div class="d-flex align-items-start gap-2">
                 <i class="ti ti-alert-triangle mt-1"></i>
                 <div>
-                  <div class="fw-semibold">Routers are managed in Settings → Usage</div>
-                  <div class="small text-muted">This page reads the router list from Usage. To add/edit routers, use the Usage Routers tab.</div>
-                  <a class="btn btn-sm btn-outline-danger mt-2" href="/settings/usage?tab=settings&settings_tab=routers#usage-routers">
-                    Open Usage Routers
+                  <div class="fw-semibold">Routers are managed in System Settings</div>
+                  <div class="small text-muted">This page reads the shared router list. To add/edit routers, use System Settings → Routers → Mikrotik Routers.</div>
+                  <a class="btn btn-sm btn-outline-danger mt-2" href="/settings/system?tab=routers&routers_tab=mikrotik-routers#sys-routers-mikrotik">
+                    Open Mikrotik Routers
                   </a>
                 </div>
               </div>
@@ -227,8 +227,8 @@
 
             <div class="card">
               <div class="card-body">
-                <h4 class="mb-3">Routers (from Usage)</h4>
-                {% set routers = (usage_settings.mikrotik.routers or []) %}
+                <h4 class="mb-3">Routers</h4>
+                {% set routers = (wan_settings.pppoe_routers or []) %}
                 {% if routers and routers|length %}
                   <div class="table-responsive">
                     <table class="table table-vcenter">
@@ -238,7 +238,7 @@
                           <th>Host</th>
                           <th>Port</th>
                           <th>User</th>
-                          <th>Enabled</th>
+                          <th>TLS</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -249,8 +249,8 @@
                             <td class="text-muted">{{ r.port or 8728 }}</td>
                             <td class="text-muted">{{ r.username }}</td>
                             <td>
-                              {% if r.enabled is not defined or r.enabled %}
-                                <span class="badge bg-green-lt">Yes</span>
+                              {% if r.use_tls %}
+                                <span class="badge bg-yellow-lt">Yes</span>
                               {% else %}
                                 <span class="badge bg-secondary-lt">No</span>
                               {% endif %}
@@ -261,7 +261,7 @@
                     </table>
                   </div>
                 {% else %}
-                  <div class="text-muted">No routers configured yet. Add routers in Settings → Usage → Routers.</div>
+                  <div class="text-muted">No routers configured yet. Add routers in System Settings → Routers → Mikrotik Routers.</div>
                 {% endif %}
               </div>
             </div>
