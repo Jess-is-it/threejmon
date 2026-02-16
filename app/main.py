@@ -1482,6 +1482,61 @@ def _memory_percent():
         return 0.0
 
 
+def _memory_used_including_cache_percent():
+    """Proxmox-like 'used' view: MemTotal - MemFree (includes page cache/buffers)."""
+    try:
+        mem_total = 0
+        mem_free = 0
+        with open("/proc/meminfo", "r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("MemTotal:"):
+                    mem_total = int(line.split()[1])
+                elif line.startswith("MemFree:"):
+                    mem_free = int(line.split()[1])
+        if mem_total <= 0:
+            return 0.0
+        used = mem_total - mem_free
+        return max(0.0, min(100.0, 100.0 * used / mem_total))
+    except Exception:
+        return 0.0
+
+
+def _memory_details_kb():
+    try:
+        values = {}
+        with open("/proc/meminfo", "r", encoding="utf-8") as handle:
+            for line in handle:
+                if ":" not in line:
+                    continue
+                key, rest = line.split(":", 1)
+                parts = rest.strip().split()
+                if not parts:
+                    continue
+                try:
+                    values[key] = int(parts[0])
+                except Exception:
+                    continue
+        return {
+            "mem_total_kb": int(values.get("MemTotal") or 0),
+            "mem_free_kb": int(values.get("MemFree") or 0),
+            "mem_available_kb": int(values.get("MemAvailable") or 0),
+            "buffers_kb": int(values.get("Buffers") or 0),
+            "cached_kb": int(values.get("Cached") or 0),
+            "swap_total_kb": int(values.get("SwapTotal") or 0),
+            "swap_free_kb": int(values.get("SwapFree") or 0),
+        }
+    except Exception:
+        return {
+            "mem_total_kb": 0,
+            "mem_free_kb": 0,
+            "mem_available_kb": 0,
+            "buffers_kb": 0,
+            "cached_kb": 0,
+            "swap_total_kb": 0,
+            "swap_free_kb": 0,
+        }
+
+
 def _disk_percent():
     try:
         usage = shutil.disk_usage("/")
@@ -6447,10 +6502,26 @@ async def pulsewatch_settings(request: Request):
 
 @app.get("/system/resources")
 async def system_resources():
+    mem = _memory_details_kb()
+    mem_total_kb = int(mem.get("mem_total_kb") or 0)
+    mem_avail_kb = int(mem.get("mem_available_kb") or 0)
+    mem_free_kb = int(mem.get("mem_free_kb") or 0)
+    mem_cached_kb = int(mem.get("cached_kb") or 0)
+    mem_buffers_kb = int(mem.get("buffers_kb") or 0)
     return JSONResponse(
         {
             "cpu_pct": round(_cpu_percent(), 1),
+            # ram_pct remains backward-compatible (pressure view, based on MemAvailable)
             "ram_pct": round(_memory_percent(), 1),
+            # explicit fields:
+            "ram_pressure_pct": round(_memory_percent(), 1),
+            "ram_used_incl_cache_pct": round(_memory_used_including_cache_percent(), 1),
+            # raw figures for debugging/UI (KB from /proc/meminfo)
+            "ram_total_kb": mem_total_kb,
+            "ram_available_kb": mem_avail_kb,
+            "ram_free_kb": mem_free_kb,
+            "ram_cached_kb": mem_cached_kb,
+            "ram_buffers_kb": mem_buffers_kb,
             "disk_pct": round(_disk_percent(), 1),
             "uptime_seconds": _uptime_seconds(),
         }
