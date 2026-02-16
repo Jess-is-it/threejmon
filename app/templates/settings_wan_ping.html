@@ -185,23 +185,23 @@
         </div>
       </div>
 
-	      <div class="tab-pane {% if active_tab != 'status' %}active{% endif %}" id="wan-settings">
-	        <div class="alert alert-info mb-3">
-	          <div class="d-flex align-items-start">
-	            <span class="me-2"><i class="ti ti-info-circle"></i></span>
-	            <div>
-	              <div class="fw-semibold">Heads up</div>
-	              <div class="small text-muted mt-1">
-	                Router and ISP management moved to <a href="/settings/system?tab=routers&routers_tab=isps">System Settings → Routers</a>.
-	                WAN Ping settings here are focused on polling + Telegram + messages.
-	              </div>
-	              <div class="mt-2 d-flex gap-2 flex-wrap">
-	                <a class="btn btn-sm btn-outline-primary" href="/settings/system?tab=routers&routers_tab=isps">Open Add ISP</a>
-	                <a class="btn btn-sm btn-outline-primary" href="/settings/system?tab=routers&routers_tab=mikrotik-routers">Open Mikrotik Routers</a>
-	              </div>
-	            </div>
-	          </div>
-	        </div>
+		      <div class="tab-pane {% if active_tab != 'status' %}active{% endif %}" id="wan-settings">
+		        <div class="alert alert-info mb-3">
+		          <div class="d-flex align-items-start">
+		            <span class="me-2"><i class="ti ti-info-circle"></i></span>
+		            <div>
+		              <div class="fw-semibold">Heads up</div>
+		              <div class="small text-muted mt-1">
+		                Routers and ISPs shown below are <span class="fw-semibold">view-only</span> in WAN Ping.
+		                To add/edit them, use <a href="/settings/system?tab=routers&routers_tab=isps">System Settings → Routers</a>.
+		              </div>
+		              <div class="mt-2 d-flex gap-2 flex-wrap">
+		                <a class="btn btn-sm btn-outline-primary" href="/settings/system?tab=routers&routers_tab=isps">Open Add ISP</a>
+		                <a class="btn btn-sm btn-outline-primary" href="/settings/system?tab=routers&routers_tab=mikrotik-routers">Open Mikrotik Routers</a>
+		              </div>
+		            </div>
+		          </div>
+		        </div>
 	        <ul class="nav nav-tabs" data-bs-toggle="tabs">
 	          <li class="nav-item">
 	            <a href="#wan-settings-tab" class="nav-link {% if active_tab == 'settings' or active_tab == 'status' %}active{% endif %}" data-bs-toggle="tab">Settings</a>
@@ -210,13 +210,122 @@
 	            <a href="#wan-messages" class="nav-link {% if active_tab == 'messages' %}active{% endif %}" data-bs-toggle="tab">Messages</a>
 	          </li>
 	        </ul>
-	        <div class="tab-content pt-4">
+		        <div class="tab-content pt-4">
 		          <div class="tab-pane {% if active_tab == 'settings' or active_tab == 'status' %}active{% endif %}" id="wan-settings-tab">
-	        <ul class="nav nav-tabs" data-bs-toggle="tabs">
+                <div class="card mb-3">
+                  <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
+                      <div>
+                        <h4 class="mb-0">Routers & ISPs (view-only)</h4>
+                        <div class="text-muted small mt-1">WAN Ping reads from the shared definitions in System Settings.</div>
+                      </div>
+                      <div class="d-flex gap-2 flex-wrap">
+                        <a class="btn btn-outline-primary btn-sm" href="/settings/system?tab=routers&routers_tab=isps">Manage ISPs</a>
+                        <a class="btn btn-outline-primary btn-sm" href="/settings/system?tab=routers&routers_tab=mikrotik-routers">Manage Routers</a>
+                      </div>
+                    </div>
+
+                    <div class="row g-3">
+                      <div class="col-12 col-xl-6">
+                        <div class="border rounded p-3 h-100">
+                          <div class="fw-semibold mb-2">Mikrotik Routers</div>
+                          {% if settings.pppoe_routers and settings.pppoe_routers|length %}
+                            <div class="table-responsive">
+                              <table class="table table-vcenter table-sm">
+                                <thead>
+                                  <tr>
+                                    <th>Router</th>
+                                    <th>Host</th>
+                                    <th>Port</th>
+                                    <th>User</th>
+                                    <th>TLS</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {% for r in settings.pppoe_routers %}
+                                    <tr>
+                                      <td class="fw-semibold">{{ r.name or r.id }}</td>
+                                      <td class="text-muted">{{ r.host }}</td>
+                                      <td class="text-muted">{{ r.port or 8728 }}</td>
+                                      <td class="text-muted">{{ r.username }}</td>
+                                      <td>
+                                        {% if r.use_tls %}
+                                          <span class="badge bg-yellow-lt">Yes</span>
+                                        {% else %}
+                                          <span class="badge bg-secondary-lt">No</span>
+                                        {% endif %}
+                                      </td>
+                                    </tr>
+                                  {% endfor %}
+                                </tbody>
+                              </table>
+                            </div>
+                          {% else %}
+                            <div class="text-muted small">No routers configured yet. Add them in System Settings → Routers → Mikrotik Routers.</div>
+                          {% endif %}
+                        </div>
+                      </div>
+
+                      <div class="col-12 col-xl-6">
+                        <div class="border rounded p-3 h-100">
+                          <div class="fw-semibold mb-2">ISPs (TO-ISP lists)</div>
+                          {% if wan_rows and wan_rows|length %}
+                            <div class="table-responsive">
+                              <table class="table table-vcenter table-sm">
+                                <thead>
+                                  <tr>
+                                    <th>Core</th>
+                                    <th>TO-ISP List</th>
+                                    <th>Identifier</th>
+                                    <th>Mode</th>
+                                    <th>Local IP</th>
+                                    <th>Router</th>
+                                    <th>Enabled</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {% for row in wan_rows %}
+                                    <tr>
+                                      <td class="text-muted">{{ row.core_label }}</td>
+                                      <td class="text-muted">{{ row.list_name }}</td>
+                                      <td class="fw-semibold">
+                                        {{ row.identifier or '' }}
+                                        {% if row.color %}
+                                          <span class="badge ms-1" style="background: {{ row.color }}; color: #fff;">&nbsp;</span>
+                                        {% endif %}
+                                      </td>
+                                      <td class="text-muted text-capitalize">{{ row.mode }}</td>
+                                      <td class="text-muted">{{ row.local_ip or '' }}</td>
+                                      <td class="text-muted">
+                                        {% set rid = row.pppoe_router_id %}
+                                        {% set rr = (settings.pppoe_routers or []) | selectattr('id', 'equalto', rid) | list %}
+                                        {{ (rr and (rr[0].name or rr[0].id)) or '' }}
+                                      </td>
+                                      <td>
+                                        {% if row.enabled %}
+                                          <span class="badge bg-green-lt">Yes</span>
+                                        {% else %}
+                                          <span class="badge bg-secondary-lt">No</span>
+                                        {% endif %}
+                                      </td>
+                                    </tr>
+                                  {% endfor %}
+                                </tbody>
+                              </table>
+                            </div>
+                          {% else %}
+                            <div class="text-muted small">No ISP lists detected yet. Configure cores and refresh in System Settings → Routers → Add ISP.</div>
+                          {% endif %}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+		        <ul class="nav nav-tabs" data-bs-toggle="tabs">
+		          <li class="nav-item">
+		            <a href="#wan-settings-telegram" class="nav-link active" data-bs-toggle="tab">Telegram</a>
+		          </li>
 	          <li class="nav-item">
-	            <a href="#wan-settings-telegram" class="nav-link active" data-bs-toggle="tab">Telegram</a>
-	          </li>
-          <li class="nav-item">
             <a href="#wan-settings-interval" class="nav-link" data-bs-toggle="tab">Interval</a>
           </li>
           <li class="nav-item">
