@@ -940,6 +940,7 @@ class JobsManager:
                         "pppoe_hosts": {},
                         "anytime_issues": {},
                         "anytime_eval_at": None,
+                        "ppp_active_stats_supported": {},
                     },
                 )
 
@@ -1029,6 +1030,11 @@ class JobsManager:
                     secrets_refreshed_at = (
                         state.get("secrets_refreshed_at") if isinstance(state.get("secrets_refreshed_at"), dict) else {}
                     )
+                    stats_cap = (
+                        state.get("ppp_active_stats_supported")
+                        if isinstance(state.get("ppp_active_stats_supported"), dict)
+                        else {}
+                    )
 
                     update_job_status("usage", last_run_at=utc_now_iso())
                     for router in routers:
@@ -1084,6 +1090,7 @@ class JobsManager:
 
                         router_error = ""
                         router_active = []
+                        router_active_counters = []
                         router_queues = []
                         router_ifaces = []
                         connected = False
@@ -1095,6 +1102,13 @@ class JobsManager:
                             router_active = usage_notifier.fetch_pppoe_active(client)
                             router_queues = usage_notifier.fetch_simple_queues(client)
                             router_ifaces = usage_notifier.fetch_ppp_interfaces(client)
+                            if stats_cap.get(router_id) is not False:
+                                try:
+                                    router_active_counters = usage_notifier.fetch_pppoe_active_counters(client)
+                                    if router_active_counters:
+                                        stats_cap[router_id] = True
+                                except Exception:
+                                    stats_cap[router_id] = False
                             if secrets_due:
                                 secrets_cache[router_id] = usage_notifier.fetch_pppoe_secrets(client)
                                 secrets_refreshed_at[router_id] = now_iso
@@ -1113,6 +1127,13 @@ class JobsManager:
                                 router_active = usage_notifier.fetch_pppoe_active(clients[router_id])
                                 router_queues = usage_notifier.fetch_simple_queues(clients[router_id])
                                 router_ifaces = usage_notifier.fetch_ppp_interfaces(clients[router_id])
+                                if stats_cap.get(router_id) is not False:
+                                    try:
+                                        router_active_counters = usage_notifier.fetch_pppoe_active_counters(clients[router_id])
+                                        if router_active_counters:
+                                            stats_cap[router_id] = True
+                                    except Exception:
+                                        stats_cap[router_id] = False
                                 if secrets_due:
                                     secrets_cache[router_id] = usage_notifier.fetch_pppoe_secrets(clients[router_id])
                                     secrets_refreshed_at[router_id] = now_iso
@@ -1134,6 +1155,11 @@ class JobsManager:
                         iface_rows = router_ifaces if isinstance(router_ifaces, list) else []
                         iface_match_count = 0
                         iface_bytes_ok = 0
+                        active_counter_rows = (
+                            router_active_counters if isinstance(router_active_counters, list) else []
+                        )
+                        active_counter_by_id = {r.get(".id"): r for r in active_counter_rows if isinstance(r, dict) and r.get(".id")}
+                        active_counter_by_name = {r.get("name"): r for r in active_counter_rows if isinstance(r, dict) and r.get("name")}
 
                         def match_queue_for_row(pppoe, address):
                             pppoe = (pppoe or "").strip()
@@ -1188,9 +1214,14 @@ class JobsManager:
                                         return i
                             if not pppoe:
                                 return None
+                            # Prefer exact interface name match (common for PPPoE client interfaces named after the account).
+                            low = pppoe.lower()
+                            for i in iface_rows:
+                                name = (i.get("name") or "").strip()
+                                if name and name.strip().lower() == low:
+                                    return i
                             candidates = [i for i in iface_rows if pppoe in ((i.get("name") or "").strip())]
                             if not candidates:
-                                low = pppoe.lower()
                                 candidates = [
                                     i for i in iface_rows if low and low in ((i.get("name") or "").strip().lower())
                                 ]
@@ -1205,6 +1236,7 @@ class JobsManager:
                             pppoe = (row.get("name") or "").strip()
                             if not pppoe:
                                 continue
+                            counter_row = active_counter_by_id.get(row.get(".id")) or active_counter_by_name.get(pppoe)
                             addr = (row.get("address") or "").strip()
                             iface_hint = (row.get("interface") or "").strip()
                             active_set.add(pppoe)
@@ -1246,6 +1278,15 @@ class JobsManager:
                                     if now_out is None:
                                         now_out = tx_b
 
+                            # Fallback: PPP active counters (when supported).
+                            if (now_in is None or now_out is None) and counter_row:
+                                c_in = usage_notifier._parse_int(counter_row.get("bytes-in"))
+                                c_out = usage_notifier._parse_int(counter_row.get("bytes-out"))
+                                if now_in is None:
+                                    now_in = c_in
+                                if now_out is None:
+                                    now_out = c_out
+
                             rate_dl_bps = q_rate[0] if q_rate else None
                             rate_ul_bps = q_rate[1] if q_rate else None
                             computed_rx_bps = None
@@ -1255,6 +1296,20 @@ class JobsManager:
                                 computed_rx_bps = float(rate_ul_bps)
                             if rate_dl_bps is not None:
                                 computed_tx_bps = float(rate_dl_bps)
+                            if (computed_rx_bps is None or computed_tx_bps is None) and counter_row:
+                                # PPP active rates are rx/tx relative to the router.
+                                c_rx = usage_notifier._parse_float(counter_row.get("rx-rate"))
+                                c_tx = usage_notifier._parse_float(counter_row.get("tx-rate"))
+                                if c_rx is None or c_tx is None:
+                                    duplex = (counter_row.get("rate") or "").strip()
+                                    parsed = usage_notifier.parse_duplex_float(duplex)
+                                    if parsed:
+                                        c_rx = c_rx if c_rx is not None else parsed[0]
+                                        c_tx = c_tx if c_tx is not None else parsed[1]
+                                if computed_rx_bps is None and c_rx is not None:
+                                    computed_rx_bps = float(c_rx)
+                                if computed_tx_bps is None and c_tx is not None:
+                                    computed_tx_bps = float(c_tx)
 
                             if (computed_rx_bps is None or computed_tx_bps is None) and prev_dt and now_in is not None and now_out is not None and prev_in is not None and prev_out is not None:
                                 dt = (now - prev_dt).total_seconds()
@@ -1274,7 +1329,7 @@ class JobsManager:
                                 prev_bytes[key] = {"ts": now_iso, "bytes_in": now_in, "bytes_out": now_out}
 
                             norm = usage_notifier.normalize_active_row(
-                                row,
+                                {**row, **(counter_row or {})},
                                 timestamp=now_iso,
                                 router_id=router_id,
                                 router_name=router_name,
@@ -1430,6 +1485,7 @@ class JobsManager:
                     state["prev_bytes"] = prev_bytes
                     state["secrets_cache"] = secrets_cache
                     state["secrets_refreshed_at"] = secrets_refreshed_at
+                    state["ppp_active_stats_supported"] = stats_cap
                     state["last_check_at"] = now_iso
                     save_state("usage_state", state)
                     update_job_status("usage", last_success_at=utc_now_iso(), last_error="", last_error_at="")

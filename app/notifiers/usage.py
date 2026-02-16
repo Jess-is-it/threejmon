@@ -89,7 +89,7 @@ def _sentence_to_dict(sentence):
     return data
 
 
-def routeros_print(client, path, proplist=None, stats=False, stats_word="=stats="):
+def routeros_print(client, path, proplist=None, stats=False, stats_word="=stats=", raise_on_trap=False):
     words = [path]
     if stats and stats_word:
         words.append(stats_word)
@@ -98,6 +98,15 @@ def routeros_print(client, path, proplist=None, stats=False, stats_word="=stats=
     replies = client.talk(words)
     rows = []
     for sentence in replies:
+        if not sentence:
+            continue
+        if sentence[0] == "!trap" and raise_on_trap:
+            message = ""
+            for word in sentence[1:]:
+                if word.startswith("=message="):
+                    message = word.split("=", 2)[2]
+                    break
+            raise RuntimeError(f"RouterOS API trap: {message or 'unknown error'}")
         if not sentence or sentence[0] != "!re":
             continue
         rows.append(_sentence_to_dict(sentence))
@@ -146,10 +155,35 @@ def fetch_pppoe_active(client):
         "limit-bytes-in",
         "limit-bytes-out",
     ]
-    rows = routeros_print(client, "/ppp/active/print", proplist=proplist, stats=False)
+    rows = routeros_print(client, "/ppp/active/print", proplist=proplist, stats=False, raise_on_trap=True)
     if rows:
         return rows
-    return routeros_print(client, "/ppp/active/print", proplist=None, stats=False)
+    return routeros_print(client, "/ppp/active/print", proplist=None, stats=False, raise_on_trap=True)
+
+
+def fetch_pppoe_active_counters(client):
+    """
+    Best-effort: fetch per-session byte/rate counters from /ppp/active when supported.
+    Some RouterOS builds may trap or close the API connection when stats are requested, so callers
+    should treat this as optional and cache capability per router.
+    """
+    proplist = [
+        ".id",
+        "name",
+        "bytes-in",
+        "bytes-out",
+        "rx-rate",
+        "tx-rate",
+        "rate",
+    ]
+    rows = routeros_print(client, "/ppp/active/print", proplist=proplist, stats=True, raise_on_trap=True) or []
+    if _rows_have_usage(rows):
+        return rows
+    # Some builds include counters without requiring stats.
+    rows2 = routeros_print(client, "/ppp/active/print", proplist=proplist, stats=False, raise_on_trap=True) or []
+    if _rows_have_usage(rows2):
+        return rows2
+    return []
 
 
 def fetch_pppoe_secrets(client):
@@ -162,7 +196,7 @@ def fetch_pppoe_secrets(client):
         "last-logged-out",
         "comment",
     ]
-    return routeros_print(client, "/ppp/secret/print", proplist=proplist)
+    return routeros_print(client, "/ppp/secret/print", proplist=proplist, raise_on_trap=True)
 
 
 def fetch_simple_queues(client):
@@ -177,7 +211,7 @@ def fetch_simple_queues(client):
         "total-bytes",
         "total-rate",
     ]
-    rows = routeros_print(client, "/queue/simple/print", proplist=proplist, stats=False) or []
+    rows = routeros_print(client, "/queue/simple/print", proplist=proplist, stats=False, raise_on_trap=True) or []
     # Some RouterOS builds require `=stats=` to include counters.
     has_counters = False
     for row in rows[:25]:
@@ -191,7 +225,7 @@ def fetch_simple_queues(client):
             break
     if rows and not has_counters:
         try:
-            rows2 = routeros_print(client, "/queue/simple/print", proplist=proplist, stats=True) or []
+            rows2 = routeros_print(client, "/queue/simple/print", proplist=proplist, stats=True, raise_on_trap=True) or []
             if rows2:
                 return rows2
         except Exception:
@@ -212,17 +246,32 @@ def fetch_ppp_interfaces(client):
         "fp-rx-byte",
         "fp-tx-byte",
     ]
-    rows = routeros_print(client, "/interface/print", proplist=proplist, stats=False) or []
-    filtered = []
-    for row in rows:
-        dyn = (row.get("dynamic") or "").strip().lower()
-        typ = (row.get("type") or "").strip().lower()
-        if dyn not in ("true", "yes", "1"):
-            continue
-        if "ppp" not in typ:
-            continue
-        filtered.append(row)
-    return filtered
+    rows = routeros_print(client, "/interface/print", proplist=proplist, stats=False, raise_on_trap=True) or []
+    # Some RouterOS builds only include counters when =stats= is used.
+    has_counters = False
+    for row in rows[:50]:
+        if _parse_int(row.get("rx-byte")) is not None:
+            has_counters = True
+            break
+        if _parse_int(row.get("tx-byte")) is not None:
+            has_counters = True
+            break
+        if _parse_int(row.get("fp-rx-byte")) is not None:
+            has_counters = True
+            break
+        if _parse_int(row.get("fp-tx-byte")) is not None:
+            has_counters = True
+            break
+    if rows and not has_counters:
+        try:
+            rows2 = routeros_print(client, "/interface/print", proplist=proplist, stats=True, raise_on_trap=True) or []
+            if rows2:
+                rows = rows2
+        except Exception:
+            pass
+    # Return all interfaces; caller matches by interface name or exact PPPoE username.
+    # This supports PPPoE client setups where interface name == PPPoE username (and /ppp/active.interface may be blank).
+    return rows
 
 
 def parse_duplex_int(value):
