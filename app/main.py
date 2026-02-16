@@ -7204,13 +7204,99 @@ async def settings_root():
 
 @app.get("/settings/system", response_class=HTMLResponse)
 async def system_settings(request: Request):
-    settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    active_tab = (request.query_params.get("tab") or "general").strip().lower()
+    if active_tab not in {"general", "routers", "backup", "danger"}:
+        active_tab = "general"
+    routers_tab = (request.query_params.get("routers_tab") or "cores").strip().lower()
+    if routers_tab not in {"cores", "mikrotik-routers", "isps"}:
+        routers_tab = "cores"
+    return render_system_settings_response(request, "", active_tab=active_tab, routers_tab=routers_tab)
+
+
+def render_system_settings_response(request: Request, message: str, active_tab: str = "general", routers_tab: str = "cores"):
+    pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
     interfaces = get_interface_options()
     telegram_state = get_state("telegram_state", {})
+
+    wan_rows_loaded = bool(active_tab == "routers" and routers_tab == "isps")
+    wan_rows = []
+    if wan_rows_loaded:
+        try:
+            wan_rows = build_wan_rows(pulse_settings, wan_settings_data)
+        except Exception:
+            wan_rows = []
+
     return templates.TemplateResponse(
         "settings_system.html",
-        make_context(request, {"message": "", "settings": settings, "interfaces": interfaces, "telegram_state": telegram_state}),
+        make_context(
+            request,
+            {
+                "message": message,
+                "active_tab": active_tab,
+                "routers_tab": routers_tab,
+                "settings": pulse_settings,
+                "wan_settings": wan_settings_data,
+                "wan_rows": wan_rows,
+                "wan_rows_loaded": wan_rows_loaded,
+                "interfaces": interfaces,
+                "telegram_state": telegram_state,
+            },
+        ),
     )
+
+
+def _parse_wan_pppoe_routers_from_form(form, count: int):
+    routers = []
+    removed_ids = set()
+    for idx in range(count):
+        router_id = (form.get(f"router_{idx}_id") or "").strip()
+        if not router_id:
+            continue
+        if parse_bool(form, f"router_{idx}_remove"):
+            removed_ids.add(router_id)
+            continue
+        routers.append(
+            {
+                "id": router_id,
+                "name": (form.get(f"router_{idx}_name") or "").strip(),
+                "host": (form.get(f"router_{idx}_host") or "").strip(),
+                "port": parse_int(form, f"router_{idx}_port", 8728),
+                "username": (form.get(f"router_{idx}_username") or "").strip(),
+                "password": (form.get(f"router_{idx}_password") or "").strip(),
+                "use_tls": parse_bool(form, f"router_{idx}_use_tls"),
+            }
+        )
+    return routers, removed_ids
+
+
+def _parse_wan_list_from_form(form, count: int):
+    wans = []
+    for idx in range(count):
+        core_id = (form.get(f"wan_{idx}_core_id") or "").strip()
+        list_name = (form.get(f"wan_{idx}_list") or "").strip()
+        if not core_id or not list_name:
+            continue
+        mode = (form.get(f"wan_{idx}_mode") or "routed").strip().lower()
+        if mode not in ("routed", "bridged"):
+            mode = "routed"
+        local_ip = (form.get(f"wan_{idx}_local_ip") or "").strip()
+        enabled = parse_bool(form, f"wan_{idx}_enabled")
+        if not local_ip:
+            enabled = False
+        wans.append(
+            {
+                "id": wan_row_id(core_id, list_name),
+                "core_id": core_id,
+                "list_name": list_name,
+                "enabled": enabled,
+                "mode": mode,
+                "local_ip": local_ip,
+                "gateway_ip": "",
+                "pppoe_router_id": (form.get(f"wan_{idx}_pppoe_router_id") or "").strip(),
+            }
+        )
+    return wans
 
 
 @app.post("/settings/system/mikrotik", response_class=HTMLResponse)
@@ -7239,7 +7325,6 @@ async def system_mikrotik_save(request: Request):
     pulsewatch["mikrotik"] = {"cores": cores}
     settings["pulsewatch"] = pulsewatch
     save_settings("isp_ping", settings)
-    interfaces = get_interface_options()
     message = "MikroTik settings saved."
     netplan_msg = None
     apply_msg = None
@@ -7253,13 +7338,7 @@ async def system_mikrotik_save(request: Request):
         message = f"{message} {netplan_msg}"
     if apply_msg and not apply_msg.startswith("Netplan applied"):
         message = f"{message} {apply_msg}"
-    return templates.TemplateResponse(
-        "settings_system.html",
-        make_context(
-            request,
-            {"message": message, "settings": settings, "interfaces": interfaces, "telegram_state": get_state("telegram_state", {})},
-        ),
-    )
+    return render_system_settings_response(request, message, active_tab="routers", routers_tab="cores")
 
 
 @app.post("/settings/system/telegram", response_class=HTMLResponse)
@@ -7273,15 +7352,8 @@ async def system_telegram_save(request: Request):
     telegram["command_feedback_seconds"] = parse_int(form, "telegram_command_feedback_seconds", 10)
     settings["telegram"] = telegram
     save_settings("isp_ping", settings)
-    interfaces = get_interface_options()
     message = "Telegram command settings saved."
-    return templates.TemplateResponse(
-        "settings_system.html",
-        make_context(
-            request,
-            {"message": message, "settings": settings, "interfaces": interfaces, "telegram_state": get_state("telegram_state", {})},
-        ),
-    )
+    return render_system_settings_response(request, message, active_tab="general", routers_tab="cores")
 
 
 @app.post("/settings/system/mikrotik/add", response_class=HTMLResponse)
@@ -7326,10 +7398,7 @@ async def system_mikrotik_add(request: Request):
         message = f"{message} {netplan_msg}"
     if apply_msg and not apply_msg.startswith("Netplan applied"):
         message = f"{message} {apply_msg}"
-    return templates.TemplateResponse(
-        "settings_system.html",
-        make_context(request, {"message": message, "settings": settings, "interfaces": interfaces}),
-    )
+    return render_system_settings_response(request, message, active_tab="routers", routers_tab="cores")
 
 
 @app.post("/settings/system/mikrotik/remove/{core_id}", response_class=HTMLResponse)
@@ -7362,10 +7431,136 @@ async def system_mikrotik_remove(request: Request, core_id: str):
         message = f"{message} {netplan_msg}"
     if apply_msg and not apply_msg.startswith("Netplan applied"):
         message = f"{message} {apply_msg}"
-    return templates.TemplateResponse(
-        "settings_system.html",
-        make_context(request, {"message": message, "settings": settings, "interfaces": interfaces}),
+    return render_system_settings_response(request, message, active_tab="routers", routers_tab="cores")
+
+
+@app.post("/settings/system/routers/pppoe", response_class=HTMLResponse)
+async def system_save_pppoe_routers(request: Request):
+    form = await request.form()
+    wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    count = parse_int(form, "router_count", 0)
+    routers, removed_ids = _parse_wan_pppoe_routers_from_form(form, count)
+    wan_settings_data["pppoe_routers"] = routers
+    if removed_ids:
+        for wan in wan_settings_data.get("wans", []):
+            if wan.get("pppoe_router_id") in removed_ids:
+                wan["pppoe_router_id"] = ""
+    save_settings("wan_ping", wan_settings_data)
+    return render_system_settings_response(
+        request,
+        "MikroTik routers saved.",
+        active_tab="routers",
+        routers_tab="mikrotik-routers",
     )
+
+
+@app.post("/settings/system/routers/pppoe/add", response_class=HTMLResponse)
+async def system_add_pppoe_router(request: Request):
+    wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    routers = wan_settings_data.get("pppoe_routers", [])
+    existing_ids = {router.get("id") for router in routers if router.get("id")}
+    next_idx = 1
+    while f"router{next_idx}" in existing_ids:
+        next_idx += 1
+    routers.append(
+        {
+            "id": f"router{next_idx}",
+            "name": f"Router {next_idx}",
+            "host": "",
+            "port": 8728,
+            "username": "",
+            "password": "",
+            "use_tls": False,
+        }
+    )
+    wan_settings_data["pppoe_routers"] = routers
+    save_settings("wan_ping", wan_settings_data)
+    return render_system_settings_response(
+        request,
+        "MikroTik router added.",
+        active_tab="routers",
+        routers_tab="mikrotik-routers",
+    )
+
+
+@app.post("/settings/system/routers/pppoe/remove/{router_id}", response_class=HTMLResponse)
+async def system_remove_pppoe_router(request: Request, router_id: str):
+    wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    routers = [router for router in wan_settings_data.get("pppoe_routers", []) if router.get("id") != router_id]
+    wan_settings_data["pppoe_routers"] = routers
+    for wan in wan_settings_data.get("wans", []):
+        if wan.get("pppoe_router_id") == router_id:
+            wan["pppoe_router_id"] = ""
+    save_settings("wan_ping", wan_settings_data)
+    return render_system_settings_response(
+        request,
+        "MikroTik router removed.",
+        active_tab="routers",
+        routers_tab="mikrotik-routers",
+    )
+
+
+@app.post("/settings/system/routers/pppoe/test/{router_id}", response_class=HTMLResponse)
+async def system_test_pppoe_router(request: Request, router_id: str):
+    wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    router = next((item for item in wan_settings_data.get("pppoe_routers", []) if item.get("id") == router_id), None)
+    if not router:
+        return render_system_settings_response(
+            request,
+            "Router not found.",
+            active_tab="routers",
+            routers_tab="mikrotik-routers",
+        )
+    if router.get("use_tls"):
+        return render_system_settings_response(
+            request,
+            "TLS test not supported yet. Disable TLS or use port 8728.",
+            active_tab="routers",
+            routers_tab="mikrotik-routers",
+        )
+    host = (router.get("host") or "").strip()
+    if not host:
+        return render_system_settings_response(
+            request,
+            "Router host is required.",
+            active_tab="routers",
+            routers_tab="mikrotik-routers",
+        )
+    client = RouterOSClient(
+        host,
+        int(router.get("port", 8728)),
+        router.get("username", ""),
+        router.get("password", ""),
+    )
+    try:
+        client.connect()
+        message = f"Router {router.get('name') or router_id} connected successfully."
+    except Exception as exc:
+        message = f"Router test failed: {exc}"
+    finally:
+        client.close()
+    return render_system_settings_response(
+        request,
+        message,
+        active_tab="routers",
+        routers_tab="mikrotik-routers",
+    )
+
+
+@app.post("/settings/system/routers/isps", response_class=HTMLResponse)
+async def system_save_isps(request: Request):
+    form = await request.form()
+    pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    count = parse_int(form, "wan_count", 0)
+    wan_settings_data["wans"] = _parse_wan_list_from_form(form, count)
+    save_settings("wan_ping", wan_settings_data)
+    sync_errors = wan_ping_notifier.sync_netwatch(wan_settings_data, pulse_settings)
+    if sync_errors:
+        message = "ISP list saved with Netwatch warnings: " + "; ".join(sync_errors)
+    else:
+        message = "ISP list saved and Netwatch synced."
+    return render_system_settings_response(request, message, active_tab="routers", routers_tab="isps")
 
 
 @app.post("/settings/system/uninstall", response_class=HTMLResponse)
@@ -7375,7 +7570,7 @@ async def system_uninstall(request: Request):
     message = ""
     if confirm_text != "UNINSTALL":
         message = "Confirmation text does not match. Type UNINSTALL to proceed."
-        return await system_settings(request)
+        return render_system_settings_response(request, message, active_tab="danger", routers_tab="cores")
 
     host_repo = os.environ.get("THREEJ_HOST_REPO", "/opt/threejnotif")
     command = (
@@ -7398,41 +7593,21 @@ async def system_uninstall(request: Request):
     except Exception as exc:
         message = f"Uninstall failed: {exc}"
 
-    settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
-    interfaces = get_interface_options()
-    return templates.TemplateResponse(
-        "settings_system.html",
-        make_context(request, {"message": message, "settings": settings, "interfaces": interfaces}),
-    )
+    return render_system_settings_response(request, message, active_tab="danger", routers_tab="cores")
 
 
 @app.post("/settings/system/logo", response_class=HTMLResponse)
 async def system_logo_upload(request: Request, company_logo: UploadFile = File(...)):
-    settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
-    interfaces = get_interface_options()
-    telegram_state = get_state("telegram_state", {})
     message = ""
 
     if not company_logo or not (company_logo.filename or "").strip():
         message = "Please select an image file to upload."
-        return templates.TemplateResponse(
-            "settings_system.html",
-            make_context(
-                request,
-                {"message": message, "settings": settings, "interfaces": interfaces, "telegram_state": telegram_state},
-            ),
-        )
+        return render_system_settings_response(request, message, active_tab="general", routers_tab="cores")
 
     content_type = (company_logo.content_type or "").lower().strip()
     if not content_type.startswith("image/"):
         message = "Invalid file type. Please upload an image only."
-        return templates.TemplateResponse(
-            "settings_system.html",
-            make_context(
-                request,
-                {"message": message, "settings": settings, "interfaces": interfaces, "telegram_state": telegram_state},
-            ),
-        )
+        return render_system_settings_response(request, message, active_tab="general", routers_tab="cores")
 
     header = await company_logo.read(512)
     await company_logo.seek(0)
@@ -7440,13 +7615,7 @@ async def system_logo_upload(request: Request, company_logo: UploadFile = File(.
     allowed_kinds = {"png": "image/png", "jpeg": "image/jpeg", "gif": "image/gif", "webp": "image/webp"}
     if kind not in allowed_kinds:
         message = "Invalid image. Please upload a PNG, JPG, WebP, or GIF."
-        return templates.TemplateResponse(
-            "settings_system.html",
-            make_context(
-                request,
-                {"message": message, "settings": settings, "interfaces": interfaces, "telegram_state": telegram_state},
-            ),
-        )
+        return render_system_settings_response(request, message, active_tab="general", routers_tab="cores")
 
     max_bytes = 5 * 1024 * 1024
     public_dir = DATA_DIR / "public"
@@ -7475,26 +7644,14 @@ async def system_logo_upload(request: Request, company_logo: UploadFile = File(.
         except Exception:
             pass
         message = "Image too large. Max size is 5MB."
-        return templates.TemplateResponse(
-            "settings_system.html",
-            make_context(
-                request,
-                {"message": message, "settings": settings, "interfaces": interfaces, "telegram_state": telegram_state},
-            ),
-        )
+        return render_system_settings_response(request, message, active_tab="general", routers_tab="cores")
     except Exception as exc:
         try:
             dest.unlink(missing_ok=True)
         except Exception:
             pass
         message = f"Upload failed: {exc}"
-        return templates.TemplateResponse(
-            "settings_system.html",
-            make_context(
-                request,
-                {"message": message, "settings": settings, "interfaces": interfaces, "telegram_state": telegram_state},
-            ),
-        )
+        return render_system_settings_response(request, message, active_tab="general", routers_tab="cores")
 
     system_settings = get_settings("system", SYSTEM_DEFAULTS)
     branding = dict(system_settings.get("branding") or {})
@@ -7507,42 +7664,21 @@ async def system_logo_upload(request: Request, company_logo: UploadFile = File(.
     save_settings("system", system_settings)
 
     message = "Company logo updated."
-    return templates.TemplateResponse(
-        "settings_system.html",
-        make_context(
-            request,
-            {"message": message, "settings": settings, "interfaces": interfaces, "telegram_state": telegram_state},
-        ),
-    )
+    return render_system_settings_response(request, message, active_tab="general", routers_tab="cores")
 
 
 @app.post("/settings/system/browser-logo", response_class=HTMLResponse)
 async def system_browser_logo_upload(request: Request, browser_logo: UploadFile = File(...)):
-    settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
-    interfaces = get_interface_options()
-    telegram_state = get_state("telegram_state", {})
     message = ""
 
     if not browser_logo or not (browser_logo.filename or "").strip():
         message = "Please select an image file to upload."
-        return templates.TemplateResponse(
-            "settings_system.html",
-            make_context(
-                request,
-                {"message": message, "settings": settings, "interfaces": interfaces, "telegram_state": telegram_state},
-            ),
-        )
+        return render_system_settings_response(request, message, active_tab="general", routers_tab="cores")
 
     content_type = (browser_logo.content_type or "").lower().strip()
     if not content_type.startswith("image/") and content_type not in {"application/octet-stream"}:
         message = "Invalid file type. Please upload an image only."
-        return templates.TemplateResponse(
-            "settings_system.html",
-            make_context(
-                request,
-                {"message": message, "settings": settings, "interfaces": interfaces, "telegram_state": telegram_state},
-            ),
-        )
+        return render_system_settings_response(request, message, active_tab="general", routers_tab="cores")
 
     header = await browser_logo.read(512)
     await browser_logo.seek(0)
@@ -7551,13 +7687,7 @@ async def system_browser_logo_upload(request: Request, browser_logo: UploadFile 
     allowed_kinds = {"png": "image/png", "jpeg": "image/jpeg", "gif": "image/gif", "webp": "image/webp"}
     if kind not in allowed_kinds and not is_ico:
         message = "Invalid image. Please upload a PNG, JPG, WebP, GIF, or ICO."
-        return templates.TemplateResponse(
-            "settings_system.html",
-            make_context(
-                request,
-                {"message": message, "settings": settings, "interfaces": interfaces, "telegram_state": telegram_state},
-            ),
-        )
+        return render_system_settings_response(request, message, active_tab="general", routers_tab="cores")
 
     max_bytes = 2 * 1024 * 1024
     public_dir = DATA_DIR / "public"
@@ -7591,26 +7721,14 @@ async def system_browser_logo_upload(request: Request, browser_logo: UploadFile 
         except Exception:
             pass
         message = "Image too large. Max size is 2MB."
-        return templates.TemplateResponse(
-            "settings_system.html",
-            make_context(
-                request,
-                {"message": message, "settings": settings, "interfaces": interfaces, "telegram_state": telegram_state},
-            ),
-        )
+        return render_system_settings_response(request, message, active_tab="general", routers_tab="cores")
     except Exception as exc:
         try:
             dest.unlink(missing_ok=True)
         except Exception:
             pass
         message = f"Upload failed: {exc}"
-        return templates.TemplateResponse(
-            "settings_system.html",
-            make_context(
-                request,
-                {"message": message, "settings": settings, "interfaces": interfaces, "telegram_state": telegram_state},
-            ),
-        )
+        return render_system_settings_response(request, message, active_tab="general", routers_tab="cores")
 
     system_settings = get_settings("system", SYSTEM_DEFAULTS)
     branding = dict(system_settings.get("branding") or {})
@@ -7623,10 +7741,4 @@ async def system_browser_logo_upload(request: Request, browser_logo: UploadFile 
     save_settings("system", system_settings)
 
     message = "Browser logo updated."
-    return templates.TemplateResponse(
-        "settings_system.html",
-        make_context(
-            request,
-            {"message": message, "settings": settings, "interfaces": interfaces, "telegram_state": telegram_state},
-        ),
-    )
+    return render_system_settings_response(request, message, active_tab="general", routers_tab="cores")

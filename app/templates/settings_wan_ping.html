@@ -186,6 +186,18 @@
       </div>
 
       <div class="tab-pane {% if active_tab != 'status' %}active{% endif %}" id="wan-settings">
+        <div class="alert alert-info mb-3">
+          <div class="d-flex align-items-start">
+            <span class="me-2"><i class="ti ti-info-circle"></i></span>
+            <div>
+              <div class="fw-semibold">Heads up</div>
+              <div class="small text-muted mt-1">
+                Router, Core, and ISP definitions are also available in <a href="/settings/system?tab=routers&routers_tab=isps">System Settings → Routers</a>.
+                This page still works and edits the same settings.
+              </div>
+            </div>
+          </div>
+        </div>
         <ul class="nav nav-tabs" data-bs-toggle="tabs">
           <li class="nav-item">
             <a href="#wan-add" class="nav-link {% if active_tab == 'add' or active_tab == 'status' %}active{% endif %}" data-bs-toggle="tab">Add WAN</a>

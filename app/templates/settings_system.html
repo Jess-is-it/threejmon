@@ -9,211 +9,472 @@
   <div class="alert alert-info">{{ message }}</div>
 {% endif %}
 
-<div class="card mb-4">
-  <div class="card-header">
-    <h3 class="card-title">Branding</h3>
-  </div>
-  <div class="card-body">
-    <div class="row g-4">
-      <div class="col-12 col-lg-6">
-        <form method="post" action="/settings/system/logo" enctype="multipart/form-data">
-          <label class="form-label">Company Logo <span class="info" data-tip="Displayed in the left navigation header. Image files only (PNG/JPG/WebP/GIF).">i</span></label>
-          <input class="form-control" type="file" name="company_logo" accept="image/*" required />
-          <div class="text-muted small mt-1">Recommended: transparent PNG, height 32–40px.</div>
-          <div class="mt-3 d-flex align-items-center gap-3 flex-wrap">
-            <button type="submit" class="btn btn-primary">Upload Company Logo</button>
-            {% if company_logo_url %}
-              <div class="border rounded p-2 d-inline-block bg-white">
-                <img src="{{ company_logo_url }}" alt="Company Logo" style="height: 40px; width: auto; display: block;" />
-              </div>
-            {% else %}
-              <div class="text-muted small">No logo uploaded yet.</div>
-            {% endif %}
-          </div>
-        </form>
-      </div>
+<ul class="nav nav-tabs mb-3" data-bs-toggle="tabs">
+  <li class="nav-item">
+    <a href="#sys-general" class="nav-link {% if active_tab == 'general' %}active{% endif %}" data-bs-toggle="tab">General</a>
+  </li>
+  <li class="nav-item">
+    <a href="#sys-routers" class="nav-link {% if active_tab == 'routers' %}active{% endif %}" data-bs-toggle="tab">Routers</a>
+  </li>
+  <li class="nav-item">
+    <a href="#sys-backup" class="nav-link {% if active_tab == 'backup' %}active{% endif %}" data-bs-toggle="tab">Backup</a>
+  </li>
+  <li class="nav-item">
+    <a href="#sys-danger" class="nav-link {% if active_tab == 'danger' %}active{% endif %}" data-bs-toggle="tab">Danger</a>
+  </li>
+</ul>
 
-      <div class="col-12 col-lg-6">
-        <form method="post" action="/settings/system/browser-logo" enctype="multipart/form-data">
-          <label class="form-label">Browser Page Logo <span class="info" data-tip="Used as the browser tab icon (favicon). PNG/JPG/WebP/GIF/ICO supported.">i</span></label>
-          <input class="form-control" type="file" name="browser_logo" accept="image/*,.ico" required />
-          <div class="text-muted small mt-1">Recommended: square icon (e.g. 64×64 or 128×128 PNG).</div>
-          <div class="mt-3 d-flex align-items-center gap-3 flex-wrap">
-            <button type="submit" class="btn btn-primary">Upload Browser Logo</button>
-            {% if browser_logo_url %}
-              <div class="border rounded p-2 d-inline-block bg-white">
-                <img src="{{ browser_logo_url }}" alt="Browser Logo" style="height: 32px; width: 32px; display: block;" />
+<div class="tab-content">
+  <div class="tab-pane {% if active_tab == 'general' %}active{% endif %}" id="sys-general">
+    <div class="card mb-4">
+      <div class="card-header">
+        <h3 class="card-title">Branding</h3>
+      </div>
+      <div class="card-body">
+        <div class="row g-4">
+          <div class="col-12 col-lg-6">
+            <form method="post" action="/settings/system/logo" enctype="multipart/form-data">
+              <label class="form-label">Company Logo <span class="info" data-tip="Displayed in the left navigation header. Image files only (PNG/JPG/WebP/GIF).">i</span></label>
+              <input class="form-control" type="file" name="company_logo" accept="image/*" required />
+              <div class="text-muted small mt-1">Recommended: transparent PNG, height 32–40px.</div>
+              <div class="mt-3 d-flex align-items-center gap-3 flex-wrap">
+                <button type="submit" class="btn btn-primary">Upload Company Logo</button>
+                {% if company_logo_url %}
+                  <div class="border rounded p-2 d-inline-block bg-white">
+                    <img src="{{ company_logo_url }}" alt="Company Logo" style="height: 40px; width: auto; display: block;" />
+                  </div>
+                {% else %}
+                  <div class="text-muted small">No logo uploaded yet.</div>
+                {% endif %}
               </div>
-            {% else %}
-              <div class="text-muted small">No browser logo uploaded yet.</div>
-            {% endif %}
+            </form>
           </div>
-        </form>
+
+          <div class="col-12 col-lg-6">
+            <form method="post" action="/settings/system/browser-logo" enctype="multipart/form-data">
+              <label class="form-label">Browser Page Logo <span class="info" data-tip="Used as the browser tab icon (favicon). PNG/JPG/WebP/GIF/ICO supported.">i</span></label>
+              <input class="form-control" type="file" name="browser_logo" accept="image/*,.ico" required />
+              <div class="text-muted small mt-1">Recommended: square icon (e.g. 64×64 or 128×128 PNG).</div>
+              <div class="mt-3 d-flex align-items-center gap-3 flex-wrap">
+                <button type="submit" class="btn btn-primary">Upload Browser Logo</button>
+                {% if browser_logo_url %}
+                  <div class="border rounded p-2 d-inline-block bg-white">
+                    <img src="{{ browser_logo_url }}" alt="Browser Logo" style="height: 32px; width: 32px; display: block;" />
+                  </div>
+                {% else %}
+                  <div class="text-muted small">No browser logo uploaded yet.</div>
+                {% endif %}
+              </div>
+            </form>
+          </div>
+        </div>
       </div>
     </div>
-  </div>
-</div>
 
-<div class="card mb-4">
-  <div class="card-header">
-    <h3 class="card-title">MikroTik API (Pulsewatch)</h3>
-  </div>
-  <div class="card-body">
-    <form method="post" action="/settings/system/mikrotik">
-      {% set cores = settings.pulsewatch.mikrotik.cores %}
-      {% set interface_options = interfaces if interfaces is defined else [] %}
-      <textarea name="core_ids" style="display: none;">{% for core in cores %}{{ core.id }}
-{% endfor %}</textarea>
-      {% for core in cores %}
-        <div class="border rounded p-3 mb-3">
-          <div class="fw-semibold mb-2">{{ core.label }}</div>
+    <div class="card mb-4">
+      <div class="card-header">
+        <h3 class="card-title">Telegram Commands</h3>
+      </div>
+      <div class="card-body">
+        <form method="post" action="/settings/system/telegram">
           <div class="row g-3">
-            <div class="col-md-3">
-              <label class="form-label">Core ID <span class="info" data-tip="Internal identifier for this MikroTik entry.">i</span></label>
-              <input class="form-control" type="text" name="{{ core.id }}_id" value="{{ core.id }}" disabled />
+            <div class="col-md-6">
+              <label class="form-label">Command Bot Token <span class="info" data-tip="Bot token used for command replies and interactions.">i</span></label>
+              <input class="form-control" type="text" name="telegram_command_bot_token" value="{{ settings.telegram.command_bot_token }}" />
             </div>
-            <div class="col-md-3">
-              <label class="form-label">Router Name <span class="info" data-tip="Friendly label shown in Pulsewatch tables.">i</span></label>
-              <input class="form-control" type="text" name="{{ core.id }}_label" value="{{ core.label }}" />
+            <div class="col-md-6">
+              <label class="form-label">Command Chat ID <span class="info" data-tip="Optional: lock commands to a single chat/group. Leave blank to allow private chats for allowed users.">i</span></label>
+              <input class="form-control" type="text" name="telegram_command_chat_id" value="{{ settings.telegram.command_chat_id }}" placeholder="Leave blank for private chats" />
             </div>
-            <div class="col-md-3">
-              <label class="form-label">Host <span class="info" data-tip="MikroTik API IP/hostname for this router.">i</span></label>
-              <input class="form-control" type="text" name="{{ core.id }}_host" value="{{ core.host }}" />
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Interface <span class="info" data-tip="Linux NIC that carries this router's Pulsewatch source IPs (e.g., enp0s8).">i</span></label>
-              <select class="form-select" name="{{ core.id }}_interface">
-                <option value="">Select interface</option>
-                {% for iface in interface_options %}
-                  <option value="{{ iface }}" {% if iface == core.interface %}selected{% endif %}>{{ iface }}</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Prefix <span class="info" data-tip="CIDR prefix length for the source IPs on this interface (usually 24).">i</span></label>
-              <input class="form-control" type="number" name="{{ core.id }}_prefix" value="{{ core.prefix }}" />
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Source IP Gateway <span class="info" data-tip="Default gateway used when traffic is sourced from this core's IPs. Example: 172.16.90.1.">i</span></label>
-              <input class="form-control" type="text" name="{{ core.id }}_gateway" value="{{ core.gateway }}" placeholder="e.g. 172.16.90.1" />
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Port <span class="info" data-tip="MikroTik API port (8728 by default).">i</span></label>
-              <input class="form-control" type="number" name="{{ core.id }}_port" value="{{ core.port }}" />
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Username <span class="info" data-tip="MikroTik API username.">i</span></label>
-              <input class="form-control" type="text" name="{{ core.id }}_username" value="{{ core.username }}" />
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Password <span class="info" data-tip="MikroTik API password.">i</span></label>
-              <input class="form-control" type="password" name="{{ core.id }}_password" value="{{ core.password }}" />
-            </div>
-          </div>
-          <div class="mt-3">
-            <button type="submit" class="btn btn-outline-danger btn-sm" formaction="/settings/system/mikrotik/remove/{{ core.id }}" formmethod="post">Remove Core</button>
-          </div>
-        </div>
-      {% endfor %}
-      <div class="d-flex gap-2 flex-wrap">
-        <button type="submit" class="btn btn-primary">Save MikroTik Settings</button>
-        <button type="submit" class="btn" formaction="/settings/system/mikrotik/add" formmethod="post">Add MikroTik Core</button>
-        <button type="submit" class="btn btn-outline-primary" formaction="/settings/pulsewatch/mikrotik/test" formmethod="post">Test MikroTik API</button>
-        <button type="submit" class="btn btn-outline-primary" formaction="/settings/pulsewatch/mikrotik/sync" formmethod="post">Sync MikroTik Address-Lists</button>
-      </div>
-    </form>
-  </div>
-</div>
-
-<div class="card mb-4">
-  <div class="card-header">
-    <h3 class="card-title">Telegram Commands</h3>
-  </div>
-  <div class="card-body">
-    <form method="post" action="/settings/system/telegram">
-      <div class="row g-3">
-        <div class="col-md-6">
-          <label class="form-label">Command Bot Token <span class="info" data-tip="Bot token used for command replies and interactions.">i</span></label>
-          <input class="form-control" type="text" name="telegram_command_bot_token" value="{{ settings.telegram.command_bot_token }}" />
-        </div>
-        <div class="col-md-6">
-          <label class="form-label">Command Chat ID <span class="info" data-tip="Optional: lock commands to a single chat/group. Leave blank to allow private chats for allowed users.">i</span></label>
-          <input class="form-control" type="text" name="telegram_command_chat_id" value="{{ settings.telegram.command_chat_id }}" placeholder="Leave blank for private chats" />
-        </div>
-        <div class="col-md-6">
-          <label class="form-label">Allowed User IDs <span class="info" data-tip="One Telegram user ID per line for command access control.">i</span></label>
-          <textarea class="form-control" name="telegram_allowed_user_ids" rows="5" placeholder="123456789">{% for user_id in settings.telegram.allowed_user_ids %}{{ user_id }}
+            <div class="col-md-6">
+              <label class="form-label">Allowed User IDs <span class="info" data-tip="One Telegram user ID per line for command access control.">i</span></label>
+              <textarea class="form-control" name="telegram_allowed_user_ids" rows="5" placeholder="123456789">{% for user_id in settings.telegram.allowed_user_ids %}{{ user_id }}
 {% endfor %}</textarea>
-        </div>
-        <div class="col-md-3">
-          <label class="form-label">Feedback Reply Seconds <span class="info" data-tip="Send a progress reply after this delay, then double the delay each time (e.g., 10s, 20s, 40s). Set 0 to disable.">i</span></label>
-          <input class="form-control" type="number" name="telegram_command_feedback_seconds" value="{{ settings.telegram.command_feedback_seconds }}" />
-        </div>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Feedback Reply Seconds <span class="info" data-tip="Send a progress reply after this delay, then double the delay each time (e.g., 10s, 20s, 40s). Set 0 to disable.">i</span></label>
+              <input class="form-control" type="number" name="telegram_command_feedback_seconds" value="{{ settings.telegram.command_feedback_seconds }}" />
+            </div>
+          </div>
+          <div class="d-flex gap-2 mt-3">
+            <button type="submit" class="btn btn-primary">Save Telegram Command Settings</button>
+          </div>
+        </form>
+        {% if telegram_state %}
+          <div class="text-muted mt-3">Last poll: {{ telegram_state.last_poll_at or "n/a" }}</div>
+          <div class="text-muted">Last command: {{ telegram_state.last_command or "n/a" }} | From: {{ telegram_state.last_command_from or "n/a" }}</div>
+          <div class="text-muted">Last reply: {{ telegram_state.last_reply or "n/a" }}</div>
+          {% if telegram_state.last_error %}
+            <div class="alert alert-warning mt-2">Telegram command error: {{ telegram_state.last_error }}</div>
+          {% endif %}
+        {% endif %}
       </div>
-      <div class="d-flex gap-2 mt-3">
-        <button type="submit" class="btn btn-primary">Save Telegram Command Settings</button>
-      </div>
-    </form>
-    {% if telegram_state %}
-      <div class="text-muted mt-3">Last poll: {{ telegram_state.last_poll_at or "n/a" }}</div>
-      <div class="text-muted">Last command: {{ telegram_state.last_command or "n/a" }} | From: {{ telegram_state.last_command_from or "n/a" }}</div>
-      <div class="text-muted">Last reply: {{ telegram_state.last_reply or "n/a" }}</div>
-      {% if telegram_state.last_error %}
-        <div class="alert alert-warning mt-2">Telegram command error: {{ telegram_state.last_error }}</div>
-      {% endif %}
-    {% endif %}
-  </div>
-</div>
-
-<div class="card mb-4">
-  <div class="card-header">
-    <h3 class="card-title">Backup & Restore</h3>
-  </div>
-  <div class="card-body">
-    <div class="text-muted mb-2">
-      <a href="/settings/export">Download settings backup</a>
     </div>
-    <form method="post" action="/settings/import" enctype="multipart/form-data">
-      <label class="form-label">Restore from JSON file <span class="info" data-tip="Import a settings backup JSON (configuration only; runtime history is excluded). Includes WAN Ping, WAN Summary, and Pulsewatch settings.">i</span></label>
-      <input class="form-control" type="file" name="settings_file" accept="application/json" />
-      <div class="mt-3">
-        <button type="submit" class="btn btn-primary">Import Settings</button>
-      </div>
-    </form>
   </div>
-</div>
 
-<div class="card mb-4">
-  <div class="card-header">
-    <h3 class="card-title">Database Backup & Restore</h3>
-  </div>
-  <div class="card-body">
-    <div class="text-muted mb-2">
-      <a href="/settings/db/export">Download database backup</a>
+  <div class="tab-pane {% if active_tab == 'routers' %}active{% endif %}" id="sys-routers">
+    <div class="alert alert-info">
+      <div class="d-flex align-items-start">
+        <span class="me-2"><i class="ti ti-info-circle"></i></span>
+        <div>
+          <div class="fw-semibold">Router & ISP definitions</div>
+          <div class="small text-muted mt-1">
+            Configure these once and reuse them across modules (WAN Ping, Pulsewatch, and future router-based features).
+            WAN Ping still has its own settings page; both pages edit the same underlying settings.
+          </div>
+          <div class="mt-2 d-flex gap-2 flex-wrap">
+            <a class="btn btn-sm btn-outline-primary" href="/settings/wan">Open WAN Ping Settings</a>
+            <a class="btn btn-sm btn-outline-primary" href="/settings/pulsewatch">Open Pulsewatch</a>
+          </div>
+        </div>
+      </div>
     </div>
-    <form method="post" action="/settings/db/import" enctype="multipart/form-data">
-      <label class="form-label">Restore database <span class="info" data-tip="If running Postgres, use pg_dump/psql instead of uploading a SQLite .db file.">i</span></label>
-      <input class="form-control" type="file" name="db_file" accept=".db,application/octet-stream" />
-      <div class="mt-3">
-        <button type="submit" class="btn btn-primary">Import Database</button>
+
+    <ul class="nav nav-tabs" data-bs-toggle="tabs">
+      <li class="nav-item">
+        <a href="#sys-routers-cores" class="nav-link {% if routers_tab == 'cores' %}active{% endif %}" data-bs-toggle="tab">Cores</a>
+      </li>
+      <li class="nav-item">
+        <a href="#sys-routers-mikrotik" class="nav-link {% if routers_tab == 'mikrotik-routers' %}active{% endif %}" data-bs-toggle="tab">MikroTik Routers</a>
+      </li>
+      <li class="nav-item">
+        <a href="#sys-routers-isps" class="nav-link {% if routers_tab == 'isps' %}active{% endif %}" data-bs-toggle="tab">Add ISP</a>
+      </li>
+    </ul>
+
+    <div class="tab-content pt-4">
+      <div class="tab-pane {% if routers_tab == 'cores' %}active{% endif %}" id="sys-routers-cores">
+        <div class="card mb-4">
+          <div class="card-header">
+            <h3 class="card-title">MikroTik API Cores (Pulsewatch)</h3>
+          </div>
+          <div class="card-body">
+            <form method="post" action="/settings/system/mikrotik">
+              {% set cores = settings.pulsewatch.mikrotik.cores %}
+              {% set interface_options = interfaces if interfaces is defined else [] %}
+              <textarea name="core_ids" style="display: none;">{% for core in cores %}{{ core.id }}
+{% endfor %}</textarea>
+              {% for core in cores %}
+                <div class="border rounded p-3 mb-3">
+                  <div class="fw-semibold mb-2">{{ core.label }}</div>
+                  <div class="row g-3">
+                    <div class="col-md-3">
+                      <label class="form-label">Core ID <span class="info" data-tip="Internal identifier for this MikroTik entry.">i</span></label>
+                      <input class="form-control" type="text" name="{{ core.id }}_id" value="{{ core.id }}" disabled />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Router Name <span class="info" data-tip="Friendly label shown in Pulsewatch tables.">i</span></label>
+                      <input class="form-control" type="text" name="{{ core.id }}_label" value="{{ core.label }}" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Host <span class="info" data-tip="MikroTik API IP/hostname for this router.">i</span></label>
+                      <input class="form-control" type="text" name="{{ core.id }}_host" value="{{ core.host }}" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Interface <span class="info" data-tip="Linux NIC that carries this router's Pulsewatch source IPs (e.g., enp0s8).">i</span></label>
+                      <select class="form-select" name="{{ core.id }}_interface">
+                        <option value="">Select interface</option>
+                        {% for iface in interface_options %}
+                          <option value="{{ iface }}" {% if iface == core.interface %}selected{% endif %}>{{ iface }}</option>
+                        {% endfor %}
+                      </select>
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Prefix <span class="info" data-tip="CIDR prefix length for the source IPs on this interface (usually 24).">i</span></label>
+                      <input class="form-control" type="number" name="{{ core.id }}_prefix" value="{{ core.prefix }}" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Source IP Gateway <span class="info" data-tip="Default gateway used when traffic is sourced from this core's IPs. Example: 172.16.90.1.">i</span></label>
+                      <input class="form-control" type="text" name="{{ core.id }}_gateway" value="{{ core.gateway }}" placeholder="e.g. 172.16.90.1" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Port <span class="info" data-tip="MikroTik API port (8728 by default).">i</span></label>
+                      <input class="form-control" type="number" name="{{ core.id }}_port" value="{{ core.port }}" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Username <span class="info" data-tip="MikroTik API username.">i</span></label>
+                      <input class="form-control" type="text" name="{{ core.id }}_username" value="{{ core.username }}" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Password <span class="info" data-tip="MikroTik API password.">i</span></label>
+                      <input class="form-control" type="password" name="{{ core.id }}_password" value="{{ core.password }}" />
+                    </div>
+                  </div>
+                  <div class="mt-3">
+                    <button type="submit" class="btn btn-outline-danger btn-sm" formaction="/settings/system/mikrotik/remove/{{ core.id }}" formmethod="post">Remove Core</button>
+                  </div>
+                </div>
+              {% endfor %}
+              <div class="d-flex gap-2 flex-wrap">
+                <button type="submit" class="btn btn-primary">Save Cores</button>
+                <button type="submit" class="btn" formaction="/settings/system/mikrotik/add" formmethod="post">Add Core</button>
+                <button type="submit" class="btn btn-outline-primary" formaction="/settings/pulsewatch/mikrotik/test" formmethod="post">Test MikroTik API</button>
+                <button type="submit" class="btn btn-outline-primary" formaction="/settings/pulsewatch/mikrotik/sync" formmethod="post">Sync Address-Lists</button>
+              </div>
+              <div class="text-muted small mt-3">
+                Guide: Cores are used to retrieve address-lists (TO-ISP) and to bind source IPs for Pulsewatch/WAN checks.
+              </div>
+            </form>
+          </div>
+        </div>
       </div>
-    </form>
+
+      <div class="tab-pane {% if routers_tab == 'mikrotik-routers' %}active{% endif %}" id="sys-routers-mikrotik">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h4 class="mb-0">MikroTik Routers (PPPoE / Bridge)</h4>
+          <form method="post" action="/settings/system/routers/pppoe/add">
+            <button type="submit" class="btn btn-outline-primary">Add Router</button>
+          </form>
+        </div>
+        <div class="text-muted small mb-3">
+          Used for WAN Ping <span class="fw-semibold">Bridged</span> mode (PPPoE router is the hop). If you don’t use Bridged mode, you can leave this empty.
+        </div>
+        <form method="post" action="/settings/system/routers/pppoe">
+          <input type="hidden" name="router_count" value="{{ wan_settings.pppoe_routers|length }}" />
+          <div style="overflow-x: auto;">
+            <table class="table table-vcenter">
+              <thead>
+                <tr>
+                  <th title="Friendly label for the PPPoE router.">Name</th>
+                  <th title="Router IP or hostname for RouterOS API.">Host</th>
+                  <th title="API port (8728) or API-SSL port (8729).">Port</th>
+                  <th title="RouterOS API username.">Username</th>
+                  <th title="RouterOS API password.">Password</th>
+                  <th title="Enable only if api-ssl is configured on the router.">TLS</th>
+                  <th title="Try connecting to the RouterOS API.">Test</th>
+                  <th title="Mark for removal on save.">Remove</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for router in wan_settings.pppoe_routers %}
+                  <tr>
+                    <td>
+                      <input type="hidden" name="router_{{ loop.index0 }}_id" value="{{ router.id }}" />
+                      <input class="form-control" type="text" name="router_{{ loop.index0 }}_name" value="{{ router.name }}" />
+                    </td>
+                    <td><input class="form-control" type="text" name="router_{{ loop.index0 }}_host" value="{{ router.host }}" /></td>
+                    <td><input class="form-control" type="number" name="router_{{ loop.index0 }}_port" value="{{ router.port or 8728 }}" /></td>
+                    <td><input class="form-control" type="text" name="router_{{ loop.index0 }}_username" value="{{ router.username }}" /></td>
+                    <td><input class="form-control" type="password" name="router_{{ loop.index0 }}_password" value="{{ router.password }}" /></td>
+                    <td>
+                      <label class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" name="router_{{ loop.index0 }}_use_tls" {% if router.use_tls %}checked{% endif %} />
+                      </label>
+                    </td>
+                    <td>
+                      <button type="submit" class="btn btn-outline-primary btn-sm" formaction="/settings/system/routers/pppoe/test/{{ router.id }}" formmethod="post">Test</button>
+                    </td>
+                    <td>
+                      <label class="form-check">
+                        <input class="form-check-input" type="checkbox" name="router_{{ loop.index0 }}_remove" />
+                        <span class="form-check-label text-muted">Remove</span>
+                      </label>
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% if not wan_settings.pppoe_routers %}
+            <div class="text-muted">No MikroTik PPPoE routers added.</div>
+          {% endif %}
+          <div class="d-flex justify-content-end mt-3">
+            <button type="submit" class="btn btn-primary">Save Routers</button>
+          </div>
+          <div class="text-muted small mt-2">Note: TLS test is not supported yet (API-SSL). Use port 8728 for tests.</div>
+        </form>
+      </div>
+
+      <div class="tab-pane {% if routers_tab == 'isps' %}active{% endif %}" id="sys-routers-isps">
+        <form method="post" action="/settings/system/routers/isps">
+          <div class="card mb-3">
+            <div class="card-body">
+              <h4 class="mb-3">Detected ISPs (WAN Ping)</h4>
+              {% if not wan_rows_loaded %}
+                <div class="alert alert-warning">
+                  <div class="d-flex align-items-start">
+                    <span class="me-2"><i class="ti ti-alert-triangle"></i></span>
+                    <div>
+                      This tab needs a refresh to retrieve TO-ISP lists from your MikroTik cores (it will log in to each core).
+                      <div class="mt-2">
+                        <a class="btn btn-sm btn-outline-primary" href="/settings/system?tab=routers&routers_tab=isps">Refresh Detected ISPs</a>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              {% endif %}
+              <div class="alert alert-info">
+                <div class="d-flex align-items-start">
+                  <span class="me-2"><i class="ti ti-info-circle"></i></span>
+                  <div>
+                    ISPs are detected from each Core’s RouterOS address-lists (TO-ISP). Add the missing fields below.
+                    <div class="mt-2">Enable checks by setting a <span class="fw-semibold">Local IP</span>. If Local IP is blank, the entry is kept disabled.</div>
+                    <div class="mt-2">Tip: Identifier comes from Pulsewatch Presets. If you see “add identifier name in pulsewatch”, edit it there.</div>
+                  </div>
+                </div>
+              </div>
+              <input type="hidden" name="wan_count" value="{{ wan_rows|length }}" />
+              <div style="overflow-x: auto;">
+                <table class="table table-vcenter">
+                  <thead>
+                    <tr>
+                      <th title="MikroTik core where this TO-ISP list is found.">Core</th>
+                      <th title="Address-list name pulled from MikroTik.">TO-ISP List</th>
+                      <th title="Auto from Pulsewatch identifier; update it in Pulsewatch Presets.">Identifier</th>
+                      <th title="Routed = ping via core router; Bridged = ping via PPPoE router.">Mode</th>
+                      <th title="Source IP to bind for server ping checks.">Local IP</th>
+                      <th title="Select PPPoE router for Bridged mode.">PPPoE Router</th>
+                      <th title="Disable to skip checks for this ISP.">Enabled</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for row in wan_rows %}
+                      <tr>
+                        <td>
+                          {{ row.core_label }}
+                          <input type="hidden" name="wan_{{ loop.index0 }}_core_id" value="{{ row.core_id }}" />
+                        </td>
+                        <td>
+                          {{ row.list_name }}
+                          <input type="hidden" name="wan_{{ loop.index0 }}_list" value="{{ row.list_name }}" />
+                        </td>
+                        <td>
+                          {% if row.identifier_missing %}
+                            <span class="text-muted">add identifier name in pulsewatch</span>
+                          {% else %}
+                            {{ row.identifier }}
+                          {% endif %}
+                        </td>
+                        <td>
+                          <select name="wan_{{ loop.index0 }}_mode" class="form-select wan-mode" data-row="{{ loop.index0 }}">
+                            <option value="routed" {% if row.mode == 'routed' %}selected{% endif %}>Routed</option>
+                            <option value="bridged" {% if row.mode == 'bridged' %}selected{% endif %}>Bridged</option>
+                          </select>
+                        </td>
+                        <td>
+                          <input type="text" class="form-control wan-local-ip" name="wan_{{ loop.index0 }}_local_ip" value="{{ row.local_ip }}" data-row="{{ loop.index0 }}" />
+                        </td>
+                        <td>
+                          <select name="wan_{{ loop.index0 }}_pppoe_router_id" class="form-select wan-router" data-row="{{ loop.index0 }}">
+                            <option value="">Select router</option>
+                            {% for router in wan_settings.pppoe_routers %}
+                              <option value="{{ router.id }}" {% if row.pppoe_router_id == router.id %}selected{% endif %}>{{ router.name or router.id }}</option>
+                            {% endfor %}
+                          </select>
+                        </td>
+                        <td>
+                          <label class="form-check form-switch">
+                            <input class="form-check-input wan-enabled" type="checkbox" name="wan_{{ loop.index0 }}_enabled" data-row="{{ loop.index0 }}" {% if row.enabled %}checked{% endif %} {% if not row.local_ip %}disabled{% endif %} />
+                          </label>
+                        </td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+              {% if not wan_rows %}
+                <div class="text-muted">
+                  {% if wan_rows_loaded %}
+                    No TO-ISP lists detected yet. Check <span class="fw-semibold">Cores</span> configuration and MikroTik API connectivity.
+                  {% else %}
+                    Not loaded yet.
+                  {% endif %}
+                </div>
+              {% endif %}
+            </div>
+            <div class="card-footer d-flex justify-content-end">
+              <button type="submit" class="btn btn-primary">Save ISP List</button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <div class="tab-pane {% if active_tab == 'backup' %}active{% endif %}" id="sys-backup">
+    <div class="card mb-4">
+      <div class="card-header">
+        <h3 class="card-title">Backup & Restore</h3>
+      </div>
+      <div class="card-body">
+        <div class="text-muted mb-2">
+          <a href="/settings/export">Download settings backup</a>
+        </div>
+        <form method="post" action="/settings/import" enctype="multipart/form-data">
+          <label class="form-label">Restore from JSON file <span class="info" data-tip="Import a settings backup JSON (configuration only; runtime history is excluded). Includes WAN Ping, WAN Summary, and Pulsewatch settings.">i</span></label>
+          <input class="form-control" type="file" name="settings_file" accept="application/json" />
+          <div class="mt-3">
+            <button type="submit" class="btn btn-primary">Import Settings</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="card mb-4">
+      <div class="card-header">
+        <h3 class="card-title">Database Backup & Restore</h3>
+      </div>
+      <div class="card-body">
+        <div class="text-muted mb-2">
+          <a href="/settings/db/export">Download database backup</a>
+        </div>
+        <form method="post" action="/settings/db/import" enctype="multipart/form-data">
+          <label class="form-label">Restore database <span class="info" data-tip="If running Postgres, use pg_dump/psql instead of uploading a SQLite .db file.">i</span></label>
+          <input class="form-control" type="file" name="db_file" accept=".db,application/octet-stream" />
+          <div class="mt-3">
+            <button type="submit" class="btn btn-primary">Import Database</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <div class="tab-pane {% if active_tab == 'danger' %}active{% endif %}" id="sys-danger">
+    <div class="card mb-4">
+      <div class="card-header">
+        <h3 class="card-title text-danger">Uninstall</h3>
+      </div>
+      <div class="card-body">
+        <div class="alert alert-warning">Warning: This will remove Docker, all containers/images/volumes, and delete the app files. This action is irreversible.</div>
+        <p class="text-muted">Type UNINSTALL to confirm.</p>
+        <form method="post" action="/settings/system/uninstall">
+          <input class="form-control" type="text" name="confirm_text" placeholder="Type UNINSTALL" />
+          <div class="mt-3">
+            <button type="submit" class="btn btn-danger">Uninstall Everything</button>
+          </div>
+        </form>
+      </div>
+    </div>
   </div>
 </div>
 
-<div class="card mb-4">
-  <div class="card-header">
-    <h3 class="card-title text-danger">Uninstall</h3>
-  </div>
-  <div class="card-body">
-    <div class="alert alert-warning">Warning: This will remove Docker, all containers/images/volumes, and delete the app files. This action is irreversible.</div>
-    <p class="text-muted">Type UNINSTALL to confirm.</p>
-    <form method="post" action="/settings/system/uninstall">
-      <input class="form-control" type="text" name="confirm_text" placeholder="Type UNINSTALL" />
-      <div class="mt-3">
-        <button type="submit" class="btn btn-danger">Uninstall Everything</button>
-      </div>
-    </form>
-  </div>
-</div>
+<script>
+  const toggleWanFields = (rowId) => {
+    const mode = document.querySelector(`.wan-mode[data-row="${rowId}"]`);
+    const localInput = document.querySelector(`.wan-local-ip[data-row="${rowId}"]`);
+    const routerSelect = document.querySelector(`.wan-router[data-row="${rowId}"]`);
+    const enabledToggle = document.querySelector(`.wan-enabled[data-row="${rowId}"]`);
+    if (!mode || !localInput || !routerSelect || !enabledToggle) return;
+    const isBridged = mode.value === "bridged";
+    localInput.disabled = false;
+    routerSelect.disabled = !isBridged;
+    localInput.style.opacity = "1";
+    routerSelect.style.opacity = isBridged ? "1" : "0.6";
+    const hasLocal = Boolean(localInput.value.trim());
+    enabledToggle.disabled = !hasLocal;
+    if (!hasLocal) {
+      enabledToggle.checked = false;
+    }
+  };
+
+  document.querySelectorAll(".wan-mode").forEach((select) => {
+    toggleWanFields(select.dataset.row);
+    select.addEventListener("change", () => toggleWanFields(select.dataset.row));
+  });
+
+  document.querySelectorAll(".wan-local-ip").forEach((input) => {
+    toggleWanFields(input.dataset.row);
+    input.addEventListener("input", () => toggleWanFields(input.dataset.row));
+  });
+</script>
 {% endblock %}
