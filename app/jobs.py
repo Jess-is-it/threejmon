@@ -1020,6 +1020,11 @@ class JobsManager:
                             wan_cfg["pppoe_routers"] = migrated
                             save_settings("wan_ping", wan_cfg)
                             routers = migrated
+                    usage_router_enabled = (
+                        (cfg.get("mikrotik") or {}).get("router_enabled")
+                        if isinstance((cfg.get("mikrotik") or {}).get("router_enabled"), dict)
+                        else {}
+                    )
                     enabled_router_ids = set()
                     active_rows = []
                     offline_rows = []
@@ -1040,12 +1045,12 @@ class JobsManager:
                     for router in routers:
                         if not isinstance(router, dict):
                             continue
-                        if not router.get("enabled", True):
-                            continue
                         router_id = (router.get("id") or "").strip()
                         router_name = (router.get("name") or router_id or "router").strip()
                         host = (router.get("host") or "").strip()
                         if not router_id or not host:
+                            continue
+                        if not bool(usage_router_enabled.get(router_id, True)):
                             continue
                         enabled_router_ids.add(router_id)
                         if router.get("use_tls"):
@@ -1482,6 +1487,7 @@ class JobsManager:
                     state["active_rows"] = active_rows
                     state["offline_rows"] = offline_rows
                     state["routers"] = router_status
+                    state["enabled_router_ids"] = sorted(list(enabled_router_ids))
                     state["prev_bytes"] = prev_bytes
                     state["secrets_cache"] = secrets_cache
                     state["secrets_refreshed_at"] = secrets_refreshed_at
@@ -1585,6 +1591,17 @@ class JobsManager:
                         use_cache = True
             except Exception:
                 use_cache = False
+            if use_cache:
+                try:
+                    cached_router_ids = set(usage_state.get("enabled_router_ids") or [])
+                    desired_router_ids = {(r.get("id") or "").strip() for r in routers if isinstance(r, dict)}
+                    desired_router_ids = {rid for rid in desired_router_ids if rid}
+                    if desired_router_ids and cached_router_ids and cached_router_ids != desired_router_ids:
+                        # Usage may be configured to only poll a subset of routers; do not use cache
+                        # for offline calculations in that case.
+                        use_cache = False
+                except Exception:
+                    use_cache = False
 
             try:
                 # Retention for history (once per day).

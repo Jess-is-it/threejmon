@@ -3283,9 +3283,7 @@ async def usage_settings(request: Request):
     if active_tab not in ("status", "settings"):
         active_tab = "status"
     settings_tab = (request.query_params.get("settings_tab") or "general").strip().lower()
-    if settings_tab == "routers":
-        return RedirectResponse(url="/settings/system?tab=routers&routers_tab=mikrotik-routers", status_code=302)
-    if settings_tab not in ("general", "data", "detection", "storage", "danger"):
+    if settings_tab not in ("general", "routers", "data", "detection", "storage", "danger"):
         settings_tab = "general"
     job_status = {item["job_name"]: dict(item) for item in get_job_status()}
     usage_job = job_status.get("usage", {})
@@ -3296,6 +3294,11 @@ async def usage_settings(request: Request):
         "last_error_at_ph": format_ts_ph(usage_job.get("last_error_at")),
     }
     state = get_state("usage_state", {})
+    wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    router_state_rows = state.get("routers") if isinstance(state.get("routers"), list) else []
+    router_state_map = {
+        (row.get("router_id") or "").strip(): row for row in router_state_rows if isinstance(row, dict)
+    }
     return templates.TemplateResponse(
         "settings_usage.html",
         make_context(
@@ -3306,6 +3309,8 @@ async def usage_settings(request: Request):
                 "active_tab": active_tab,
                 "settings_tab": settings_tab,
                 "usage_job": usage_job,
+                "wan_settings": wan_settings,
+                "usage_router_state": router_state_map,
                 "usage_state": {
                     "last_check": format_ts_ph(state.get("last_check_at")),
                     "genieacs_last_refresh": format_ts_ph(state.get("last_genieacs_refresh_at")),
@@ -3320,8 +3325,6 @@ async def usage_settings(request: Request):
 async def usage_settings_save(request: Request):
     form = await request.form()
     settings_tab = (form.get("settings_tab") or "general").strip() or "general"
-    if settings_tab == "routers":
-        return RedirectResponse(url="/settings/system?tab=routers&routers_tab=mikrotik-routers", status_code=302)
     settings = get_settings("usage", USAGE_DEFAULTS)
 
     settings["mikrotik"] = settings.get("mikrotik") if isinstance(settings.get("mikrotik"), dict) else {}
@@ -3330,6 +3333,11 @@ async def usage_settings_save(request: Request):
     settings["device"] = settings.get("device") if isinstance(settings.get("device"), dict) else {}
     settings["detection"] = settings.get("detection") if isinstance(settings.get("detection"), dict) else {}
     settings["storage"] = settings.get("storage") if isinstance(settings.get("storage"), dict) else {}
+    settings["mikrotik"]["router_enabled"] = (
+        settings["mikrotik"].get("router_enabled")
+        if isinstance(settings["mikrotik"].get("router_enabled"), dict)
+        else {}
+    )
 
     message = ""
     try:
@@ -3360,6 +3368,18 @@ async def usage_settings_save(request: Request):
                 int(settings["storage"].get("sample_interval_seconds", USAGE_DEFAULTS["storage"]["sample_interval_seconds"])),
             )
             message = "Usage settings saved."
+        elif settings_tab == "routers":
+            wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+            system_routers = wan_settings.get("pppoe_routers") if isinstance(wan_settings.get("pppoe_routers"), list) else []
+            count = parse_int(form, "router_count", len(system_routers))
+            enabled_map = {}
+            for idx in range(count):
+                router_id = (form.get(f"router_{idx}_id") or "").strip()
+                if not router_id:
+                    continue
+                enabled_map[router_id] = parse_bool(form, f"router_{idx}_enabled")
+            settings["mikrotik"]["router_enabled"] = enabled_map
+            message = "Usage router selection saved."
         elif settings_tab == "data":
             settings["genieacs"]["base_url"] = (form.get("genieacs_base_url") or "").strip()
             settings["genieacs"]["username"] = (form.get("genieacs_username") or "").strip()
@@ -3471,6 +3491,11 @@ async def usage_settings_save(request: Request):
         "last_error_at_ph": format_ts_ph(usage_job.get("last_error_at")),
     }
     state = get_state("usage_state", {})
+    wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    router_state_rows = state.get("routers") if isinstance(state.get("routers"), list) else []
+    router_state_map = {
+        (row.get("router_id") or "").strip(): row for row in router_state_rows if isinstance(row, dict)
+    }
     return templates.TemplateResponse(
         "settings_usage.html",
         make_context(
@@ -3481,6 +3506,8 @@ async def usage_settings_save(request: Request):
                 "active_tab": "settings",
                 "settings_tab": settings_tab,
                 "usage_job": usage_job,
+                "wan_settings": wan_settings,
+                "usage_router_state": router_state_map,
                 "usage_state": {
                     "last_check": format_ts_ph(state.get("last_check_at")),
                     "genieacs_last_refresh": format_ts_ph(state.get("last_genieacs_refresh_at")),
@@ -3528,6 +3555,11 @@ async def usage_test_genieacs(request: Request):
         "last_error_at_ph": format_ts_ph(usage_job.get("last_error_at")),
     }
     state = get_state("usage_state", {})
+    wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    router_state_rows = state.get("routers") if isinstance(state.get("routers"), list) else []
+    router_state_map = {
+        (row.get("router_id") or "").strip(): row for row in router_state_rows if isinstance(row, dict)
+    }
     return templates.TemplateResponse(
         "settings_usage.html",
         make_context(
@@ -3538,6 +3570,8 @@ async def usage_test_genieacs(request: Request):
                 "active_tab": "settings",
                 "settings_tab": "data",
                 "usage_job": usage_job,
+                "wan_settings": wan_settings,
+                "usage_router_state": router_state_map,
                 "usage_state": {
                     "last_check": format_ts_ph(state.get("last_check_at")),
                     "genieacs_last_refresh": format_ts_ph(state.get("last_genieacs_refresh_at")),
@@ -3664,6 +3698,11 @@ async def usage_format(request: Request):
         "last_error_at_ph": format_ts_ph(usage_job.get("last_error_at")),
     }
     state = get_state("usage_state", {})
+    wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    router_state_rows = state.get("routers") if isinstance(state.get("routers"), list) else []
+    router_state_map = {
+        (row.get("router_id") or "").strip(): row for row in router_state_rows if isinstance(row, dict)
+    }
     return templates.TemplateResponse(
         "settings_usage.html",
         make_context(
@@ -3674,6 +3713,8 @@ async def usage_format(request: Request):
                 "active_tab": "settings",
                 "settings_tab": "danger",
                 "usage_job": usage_job,
+                "wan_settings": wan_settings,
+                "usage_router_state": router_state_map,
                 "usage_state": {
                     "last_check": format_ts_ph(state.get("last_check_at")),
                     "genieacs_last_refresh": format_ts_ph(state.get("last_genieacs_refresh_at")),

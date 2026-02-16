@@ -179,6 +179,9 @@
             <a href="#usage-general" class="nav-link {% if settings_tab == 'general' %}active{% endif %}" data-bs-toggle="tab">General</a>
           </li>
           <li class="nav-item">
+            <a href="#usage-routers" class="nav-link {% if settings_tab == 'routers' %}active{% endif %}" data-bs-toggle="tab">Routers</a>
+          </li>
+          <li class="nav-item">
             <a href="#usage-data" class="nav-link {% if settings_tab == 'data' %}active{% endif %}" data-bs-toggle="tab">Data Source</a>
           </li>
           <li class="nav-item">
@@ -200,15 +203,6 @@
               <div class="card mb-3">
                 <div class="card-body">
                   <h4 class="mb-3">General</h4>
-                  <div class="alert alert-info">
-                    <div class="d-flex align-items-start">
-                      <span class="me-2"><i class="ti ti-info-circle"></i></span>
-                      <div>
-                        MikroTik routers are managed in <a class="link-primary" href="/settings/system?tab=routers&routers_tab=mikrotik-routers">System Settings → Routers → Mikrotik Routers</a>.
-                        <div class="small text-muted mt-1">Usage reads from that shared router list (also used by Offline and WAN Ping Bridged mode).</div>
-                      </div>
-                    </div>
-                  </div>
                   <div class="row g-3">
                     <div class="col-md-4">
                       <label class="form-check form-switch">
@@ -242,6 +236,90 @@
               </div>
               <div class="d-flex gap-2">
                 <button type="submit" class="btn btn-primary">Save General Settings</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="tab-pane {% if settings_tab == 'routers' %}active{% endif %}" id="usage-routers">
+            <form method="post" action="/settings/usage">
+              <input type="hidden" name="active_tab" value="settings" />
+              <input type="hidden" name="settings_tab" value="routers" />
+              <div class="card mb-3">
+                <div class="card-body">
+                  <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+                    <div>
+                      <h4 class="mb-0">Routers (from System Settings)</h4>
+                      <div class="text-muted small mt-1">View-only list. Toggle which routers are polled by the Usage collector.</div>
+                    </div>
+                    <a class="btn btn-outline-primary" href="/settings/system?tab=routers&routers_tab=mikrotik-routers#sys-routers-mikrotik">Manage Routers</a>
+                  </div>
+                  <input type="hidden" name="router_count" value="{{ (wan_settings.pppoe_routers or [])|length }}" />
+                  <div class="table-responsive">
+                    <table class="table table-vcenter">
+                      <thead>
+                        <tr>
+                          <th>Router</th>
+                          <th>Host</th>
+                          <th>Port</th>
+                          <th>User</th>
+                          <th>TLS</th>
+                          <th title="When enabled, this router is included in Usage polling.">Usage Enabled</th>
+                          <th>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {% for r in (wan_settings.pppoe_routers or []) %}
+                          {% set rid = (r.id or '') %}
+                          {% set enabled_map = settings.mikrotik.router_enabled if settings.mikrotik.router_enabled is defined else {} %}
+                          {% set usage_enabled = enabled_map.get(rid, True) %}
+                          {% set st = usage_router_state.get(rid, {}) if usage_router_state is defined else {} %}
+                          <tr>
+                            <td class="fw-semibold">
+                              {{ r.name or r.id }}
+                              <input type="hidden" name="router_{{ loop.index0 }}_id" value="{{ r.id }}" />
+                            </td>
+                            <td class="text-muted">{{ r.host }}</td>
+                            <td class="text-muted">{{ r.port or 8728 }}</td>
+                            <td class="text-muted">{{ r.username }}</td>
+                            <td>
+                              {% if r.use_tls %}
+                                <span class="badge bg-yellow-lt">Yes</span>
+                              {% else %}
+                                <span class="badge bg-secondary-lt">No</span>
+                              {% endif %}
+                            </td>
+                            <td>
+                              <label class="form-check form-switch m-0">
+                                <input class="form-check-input" type="checkbox" name="router_{{ loop.index0 }}_enabled" {% if usage_enabled %}checked{% endif %} />
+                              </label>
+                            </td>
+                            <td>
+                              {% if not st %}
+                                <span class="text-muted">n/a</span>
+                              {% else %}
+                                {% if st.error %}
+                                  <span class="badge bg-red-lt">Error</span>
+                                  <span class="text-muted small">{{ st.error }}</span>
+                                {% elif st.connected %}
+                                  <span class="badge bg-green-lt">OK</span>
+                                  <span class="text-muted small">Active: {{ st.active_count or 0 }}</span>
+                                {% else %}
+                                  <span class="badge bg-yellow-lt">Pending</span>
+                                {% endif %}
+                              {% endif %}
+                            </td>
+                          </tr>
+                        {% endfor %}
+                      </tbody>
+                    </table>
+                  </div>
+                  {% if not (wan_settings.pppoe_routers or []) %}
+                    <div class="text-muted">No routers added yet. Add them in System Settings → Routers → Mikrotik Routers.</div>
+                  {% endif %}
+                </div>
+                <div class="card-footer d-flex justify-content-end">
+                  <button type="submit" class="btn btn-primary">Save Router Selection</button>
+                </div>
               </div>
             </form>
           </div>

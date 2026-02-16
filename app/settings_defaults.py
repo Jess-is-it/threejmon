@@ -358,6 +358,9 @@ USAGE_DEFAULTS = {
     "enabled": False,
     "mikrotik": {
         "routers": [],
+        # Per-router enablement for Usage collector (routers are managed in System Settings).
+        # If a router_id is missing here, it is treated as enabled by default.
+        "router_enabled": {},
         # Active PPPoE polling frequency (seconds).
         "poll_interval_seconds": 10,
         # How often to refresh /ppp/secret list for offline accounts (minutes).
