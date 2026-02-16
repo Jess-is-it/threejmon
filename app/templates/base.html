@@ -170,7 +170,26 @@
         const diskEl = document.getElementById("sys-disk");
         const uptimeEl = document.getElementById("sys-uptime");
         if (cpuEl) cpuEl.textContent = `CPU ${data.cpu_pct ?? 0}%`;
-        if (ramEl) ramEl.textContent = `RAM ${data.ram_pct ?? 0}%`;
+        if (ramEl) {
+          const pressure = data.ram_pressure_pct ?? data.ram_pct ?? 0;
+          const allocated = data.ram_used_incl_cache_pct;
+          if (allocated !== undefined && allocated !== null) {
+            ramEl.textContent = `RAM ${pressure}% · Alloc ${allocated}%`;
+          } else {
+            ramEl.textContent = `RAM ${pressure}%`;
+          }
+
+          const kbToGiB = (kb) => {
+            const n = Number(kb ?? 0);
+            if (!Number.isFinite(n) || n <= 0) return "n/a";
+            return (n / 1024 / 1024).toFixed(2);
+          };
+          const totalGiB = kbToGiB(data.ram_total_kb);
+          const availGiB = kbToGiB(data.ram_available_kb);
+          const cachedGiB = kbToGiB(data.ram_cached_kb);
+          const freeGiB = kbToGiB(data.ram_free_kb);
+          ramEl.title = `RAM pressure (MemAvailable): ${pressure}%\nRAM allocated (incl cache): ${allocated ?? "n/a"}%\nTotal: ${totalGiB} GiB · Available: ${availGiB} GiB · Cached: ${cachedGiB} GiB · Free: ${freeGiB} GiB`;
+        }
         if (diskEl) diskEl.textContent = `DISK ${data.disk_pct ?? 0}%`;
         if (uptimeEl) uptimeEl.textContent = `UPTIME ${formatUptime(data.uptime_seconds ?? 0)}`;
       } catch (err) {
