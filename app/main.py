@@ -6213,6 +6213,11 @@ async def surveillance_fixed_many(request: Request):
     return RedirectResponse(url="/surveillance?tab=under", status_code=303)
 
 def render_wan_ping_response(request, pulse_settings, wan_settings, message, active_tab, wan_window_hours=24):
+    if (active_tab or "").strip().lower() in ("add", "routers"):
+        active_tab = "settings"
+    active_tab = (active_tab or "status").strip().lower()
+    if active_tab not in ("status", "settings", "messages"):
+        active_tab = "settings"
     wan_rows = build_wan_rows(pulse_settings, wan_settings)
     wan_state = get_state("wan_ping_state", {})
     window_end = datetime.now(timezone.utc)
@@ -6304,47 +6309,26 @@ async def wan_settings_save_wans(request: Request):
         message = "WAN list saved with Netwatch warnings: " + "; ".join(sync_errors)
     else:
         message = "WAN list saved and Netwatch synced."
-    return render_wan_ping_response(request, pulse_settings, wan_settings_data, message, "add")
+    return render_system_settings_response(request, message, active_tab="routers", routers_tab="isps")
 
 
 @app.post("/settings/wan/routers", response_class=HTMLResponse)
 async def wan_settings_save_routers(request: Request):
     form = await request.form()
-    pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
     wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
     count = parse_int(form, "router_count", 0)
-    routers = []
-    removed_ids = set()
-    for idx in range(count):
-        router_id = (form.get(f"router_{idx}_id") or "").strip()
-        if not router_id:
-            continue
-        if parse_bool(form, f"router_{idx}_remove"):
-            removed_ids.add(router_id)
-            continue
-        routers.append(
-            {
-                "id": router_id,
-                "name": (form.get(f"router_{idx}_name") or "").strip(),
-                "host": (form.get(f"router_{idx}_host") or "").strip(),
-                "port": parse_int(form, f"router_{idx}_port", 8728),
-                "username": (form.get(f"router_{idx}_username") or "").strip(),
-                "password": (form.get(f"router_{idx}_password") or "").strip(),
-                "use_tls": parse_bool(form, f"router_{idx}_use_tls"),
-            }
-        )
+    routers, removed_ids = _parse_wan_pppoe_routers_from_form(form, count)
     wan_settings_data["pppoe_routers"] = routers
     if removed_ids:
         for wan in wan_settings_data.get("wans", []):
             if wan.get("pppoe_router_id") in removed_ids:
                 wan["pppoe_router_id"] = ""
     save_settings("wan_ping", wan_settings_data)
-    return render_wan_ping_response(request, pulse_settings, wan_settings_data, "PPPoE routers saved.", "routers")
+    return render_system_settings_response(request, "Mikrotik routers saved.", active_tab="routers", routers_tab="mikrotik-routers")
 
 
 @app.post("/settings/wan/routers/add", response_class=HTMLResponse)
 async def wan_settings_add_router(request: Request):
-    pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
     wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
     routers = wan_settings_data.get("pppoe_routers", [])
     existing_ids = {router.get("id") for router in routers if router.get("id")}
@@ -6364,12 +6348,11 @@ async def wan_settings_add_router(request: Request):
     )
     wan_settings_data["pppoe_routers"] = routers
     save_settings("wan_ping", wan_settings_data)
-    return render_wan_ping_response(request, pulse_settings, wan_settings_data, "PPPoE router added.", "routers")
+    return render_system_settings_response(request, "Mikrotik router added.", active_tab="routers", routers_tab="mikrotik-routers")
 
 
 @app.post("/settings/wan/routers/remove/{router_id}", response_class=HTMLResponse)
 async def wan_settings_remove_router(request: Request, router_id: str):
-    pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
     wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
     routers = [router for router in wan_settings_data.get("pppoe_routers", []) if router.get("id") != router_id]
     wan_settings_data["pppoe_routers"] = routers
@@ -6377,30 +6360,28 @@ async def wan_settings_remove_router(request: Request, router_id: str):
         if wan.get("pppoe_router_id") == router_id:
             wan["pppoe_router_id"] = ""
     save_settings("wan_ping", wan_settings_data)
-    return render_wan_ping_response(request, pulse_settings, wan_settings_data, "PPPoE router removed.", "routers")
+    return render_system_settings_response(request, "Mikrotik router removed.", active_tab="routers", routers_tab="mikrotik-routers")
 
 
 @app.post("/settings/wan/routers/test/{router_id}", response_class=HTMLResponse)
 async def wan_settings_test_router(request: Request, router_id: str):
-    pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
     wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
     router = next(
         (item for item in wan_settings_data.get("pppoe_routers", []) if item.get("id") == router_id),
         None,
     )
     if not router:
-        return render_wan_ping_response(request, pulse_settings, wan_settings_data, "Router not found.", "routers")
+        return render_system_settings_response(request, "Router not found.", active_tab="routers", routers_tab="mikrotik-routers")
     if router.get("use_tls"):
-        return render_wan_ping_response(
+        return render_system_settings_response(
             request,
-            pulse_settings,
-            wan_settings_data,
             "TLS test not supported yet. Disable TLS or use port 8728.",
-            "routers",
+            active_tab="routers",
+            routers_tab="mikrotik-routers",
         )
     host = (router.get("host") or "").strip()
     if not host:
-        return render_wan_ping_response(request, pulse_settings, wan_settings_data, "Router host is required.", "routers")
+        return render_system_settings_response(request, "Router host is required.", active_tab="routers", routers_tab="mikrotik-routers")
     client = RouterOSClient(
         host,
         int(router.get("port", 8728)),
@@ -6414,7 +6395,7 @@ async def wan_settings_test_router(request: Request, router_id: str):
         message = f"Router test failed: {exc}"
     finally:
         client.close()
-    return render_wan_ping_response(request, pulse_settings, wan_settings_data, message, "routers")
+    return render_system_settings_response(request, message, active_tab="routers", routers_tab="mikrotik-routers")
 
 
 @app.post("/settings/wan/telegram", response_class=HTMLResponse)

@@ -185,190 +185,37 @@
         </div>
       </div>
 
-      <div class="tab-pane {% if active_tab != 'status' %}active{% endif %}" id="wan-settings">
-        <div class="alert alert-info mb-3">
-          <div class="d-flex align-items-start">
-            <span class="me-2"><i class="ti ti-info-circle"></i></span>
-            <div>
-              <div class="fw-semibold">Heads up</div>
-              <div class="small text-muted mt-1">
-                Router, Core, and ISP definitions are also available in <a href="/settings/system?tab=routers&routers_tab=isps">System Settings → Routers</a>.
-                This page still works and edits the same settings.
-              </div>
-            </div>
-          </div>
-        </div>
-        <ul class="nav nav-tabs" data-bs-toggle="tabs">
-          <li class="nav-item">
-            <a href="#wan-add" class="nav-link {% if active_tab == 'add' or active_tab == 'status' %}active{% endif %}" data-bs-toggle="tab">Add WAN</a>
-          </li>
-          <li class="nav-item">
-            <a href="#wan-routers" class="nav-link {% if active_tab == 'routers' %}active{% endif %}" data-bs-toggle="tab">Add PPPoE MikroTik (Bridge)</a>
-          </li>
-          <li class="nav-item">
-            <a href="#wan-settings-tab" class="nav-link {% if active_tab == 'settings' %}active{% endif %}" data-bs-toggle="tab">Settings</a>
-          </li>
-          <li class="nav-item">
-            <a href="#wan-messages" class="nav-link {% if active_tab == 'messages' %}active{% endif %}" data-bs-toggle="tab">Messages</a>
-          </li>
-        </ul>
-        <div class="tab-content pt-4">
-          <div class="tab-pane {% if active_tab == 'add' or active_tab == 'status' %}active{% endif %}" id="wan-add">
-        <form method="post" action="/settings/wan/wans">
-          <div class="card mb-3">
-            <div class="card-body">
-              <h4 class="mb-3">Detected WAN Entries</h4>
-              <div class="alert alert-info">
-                <div class="d-flex align-items-start">
-                  <span class="me-2"><i class="ti ti-info-circle"></i></span>
-                  <div>
-                    WANs are prepopulated from each MikroTik core using TO-ISP lists. Add the missing fields below.
-                    <div class="mt-2">Note: WAN checks use the Local IP as the target. If blank, the first target from Pulsewatch Presets is used.</div>
-                  </div>
-                </div>
-              </div>
-              <input type="hidden" name="wan_count" value="{{ wan_rows|length }}" />
-              <div style="overflow-x: auto;">
-                <table class="table table-vcenter">
-                  <thead>
-                    <tr>
-                      <th title="MikroTik core where this TO-ISP list is found.">Core</th>
-                      <th title="Address-list name pulled from MikroTik.">TO-ISP List</th>
-                      <th title="Auto from Pulsewatch identifier; update it in Pulsewatch Presets.">Identifier</th>
-                      <th title="Routed = ping via core router; Bridged = ping via PPPoE router.">Mode</th>
-                      <th title="Source IP to bind for server ping checks.">Local IP</th>
-                      <th title="Select PPPoE router for Bridged mode.">PPPoE Router</th>
-                      <th title="Disable to skip checks for this WAN.">Enabled</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {% for row in wan_rows %}
-                      <tr>
-                        <td>
-                          {{ row.core_label }}
-                          <input type="hidden" name="wan_{{ loop.index0 }}_core_id" value="{{ row.core_id }}" />
-                        </td>
-                        <td>
-                          {{ row.list_name }}
-                          <input type="hidden" name="wan_{{ loop.index0 }}_list" value="{{ row.list_name }}" />
-                        </td>
-                        <td>
-                          {% if row.identifier_missing %}
-                            <span class="text-muted">add identifier name in pulsewatch</span>
-                          {% else %}
-                            {{ row.identifier }}
-                          {% endif %}
-                        </td>
-                        <td>
-                          <select name="wan_{{ loop.index0 }}_mode" class="form-select wan-mode" data-row="{{ loop.index0 }}">
-                            <option value="routed" {% if row.mode == 'routed' %}selected{% endif %}>Routed</option>
-                            <option value="bridged" {% if row.mode == 'bridged' %}selected{% endif %}>Bridged</option>
-                          </select>
-                        </td>
-                        <td>
-                          <input type="text" class="form-control wan-local-ip" name="wan_{{ loop.index0 }}_local_ip" value="{{ row.local_ip }}" data-row="{{ loop.index0 }}" />
-                        </td>
-                        <td>
-                          <select name="wan_{{ loop.index0 }}_pppoe_router_id" class="form-select wan-router" data-row="{{ loop.index0 }}">
-                            <option value="">Select router</option>
-                            {% for router in settings.pppoe_routers %}
-                              <option value="{{ router.id }}" {% if row.pppoe_router_id == router.id %}selected{% endif %}>{{ router.name or router.id }}</option>
-                            {% endfor %}
-                          </select>
-                        </td>
-                        <td>
-                          <label class="form-check form-switch">
-                            <input class="form-check-input wan-enabled" type="checkbox" name="wan_{{ loop.index0 }}_enabled" data-row="{{ loop.index0 }}" {% if row.enabled %}checked{% endif %} {% if not row.local_ip %}disabled{% endif %} />
-                          </label>
-                        </td>
-                      </tr>
-                    {% endfor %}
-                  </tbody>
-                </table>
-              </div>
-              {% if not wan_rows %}
-                <div class="text-muted">No TO-ISP lists detected. Check System Settings or MikroTik API connectivity.</div>
-              {% endif %}
-            </div>
-            <div class="card-footer d-flex justify-content-end">
-              <button type="submit" class="btn btn-primary">Save WAN List</button>
-            </div>
-          </div>
-        </form>
-        <div class="card">
-          <div class="card-body">
-            <div class="text-muted">Use this tab to manage WAN list settings.</div>
-          </div>
-        </div>
-          </div>
-
-          <div class="tab-pane {% if active_tab == 'routers' %}active{% endif %}" id="wan-routers">
-        <div class="d-flex justify-content-between align-items-center mb-2">
-          <h4 class="mb-0">PPPoE MikroTik Routers</h4>
-          <form method="post" action="/settings/wan/routers/add">
-            <button type="submit" class="btn btn-outline-primary">Add Router</button>
-          </form>
-        </div>
-        <form method="post" action="/settings/wan/routers">
-          <input type="hidden" name="router_count" value="{{ settings.pppoe_routers|length }}" />
-          <div style="overflow-x: auto;">
-            <table class="table table-vcenter">
-              <thead>
-                <tr>
-                  <th title="Friendly label for the PPPoE router.">Name</th>
-                  <th title="Router IP or hostname for RouterOS API.">Host</th>
-                  <th title="API port (8728) or API-SSL port (8729).">Port</th>
-                  <th title="RouterOS API username.">Username</th>
-                  <th title="RouterOS API password.">Password</th>
-                  <th title="Enable only if api-ssl is configured on the router.">TLS</th>
-                  <th title="Try connecting to the RouterOS API.">Test</th>
-                  <th title="Mark for removal on save.">Remove</th>
-                </tr>
-              </thead>
-              <tbody>
-                {% for router in settings.pppoe_routers %}
-                  <tr>
-                    <td>
-                      <input type="hidden" name="router_{{ loop.index0 }}_id" value="{{ router.id }}" />
-                      <input class="form-control" type="text" name="router_{{ loop.index0 }}_name" value="{{ router.name }}" />
-                    </td>
-                    <td><input class="form-control" type="text" name="router_{{ loop.index0 }}_host" value="{{ router.host }}" /></td>
-                    <td><input class="form-control" type="number" name="router_{{ loop.index0 }}_port" value="{{ router.port or 8728 }}" /></td>
-                    <td><input class="form-control" type="text" name="router_{{ loop.index0 }}_username" value="{{ router.username }}" /></td>
-                    <td><input class="form-control" type="password" name="router_{{ loop.index0 }}_password" value="{{ router.password }}" /></td>
-                    <td>
-                      <label class="form-check form-switch">
-                        <input class="form-check-input" type="checkbox" name="router_{{ loop.index0 }}_use_tls" {% if router.use_tls %}checked{% endif %} />
-                      </label>
-                    </td>
-                    <td>
-                      <button type="submit" class="btn btn-outline-primary btn-sm" formaction="/settings/wan/routers/test/{{ router.id }}" formmethod="post">Test</button>
-                    </td>
-                    <td>
-                      <label class="form-check">
-                        <input class="form-check-input" type="checkbox" name="router_{{ loop.index0 }}_remove" />
-                        <span class="form-check-label text-muted">Remove</span>
-                      </label>
-                    </td>
-                  </tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          </div>
-          {% if not settings.pppoe_routers %}
-            <div class="text-muted">No PPPoE routers added.</div>
-          {% endif %}
-          <div class="d-flex justify-content-end mt-3">
-            <button type="submit" class="btn btn-primary">Save PPPoE Routers</button>
-          </div>
-        </form>
-          </div>
-
-          <div class="tab-pane {% if active_tab == 'settings' %}active{% endif %}" id="wan-settings-tab">
-        <ul class="nav nav-tabs" data-bs-toggle="tabs">
-          <li class="nav-item">
-            <a href="#wan-settings-telegram" class="nav-link active" data-bs-toggle="tab">Telegram</a>
-          </li>
+	      <div class="tab-pane {% if active_tab != 'status' %}active{% endif %}" id="wan-settings">
+	        <div class="alert alert-info mb-3">
+	          <div class="d-flex align-items-start">
+	            <span class="me-2"><i class="ti ti-info-circle"></i></span>
+	            <div>
+	              <div class="fw-semibold">Heads up</div>
+	              <div class="small text-muted mt-1">
+	                Router and ISP management moved to <a href="/settings/system?tab=routers&routers_tab=isps">System Settings → Routers</a>.
+	                WAN Ping settings here are focused on polling + Telegram + messages.
+	              </div>
+	              <div class="mt-2 d-flex gap-2 flex-wrap">
+	                <a class="btn btn-sm btn-outline-primary" href="/settings/system?tab=routers&routers_tab=isps">Open Add ISP</a>
+	                <a class="btn btn-sm btn-outline-primary" href="/settings/system?tab=routers&routers_tab=mikrotik-routers">Open Mikrotik Routers</a>
+	              </div>
+	            </div>
+	          </div>
+	        </div>
+	        <ul class="nav nav-tabs" data-bs-toggle="tabs">
+	          <li class="nav-item">
+	            <a href="#wan-settings-tab" class="nav-link {% if active_tab == 'settings' or active_tab == 'status' %}active{% endif %}" data-bs-toggle="tab">Settings</a>
+	          </li>
+	          <li class="nav-item">
+	            <a href="#wan-messages" class="nav-link {% if active_tab == 'messages' %}active{% endif %}" data-bs-toggle="tab">Messages</a>
+	          </li>
+	        </ul>
+	        <div class="tab-content pt-4">
+		          <div class="tab-pane {% if active_tab == 'settings' or active_tab == 'status' %}active{% endif %}" id="wan-settings-tab">
+	        <ul class="nav nav-tabs" data-bs-toggle="tabs">
+	          <li class="nav-item">
+	            <a href="#wan-settings-telegram" class="nav-link active" data-bs-toggle="tab">Telegram</a>
+	          </li>
           <li class="nav-item">
             <a href="#wan-settings-interval" class="nav-link" data-bs-toggle="tab">Interval</a>
           </li>
