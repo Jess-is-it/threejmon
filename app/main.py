@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import base64
+import re
 import shlex
 import shutil
 import time
@@ -1148,6 +1149,18 @@ def is_wan_list_name(list_name):
     return "TO-ISP" in (list_name or "").upper()
 
 
+_HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _sanitize_hex_color(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    if _HEX_COLOR_RE.match(raw):
+        return raw.lower()
+    return ""
+
+
 def build_wan_rows(pulsewatch_settings, wan_settings):
     cores = pulsewatch_settings.get("pulsewatch", {}).get("mikrotik", {}).get("cores", [])
     list_map = fetch_mikrotik_lists(cores)
@@ -1156,10 +1169,12 @@ def build_wan_rows(pulsewatch_settings, wan_settings):
         core_id = preset.get("core_id")
         list_name = preset.get("list")
         identifier = (preset.get("identifier") or "").strip()
+        color = _sanitize_hex_color(preset.get("color") or "")
         if core_id and list_name:
             preset_map[(core_id, list_name)] = {
                 "identifier": identifier,
                 "address": (preset.get("address") or "").strip(),
+                "color": color,
             }
     saved_wans = {
         (item.get("core_id"), item.get("list_name")): item
@@ -1187,6 +1202,7 @@ def build_wan_rows(pulsewatch_settings, wan_settings):
                 mode = "routed"
             preset_data = preset_map.get((core_id, list_name), {}) or {}
             identifier = (preset_data.get("identifier") or "").strip()
+            color = _sanitize_hex_color(preset_data.get("color") or "")
             rows.append(
                 {
                     "wan_id": wan_row_id(core_id, list_name),
@@ -1195,6 +1211,7 @@ def build_wan_rows(pulsewatch_settings, wan_settings):
                     "list_name": list_name,
                     "identifier": identifier,
                     "identifier_missing": not identifier,
+                    "color": color,
                     "mode": mode,
                     "local_ip": saved.get("local_ip", ""),
                     "gateway_ip": saved.get("gateway_ip", ""),
@@ -7555,6 +7572,32 @@ async def system_save_isps(request: Request):
     count = parse_int(form, "wan_count", 0)
     wan_settings_data["wans"] = _parse_wan_list_from_form(form, count)
     save_settings("wan_ping", wan_settings_data)
+    pulsewatch = pulse_settings.get("pulsewatch", {}) or {}
+    presets = pulsewatch.get("list_presets", [])
+    if not isinstance(presets, list):
+        presets = []
+    preset_map = {
+        (item.get("core_id"), item.get("list")): item
+        for item in presets
+        if item.get("core_id") and item.get("list")
+    }
+    for idx in range(count):
+        core_id = (form.get(f"wan_{idx}_core_id") or "").strip()
+        list_name = (form.get(f"wan_{idx}_list") or "").strip()
+        if not core_id or not list_name:
+            continue
+        identifier = (form.get(f"wan_{idx}_identifier") or "").strip()
+        color = _sanitize_hex_color(form.get(f"wan_{idx}_color") or "")
+        preset = preset_map.get((core_id, list_name))
+        if preset is None:
+            preset = {"core_id": core_id, "list": list_name}
+            presets.append(preset)
+            preset_map[(core_id, list_name)] = preset
+        preset["identifier"] = identifier
+        preset["color"] = color
+    pulsewatch["list_presets"] = presets
+    pulse_settings["pulsewatch"] = pulsewatch
+    save_settings("isp_ping", pulse_settings)
     sync_errors = wan_ping_notifier.sync_netwatch(wan_settings_data, pulse_settings)
     if sync_errors:
         message = "ISP list saved with Netwatch warnings: " + "; ".join(sync_errors)

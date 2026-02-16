@@ -313,9 +313,9 @@
                 <div class="d-flex align-items-start">
                   <span class="me-2"><i class="ti ti-info-circle"></i></span>
                   <div>
-                    ISPs are detected from each Core’s RouterOS address-lists (TO-ISP). Add the missing fields below.
+                    ISPs are detected from each Core’s RouterOS address-lists (TO-ISP). This is the main ISP list used by WAN Ping and other modules—manage the Identifier and Color here.
                     <div class="mt-2">Enable checks by setting a <span class="fw-semibold">Local IP</span>. If Local IP is blank, the entry is kept disabled.</div>
-                    <div class="mt-2">Tip: Identifier comes from Pulsewatch Presets. If you see “add identifier name in pulsewatch”, edit it there.</div>
+                    <div class="mt-2">Color is used for charts/labels (when available).</div>
                   </div>
                 </div>
               </div>
@@ -326,7 +326,8 @@
                     <tr>
                       <th title="MikroTik core where this TO-ISP list is found.">Core</th>
                       <th title="Address-list name pulled from MikroTik.">TO-ISP List</th>
-                      <th title="Auto from Pulsewatch identifier; update it in Pulsewatch Presets.">Identifier</th>
+                      <th title="Friendly ISP label used across pages.">Identifier</th>
+                      <th title="Optional color for charts/labels.">Color</th>
                       <th title="Routed = ping via core router; Bridged = ping via PPPoE router.">Mode</th>
                       <th title="Source IP to bind for server ping checks.">Local IP</th>
                       <th title="Select PPPoE router for Bridged mode.">PPPoE Router</th>
@@ -345,11 +346,10 @@
                           <input type="hidden" name="wan_{{ loop.index0 }}_list" value="{{ row.list_name }}" />
                         </td>
                         <td>
-                          {% if row.identifier_missing %}
-                            <span class="text-muted">add identifier name in pulsewatch</span>
-                          {% else %}
-                            {{ row.identifier }}
-                          {% endif %}
+                          <input type="text" class="form-control" name="wan_{{ loop.index0 }}_identifier" value="{{ row.identifier }}" placeholder="ISP name" />
+                        </td>
+                        <td>
+                          <input type="color" name="wan_{{ loop.index0 }}_color" value="{{ row.color or '#1f77b4' }}" title="Pick color" />
                         </td>
                         <td>
                           <select name="wan_{{ loop.index0 }}_mode" class="form-select wan-mode" data-row="{{ loop.index0 }}">
