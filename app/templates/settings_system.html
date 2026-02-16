@@ -220,68 +220,74 @@
       </div>
 
       <div class="tab-pane {% if routers_tab == 'mikrotik-routers' %}active{% endif %}" id="sys-routers-mikrotik">
-        <div class="d-flex justify-content-between align-items-center mb-2">
-          <h4 class="mb-0">MikroTik Routers (PPPoE / Bridge)</h4>
-          <form method="post" action="/settings/system/routers/pppoe/add">
-            <button type="submit" class="btn btn-outline-primary">Add Router</button>
-          </form>
-        </div>
-        <div class="text-muted small mb-3">
-          Used for WAN Ping <span class="fw-semibold">Bridged</span> mode (PPPoE router is the hop). If you don’t use Bridged mode, you can leave this empty.
-        </div>
         <form method="post" action="/settings/system/routers/pppoe">
-          <input type="hidden" name="router_count" value="{{ wan_settings.pppoe_routers|length }}" />
-          <div style="overflow-x: auto;">
-            <table class="table table-vcenter">
-              <thead>
-                <tr>
-                  <th title="Friendly label for the PPPoE router.">Name</th>
-                  <th title="Router IP or hostname for RouterOS API.">Host</th>
-                  <th title="API port (8728) or API-SSL port (8729).">Port</th>
-                  <th title="RouterOS API username.">Username</th>
-                  <th title="RouterOS API password.">Password</th>
-                  <th title="Enable only if api-ssl is configured on the router.">TLS</th>
-                  <th title="Try connecting to the RouterOS API.">Test</th>
-                  <th title="Mark for removal on save.">Remove</th>
-                </tr>
-              </thead>
-              <tbody>
-                {% for router in wan_settings.pppoe_routers %}
-                  <tr>
-                    <td>
-                      <input type="hidden" name="router_{{ loop.index0 }}_id" value="{{ router.id }}" />
-                      <input class="form-control" type="text" name="router_{{ loop.index0 }}_name" value="{{ router.name }}" />
-                    </td>
-                    <td><input class="form-control" type="text" name="router_{{ loop.index0 }}_host" value="{{ router.host }}" /></td>
-                    <td><input class="form-control" type="number" name="router_{{ loop.index0 }}_port" value="{{ router.port or 8728 }}" /></td>
-                    <td><input class="form-control" type="text" name="router_{{ loop.index0 }}_username" value="{{ router.username }}" /></td>
-                    <td><input class="form-control" type="password" name="router_{{ loop.index0 }}_password" value="{{ router.password }}" /></td>
-                    <td>
-                      <label class="form-check form-switch">
-                        <input class="form-check-input" type="checkbox" name="router_{{ loop.index0 }}_use_tls" {% if router.use_tls %}checked{% endif %} />
-                      </label>
-                    </td>
-                    <td>
-                      <button type="submit" class="btn btn-outline-primary btn-sm" formaction="/settings/system/routers/pppoe/test/{{ router.id }}" formmethod="post">Test</button>
-                    </td>
-                    <td>
-                      <label class="form-check">
-                        <input class="form-check-input" type="checkbox" name="router_{{ loop.index0 }}_remove" />
-                        <span class="form-check-label text-muted">Remove</span>
-                      </label>
-                    </td>
-                  </tr>
-                {% endfor %}
-              </tbody>
-            </table>
+          <div class="card mb-4">
+            <div class="card-header d-flex align-items-center">
+              <h3 class="card-title mb-0">MikroTik Routers (PPPoE / Bridge)</h3>
+              <div class="ms-auto">
+                <button type="submit" class="btn btn-outline-primary" formaction="/settings/system/routers/pppoe/add" formmethod="post">
+                  Add Router
+                </button>
+              </div>
+            </div>
+            <div class="card-body">
+              <div class="text-muted small mb-3">
+                Used for WAN Ping <span class="fw-semibold">Bridged</span> mode (PPPoE router is the hop). If you don’t use Bridged mode, you can leave this empty.
+              </div>
+              <input type="hidden" name="router_count" value="{{ wan_settings.pppoe_routers|length }}" />
+              <div style="overflow-x: auto;">
+                <table class="table table-vcenter">
+                  <thead>
+                    <tr>
+                      <th title="Friendly label for the PPPoE router.">Name</th>
+                      <th title="Router IP or hostname for RouterOS API.">Host</th>
+                      <th title="API port (8728) or API-SSL port (8729).">Port</th>
+                      <th title="RouterOS API username.">Username</th>
+                      <th title="RouterOS API password.">Password</th>
+                      <th title="Enable only if api-ssl is configured on the router.">TLS</th>
+                      <th title="Try connecting to the RouterOS API.">Test</th>
+                      <th title="Mark for removal on save.">Remove</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for router in wan_settings.pppoe_routers %}
+                      <tr>
+                        <td>
+                          <input type="hidden" name="router_{{ loop.index0 }}_id" value="{{ router.id }}" />
+                          <input class="form-control" type="text" name="router_{{ loop.index0 }}_name" value="{{ router.name }}" />
+                        </td>
+                        <td><input class="form-control" type="text" name="router_{{ loop.index0 }}_host" value="{{ router.host }}" /></td>
+                        <td><input class="form-control" type="number" name="router_{{ loop.index0 }}_port" value="{{ router.port or 8728 }}" /></td>
+                        <td><input class="form-control" type="text" name="router_{{ loop.index0 }}_username" value="{{ router.username }}" /></td>
+                        <td><input class="form-control" type="password" name="router_{{ loop.index0 }}_password" value="{{ router.password }}" /></td>
+                        <td>
+                          <label class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" name="router_{{ loop.index0 }}_use_tls" {% if router.use_tls %}checked{% endif %} />
+                          </label>
+                        </td>
+                        <td>
+                          <button type="submit" class="btn btn-outline-primary btn-sm" formaction="/settings/system/routers/pppoe/test/{{ router.id }}" formmethod="post">Test</button>
+                        </td>
+                        <td>
+                          <label class="form-check">
+                            <input class="form-check-input" type="checkbox" name="router_{{ loop.index0 }}_remove" />
+                            <span class="form-check-label text-muted">Remove</span>
+                          </label>
+                        </td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+              {% if not wan_settings.pppoe_routers %}
+                <div class="text-muted">No MikroTik PPPoE routers added.</div>
+              {% endif %}
+              <div class="text-muted small mt-2">Note: TLS test is not supported yet (API-SSL). Use port 8728 for tests.</div>
+            </div>
+            <div class="card-footer d-flex justify-content-end">
+              <button type="submit" class="btn btn-primary">Save Routers</button>
+            </div>
           </div>
-          {% if not wan_settings.pppoe_routers %}
-            <div class="text-muted">No MikroTik PPPoE routers added.</div>
-          {% endif %}
-          <div class="d-flex justify-content-end mt-3">
-            <button type="submit" class="btn btn-primary">Save Routers</button>
-          </div>
-          <div class="text-muted small mt-2">Note: TLS test is not supported yet (API-SSL). Use port 8728 for tests.</div>
         </form>
       </div>
 
