@@ -471,7 +471,33 @@ WAN_PING_DEFAULTS = {
     },
     "general": {
         "interval_seconds": 30,
+        # Target latency sampling can run at a different interval than WAN status.
+        "target_latency_interval_seconds": 30,
+        # False = ping all enabled targets every poll (default).
+        # True = use rotation based on targets_per_wan_per_run.
+        "target_rotation_enabled": False,
+        # Max concurrent RouterOS ping workers per ISP (0 = auto/all selected targets).
+        "target_parallel_workers": 0,
+        # How many targets to ping per WAN per poll. 1 = rotate, high = ping all.
+        "targets_per_wan_per_run": 1,
+        # RouterOS /tool/ping settings for target latency sampling.
+        "target_ping_timeout_ms": 1000,
+        "target_ping_count": 1,
         "history_retention_days": 400,
+        "targets_configured": False,
+        "targets": [
+            {"id": "google", "label": "Google", "host": "google.com", "enabled": True},
+            {"id": "youtube", "label": "YouTube", "host": "youtube.com", "enabled": True},
+            {"id": "facebook", "label": "Facebook", "host": "facebook.com", "enabled": True},
+            {"id": "tiktok", "label": "TikTok", "host": "tiktok.com", "enabled": True},
+            {"id": "netflix", "label": "Netflix", "host": "netflix.com", "enabled": True},
+            {"id": "instagram", "label": "Instagram", "host": "instagram.com", "enabled": True},
+            {"id": "shopee", "label": "Shopee PH", "host": "shopee.ph", "enabled": True},
+            {"id": "lazada", "label": "Lazada PH", "host": "lazada.com.ph", "enabled": True},
+            {"id": "gcash", "label": "GCash", "host": "gcash.com", "enabled": True},
+            {"id": "cloudflare-dns", "label": "Cloudflare DNS", "host": "1.1.1.1", "enabled": True},
+            {"id": "google-dns", "label": "Google DNS", "host": "8.8.8.8", "enabled": True},
+        ],
     },
     "wans": [],
     "pppoe_routers": [],

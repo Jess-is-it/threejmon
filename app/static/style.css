@@ -167,14 +167,6 @@ body,
   justify-content: center;
 }
 
-.pulsewatch-spark-modal-chart {
-  width: 100%;
-  min-height: 200px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
 aside.navbar .navbar-brand {
   padding-left: 24px;
   padding-right: 24px;
@@ -268,7 +260,7 @@ aside.navbar .navbar-brand-logo {
   white-space: nowrap;
 }
 
-.pulsewatch-stability-item {
+.wan-stability-item {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -276,17 +268,17 @@ aside.navbar .navbar-brand-logo {
   align-items: center;
 }
 
-.pulsewatch-stability-chart {
+.wan-stability-chart {
   height: 90px;
 }
 
-.pulsewatch-stability-chart-wrap {
+.wan-stability-chart-wrap {
   position: relative;
   width: 90px;
   height: 90px;
 }
 
-.pulsewatch-stability-label {
+.wan-stability-label {
   position: absolute;
   inset: 0;
   display: flex;
@@ -300,7 +292,7 @@ aside.navbar .navbar-brand-logo {
   pointer-events: none;
 }
 
-.pulsewatch-stability-legend {
+.wan-stability-legend {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;

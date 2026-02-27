@@ -48,25 +48,6 @@
       </div>
     </div>
   </div>
-  <div class="col-md-6 col-xl-3">
-    <div class="card">
-      <div class="card-body">
-        <div class="d-flex align-items-center">
-          <span class="avatar bg-green-lt me-3"><i class="ti ti-activity"></i></span>
-          <div>
-            <div class="fw-semibold">ISP Pulsewatch</div>
-            <div class="text-muted">Pulse + Speedtests</div>
-          </div>
-        </div>
-        {% set pulse_state = isp_state.get('pulsewatch', {}) %}
-        <div class="mt-3 text-muted small">
-          <div>Enabled: {{ 'yes' if pulse_enabled else 'no' }}</div>
-          <div>Address-list sync: {{ 'on' if isp_settings.pulsewatch.manage_address_lists else 'off' }}</div>
-          <div>Last reconcile: {{ pulse_last_reconcile or 'n/a' }}</div>
-        </div>
-      </div>
-    </div>
-  </div>
 </div>
 
 {% endblock %}

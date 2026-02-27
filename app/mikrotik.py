@@ -1,9 +1,37 @@
 import hashlib
 import logging
+import re
 import socket
 
 
 logger = logging.getLogger(__name__)
+
+_DURATION_RE = re.compile(r"(\d+(?:\.\d+)?)(us|ms|s)")
+
+
+def _parse_duration_ms(value):
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        pass
+    total = 0.0
+    matched = False
+    for match in _DURATION_RE.finditer(raw):
+        matched = True
+        num = float(match.group(1))
+        unit = match.group(2)
+        if unit == "s":
+            total += num * 1000.0
+        elif unit == "ms":
+            total += num
+        elif unit == "us":
+            total += num / 1000.0
+    return total if matched else None
 
 
 def _encode_word(word):
@@ -115,7 +143,10 @@ class RouterOSClient:
             if not sentence:
                 continue
             replies.append(sentence)
-            if sentence[0] in ("!done", "!trap"):
+            # RouterOS typically ends a command with "!done". Even on errors ("!trap"),
+            # it still sends a final "!done". We must drain until "!done" to avoid
+            # leaving unread sentences in the socket buffer.
+            if sentence[0] == "!done":
                 break
         return replies
 
@@ -246,11 +277,31 @@ class RouterOSClient:
             if sentence[0] == "!trap":
                 raise RuntimeError(f"RouterOS netwatch set failed: {sentence}")
 
-    def ping(self, address, count=3, src_address=None):
-        words = ["/ping", f"=address={address}", f"=count={count}"]
+    def _trap_message(self, sentence):
+        if not sentence or sentence[0] != "!trap":
+            return ""
+        for word in sentence[1:]:
+            if isinstance(word, str) and word.startswith("=message="):
+                return word.split("=", 2)[2]
+        return ""
+
+    def ping(self, address, count=3, src_address=None, timeout=None):
+        base_words = ["/tool/ping", f"=address={address}", f"=count={count}"]
         if src_address:
-            words.append(f"=src-address={src_address}")
+            base_words.append(f"=src-address={src_address}")
+
+        words = list(base_words)
+        if timeout:
+            words.append(f"=timeout={timeout}")
         replies = self.talk(words)
+        trap = next((s for s in replies if s and s[0] == "!trap"), None)
+        if trap and timeout:
+            msg = (self._trap_message(trap) or "").lower()
+            if "timeout" in msg and ("unknown" in msg or "parameter" in msg or "invalid" in msg or "expected" in msg):
+                replies = self.talk(base_words)
+                trap = next((s for s in replies if s and s[0] == "!trap"), None)
+        if trap:
+            raise RuntimeError(f"RouterOS ping failed: {self._trap_message(trap) or trap}")
         rtt_ms = None
         received = 0
         for sentence in replies:
@@ -266,19 +317,27 @@ class RouterOSClient:
                         data[key] = value
                 time_value = data.get("time") or data.get("time-ms")
                 if time_value:
-                    cleaned = str(time_value).replace("ms", "").strip()
-                    try:
-                        rtt_ms = float(cleaned)
-                    except ValueError:
-                        rtt_ms = None
+                    rtt_ms = _parse_duration_ms(time_value)
                 received += 1
         return received > 0, rtt_ms, received
 
-    def ping_times(self, address, count=3, src_address=None):
-        words = ["/ping", f"=address={address}", f"=count={count}"]
+    def ping_times(self, address, count=3, src_address=None, timeout=None):
+        base_words = ["/tool/ping", f"=address={address}", f"=count={count}"]
         if src_address:
-            words.append(f"=src-address={src_address}")
+            base_words.append(f"=src-address={src_address}")
+
+        words = list(base_words)
+        if timeout:
+            words.append(f"=timeout={timeout}")
         replies = self.talk(words)
+        trap = next((s for s in replies if s and s[0] == "!trap"), None)
+        if trap and timeout:
+            msg = (self._trap_message(trap) or "").lower()
+            if "timeout" in msg and ("unknown" in msg or "parameter" in msg or "invalid" in msg or "expected" in msg):
+                replies = self.talk(base_words)
+                trap = next((s for s in replies if s and s[0] == "!trap"), None)
+        if trap:
+            raise RuntimeError(f"RouterOS ping failed: {self._trap_message(trap) or trap}")
         times = []
         for sentence in replies:
             if sentence[0] != "!re":
@@ -294,11 +353,9 @@ class RouterOSClient:
                     data[key] = value
             time_value = data.get("time") or data.get("time-ms")
             if time_value:
-                cleaned = str(time_value).replace("ms", "").strip()
-                try:
-                    times.append(float(cleaned))
-                except ValueError:
-                    continue
+                parsed = _parse_duration_ms(time_value)
+                if parsed is not None:
+                    times.append(parsed)
         return times
 
 

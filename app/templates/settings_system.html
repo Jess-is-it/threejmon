@@ -119,12 +119,11 @@
         <div>
           <div class="fw-semibold">Router & ISP definitions</div>
           <div class="small text-muted mt-1">
-            Configure these once and reuse them across modules (WAN Ping, Pulsewatch, and future router-based features).
+            Configure these once and reuse them across modules (WAN Ping, Usage, Offline, and future router-based features).
             WAN Ping still has its own settings page; both pages edit the same underlying settings.
           </div>
           <div class="mt-2 d-flex gap-2 flex-wrap">
             <a class="btn btn-sm btn-outline-primary" href="/settings/wan">Open WAN Ping Settings</a>
-            <a class="btn btn-sm btn-outline-primary" href="/settings/pulsewatch">Open Pulsewatch</a>
           </div>
         </div>
       </div>
@@ -146,7 +145,7 @@
       <div class="tab-pane {% if routers_tab == 'cores' %}active{% endif %}" id="sys-routers-cores">
         <div class="card mb-4">
           <div class="card-header">
-            <h3 class="card-title">MikroTik API Cores (Pulsewatch)</h3>
+            <h3 class="card-title">MikroTik API Cores</h3>
           </div>
           <div class="card-body">
             <form method="post" action="/settings/system/mikrotik">
@@ -163,7 +162,7 @@
                       <input class="form-control" type="text" name="{{ core.id }}_id" value="{{ core.id }}" disabled />
                     </div>
                     <div class="col-md-3">
-                      <label class="form-label">Router Name <span class="info" data-tip="Friendly label shown in Pulsewatch tables.">i</span></label>
+                      <label class="form-label">Router Name <span class="info" data-tip="Friendly label shown across WAN/Usage/Offline tables.">i</span></label>
                       <input class="form-control" type="text" name="{{ core.id }}_label" value="{{ core.label }}" />
                     </div>
                     <div class="col-md-3">
@@ -171,7 +170,7 @@
                       <input class="form-control" type="text" name="{{ core.id }}_host" value="{{ core.host }}" />
                     </div>
                     <div class="col-md-3">
-                      <label class="form-label">Interface <span class="info" data-tip="Linux NIC that carries this router's Pulsewatch source IPs (e.g., enp0s8).">i</span></label>
+                      <label class="form-label">Interface <span class="info" data-tip="Linux NIC that carries this router's source IPs (e.g., enp0s8).">i</span></label>
                       <select class="form-select" name="{{ core.id }}_interface">
                         <option value="">Select interface</option>
                         {% for iface in interface_options %}
@@ -208,11 +207,10 @@
               <div class="d-flex gap-2 flex-wrap">
                 <button type="submit" class="btn btn-primary">Save Cores</button>
                 <button type="submit" class="btn" formaction="/settings/system/mikrotik/add" formmethod="post">Add Core</button>
-                <button type="submit" class="btn btn-outline-primary" formaction="/settings/pulsewatch/mikrotik/test" formmethod="post">Test MikroTik API</button>
-                <button type="submit" class="btn btn-outline-primary" formaction="/settings/pulsewatch/mikrotik/sync" formmethod="post">Sync Address-Lists</button>
+                <button type="submit" class="btn btn-outline-primary" formaction="/settings/system/mikrotik/test" formmethod="post">Test MikroTik API</button>
               </div>
               <div class="text-muted small mt-3">
-                Guide: Cores are used to retrieve address-lists (TO-ISP) and to bind source IPs for Pulsewatch/WAN checks.
+                Guide: Cores are used to retrieve TO-ISP lists and to bind source IPs for WAN checks.
               </div>
             </form>
           </div>
@@ -314,11 +312,22 @@
                   <span class="me-2"><i class="ti ti-info-circle"></i></span>
                   <div>
                     ISPs are detected from each Core’s RouterOS address-lists (TO-ISP). This is the main ISP list used by WAN Ping and other modules—manage the Identifier and Color here.
-                    <div class="mt-2">Enable checks by setting a <span class="fw-semibold">Local IP</span>. If Local IP is blank, the entry is kept disabled.</div>
+                    <div class="mt-2"><span class="fw-semibold">Routed mode:</span> Local IP is auto-detected from RouterOS and set to read-only. WAN IP is auto-detected and used for Netwatch host checks.</div>
+                    <div class="mt-2"><span class="fw-semibold">Bridged mode:</span> Local IP stays manual and is used as ping source and Netwatch host.</div>
                     <div class="mt-2">Color is used for charts/labels (when available).</div>
                   </div>
                 </div>
               </div>
+              {% if wan_autodetect_warnings %}
+                <div class="alert alert-warning">
+                  <div class="fw-semibold mb-1">Auto-detect warnings</div>
+                  <ul class="mb-0 ps-3">
+                    {% for item in wan_autodetect_warnings[:8] %}
+                      <li>{{ item }}</li>
+                    {% endfor %}
+                  </ul>
+                </div>
+              {% endif %}
               <input type="hidden" name="wan_count" value="{{ wan_rows|length }}" />
               <div style="overflow-x: auto;">
                 <table class="table table-vcenter">
@@ -329,7 +338,7 @@
                       <th title="Friendly ISP label used across pages.">Identifier</th>
                       <th title="Optional color for charts/labels.">Color</th>
                       <th title="Routed = ping via core router; Bridged = ping via PPPoE router.">Mode</th>
-                      <th title="Source IP to bind for server ping checks.">Local IP</th>
+                      <th title="Routed: auto-detected source IP. Bridged: manual source IP.">Local IP</th>
                       <th title="Select PPPoE router for Bridged mode.">PPPoE Router</th>
                       <th title="Disable to skip checks for this ISP.">Enabled</th>
                     </tr>
@@ -358,7 +367,27 @@
                           </select>
                         </td>
                         <td>
-                          <input type="text" class="form-control wan-local-ip" name="wan_{{ loop.index0 }}_local_ip" value="{{ row.local_ip }}" data-row="{{ loop.index0 }}" />
+                          <input
+                            type="text"
+                            class="form-control wan-local-ip"
+                            name="wan_{{ loop.index0 }}_local_ip"
+                            value="{{ row.local_ip }}"
+                            data-row="{{ loop.index0 }}"
+                            data-auto-local-ip="{{ row.detected_local_ip or '' }}"
+                            {% if row.mode == 'routed' %}readonly{% endif %}
+                          />
+                          <input
+                            type="hidden"
+                            class="wan-netwatch-host"
+                            name="wan_{{ loop.index0 }}_netwatch_host"
+                            value="{{ row.netwatch_host or '' }}"
+                            data-row="{{ loop.index0 }}"
+                            data-auto-netwatch-host="{{ row.detected_netwatch_host or '' }}"
+                          />
+                          <div class="form-hint mt-1 wan-wan-ip-wrap {% if row.mode == 'bridged' %}d-none{% endif %}" data-row="{{ loop.index0 }}">
+                            WAN IP:
+                            <span class="wan-netwatch-host-label" data-row="{{ loop.index0 }}">{{ row.netwatch_host or 'n/a' }}</span>
+                          </div>
                         </td>
                         <td>
                           <select name="wan_{{ loop.index0 }}_pppoe_router_id" class="form-select wan-router" data-row="{{ loop.index0 }}">
@@ -407,7 +436,7 @@
           <a href="/settings/export">Download settings backup</a>
         </div>
         <form method="post" action="/settings/import" enctype="multipart/form-data">
-          <label class="form-label">Restore from JSON file <span class="info" data-tip="Import a settings backup JSON (configuration only; runtime history is excluded). Includes WAN Ping, WAN Summary, and Pulsewatch settings.">i</span></label>
+          <label class="form-label">Restore from JSON file <span class="info" data-tip="Import a settings backup JSON (configuration only; runtime history is excluded). Includes WAN Ping, Usage, Offline, Optical, and System settings.">i</span></label>
           <input class="form-control" type="file" name="settings_file" accept="application/json" />
           <div class="mt-3">
             <button type="submit" class="btn btn-primary">Import Settings</button>
@@ -458,14 +487,41 @@
   const toggleWanFields = (rowId) => {
     const mode = document.querySelector(`.wan-mode[data-row="${rowId}"]`);
     const localInput = document.querySelector(`.wan-local-ip[data-row="${rowId}"]`);
+    const netwatchInput = document.querySelector(`.wan-netwatch-host[data-row="${rowId}"]`);
+    const netwatchLabel = document.querySelector(`.wan-netwatch-host-label[data-row="${rowId}"]`);
+    const wanIpWrap = document.querySelector(`.wan-wan-ip-wrap[data-row="${rowId}"]`);
     const routerSelect = document.querySelector(`.wan-router[data-row="${rowId}"]`);
     const enabledToggle = document.querySelector(`.wan-enabled[data-row="${rowId}"]`);
     if (!mode || !localInput || !routerSelect || !enabledToggle) return;
     const isBridged = mode.value === "bridged";
+    const autoLocal = String(localInput.dataset.autoLocalIp || "").trim();
+    const autoNetwatch = String(netwatchInput ? netwatchInput.dataset.autoNetwatchHost || "" : "").trim();
+    if (isBridged) {
+      localInput.readOnly = false;
+      localInput.title = "Manual source IP for bridged mode";
+      if (wanIpWrap) wanIpWrap.classList.add("d-none");
+    } else {
+      if (autoLocal) localInput.value = autoLocal;
+      localInput.readOnly = true;
+      localInput.title = "Auto-detected source IP for routed mode";
+      if (wanIpWrap) wanIpWrap.classList.remove("d-none");
+      if (netwatchInput) {
+        netwatchInput.value = autoNetwatch;
+      }
+      if (netwatchLabel) {
+        netwatchLabel.textContent = autoNetwatch || "n/a";
+      }
+    }
     localInput.disabled = false;
     routerSelect.disabled = !isBridged;
     localInput.style.opacity = "1";
     routerSelect.style.opacity = isBridged ? "1" : "0.6";
+    if (isBridged && netwatchInput) {
+      netwatchInput.value = localInput.value.trim();
+    }
+    if (isBridged && netwatchLabel) {
+      netwatchLabel.textContent = localInput.value.trim() || "n/a";
+    }
     const hasLocal = Boolean(localInput.value.trim());
     enabledToggle.disabled = !hasLocal;
     if (!hasLocal) {

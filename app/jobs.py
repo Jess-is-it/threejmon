@@ -3,6 +3,8 @@ import time as time_module
 from datetime import datetime, time, timedelta
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout, as_completed
 import base64
+import re
+import subprocess
 
 try:
     from zoneinfo import ZoneInfo
@@ -30,16 +32,13 @@ from .db import (
 )
 from .db import delete_accounts_ping_raw_older_than, delete_accounts_ping_rollups_older_than, insert_accounts_ping_result
 from .notifiers import optical as optical_notifier
-from .notifiers import isp_ping as isp_ping_notifier
 from .notifiers import wan_ping as wan_ping_notifier
 from .notifiers import rto as rto_notifier
 from .notifiers import offline as offline_notifier
 from .notifiers import usage as usage_notifier
-from .notifiers.isp_ping import ping_with_source
 from .notifiers.telegram import TelegramError, get_updates, send_telegram
 from .settings_defaults import (
     ACCOUNTS_PING_DEFAULTS,
-    ISP_PING_DEFAULTS,
     OFFLINE_DEFAULTS,
     OPTICAL_DEFAULTS,
     SURVEILLANCE_DEFAULTS,
@@ -51,6 +50,56 @@ from .telegram_commands import handle_telegram_command
 from .mikrotik import RouterOSClient
 
 
+def _safe_update_job_status(job_name, **fields):
+    try:
+        update_job_status(job_name, **fields)
+    except Exception:
+        pass
+
+
+_RE_PING_TIME = re.compile(r"time=([0-9.]+)\s*ms")
+
+
+def _ping_with_source(ip, source_ip, timeout_seconds, count):
+    cmd = ["ping", "-c", str(count), "-W", str(timeout_seconds)]
+    if source_ip:
+        cmd.extend(["-I", source_ip])
+    cmd.append(ip)
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    output = result.stdout or ""
+    replies = 0
+    times = []
+    for line in output.splitlines():
+        if "bytes from" in line:
+            replies += 1
+        time_match = _RE_PING_TIME.search(line)
+        if time_match:
+            try:
+                times.append(float(time_match.group(1)))
+            except Exception:
+                pass
+    loss = 100.0
+    if count > 0:
+        loss = round(100.0 * (count - replies) / count, 1)
+    min_ms = min(times) if times else None
+    max_ms = max(times) if times else None
+    avg_ms = round(sum(times) / len(times), 1) if times else None
+    return {
+        "loss": loss,
+        "min_ms": min_ms,
+        "avg_ms": avg_ms,
+        "max_ms": max_ms,
+        "raw_output": output,
+        "replies": replies,
+    }
+
+
 class JobsManager:
     def __init__(self):
         self.stop_event = threading.Event()
@@ -59,7 +108,6 @@ class JobsManager:
     def start(self):
         self.threads = [
             threading.Thread(target=self._optical_loop, daemon=True),
-            threading.Thread(target=self._pulsewatch_loop, daemon=True),
             threading.Thread(target=self._telegram_loop, daemon=True),
             threading.Thread(target=self._wan_ping_loop, daemon=True),
             threading.Thread(target=self._accounts_ping_loop, daemon=True),
@@ -110,22 +158,22 @@ class JobsManager:
                 daily_cfg["timezone"] = "Asia/Manila"
                 due_daily = should_run_daily_on_minute(daily_cfg, state)
                 if due_daily:
-                    update_job_status("optical", last_run_at=utc_now_iso())
+                    _safe_update_job_status("optical", last_run_at=utc_now_iso())
                     optical_notifier.run(cfg, send_alerts=True)
                     state["last_run_date"] = current_date(daily_cfg).isoformat()
                     state["last_run_at"] = now.replace(microsecond=0).isoformat() + "Z"
                     save_state("optical_state", state)
-                    update_job_status("optical", last_success_at=utc_now_iso(), last_error="", last_error_at="")
+                    _safe_update_job_status("optical", last_success_at=utc_now_iso(), last_error="", last_error_at="")
                 elif due_interval:
-                    update_job_status("optical", last_run_at=utc_now_iso())
+                    _safe_update_job_status("optical", last_run_at=utc_now_iso())
                     optical_notifier.run(cfg, send_alerts=False)
                     state["last_run_at"] = now.replace(microsecond=0).isoformat() + "Z"
                     save_state("optical_state", state)
-                    update_job_status("optical", last_success_at=utc_now_iso(), last_error="", last_error_at="")
+                    _safe_update_job_status("optical", last_success_at=utc_now_iso(), last_error="", last_error_at="")
             except TelegramError as exc:
-                update_job_status("optical", last_error=str(exc), last_error_at=utc_now_iso())
+                _safe_update_job_status("optical", last_error=str(exc), last_error_at=utc_now_iso())
             except Exception as exc:
-                update_job_status("optical", last_error=str(exc), last_error_at=utc_now_iso())
+                _safe_update_job_status("optical", last_error=str(exc), last_error_at=utc_now_iso())
 
             time_module.sleep(20)
 
@@ -364,15 +412,15 @@ class JobsManager:
                     time_module.sleep(1)
                     continue
 
-                update_job_status("accounts_ping", last_run_at=utc_now_iso())
+                _safe_update_job_status("accounts_ping", last_run_at=utc_now_iso())
 
                 def do_ping(target_row):
                     ip = target_row["ip"]
                     mode = target_row.get("_mode") or "normal"
                     if mode in ("burst", "surveillance"):
-                        res = ping_with_source(ip, "", burst_timeout_seconds, burst_count)
+                        res = _ping_with_source(ip, "", burst_timeout_seconds, burst_count)
                     else:
-                        res = ping_with_source(ip, "", timeout_seconds, count)
+                        res = _ping_with_source(ip, "", timeout_seconds, count)
                     return target_row, res
 
                 results = []
@@ -710,72 +758,18 @@ class JobsManager:
                         state["surveillance_last_eval_at"] = now_iso
                         save_state("accounts_ping_state", state)
 
-                update_job_status("accounts_ping", last_success_at=utc_now_iso(), last_error="", last_error_at="")
+                _safe_update_job_status("accounts_ping", last_success_at=utc_now_iso(), last_error="", last_error_at="")
             except TelegramError as exc:
-                update_job_status("accounts_ping", last_error=str(exc), last_error_at=utc_now_iso())
+                _safe_update_job_status("accounts_ping", last_error=str(exc), last_error_at=utc_now_iso())
             except Exception as exc:
-                update_job_status("accounts_ping", last_error=str(exc), last_error_at=utc_now_iso())
+                _safe_update_job_status("accounts_ping", last_error=str(exc), last_error_at=utc_now_iso())
 
             time_module.sleep(1)
-
-    def _pulsewatch_loop(self):
-        while not self.stop_event.is_set():
-            cfg = get_settings("isp_ping", ISP_PING_DEFAULTS)
-            pulse_cfg = cfg.get("pulsewatch", {})
-            if not pulse_cfg.get("enabled"):
-                time_module.sleep(5)
-                continue
-
-            try:
-                state = get_state("isp_ping_state", {
-                    "last_status": {},
-                    "last_report_date": None,
-                    "last_report_time": None,
-                    "last_report_timezone": None,
-                    "pulsewatch": {},
-                })
-                pause_until = state.get("pulsewatch_pause_until")
-                if pause_until:
-                    pause_dt = datetime.fromisoformat(pause_until.replace("Z", ""))
-                    if datetime.utcnow() < pause_dt:
-                        time_module.sleep(5)
-                        continue
-                update_job_status("pulsewatch", last_run_at=utc_now_iso())
-                state, _ = isp_ping_notifier.run_pulsewatch_check(cfg, state)
-                reach_last = state.get("pulsewatch_reachability_checked_at")
-                reach_last_dt = None
-                if reach_last:
-                    try:
-                        reach_last_dt = datetime.fromisoformat(reach_last.replace("Z", ""))
-                    except Exception:
-                        reach_last_dt = None
-                if not reach_last_dt or datetime.utcnow() - reach_last_dt >= timedelta(minutes=10):
-                    state = isp_ping_notifier.check_preset_reachability(cfg, state)
-                latest = get_state("isp_ping_state", {})
-                if "pulsewatch" in state:
-                    latest["pulsewatch"] = state["pulsewatch"]
-                if "pulsewatch_reachability" in state:
-                    latest["pulsewatch_reachability"] = state["pulsewatch_reachability"]
-                if "pulsewatch_reachability_checked_at" in state:
-                    latest["pulsewatch_reachability_checked_at"] = state["pulsewatch_reachability_checked_at"]
-                if "last_pulsewatch_prune_at" in state:
-                    latest["last_pulsewatch_prune_at"] = state["last_pulsewatch_prune_at"]
-                if "last_mikrotik_reconcile_at" in state:
-                    latest["last_mikrotik_reconcile_at"] = state["last_mikrotik_reconcile_at"]
-                save_state("isp_ping_state", latest)
-                update_job_status("pulsewatch", last_success_at=utc_now_iso(), last_error="", last_error_at="")
-            except TelegramError as exc:
-                update_job_status("pulsewatch", last_error=str(exc), last_error_at=utc_now_iso())
-            except Exception as exc:
-                update_job_status("pulsewatch", last_error=str(exc), last_error_at=utc_now_iso())
-
-            interval_seconds = int(pulse_cfg.get("ping", {}).get("interval_seconds", 1))
-            time_module.sleep(max(interval_seconds, 1))
 
     def _telegram_loop(self):
         executor = ThreadPoolExecutor(max_workers=2)
         while not self.stop_event.is_set():
-            cfg = get_settings("isp_ping", ISP_PING_DEFAULTS)
+            cfg = get_settings("isp_ping", {})
             telegram = cfg.get("telegram", {})
             token = telegram.get("command_bot_token") or telegram.get("bot_token", "")
             command_chat_id = (telegram.get("command_chat_id") or "").strip()
@@ -860,15 +854,15 @@ class JobsManager:
             if not cfg.get("wans"):
                 time_module.sleep(10)
                 continue
-            pulse_cfg = get_settings("isp_ping", ISP_PING_DEFAULTS)
+            router_catalog = get_settings("isp_ping", {})
             try:
-                update_job_status("wan_ping", last_run_at=utc_now_iso())
+                _safe_update_job_status("wan_ping", last_run_at=utc_now_iso())
                 state = get_state("wan_ping_state", {})
                 reset_at = state.get("reset_at")
-                state = wan_ping_notifier.run_check(cfg, pulse_cfg, state)
+                state = wan_ping_notifier.run_check(cfg, router_catalog, state)
                 latest = get_state("wan_ping_state", {})
                 if latest.get("reset_at") and latest.get("reset_at") != reset_at:
-                    state = wan_ping_notifier.run_check(cfg, pulse_cfg, latest)
+                    state = wan_ping_notifier.run_check(cfg, router_catalog, latest)
                 summary_cfg = cfg.get("summary", {})
                 if summary_cfg.get("enabled"):
                     summary_state = {"last_run_date": state.get("summary_last_run_date")}
@@ -877,16 +871,44 @@ class JobsManager:
                         "timezone": summary_cfg.get("timezone", "Asia/Manila"),
                     }
                     if should_run_daily(general_cfg, summary_state):
-                        wan_ping_notifier.send_daily_summary(cfg, pulse_cfg, state)
+                        wan_ping_notifier.send_daily_summary(cfg, router_catalog, state)
                         state["summary_last_run_date"] = current_date(general_cfg).isoformat()
                 save_state("wan_ping_state", state)
-                update_job_status("wan_ping", last_success_at=utc_now_iso(), last_error="", last_error_at="")
+                _safe_update_job_status("wan_ping", last_success_at=utc_now_iso(), last_error="", last_error_at="")
             except TelegramError as exc:
-                update_job_status("wan_ping", last_error=str(exc), last_error_at=utc_now_iso())
+                _safe_update_job_status("wan_ping", last_error=str(exc), last_error_at=utc_now_iso())
             except Exception as exc:
-                update_job_status("wan_ping", last_error=str(exc), last_error_at=utc_now_iso())
-            interval_seconds = int(cfg.get("general", {}).get("interval_seconds", 30) or 30)
-            time_module.sleep(max(interval_seconds, 5))
+                _safe_update_job_status("wan_ping", last_error=str(exc), last_error_at=utc_now_iso())
+            general = cfg.get("general") if isinstance(cfg.get("general"), dict) else {}
+            status_interval = int(general.get("interval_seconds", 30) or 30)
+            status_interval = max(status_interval, 1)
+            target_interval = int(general.get("target_latency_interval_seconds") or status_interval or 30)
+            target_interval = max(target_interval, 1)
+            rotation_raw = general.get("target_rotation_enabled", False)
+            if isinstance(rotation_raw, str):
+                rotation_enabled = rotation_raw.strip().lower() in ("1", "true", "yes", "on")
+            else:
+                rotation_enabled = bool(rotation_raw)
+            targets_per_wan_raw = general.get("targets_per_wan_per_run", 1)
+            if targets_per_wan_raw in (None, ""):
+                targets_per_wan_raw = 1
+            try:
+                targets_per_wan = max(int(targets_per_wan_raw), 0)
+            except Exception:
+                targets_per_wan = 1
+            enabled_targets = [
+                item
+                for item in (general.get("targets") or [])
+                if isinstance(item, dict)
+                and (item.get("id") or "").strip()
+                and (item.get("host") or "").strip()
+                and bool(item.get("enabled", True))
+            ]
+            sleep_s = status_interval
+            target_sampling_enabled = bool(enabled_targets) and ((not rotation_enabled) or targets_per_wan > 0)
+            if target_sampling_enabled:
+                sleep_s = min(status_interval, target_interval)
+            time_module.sleep(max(int(sleep_s or 1), 1))
 
     def _usage_loop(self):
         clients = {}
@@ -1041,7 +1063,7 @@ class JobsManager:
                         else {}
                     )
 
-                    update_job_status("usage", last_run_at=utc_now_iso())
+                    _safe_update_job_status("usage", last_run_at=utc_now_iso())
                     for router in routers:
                         if not isinstance(router, dict):
                             continue
@@ -1494,9 +1516,9 @@ class JobsManager:
                     state["ppp_active_stats_supported"] = stats_cap
                     state["last_check_at"] = now_iso
                     save_state("usage_state", state)
-                    update_job_status("usage", last_success_at=utc_now_iso(), last_error="", last_error_at="")
+                    _safe_update_job_status("usage", last_success_at=utc_now_iso(), last_error="", last_error_at="")
                 except Exception as exc:
-                    update_job_status("usage", last_error=str(exc), last_error_at=utc_now_iso())
+                    _safe_update_job_status("usage", last_error=str(exc), last_error_at=utc_now_iso())
 
                 # Sleep based on configured poll interval.
                 poll_seconds = int((cfg.get("mikrotik") or {}).get("poll_interval_seconds", 10) or 10)
@@ -1571,7 +1593,7 @@ class JobsManager:
                     routers = migrated
 
             now_iso = utc_now_iso()
-            update_job_status("offline", last_run_at=now_iso)
+            _safe_update_job_status("offline", last_run_at=now_iso)
             state = get_state("offline_state", {})
             tracker = state.get("tracker") if isinstance(state.get("tracker"), dict) else {}
             offline_rows = []
@@ -1890,9 +1912,9 @@ class JobsManager:
                     }
                 )
                 save_state("offline_state", state)
-                update_job_status("offline", last_success_at=utc_now_iso(), last_error="", last_error_at="")
+                _safe_update_job_status("offline", last_success_at=utc_now_iso(), last_error="", last_error_at="")
             except Exception as exc:
-                update_job_status("offline", last_error=str(exc), last_error_at=utc_now_iso())
+                _safe_update_job_status("offline", last_error=str(exc), last_error_at=utc_now_iso())
 
             time_module.sleep(poll_seconds)
 

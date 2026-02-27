@@ -2,6 +2,7 @@ import json
 import os
 import sqlite3
 import threading
+import time
 from datetime import datetime, timezone, timedelta
 
 DB_PATH = os.environ.get("THREEJ_DB_PATH", "/data/threejnotif.db")
@@ -141,16 +142,30 @@ def _get_pg_pool():
         from psycopg2.pool import ThreadedConnectionPool
 
         minconn = max(int(os.environ.get("THREEJ_PG_POOL_MIN", 1) or 1), 1)
-        maxconn = max(int(os.environ.get("THREEJ_PG_POOL_MAX", 10) or 10), minconn)
+        # Default higher to avoid pool exhaustion with multiple background loops + UI polling.
+        maxconn = max(int(os.environ.get("THREEJ_PG_POOL_MAX", 30) or 30), minconn)
         _pg_pool = ThreadedConnectionPool(minconn, maxconn, dsn=DB_URL)
         return _pg_pool
 
 
 def get_conn():
     if _use_postgres():
-        conn = _get_pg_pool().getconn()
-        conn.autocommit = False
-        return _PGConn(_get_pg_pool(), conn)
+        from psycopg2.pool import PoolError
+
+        pool = _get_pg_pool()
+        wait_seconds = float(os.environ.get("THREEJ_PG_POOL_WAIT_SECONDS", 5) or 5)
+        deadline = time.monotonic() + max(wait_seconds, 0.0)
+        backoff = 0.05
+        while True:
+            try:
+                conn = pool.getconn()
+                conn.autocommit = False
+                return _PGConn(pool, conn)
+            except PoolError:
+                if wait_seconds <= 0 or time.monotonic() >= deadline:
+                    raise
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 0.5)
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
@@ -285,6 +300,34 @@ def init_db():
                     core_id TEXT,
                     label TEXT
                 )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS wan_target_ping_results (
+                    id BIGSERIAL PRIMARY KEY,
+                    timestamp TEXT NOT NULL,
+                    wan_id TEXT NOT NULL,
+                    core_id TEXT,
+                    label TEXT,
+                    target_id TEXT NOT NULL,
+                    target_host TEXT NOT NULL,
+                    src_address TEXT,
+                    ok INTEGER NOT NULL,
+                    rtt_ms DOUBLE PRECISION
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_wan_target_ping_results_target_ts
+                ON wan_target_ping_results (target_id, timestamp)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_wan_target_ping_results_wan_target_ts
+                ON wan_target_ping_results (wan_id, target_id, timestamp)
                 """
             )
             conn.execute(
@@ -503,6 +546,34 @@ def init_db():
                     core_id TEXT,
                     label TEXT
                 )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS wan_target_ping_results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    wan_id TEXT NOT NULL,
+                    core_id TEXT,
+                    label TEXT,
+                    target_id TEXT NOT NULL,
+                    target_host TEXT NOT NULL,
+                    src_address TEXT,
+                    ok INTEGER NOT NULL,
+                    rtt_ms REAL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_wan_target_ping_results_target_ts
+                ON wan_target_ping_results (target_id, timestamp)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_wan_target_ping_results_wan_target_ts
+                ON wan_target_ping_results (wan_id, target_id, timestamp)
                 """
             )
             conn.execute(
@@ -1943,6 +2014,156 @@ def insert_wan_history_row(
         conn.close()
 
 
+def insert_wan_target_ping_result(
+    wan_id,
+    target_id,
+    target_host,
+    ok,
+    rtt_ms=None,
+    timestamp=None,
+    core_id=None,
+    label=None,
+    src_address=None,
+    retention_days=400,
+):
+    stamp = timestamp or utc_now_iso()
+    cutoff = (datetime.utcnow() - timedelta(days=max(int(retention_days or 1), 1))).replace(microsecond=0).isoformat() + "Z"
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO wan_target_ping_results (
+                    timestamp, wan_id, core_id, label, target_id, target_host, src_address, ok, rtt_ms
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    stamp,
+                    wan_id,
+                    core_id,
+                    label,
+                    target_id,
+                    target_host,
+                    src_address,
+                    int(bool(ok)),
+                    rtt_ms,
+                ),
+            )
+            conn.execute(
+                """
+                DELETE FROM wan_target_ping_results
+                WHERE timestamp < ?
+                """,
+                (cutoff,),
+            )
+    finally:
+        conn.close()
+
+
+def delete_wan_target_ping_results_for_targets(target_ids):
+    ids = [str(i).strip() for i in (target_ids or []) if str(i).strip()]
+    if not ids:
+        return
+    conn = get_conn()
+    try:
+        with conn:
+            if len(ids) == 1:
+                conn.execute("DELETE FROM wan_target_ping_results WHERE target_id = ?", (ids[0],))
+            else:
+                placeholders = ",".join("?" for _ in ids)
+                conn.execute(f"DELETE FROM wan_target_ping_results WHERE target_id IN ({placeholders})", ids)
+    finally:
+        conn.close()
+
+
+def fetch_wan_target_ping_series_map(wan_ids, target_id, start_iso, end_iso, bucket_seconds=None):
+    if not wan_ids or not target_id:
+        return {}
+    try:
+        bucket_seconds = max(int(bucket_seconds or 0), 0)
+    except Exception:
+        bucket_seconds = 0
+    conn = get_conn()
+    try:
+        placeholders = ",".join("?" for _ in wan_ids)
+        if bucket_seconds > 1:
+            if _use_postgres():
+                rows = conn.execute(
+                    f"""
+                    SELECT
+                        wan_id,
+                        FLOOR(EXTRACT(EPOCH FROM (timestamp::timestamptz)) / ?) * ? AS bucket_epoch,
+                        MAX(CASE WHEN ok = 1 THEN rtt_ms END) AS rtt_ms,
+                        MAX(ok) AS ok
+                    FROM wan_target_ping_results
+                    WHERE target_id = ?
+                      AND timestamp BETWEEN ? AND ?
+                      AND wan_id IN ({placeholders})
+                    GROUP BY wan_id, bucket_epoch
+                    ORDER BY bucket_epoch ASC
+                    """,
+                    [bucket_seconds, bucket_seconds, target_id, start_iso, end_iso] + list(wan_ids),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    f"""
+                    SELECT
+                        wan_id,
+                        (CAST(strftime('%s', timestamp) AS INTEGER) / ?) * ? AS bucket_epoch,
+                        MAX(CASE WHEN ok = 1 THEN rtt_ms END) AS rtt_ms,
+                        MAX(ok) AS ok
+                    FROM wan_target_ping_results
+                    WHERE target_id = ?
+                      AND timestamp BETWEEN ? AND ?
+                      AND wan_id IN ({placeholders})
+                    GROUP BY wan_id, bucket_epoch
+                    ORDER BY bucket_epoch ASC
+                    """,
+                    [bucket_seconds, bucket_seconds, target_id, start_iso, end_iso] + list(wan_ids),
+                ).fetchall()
+        else:
+            rows = conn.execute(
+                f"""
+                SELECT wan_id, timestamp, ok, rtt_ms
+                FROM wan_target_ping_results
+                WHERE target_id = ?
+                  AND timestamp BETWEEN ? AND ?
+                  AND wan_id IN ({placeholders})
+                ORDER BY timestamp ASC
+                """,
+                [target_id, start_iso, end_iso] + list(wan_ids),
+            ).fetchall()
+        series = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                row = dict(row)
+            wan_id = row.get("wan_id")
+            if not wan_id:
+                continue
+            stamp = row.get("timestamp")
+            if bucket_seconds > 1:
+                epoch = row.get("bucket_epoch")
+                if epoch is None:
+                    continue
+                try:
+                    stamp = datetime.fromtimestamp(float(epoch), tz=timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+                except Exception:
+                    continue
+            if not stamp:
+                continue
+            series.setdefault(wan_id, []).append(
+                {
+                    "timestamp": stamp,
+                    "ok": int(row.get("ok") or 0),
+                    "rtt_ms": row.get("rtt_ms"),
+                }
+            )
+        return series
+    finally:
+        conn.close()
+
+
 def fetch_wan_history_map(wan_ids, start_iso, end_iso):
     if not wan_ids:
         return {}
@@ -1970,11 +2191,50 @@ def fetch_wan_history_map(wan_ids, start_iso, end_iso):
         conn.close()
 
 
+def get_wan_status_counts(wan_ids, start_iso, end_iso):
+    if not wan_ids:
+        return {}
+    placeholders = ",".join("?" for _ in wan_ids)
+    params = [start_iso, end_iso] + list(wan_ids)
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT
+              wan_id,
+              SUM(CASE WHEN LOWER(status) = 'up' THEN 1 ELSE 0 END) AS up,
+              SUM(CASE WHEN LOWER(status) = 'down' THEN 1 ELSE 0 END) AS down,
+              COUNT(*) AS total
+            FROM wan_status_history
+            WHERE timestamp BETWEEN ? AND ?
+              AND wan_id IN ({placeholders})
+            GROUP BY wan_id
+            """,
+            params,
+        ).fetchall()
+        counts = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                row = dict(row)
+            counts[row["wan_id"]] = {
+                "up": int(row["up"] or 0),
+                "down": int(row["down"] or 0),
+                "total": int(row["total"] or 0),
+            }
+        return counts
+    finally:
+        conn.close()
+
+
 def clear_wan_history():
     conn = get_conn()
     try:
         with conn:
             conn.execute("DELETE FROM wan_status_history")
+            try:
+                conn.execute("DELETE FROM wan_target_ping_results")
+            except Exception:
+                pass
     finally:
         conn.close()
 

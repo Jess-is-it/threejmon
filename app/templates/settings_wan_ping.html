@@ -1,13 +1,10 @@
 {% extends "base.html" %}
+{% block title %}WAN Ping{% endblock %}
+{% block header_title %}WAN Ping{% endblock %}
+{% block header_badge %}
+  <span class="badge bg-azure-lt text-azure header-icon-badge"><i class="ti ti-world"></i></span>
+{% endblock %}
 {% block content %}
-<div class="page-header d-print-none">
-  <div class="row align-items-center">
-    <div class="col">
-      <h2 class="page-title">WAN Ping</h2>
-    </div>
-  </div>
-</div>
-
 {% if message %}
   <div class="alert alert-info">{{ message }}</div>
 {% endif %}
@@ -24,323 +21,274 @@
     </ul>
     <div class="tab-content pt-4">
       <div class="tab-pane {% if active_tab == 'status' %}active{% endif %}" id="wan-status">
-        <div class="card mb-3">
-          <div class="card-header d-flex align-items-center">
-            <h4 class="card-title mb-0">Pulsewatch Stability Overview</h4>
-            <div class="ms-auto">
-              <select class="form-select form-select-sm" id="pulsewatch-stability-days" style="min-width: 140px;">
-                {% set pie_days = pulsewatch_settings.pulsewatch.dashboard.pie_default_days %}
-                <option value="1h">Last 1h</option>
+	        <div class="card mb-3">
+	          <div class="card-header d-flex align-items-center">
+	            <h4 class="card-title mb-0">Netwatch Up/Down Overview</h4>
+	            <div class="ms-auto">
+	              <select class="form-select form-select-sm" id="wan-stability-days" style="min-width: 140px;">
+	                <option value="live">Live</option>
+	                <option value="1h">Last 1h</option>
                 <option value="6h">Last 6h</option>
                 <option value="12h">Last 12h</option>
-                <option value="1d" {% if pie_days == 1 %}selected{% endif %}>Last 1 day</option>
-                <option value="7d" {% if pie_days == 7 %}selected{% endif %}>Last 7 days</option>
-                <option value="15d" {% if pie_days == 15 %}selected{% endif %}>Last 15 days</option>
-                <option value="30d" {% if pie_days == 30 %}selected{% endif %}>Last 30 days</option>
+                <option value="1d" selected>Last 1 day</option>
+                <option value="7d">Last 7 days</option>
+                <option value="15d">Last 15 days</option>
+                <option value="30d">Last 30 days</option>
               </select>
             </div>
           </div>
           <div class="card-body">
-            <div id="pulsewatch-stability-grid" class="d-grid" style="gap: 6px; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); justify-items: start;"></div>
-            <div class="pulsewatch-stability-legend mt-3 justify-content-end">
+            <div id="wan-stability-grid" class="d-grid" style="gap: 6px; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); justify-items: start;"></div>
+            <div class="wan-stability-legend mt-3 justify-content-end">
               <div class="d-flex align-items-center gap-2 small text-muted">
                 <span style="width:10px;height:10px;border-radius:50%;background:#2fb344;display:inline-block;"></span>
-                <span>Stable</span>
-              </div>
-              <div class="d-flex align-items-center gap-2 small text-muted">
-                <span style="width:10px;height:10px;border-radius:50%;background:#f59f00;display:inline-block;"></span>
-                <span>Unstable</span>
+                <span>Up</span>
               </div>
               <div class="d-flex align-items-center gap-2 small text-muted">
                 <span style="width:10px;height:10px;border-radius:50%;background:#e03131;display:inline-block;"></span>
-                <span>Critical</span>
-              </div>
-              <div class="d-flex align-items-center gap-2 small text-muted">
-                <span style="width:10px;height:10px;border-radius:50%;background:#f76707;display:inline-block;"></span>
                 <span>Down</span>
               </div>
             </div>
           </div>
-        </div>
-        <div class="card mb-3">
-          <div class="card-header">
-            <div class="row g-2 align-items-center w-100">
-              <div class="col-12 col-lg-4">
-                <h4 class="mb-0">WAN Status Overview</h4>
-              </div>
-              <div class="col-12 col-lg-8">
-                <div class="d-flex align-items-center gap-2 flex-nowrap justify-content-lg-end">
-                  <span class="text-muted small">Filter core</span>
-                  <select class="form-select form-select-sm" id="wan-core-filter" style="min-width: 160px;">
-                    <option value="all">All cores</option>
-                    {% for core in pulsewatch_settings.pulsewatch.mikrotik.cores %}
-                      <option value="{{ core.id }}">{{ core.label }}</option>
-                    {% endfor %}
-                  </select>
-                  <span class="text-muted small">Range</span>
-                  <select class="form-select form-select-sm" id="wan-range-filter" style="min-width: 120px;">
-                    <option value="6">Last 6h</option>
-                    <option value="12">Last 12h</option>
-                    <option value="24" selected>Last 24h</option>
-                  </select>
-                  <span class="text-muted small">Target</span>
-                  <select class="form-select form-select-sm" id="wan-target-filter" style="min-width: 140px;">
-                    <option value="all">All targets</option>
-                    {% for target in wan_targets %}
-                      <option value="{{ target }}">{{ target }}</option>
-                    {% endfor %}
-                  </select>
-                  <span class="text-muted small">From</span>
-                  <input class="form-control form-control-sm" id="wan-from-filter" type="datetime-local" style="min-width: 190px;">
-                  <span class="text-muted small">To</span>
-                  <input class="form-control form-control-sm" id="wan-to-filter" type="datetime-local" style="min-width: 190px;">
-                </div>
-              </div>
-            </div>
-          </div>
-          <div class="card-body">
-            <div class="text-muted small mb-2">Vertical: up-time percentage (0-100%) · Horizontal: time (PHT)</div>
-            <div id="wan-latency-chart" style="width: 100%; height: 120px; position: relative;"></div>
-            <div id="wan-latency-legend" class="mt-1 d-flex flex-wrap gap-3"></div>
-          </div>
-        </div>
-        <div class="card">
-          <div class="card-body">
-            <div class="d-flex flex-wrap align-items-center justify-content-between mb-3 gap-2">
-              <div>
-                <h4 class="mb-1">WAN Status</h4>
-                <div class="text-muted small">Latest check results from WAN Ping.</div>
-              </div>
-              <div class="d-flex align-items-center gap-2 flex-wrap">
-                <span class="badge bg-blue-lt">Total: {{ wan_status.total }}</span>
-                <span class="badge bg-green-lt">Up: {{ wan_status.up_total }}</span>
-                <span class="badge bg-red-lt">Down: {{ wan_status.down_total }}</span>
-                <div class="dropdown">
-                  <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown">Window: {{ wan_status.window_label }}</button>
-                  <div class="dropdown-menu dropdown-menu-end">
-                    {% for label, hours in wan_window_options %}
-                      <a class="dropdown-item" href="?wan_window={{ hours }}#wan-status">Filter {{ label }}</a>
-                    {% endfor %}
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div class="d-flex align-items-center gap-2 flex-wrap mb-2">
-              <label class="form-label mb-0">Status</label>
-              <select class="form-select form-select-sm" id="wan-status-filter" style="max-width: 160px;">
-                <option value="all">All</option>
-                <option value="up">Up</option>
-                <option value="down">Down</option>
-              </select>
-              <label class="form-label mb-0">Search</label>
-              <input class="form-control form-control-sm" id="wan-status-search" type="text" placeholder="Search WAN" style="max-width: 200px;">
-            </div>
-            <div style="overflow-x: auto;">
-              <table class="table table-vcenter">
-                <thead>
-                  <tr>
-                    <th>WAN</th>
-                    <th>Status</th>
-                    <th>Target</th>
-                    <th>Uptime %</th>
-                    <th>Trend</th>
-                    <th>Last Check</th>
-                    <th>Last RTT (ms)</th>
-                    <th>Error</th>
-                  </tr>
-                </thead>
-                <tbody id="wan-status-body">
-                  {% for row in wan_status.rows %}
-                    {% set status_lower = row.status|lower %}
-                    <tr data-status="{{ status_lower }}" data-label="{{ row.label|lower }}">
-                      <td>{{ row.label }}</td>
-                      <td>
-                        {% if status_lower == 'up' %}
-                          <span class="badge bg-green-lt text-uppercase">Up</span>
-                        {% elif status_lower == 'down' %}
-                          <span class="badge bg-red-lt text-uppercase">Down</span>
-                        {% else %}
-                          <span class="badge bg-secondary-lt text-uppercase">{{ row.status or 'n/a' }}</span>
-                        {% endif %}
-                      </td>
-                      <td>{{ row.target or "n/a" }}</td>
-                      <td>{{ row.uptime_pct is not none and ("%.1f"|format(row.uptime_pct)) or "n/a" }}</td>
-                      <td>
-                        <svg width="120" height="28">
-                          <polyline points="{{ row.spark_points }}" fill="none" stroke="#2fb344" stroke-width="2" />
-                        </svg>
-                      </td>
-                      <td>{{ row.last_check or "n/a" }}</td>
-                      <td>{{ row.last_rtt_ms or "n/a" }}</td>
-                      <td>{{ row.last_error or "" }}</td>
-                    </tr>
-                  {% endfor %}
-                </tbody>
-              </table>
-            </div>
-            {% if not wan_rows %}
-              <div class="text-muted">No WAN entries detected yet.</div>
-            {% endif %}
-          </div>
-        </div>
-      </div>
+	        </div>
 
-		      <div class="tab-pane {% if active_tab != 'status' %}active{% endif %}" id="wan-settings">
-		        <div class="alert alert-info mb-3">
-		          <div class="d-flex align-items-start">
-		            <span class="me-2"><i class="ti ti-info-circle"></i></span>
-		            <div>
-		              <div class="fw-semibold">Heads up</div>
-		              <div class="small text-muted mt-1">
-		                Routers and ISPs shown below are <span class="fw-semibold">view-only</span> in WAN Ping.
-		                To add/edit them, use <a href="/settings/system?tab=routers&routers_tab=isps">System Settings → Routers</a>.
-		              </div>
-		              <div class="mt-2 d-flex gap-2 flex-wrap">
-		                <a class="btn btn-sm btn-outline-primary" href="/settings/system?tab=routers&routers_tab=isps">Open Add ISP</a>
-		                <a class="btn btn-sm btn-outline-primary" href="/settings/system?tab=routers&routers_tab=mikrotik-routers">Open Mikrotik Routers</a>
+		        <div class="card mb-3">
+		          <div class="card-header d-flex align-items-center">
+		            <h4 class="card-title mb-0">Target Latency</h4>
+			            <div class="ms-auto d-flex align-items-center gap-2">
+			              <select class="form-select form-select-sm w-auto" id="wan-target-latency-window" style="min-width: 120px;">
+			                {% for label, hours in wan_window_options %}
+			                  <option value="{{ hours }}" {% if hours == 24 %}selected{% endif %}>{{ label }}</option>
+			                {% endfor %}
+			              </select>
+			              <button type="button" class="btn btn-sm btn-primary text-nowrap" id="wan-target-ping-all">
+			                <i class="ti ti-player-play me-1"></i>Run Ping All
+			              </button>
+			              <a
+			                class="btn btn-sm btn-outline-secondary text-nowrap"
+			                data-bs-toggle="collapse"
+			                href="#wan-target-latency-help"
+		                role="button"
+		                aria-expanded="false"
+		                aria-controls="wan-target-latency-help"
+		              >
+		                <i class="ti ti-info-circle me-1"></i>How Target Latency works
+		              </a>
+		            </div>
+			          </div>
+			          <div class="card-body">
+			            {% set enabled_targets = settings.general.targets | selectattr('enabled') | list %}
+			            <div id="wan-target-latency-meta" class="small text-muted mb-2"></div>
+			            <div id="wan-target-isp-filter" class="d-flex flex-wrap gap-1 mb-2"></div>
+			            <div class="collapse" id="wan-target-latency-help">
+			              <div class="card card-sm bg-azure-lt border-0 mb-3">
+			                <div class="card-body">
+				                  <div class="fw-semibold mb-2">How we collect ping (per ISP)</div>
+				                  <ul class="small mb-3">
+				                    <li>Ping is executed <span class="fw-semibold">inside the MikroTik</span> using RouterOS API <code>/tool/ping</code> (not from this server).</li>
+				                    <li>We set <code>src-address</code> so results are ISP-scoped. The saved Local IP must be an exact local interface IP on that router.</li>
+				                    <li>We do <span class="fw-semibold">not</span> retry without <code>src-address</code> (to keep results ISP-scoped). No reply is stored as a timeout sample.</li>
+				                    <li>By default, each poll runs against <span class="fw-semibold">all enabled targets</span>. You can enable target rotation in <span class="fw-semibold">WAN Settings → Interval → Target Latency Polling</span> if you need lower router load.</li>
+				                    <li>If a ping gets a <span class="fw-semibold">Request timeout</span>, we store it as a failed sample (no RTT). Charts show a gap and tooltips display <span class="fw-semibold">Timeout</span>.</li>
+				                    <li>The <span class="fw-semibold">Worst</span> value on each target card is the max RTT in the selected window (for the currently enabled ISP filters).</li>
+				                    <li>Charts show max RTT per bucket (≤1D: 5m, ≤7D: 30m, >7D: 2h). Tooltips use Asia/Manila (PHT).</li>
+				                  </ul>
+		                  <div id="wan-target-latency-polling-meta" class="small text-muted mb-2"></div>
+		                  <div class="table-responsive">
+			                    <table class="table table-sm table-vcenter mb-0">
+			                      <thead>
+			                        <tr>
+			                          <th>ISP</th>
+			                          <th>Command</th>
+			                          <th>Last poll (PHT)</th>
+			                          <th>Next poll (PHT)</th>
+			                        </tr>
+			                      </thead>
+			                      <tbody id="wan-target-latency-polling-table">
+			                        <tr><td colspan="4" class="text-muted">Loading…</td></tr>
+			                      </tbody>
+		                    </table>
+		                  </div>
+		                </div>
 		              </div>
 		            </div>
-		          </div>
-		        </div>
+		            {% if enabled_targets and enabled_targets|length %}
+		              <div class="row row-cards">
+		                {% for t in enabled_targets %}
+			                  <div class="col-12 col-md-6">
+			                    <div class="card card-sm">
+		                      <div class="card-body">
+		                        <div class="d-flex align-items-center gap-2">
+		                          {% set tid = (t.id or '')|lower %}
+		                          {% set icon = "ti ti-world" %}
+		                          {% set icon_color = "text-muted" %}
+		                          {% if tid in ["google", "google-dns"] %}
+		                            {% set icon = "ti ti-brand-google" %}
+		                            {% set icon_color = "text-blue" %}
+		                          {% elif tid == "youtube" %}
+		                            {% set icon = "ti ti-brand-youtube" %}
+		                            {% set icon_color = "text-red" %}
+		                          {% elif tid == "facebook" %}
+		                            {% set icon = "ti ti-brand-facebook" %}
+		                            {% set icon_color = "text-blue" %}
+		                          {% elif tid == "netflix" %}
+		                            {% set icon = "ti ti-brand-netflix" %}
+		                            {% set icon_color = "text-red" %}
+		                          {% elif tid == "tiktok" %}
+		                            {% set icon = "ti ti-brand-tiktok" %}
+		                            {% set icon_color = "text-dark" %}
+		                          {% elif tid == "instagram" %}
+		                            {% set icon = "ti ti-brand-instagram" %}
+		                            {% set icon_color = "text-purple" %}
+		                          {% elif tid == "shopee" %}
+		                            {% set icon = "ti ti-brand-shopee" %}
+		                            {% set icon_color = "text-orange" %}
+		                          {% elif tid == "lazada" %}
+		                            {% set icon = "ti ti-shopping-bag" %}
+		                            {% set icon_color = "text-indigo" %}
+		                          {% elif tid == "gcash" %}
+		                            {% set icon = "ti ti-cash" %}
+		                            {% set icon_color = "text-blue" %}
+		                          {% elif tid == "cloudflare-dns" %}
+		                            {% set icon = "ti ti-brand-cloudflare" %}
+		                            {% set icon_color = "text-orange" %}
+		                          {% endif %}
+		                          <i class="{{ icon }} {{ icon_color }}"></i>
+		                          <div class="fw-semibold text-truncate">{{ t.label or t.host }}</div>
+		                          <div class="ms-auto small text-muted" id="wan-target-mini-kpi-{{ loop.index }}"></div>
+		                        </div>
+		                        {% if t.label and t.host and t.label != t.host %}
+		                          <div class="small text-muted text-truncate">{{ t.host }}</div>
+	                        {% endif %}
+		                        <div
+		                          id="wan-target-mini-chart-{{ loop.index }}"
+		                          class="wan-target-mini-chart mt-2"
+		                          style="height: 160px;"
+		                          data-target-id="{{ t.id }}"
+		                          data-target-label="{{ t.label or t.host }}"
+		                          data-kpi-id="wan-target-mini-kpi-{{ loop.index }}"
+		                        ></div>
+		                      </div>
+		                    </div>
+		                  </div>
+		                {% endfor %}
+		              </div>
+	            {% else %}
+	              <div class="text-muted small">No targets enabled. Add/enable targets in WAN Settings → Targets.</div>
+	            {% endif %}
+	          </div>
+	        </div>
+	      </div>
+
+				      <div class="tab-pane {% if active_tab != 'status' %}active{% endif %}" id="wan-settings">
 	        <ul class="nav nav-tabs" data-bs-toggle="tabs">
+            <li class="nav-item">
+              <a href="#wan-settings-isps" class="nav-link {% if active_tab == 'status' %}active{% endif %}" data-bs-toggle="tab">ISPs (TO-ISP lists)</a>
+            </li>
 	          <li class="nav-item">
-	            <a href="#wan-settings-tab" class="nav-link {% if active_tab == 'settings' or active_tab == 'status' %}active{% endif %}" data-bs-toggle="tab">Settings</a>
+	            <a href="#wan-settings-tab" class="nav-link {% if active_tab == 'settings' %}active{% endif %}" data-bs-toggle="tab">Settings</a>
 	          </li>
 	          <li class="nav-item">
 	            <a href="#wan-messages" class="nav-link {% if active_tab == 'messages' %}active{% endif %}" data-bs-toggle="tab">Messages</a>
 	          </li>
 	        </ul>
 		        <div class="tab-content pt-4">
-		          <div class="tab-pane {% if active_tab == 'settings' or active_tab == 'status' %}active{% endif %}" id="wan-settings-tab">
-                <div class="card mb-3">
-                  <div class="card-body">
-                    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
-                      <div>
-                        <h4 class="mb-0">Routers & ISPs (view-only)</h4>
-                        <div class="text-muted small mt-1">WAN Ping reads from the shared definitions in System Settings.</div>
-                      </div>
-                      <div class="d-flex gap-2 flex-wrap">
-                        <a class="btn btn-outline-primary btn-sm" href="/settings/system?tab=routers&routers_tab=isps">Manage ISPs</a>
-                        <a class="btn btn-outline-primary btn-sm" href="/settings/system?tab=routers&routers_tab=mikrotik-routers">Manage Routers</a>
-                      </div>
-                    </div>
-
-                    <div class="row g-3">
-                      <div class="col-12 col-xl-6">
-                        <div class="border rounded p-3 h-100">
-                          <div class="fw-semibold mb-2">Mikrotik Routers</div>
-                          {% if settings.pppoe_routers and settings.pppoe_routers|length %}
-                            <div class="table-responsive">
-                              <table class="table table-vcenter table-sm">
-                                <thead>
-                                  <tr>
-                                    <th>Router</th>
-                                    <th>Host</th>
-                                    <th>Port</th>
-                                    <th>User</th>
-                                    <th>TLS</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {% for r in settings.pppoe_routers %}
-                                    <tr>
-                                      <td class="fw-semibold">{{ r.name or r.id }}</td>
-                                      <td class="text-muted">{{ r.host }}</td>
-                                      <td class="text-muted">{{ r.port or 8728 }}</td>
-                                      <td class="text-muted">{{ r.username }}</td>
-                                      <td>
-                                        {% if r.use_tls %}
-                                          <span class="badge bg-yellow-lt">Yes</span>
-                                        {% else %}
-                                          <span class="badge bg-secondary-lt">No</span>
-                                        {% endif %}
-                                      </td>
-                                    </tr>
-                                  {% endfor %}
-                                </tbody>
-                              </table>
-                            </div>
-                          {% else %}
-                            <div class="text-muted small">No routers configured yet. Add them in System Settings → Routers → Mikrotik Routers.</div>
-                          {% endif %}
-                        </div>
-                      </div>
-
-                      <div class="col-12 col-xl-6">
-                        <div class="border rounded p-3 h-100">
-                          <div class="fw-semibold mb-2">ISPs (TO-ISP lists)</div>
-                          {% if wan_rows and wan_rows|length %}
-                            <div class="table-responsive">
-                              <table class="table table-vcenter table-sm">
-                                <thead>
-                                  <tr>
-                                    <th>Core</th>
-                                    <th>TO-ISP List</th>
-                                    <th>Identifier</th>
-                                    <th>Mode</th>
-                                    <th>Local IP</th>
-                                    <th>Router</th>
-                                    <th>Enabled</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {% for row in wan_rows %}
-                                    <tr>
-                                      <td class="text-muted">{{ row.core_label }}</td>
-                                      <td class="text-muted">{{ row.list_name }}</td>
-                                      <td class="fw-semibold">
-                                        {{ row.identifier or '' }}
-                                        {% if row.color %}
-                                          <span class="badge ms-1" style="background: {{ row.color }}; color: #fff;">&nbsp;</span>
-                                        {% endif %}
-                                      </td>
-                                      <td class="text-muted text-capitalize">{{ row.mode }}</td>
-                                      <td class="text-muted">{{ row.local_ip or '' }}</td>
-                                      <td class="text-muted">
-                                        {% set rid = row.pppoe_router_id %}
-                                        {% set rr = (settings.pppoe_routers or []) | selectattr('id', 'equalto', rid) | list %}
-                                        {{ (rr and (rr[0].name or rr[0].id)) or '' }}
-                                      </td>
-                                      <td>
-                                        {% if row.enabled %}
-                                          <span class="badge bg-green-lt">Yes</span>
-                                        {% else %}
-                                          <span class="badge bg-secondary-lt">No</span>
-                                        {% endif %}
-                                      </td>
-                                    </tr>
-                                  {% endfor %}
-                                </tbody>
-                              </table>
-                            </div>
-                          {% else %}
-                            <div class="text-muted small">No ISP lists detected yet. Configure cores and refresh in System Settings → Routers → Add ISP.</div>
-                          {% endif %}
-                        </div>
+              <div class="tab-pane {% if active_tab == 'status' %}active{% endif %}" id="wan-settings-isps">
+                <div class="alert alert-info mb-3">
+                  <div class="d-flex align-items-start">
+                    <span class="me-2"><i class="ti ti-info-circle"></i></span>
+                    <div>
+                      <div class="fw-semibold">Heads up</div>
+                      <div class="small text-muted mt-1">
+                        ISPs (TO-ISP lists) shown below are <span class="fw-semibold">view-only</span> in WAN Ping.
+                        To add/edit them, use <a href="/settings/system?tab=routers&routers_tab=isps">System Settings → Routers</a>.
                       </div>
                     </div>
                   </div>
                 </div>
+                <div class="card mb-3">
+                  <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
+                      <div>
+                        <h4 class="mb-0">ISPs (TO-ISP lists)</h4>
+                        <div class="text-muted small mt-1">View-only. Manage this list in System Settings → Routers → Add ISP.</div>
+                      </div>
+                      <a class="btn btn-outline-primary btn-sm" href="/settings/system?tab=routers&routers_tab=isps">Manage ISPs</a>
+                    </div>
+                    {% if wan_rows and wan_rows|length %}
+                      <div class="table-responsive">
+                        <table class="table table-vcenter table-sm">
+                          <thead>
+                            <tr>
+                              <th>Core</th>
+                              <th>TO-ISP List</th>
+                              <th>Identifier</th>
+                              <th>Mode</th>
+                              <th>Local IP</th>
+                              <th>PPPoE Router</th>
+                              <th>Enabled</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {% for row in wan_rows %}
+                              <tr>
+                                <td class="text-muted">{{ row.core_label }}</td>
+                                <td class="text-muted">{{ row.list_name }}</td>
+                                <td class="fw-semibold">
+                                  {{ row.identifier or '' }}
+                                  {% if row.color %}
+                                    <span class="badge ms-1" style="background: {{ row.color }}; color: #fff;">&nbsp;</span>
+                                  {% endif %}
+                                </td>
+                                <td class="text-muted text-capitalize">{{ row.mode }}</td>
+                                <td class="text-muted">{{ row.local_ip or '' }}</td>
+                                <td class="text-muted">
+                                  {% set rid = row.pppoe_router_id %}
+                                  {% set rr = (settings.pppoe_routers or []) | selectattr('id', 'equalto', rid) | list %}
+                                  {{ (rr and (rr[0].name or rr[0].id)) or '' }}
+                                </td>
+                                <td>
+                                  {% if row.enabled %}
+                                    <span class="badge bg-green-lt">Yes</span>
+                                  {% else %}
+                                    <span class="badge bg-secondary-lt">No</span>
+                                  {% endif %}
+                                </td>
+                              </tr>
+                            {% endfor %}
+                          </tbody>
+                        </table>
+                      </div>
+                    {% else %}
+                      <div class="text-muted small">No ISP lists detected yet. Configure cores and refresh in System Settings → Routers → Add ISP.</div>
+                    {% endif %}
+                  </div>
+                </div>
+              </div>
+		          <div class="tab-pane {% if active_tab == 'settings' %}active{% endif %}" id="wan-settings-tab">
 		        <ul class="nav nav-tabs" data-bs-toggle="tabs">
 		          <li class="nav-item">
-		            <a href="#wan-settings-telegram" class="nav-link active" data-bs-toggle="tab">Telegram</a>
+		            <a href="#wan-settings-telegram" class="nav-link {% if wan_settings_tab == 'telegram' %}active{% endif %}" data-bs-toggle="tab">Telegram</a>
 		          </li>
-	          <li class="nav-item">
-            <a href="#wan-settings-interval" class="nav-link" data-bs-toggle="tab">Interval</a>
+              <li class="nav-item">
+                <a href="#wan-settings-targets" class="nav-link {% if wan_settings_tab == 'targets' %}active{% endif %}" data-bs-toggle="tab">Targets</a>
+              </li>
+		          <li class="nav-item">
+		            <a href="#wan-settings-interval" class="nav-link {% if wan_settings_tab == 'interval' %}active{% endif %}" data-bs-toggle="tab">Interval</a>
           </li>
           <li class="nav-item">
-            <a href="#wan-settings-database" class="nav-link" data-bs-toggle="tab">Database</a>
+            <a href="#wan-settings-database" class="nav-link {% if wan_settings_tab == 'database' %}active{% endif %}" data-bs-toggle="tab">Database</a>
           </li>
           <li class="nav-item">
-            <a href="#wan-settings-danger" class="nav-link" data-bs-toggle="tab">Danger</a>
+            <a href="#wan-settings-danger" class="nav-link {% if wan_settings_tab == 'danger' %}active{% endif %}" data-bs-toggle="tab">Danger</a>
           </li>
-        </ul>
-        <div class="tab-content pt-4">
-          <div class="tab-pane active" id="wan-settings-telegram">
-        <form method="post" action="/settings/wan/telegram">
-          <div class="card mb-3">
-            <div class="card-body">
-              <h4 class="mb-3">Telegram</h4>
+	        </ul>
+	        <div class="tab-content pt-4">
+	          <div class="tab-pane {% if wan_settings_tab == 'telegram' %}active{% endif %}" id="wan-settings-telegram">
+	        <form method="post" action="/settings/wan/telegram">
+	          <div class="card mb-3">
+	            <div class="card-body">
+	              <h4 class="mb-3">Telegram</h4>
               <div class="row g-3">
                 <div class="col-md-6">
                   <label class="form-label">Bot Token <span class="info" data-tip="Telegram bot token from BotFather.">i</span></label>
@@ -359,29 +307,204 @@
         </form>
           </div>
 
-          <div class="tab-pane" id="wan-settings-interval">
-        <div class="card mb-3">
-          <div class="card-body">
-            <h4 class="mb-3">WAN Ping Interval</h4>
-            <div class="row g-3">
-              <div class="col-md-4">
-                <label class="form-label">Interval (seconds)</label>
-                <input class="form-control" type="number" name="wan_interval_seconds" value="{{ settings.general.interval_seconds }}" form="wan-interval-form" />
-                <div class="help">How often to poll WAN status and refresh Netwatch entries.</div>
-              </div>
-            </div>
-          </div>
-          <div class="card-footer d-flex justify-content-end">
-            <form id="wan-interval-form" method="post" action="/settings/wan/interval">
-              <button type="submit" class="btn btn-primary">Save Interval</button>
-            </form>
-          </div>
-        </div>
-          </div>
+	          <div class="tab-pane {% if wan_settings_tab == 'targets' %}active{% endif %}" id="wan-settings-targets">
+	            <form method="post" action="/settings/wan/targets" id="wan-targets-form">
+	              <div class="card mb-3">
+	                <div class="card-body">
+                  <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
+                    <div>
+                      <h4 class="mb-1">Ping Targets</h4>
+                      <div class="text-muted small">Preloaded with common targets (Google/Facebook/Netflix/etc). These will be used later as WAN Ping targets.</div>
+                    </div>
+                    <button type="button" class="btn btn-outline-primary btn-sm" id="wan-add-target">
+                      <i class="ti ti-plus"></i> Add Target
+                    </button>
+                  </div>
+                  <input type="hidden" name="target_count" id="wan-target-count" value="{{ (settings.general.targets or [])|length }}" />
+                  <div class="table-responsive">
+                    <table class="table table-vcenter table-sm" id="wan-targets-table">
+                      <thead>
+                        <tr>
+                          <th style="min-width: 180px;">Label</th>
+                          <th style="min-width: 220px;">Host/IP</th>
+                          <th>Enabled</th>
+                          <th>Remove</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {% for target in settings.general.targets or [] %}
+                          <tr>
+                            <td>
+                              <input type="hidden" name="target_{{ loop.index0 }}_id" value="{{ target.id }}" />
+                              <input class="form-control form-control-sm" type="text" name="target_{{ loop.index0 }}_label" value="{{ target.label }}" placeholder="e.g. Google" />
+                            </td>
+                            <td>
+                              <input class="form-control form-control-sm" type="text" name="target_{{ loop.index0 }}_host" value="{{ target.host }}" placeholder="e.g. 8.8.8.8 or google.com" />
+                            </td>
+                            <td>
+                              <label class="form-check form-switch m-0">
+                                <input class="form-check-input" type="checkbox" name="target_{{ loop.index0 }}_enabled" {% if target.enabled %}checked{% endif %} />
+                              </label>
+                            </td>
+                            <td>
+                              <label class="form-check m-0">
+                                <input class="form-check-input" type="checkbox" name="target_{{ loop.index0 }}_delete" />
+                                <span class="form-check-label">Delete</span>
+                              </label>
+                            </td>
+                          </tr>
+                        {% endfor %}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                <div class="card-footer d-flex justify-content-end">
+                  <button type="submit" class="btn btn-primary">Save Targets</button>
+                </div>
+		              </div>
+		            </form>
+		          </div>
 
-          <div class="tab-pane" id="wan-settings-database">
-        <form method="post" action="/settings/wan/database">
-          <div class="card mb-3">
+	          <div class="tab-pane {% if wan_settings_tab == 'interval' %}active{% endif %}" id="wan-settings-interval">
+	        <div class="card mb-3">
+	          <div class="card-body">
+	            <h4 class="mb-3">WAN Ping Interval</h4>
+	            <div class="row g-3">
+	              <div class="col-md-4">
+	                <label class="form-label">Interval (seconds)</label>
+	                <input class="form-control" type="number" name="wan_interval_seconds" value="{{ settings.general.interval_seconds }}" form="wan-interval-form" />
+	                <div class="help">How often to poll WAN status and refresh Netwatch entries.</div>
+	              </div>
+	            </div>
+	          </div>
+	          <div class="card-footer d-flex justify-content-end">
+	            <form id="wan-interval-form" method="post" action="/settings/wan/interval">
+	              <button type="submit" class="btn btn-primary">Save Polling Settings</button>
+	            </form>
+	          </div>
+	        </div>
+	        <div class="card mb-3">
+	          <div class="card-body">
+	            <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
+	              <div>
+	                <h4 class="mb-1">Target Latency Polling</h4>
+	                <div class="text-muted small">Controls how Target Latency charts are sampled and stored. Aggressive settings can increase router load and database size.</div>
+	              </div>
+	              <a
+	                class="btn btn-sm btn-outline-secondary text-nowrap"
+	                data-bs-toggle="collapse"
+	                href="#wan-target-polling-guide"
+	                role="button"
+	                aria-expanded="false"
+	                aria-controls="wan-target-polling-guide"
+	              >
+	                <i class="ti ti-info-circle me-1"></i>Guide
+	              </a>
+	            </div>
+		            <div class="row g-3">
+		              <div class="col-md-4">
+		                <label class="form-label">Target Latency Interval (seconds)</label>
+		                <input
+		                  class="form-control"
+	                  type="number"
+	                  name="wan_target_latency_interval_seconds"
+	                  value="{{ settings.general.target_latency_interval_seconds }}"
+	                  min="1"
+	                  form="wan-interval-form"
+		                />
+		                <div class="help">How often to ping targets for Target Latency charts (separate from WAN status).</div>
+		              </div>
+		              <div class="col-md-4">
+		                <label class="form-label d-block">Target Rotation</label>
+		                <label class="form-check form-switch mt-1">
+		                  <input
+		                    class="form-check-input"
+		                    type="checkbox"
+		                    id="wan-target-rotation-enabled"
+		                    name="wan_target_rotation_enabled"
+		                    value="on"
+		                    {% if settings.general.target_rotation_enabled %}checked{% endif %}
+		                    form="wan-interval-form"
+		                  />
+		                  <span class="form-check-label">Enable rotation pinging</span>
+		                </label>
+		                <div class="help">Off (default): ping all enabled targets every poll. On: rotate targets per poll using the field below.</div>
+		              </div>
+		              <div class="col-md-4">
+		                <label class="form-label">Parallel workers per ISP</label>
+		                <input
+		                  class="form-control"
+		                  type="number"
+		                  name="wan_target_parallel_workers"
+		                  value="{{ settings.general.target_parallel_workers|default(0) }}"
+		                  min="0"
+		                  max="64"
+		                  form="wan-interval-form"
+		                />
+		                <div class="help">0 = auto (all selected targets in parallel). Set 1 for sequential. Higher values increase concurrency and router load.</div>
+		              </div>
+		              <div class="col-md-4">
+		                <label class="form-label">Targets per ISP per poll</label>
+		                <input
+		                  class="form-control"
+		                  id="wan-targets-per-wan-input"
+		                  type="number"
+		                  name="wan_targets_per_wan_per_run"
+		                  value="{{ settings.general.targets_per_wan_per_run }}"
+		                  min="0"
+		                  form="wan-interval-form"
+		                />
+		                <div class="help">Used only when rotation is enabled. 1 = rotate lightly, higher values = more targets per poll, 0 = disable Target Latency sampling.</div>
+		              </div>
+		              <div class="col-md-4">
+		                <label class="form-label">Ping timeout (ms)</label>
+		                <input
+	                  class="form-control"
+	                  type="number"
+	                  name="wan_target_ping_timeout_ms"
+	                  value="{{ settings.general.target_ping_timeout_ms }}"
+	                  min="100"
+	                  form="wan-interval-form"
+	                />
+	                <div class="help">Timeout per ICMP attempt inside RouterOS <code>/tool/ping</code>.</div>
+	              </div>
+	              <div class="col-md-4">
+	                <label class="form-label">Ping count (per sample)</label>
+	                <input
+	                  class="form-control"
+	                  type="number"
+	                  name="wan_target_ping_count"
+	                  value="{{ settings.general.target_ping_count }}"
+	                  min="1"
+	                  max="10"
+	                  form="wan-interval-form"
+	                />
+	                <div class="help">How many pings to run per target sample. Higher values are heavier but may be more stable.</div>
+	              </div>
+	            </div>
+	
+	            <div class="collapse mt-3" id="wan-target-polling-guide">
+	              <div class="card card-sm bg-azure-lt border-0">
+	                <div class="card-body">
+		                  <div class="fw-semibold mb-2">How polling works</div>
+		                  <ul class="small mb-0">
+		                    <li>Every <span class="fw-semibold">Target Latency Interval</span>, each enabled ISP pings either <span class="fw-semibold">all enabled targets</span> (rotation OFF) or <span class="fw-semibold">Targets per ISP per poll</span> (rotation ON).</li>
+		                    <li>Ping execution per ISP is <span class="fw-semibold">parallelized</span> by <span class="fw-semibold">Parallel workers per ISP</span> (0 = auto/all selected targets).</li>
+		                    <li>Pings run <span class="fw-semibold">inside the MikroTik</span> via RouterOS API <code>/tool/ping</code> with <code>src-address</code> = the ISP Local IP (so results are ISP-scoped).</li>
+		                    <li>Estimated revisit time per target (rotation ON) ≈ <code>ceil(enabled_targets / targets_per_poll) × target_interval</code>.</li>
+		                    <li>Estimated router load ≈ <code>ISPs_on_router × targets_per_poll × ping_count</code> pings per poll.</li>
+		                    <li>If you formatted the WAN database, Target Latency history was cleared too. Charts will show <span class="fw-semibold">n/a</span> until new samples arrive.</li>
+		                  </ul>
+		                </div>
+	              </div>
+	            </div>
+	          </div>
+	        </div>
+	          </div>
+
+	          <div class="tab-pane {% if wan_settings_tab == 'database' %}active{% endif %}" id="wan-settings-database">
+	        <form method="post" action="/settings/wan/database">
+	          <div class="card mb-3">
             <div class="card-body">
               <h4 class="mb-3">WAN History Database</h4>
               <div class="row g-3">
@@ -399,19 +522,19 @@
         </form>
           </div>
 
-          <div class="tab-pane" id="wan-settings-danger">
-        <div class="card">
-          <div class="card-body">
-            <h4 class="mb-2">Format WAN Status Database</h4>
-            <div class="alert alert-warning">
-              <div class="d-flex align-items-center">
-                <span class="me-2"><i class="ti ti-alert-triangle"></i></span>
-                <div>Formatting removes WAN status history. Settings are preserved.</div>
-              </div>
-            </div>
-            <form method="post" action="/settings/wan/format">
-              <label class="form-check">
-                <input class="form-check-input" type="checkbox" name="confirm_format" />
+          <div class="tab-pane {% if wan_settings_tab == 'danger' %}active{% endif %}" id="wan-settings-danger">
+	          <div class="card">
+	          <div class="card-body">
+	            <h4 class="mb-2">Format WAN Status Database</h4>
+	            <div class="alert alert-warning">
+	              <div class="d-flex align-items-center">
+	                <span class="me-2"><i class="ti ti-alert-triangle"></i></span>
+	                <div>Formatting removes WAN status history and Target Latency history. Settings are preserved.</div>
+	              </div>
+	            </div>
+	            <form method="post" action="/settings/wan/format">
+	              <label class="form-check">
+	                <input class="form-check-input" type="checkbox" name="confirm_format" />
                 <span class="form-check-label">I understand this will erase WAN status data.</span>
               </label>
               <div class="mt-3">
@@ -476,7 +599,7 @@
                   <div class="fw-semibold mb-2">
                     {{ row.core_label }} - {{ row.identifier or row.list_name }}
                     {% if row.identifier_missing %}
-                      <span class="text-muted">(add identifier name in pulsewatch)</span>
+                      <span class="text-muted">(set identifier in System Settings → Routers → Add ISP)</span>
                     {% endif %}
                   </div>
                   <input type="hidden" name="message_{{ loop.index0 }}_id" value="{{ row.wan_id }}" />
@@ -568,7 +691,7 @@
             {% raw %}
             <div class="small text-muted">{{ping5}} - 5 ping lines</div>
             {% endraw %}
-            <div class="small text-muted">Target uses the Local IP when set; otherwise the first Pulsewatch preset target.</div>
+            <div class="small text-muted">Target uses the Local IP configured per ISP row.</div>
           </div>
         </div>
         <div class="mt-3 p-3 bg-light rounded">
@@ -580,6 +703,33 @@
         </div>
       </div>
       <div class="modal-footer">
+        <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal modal-blur fade" id="wan-target-ping-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="wan-target-ping-title">Live Ping (All ISPs)</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+	        <div class="text-muted small mb-2" id="wan-target-ping-subtitle">
+	          Runs RouterOS <code>/tool/ping</code> inside each MikroTik. Closing the modal stops this manual ping.
+	        </div>
+        <div class="mb-3">
+          <div class="small text-muted mb-1">Target filter</div>
+          <div id="wan-target-ping-target-filter" class="d-flex flex-wrap gap-1"></div>
+        </div>
+        <div id="wan-target-ping-skipped" class="small text-muted mb-3" style="display:none"></div>
+        <div id="wan-target-ping-grid" class="d-grid" style="gap: 12px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));"></div>
+        <div id="wan-target-ping-status" class="small text-muted mt-3"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" id="wan-target-ping-freeze-all" data-frozen="0">Freeze All</button>
         <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Close</button>
       </div>
     </div>
@@ -629,8 +779,63 @@
     checkbox.addEventListener("change", () => toggleRepeatField(checkbox.dataset.row));
   });
 
-  let wanLatencySeries = {{ wan_latency_series | tojson }};
-  const chartEl = document.getElementById("wan-latency-chart");
+  const wanTargetRotationToggleEl = document.getElementById("wan-target-rotation-enabled");
+  const wanTargetsPerWanInputEl = document.getElementById("wan-targets-per-wan-input");
+  const toggleWanTargetRotationField = () => {
+    if (!wanTargetRotationToggleEl || !wanTargetsPerWanInputEl) return;
+    const enabled = Boolean(wanTargetRotationToggleEl.checked);
+    wanTargetsPerWanInputEl.disabled = !enabled;
+    wanTargetsPerWanInputEl.style.opacity = enabled ? "1" : "0.65";
+  };
+  if (wanTargetRotationToggleEl && wanTargetsPerWanInputEl) {
+    toggleWanTargetRotationField();
+    wanTargetRotationToggleEl.addEventListener("change", toggleWanTargetRotationField);
+  }
+
+  const escapeHtml = (value) => String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
+  const targetsAddBtn = document.getElementById("wan-add-target");
+  const targetsCountEl = document.getElementById("wan-target-count");
+  const targetsBodyEl = document.querySelector("#wan-targets-table tbody");
+  const buildTargetRow = (idx) => `
+    <tr>
+      <td>
+        <input type="hidden" name="target_${idx}_id" value="" />
+        <input class="form-control form-control-sm" type="text" name="target_${idx}_label" value="" placeholder="e.g. Google" />
+      </td>
+      <td>
+        <input class="form-control form-control-sm" type="text" name="target_${idx}_host" value="" placeholder="e.g. 8.8.8.8 or google.com" />
+      </td>
+      <td>
+        <label class="form-check form-switch m-0">
+          <input class="form-check-input" type="checkbox" name="target_${idx}_enabled" checked />
+        </label>
+      </td>
+      <td>
+        <label class="form-check m-0">
+          <input class="form-check-input" type="checkbox" name="target_${idx}_delete" />
+          <span class="form-check-label">Delete</span>
+        </label>
+      </td>
+    </tr>
+  `;
+		  if (targetsAddBtn && targetsCountEl && targetsBodyEl) {
+		    targetsAddBtn.addEventListener("click", () => {
+		      const idx = parseInt(targetsCountEl.value || "0", 10);
+		      const safeIdx = Number.isNaN(idx) ? 0 : idx;
+		      targetsBodyEl.insertAdjacentHTML("beforeend", buildTargetRow(safeIdx));
+		      targetsCountEl.value = String(safeIdx + 1);
+		    });
+		  }
+
+		  /* WAN Status Overview + table UI removed (kept here for future reference).
+		  let wanLatencySeries = [];
+		  const chartEl = document.getElementById("wan-latency-chart");
   const legendEl = document.getElementById("wan-latency-legend");
   const filterEl = document.getElementById("wan-core-filter");
   const rangeEl = document.getElementById("wan-range-filter");
@@ -639,13 +844,6 @@
   const toEl = document.getElementById("wan-to-filter");
   const statusBody = document.getElementById("wan-status-body");
   const wanRefreshSeconds = 2;
-
-  const escapeHtml = (value) => String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 
   const tooltip = document.createElement("div");
   tooltip.style.position = "absolute";
@@ -1173,15 +1371,19 @@
   setInterval(() => {
     fetchStatus();
     updateChart();
+    if (stabilityDaysEl && stabilityDaysEl.value === "live") {
+      fetchStability();
+    }
   }, wanRefreshSeconds * 1000);
 
   setTimeout(() => {
     updateChart();
   }, 500);
 
-  const stabilityGridEl = document.getElementById("pulsewatch-stability-grid");
-  const stabilityDaysEl = document.getElementById("pulsewatch-stability-days");
-  const stabilityColors = ["#2fb344", "#f59f00", "#e03131", "#f76707"];
+  */
+  const stabilityGridEl = document.getElementById("wan-stability-grid");
+  const stabilityDaysEl = document.getElementById("wan-stability-days");
+  const stabilityColors = ["#2fb344", "#e03131"];
   const stabilityCharts = new Map();
 
   const renderStabilityGrid = (rows) => {
@@ -1189,26 +1391,26 @@
     stabilityCharts.forEach((chart) => chart.destroy());
     stabilityCharts.clear();
     if (!rows.length) {
-      stabilityGridEl.innerHTML = "<div class='text-muted'>No Pulsewatch presets with IPs.</div>";
+      stabilityGridEl.innerHTML = "<div class='text-muted'>No ISPs configured for WAN checks.</div>";
       return;
     }
     stabilityGridEl.innerHTML = rows.map((row) => {
-      const chartId = `pulsewatch-stability-${row.id}`;
+      const chartId = `wan-stability-${row.id}`;
       return `
-        <div class="pulsewatch-stability-item">
-          <div class="pulsewatch-stability-chart-wrap">
-            <div id="${chartId}" class="pulsewatch-stability-chart"></div>
-            <div class="pulsewatch-stability-label">${escapeHtml(row.label || "Unnamed ISP")}</div>
+        <div class="wan-stability-item">
+          <div class="wan-stability-chart-wrap">
+            <div id="${chartId}" class="wan-stability-chart"></div>
+            <div class="wan-stability-label">${escapeHtml(row.label || "Unnamed ISP")}</div>
           </div>
         </div>
       `;
     }).join("");
 
     rows.forEach((row) => {
-      const chartId = `pulsewatch-stability-${row.id}`;
+      const chartId = `wan-stability-${row.id}`;
       const el = document.getElementById(chartId);
       if (!el || !window.ApexCharts) return;
-      const series = [row.healthy || 0, row.degraded || 0, row.poor || 0, row.outage || 0];
+      const series = [row.up || 0, row.down || 0];
       const total = series.reduce((sum, value) => sum + value, 0);
       if (!total) {
         el.innerHTML = "<div class='text-muted'>No data in range.</div>";
@@ -1222,7 +1424,7 @@
           height: 90,
           sparkline: { enabled: true },
         },
-        labels: ["Stable", "Unstable", "Critical", "Down"],
+        labels: ["Up", "Down"],
         colors: stabilityColors,
         series,
         dataLabels: { enabled: false },
@@ -1264,7 +1466,10 @@
   const fetchStability = async () => {
     if (!stabilityGridEl) return;
     const window = (() => {
-      const raw = stabilityDaysEl ? stabilityDaysEl.value : "7d";
+      const raw = stabilityDaysEl ? stabilityDaysEl.value : "1d";
+      if (raw === "live") {
+        return { live: true };
+      }
       if (raw.endsWith("h")) {
         const hours = parseInt(raw.slice(0, -1), 10);
         return { hours: Number.isNaN(hours) ? 1 : hours };
@@ -1277,13 +1482,15 @@
       return { days: Number.isNaN(days) ? 7 : days };
     })();
     const params = new URLSearchParams();
-    if (window.hours) {
+    if (window.live) {
+      params.set("live", "1");
+    } else if (window.hours) {
       params.set("hours", String(window.hours));
     } else {
       params.set("days", String(window.days || 7));
     }
     try {
-      const res = await fetch(`/pulsewatch/stability?${params.toString()}`, {
+      const res = await fetch(`/wan/stability?${params.toString()}`, {
         headers: { "Accept": "application/json" },
         cache: "no-store",
       });
@@ -1299,30 +1506,1345 @@
     }
   };
 
-  if (stabilityDaysEl) {
-    stabilityDaysEl.addEventListener("change", fetchStability);
-  }
-  fetchStability();
+	  if (stabilityDaysEl) {
+	    stabilityDaysEl.addEventListener("change", fetchStability);
+	  }
+	  fetchStability();
 
-  const statusTab = document.querySelector('a[href="#wan-status"]');
-  if (statusTab) {
-    statusTab.addEventListener("shown.bs.tab", () => {
-      updateChart();
-      fetchStatus();
-    });
-  }
+		  const wanTargetWindowEl = document.getElementById("wan-target-latency-window");
+		  const wanTargetMetaEl = document.getElementById("wan-target-latency-meta");
+		  const wanTargetIspFilterEl = document.getElementById("wan-target-isp-filter");
+		  const wanTargetPollingMetaEl = document.getElementById("wan-target-latency-polling-meta");
+		  const wanTargetPollingTableEl = document.getElementById("wan-target-latency-polling-table");
+		  const wanTargetMiniEls = Array.from(document.querySelectorAll(".wan-target-mini-chart[data-target-id]"));
+		  const wanTargetRefreshSeconds = Math.max(Number({{ wan_target_refresh_seconds|default(30) }}) || 30, 1);
+		  const wanTargetUiRefreshSeconds = Math.max(wanTargetRefreshSeconds, 5);
+		  const wanTargetRotationEnabled = Boolean({{ wan_target_rotation_enabled|default(false)|tojson }});
+		  const wanTargetParallelWorkersRaw = Number({{ settings.general.target_parallel_workers|default(0) }});
+		  const wanTargetParallelWorkers = Number.isFinite(wanTargetParallelWorkersRaw)
+		    ? Math.max(Math.min(wanTargetParallelWorkersRaw, 64), 0)
+		    : 0;
+		  const wanTargetConfiguredTargetsPerPollRaw = Number({{ wan_targets_per_wan_per_run|default(1) }});
+		  const wanTargetConfiguredTargetsPerPoll = Number.isFinite(wanTargetConfiguredTargetsPerPollRaw)
+		    ? Math.max(wanTargetConfiguredTargetsPerPollRaw, 0)
+		    : 1;
+		  const wanTargetTargetsPerPoll = wanTargetRotationEnabled
+		    ? wanTargetConfiguredTargetsPerPoll
+		    : Math.max(wanTargetMiniEls.length, 0);
+			  const wanTargetMiniCharts = new Map();
+			  const wanTargetMiniData = new Map();
+				  const wanTargetIspMeta = new Map(); // wan_id -> { name, color }
+				  const wanTargetIspNextMs = new Map(); // wan_id -> next poll ms (local estimate)
+				  const wanTargetWanMeta = new Map();
+				  let wanTargetMiniFirstLoadDone = false;
+			  const wanTargetIspEnabled = new Set(); // wan_id
+			  let wanTargetIspTouched = false;
 
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") {
-      fetchStatus();
-      updateChart();
-    }
-  });
+		  const wanTargetCommandHost = {{ wan_target_default_host|default("")|tojson }};
+		  const wanTargetCommandExtraTargets = Number({{ wan_target_extra_targets|default(0) }}) || 0;
 
-  const statusFilterEl = document.getElementById("wan-status-filter");
-  const statusSearchEl = document.getElementById("wan-status-search");
-  if (statusFilterEl) statusFilterEl.addEventListener("change", applyWanStatusFilters);
-  if (statusSearchEl) statusSearchEl.addEventListener("input", applyWanStatusFilters);
-  applyWanStatusFilters();
-</script>
-{% endblock %}
+		  const fmtMs = (value) => {
+		    const num = Number(value);
+		    if (!Number.isFinite(num)) return "n/a";
+		    if (num >= 100) return `${num.toFixed(0)}ms`;
+		    if (num >= 10) return `${num.toFixed(1)}ms`;
+		    return `${num.toFixed(2)}ms`;
+		  };
+
+		  const fmtCount = (value) => {
+		    const num = Number(value);
+		    if (!Number.isFinite(num) || num <= 0) return "0";
+		    if (num < 1000) return String(Math.round(num));
+		    if (num < 1000000) {
+		      const k = num / 1000;
+		      const s = k >= 10 ? k.toFixed(0) : k.toFixed(1);
+		      return `${s.replace(/\\.0$/, "")}k`;
+		    }
+		    const m = num / 1000000;
+		    const s = m >= 10 ? m.toFixed(0) : m.toFixed(1);
+		    return `${s.replace(/\\.0$/, "")}M`;
+		  };
+
+		  const isFiniteRttPoint = (value) => (typeof value === "number" && Number.isFinite(value));
+
+		  const bucketMsForHours = (hours) => {
+		    const h = Number(hours);
+		    if (!Number.isFinite(h)) return 300000;
+		    if (h <= 24) return 300000;        // 5m
+		    if (h <= 168) return 1800000;      // 30m
+		    return 7200000;                    // 2h
+		  };
+
+		  const sanitizeColor = (value) => {
+		    const str = String(value || "").trim();
+		    if (!str) return "";
+		    if (/^#[0-9a-fA-F]{3,8}$/.test(str)) return str;
+		    return "";
+		  };
+
+		  const fallbackColors = [
+		    "#206bc4", // blue
+		    "#2fb344", // green
+		    "#f76707", // orange
+		    "#ae3ec9", // purple
+		    "#e03131", // red
+		    "#15aabf", // teal
+		    "#f59f00", // yellow
+		    "#74b816", // lime
+		    "#4263eb", // indigo
+		    "#0ca678", // green-ish
+		  ];
+
+		  const hashString = (input) => {
+		    const str = String(input || "");
+		    let hash = 0;
+		    for (let i = 0; i < str.length; i++) {
+		      hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
+		    }
+		    return hash >>> 0;
+		  };
+
+		  const colorForName = (name, preferred) => {
+		    const preferredClean = sanitizeColor(preferred);
+		    if (preferredClean) return preferredClean;
+		    const idx = hashString(name) % fallbackColors.length;
+		    return fallbackColors[idx] || "#adb5bd";
+		  };
+
+		  const formatTsPH = (ts, options) => {
+		    const dt = new Date(ts);
+		    if (Number.isNaN(dt.getTime())) return "";
+		    try {
+		      return dt.toLocaleString("en-PH", { timeZone: "Asia/Manila", ...options });
+		    } catch (e) {
+		      return dt.toLocaleString("en-PH", options);
+		    }
+		  };
+
+		  const pad2 = (value) => String(value).padStart(2, "0");
+		  const fmtCountdown = (ms) => {
+		    if (!Number.isFinite(ms)) return "";
+		    const total = Math.max(0, Math.ceil(ms / 1000));
+		    const m = Math.floor(total / 60);
+		    const s = total % 60;
+		    if (m > 99) return `${m}m`;
+		    return `${m}:${pad2(s)}`;
+		  };
+
+		  const xTickAmountForHours = (hours) => {
+		    const h = Number(hours);
+		    if (!Number.isFinite(h)) return undefined;
+		    if (h <= 24) return Math.max(2, Math.floor(h));
+		    if (h <= 168) return 7;
+		    if (h <= 360) return 15;
+		    return 30;
+		  };
+
+		  const xLabelForHours = (ts, hours) => {
+		    const h = Number(hours);
+		    if (h <= 12) {
+		      return formatTsPH(ts, { hour: "2-digit", minute: "2-digit", hour12: false });
+		    }
+		    if (h <= 24) {
+		      return formatTsPH(ts, { hour: "2-digit", hour12: false });
+		    }
+		    return formatTsPH(ts, { month: "short", day: "2-digit" });
+		  };
+
+		  const buildMultiSeries = (payload, bucketMs, anchorMs) => {
+		    const seriesRaw = Array.isArray(payload?.series) ? payload.series : [];
+		    const bucketSizeMs = Number(bucketMs);
+		    const anchor = Number(anchorMs);
+			    const useBuckets = Number.isFinite(bucketSizeMs) && bucketSizeMs > 0;
+			    const useAnchor = useBuckets && Number.isFinite(anchor);
+			    const out = [];
+			    for (const row of seriesRaw) {
+			      const points = Array.isArray(row?.points) ? row.points : [];
+			      const buckets = new Map();
+			      let latestTs = -Infinity;
+			      let latestRtt = null;
+			      let worstRtt = null;
+			      let pollTotal = 0;
+			      let pollOk = 0;
+			      for (const p of points) {
+			        const ts = Date.parse(String(p?.ts || ""));
+			        if (!Number.isFinite(ts)) continue;
+			        pollTotal += 1;
+			        const ok = Number(p?.ok || 0) ? 1 : 0;
+			        const rtt = p?.rtt_ms === null || p?.rtt_ms === undefined ? NaN : Number(p.rtt_ms);
+			        const bucket = useBuckets
+			          ? (useAnchor ? (anchor + Math.floor((ts - anchor) / bucketSizeMs) * bucketSizeMs) : (Math.floor(ts / bucketSizeMs) * bucketSizeMs))
+			          : ts;
+			        const prev = buckets.get(bucket);
+			        const prevY = (prev && typeof prev === "object") ? prev.y : prev;
+			        if (ok && Number.isFinite(rtt)) {
+			          pollOk += 1;
+			          if (prev === undefined || prevY === null || !Number.isFinite(Number(prevY)) || rtt > Number(prevY)) {
+			            buckets.set(bucket, { y: rtt, state: "ok" });
+			          }
+			          if (worstRtt === null || rtt > worstRtt) {
+			            worstRtt = rtt;
+			          }
+			          if (ts > latestTs) {
+			            latestTs = ts;
+			            latestRtt = rtt;
+			          }
+			        }
+			      }
+			      const data = Array.from(buckets.entries())
+			        .sort((a, b) => a[0] - b[0])
+			        .map(([x, value]) => {
+			          const y = (value && typeof value === "object") ? value.y : value;
+			          const state = (value && typeof value === "object")
+			            ? (value.state || (y === null ? "timeout" : "ok"))
+			            : (y === null ? "timeout" : "ok");
+			          return { x, y, state };
+			        });
+		      const name = String(row?.name || "").trim() || "ISP";
+		      out.push({
+		        id: String(row?.id || "").trim(),
+		        name,
+		        color: colorForName(name, row?.color),
+		        data,
+		        latestRtt,
+		        worstRtt,
+		        pollTotal,
+		        pollOk,
+		      });
+		    }
+		    return out;
+		  };
+
+		  const renderWanTargetIspFilter = () => {
+		    if (!wanTargetIspFilterEl) return;
+		    wanTargetIspFilterEl.innerHTML = "";
+		    const entries = Array.from(wanTargetIspMeta.entries()).sort((a, b) => {
+		      const left = String((a[1] || {}).name || a[0] || "");
+		      const right = String((b[1] || {}).name || b[0] || "");
+		      return left.localeCompare(right);
+		    });
+		    if (!entries.length) return;
+
+		    const mkAction = (label, onClick) => {
+		      const badge = document.createElement("span");
+		      badge.className = "badge bg-secondary-lt text-secondary";
+		      badge.style.cursor = "pointer";
+		      badge.textContent = label;
+		      badge.addEventListener("click", onClick);
+		      return badge;
+		    };
+
+		    wanTargetIspFilterEl.appendChild(
+		      mkAction("All", () => {
+		        wanTargetIspTouched = true;
+		        wanTargetIspEnabled.clear();
+		        for (const [wanId] of entries) wanTargetIspEnabled.add(wanId);
+		        renderWanTargetIspFilter();
+		        for (const targetId of wanTargetMiniData.keys()) updateWanTargetMini(targetId);
+		      })
+		    );
+		    wanTargetIspFilterEl.appendChild(
+		      mkAction("None", () => {
+		        wanTargetIspTouched = true;
+		        wanTargetIspEnabled.clear();
+		        renderWanTargetIspFilter();
+		        for (const targetId of wanTargetMiniData.keys()) updateWanTargetMini(targetId);
+		      })
+		    );
+
+			    for (const [wanId, meta] of entries) {
+			      const name = String(meta?.name || wanId || "").trim() || wanId;
+			      const color = String(meta?.color || "").trim() || "#adb5bd";
+			      const enabled = wanTargetIspEnabled.has(wanId);
+			      const nextMs = wanTargetIspNextMs.get(wanId);
+			      const hasNext = Number.isFinite(nextMs);
+			      const badge = document.createElement("span");
+			      badge.className = enabled
+			        ? "badge bg-secondary-lt text-secondary d-inline-flex align-items-center gap-1"
+			        : "badge bg-light text-muted d-inline-flex align-items-center gap-1";
+			      badge.style.cursor = "pointer";
+			      if (!enabled) badge.style.opacity = "0.65";
+			      const nextAt = hasNext
+			        ? formatTsPH(nextMs, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true })
+			        : "n/a";
+				      badge.title = `${enabled ? "Click to hide" : "Click to show"} · Next poll: ${nextAt}`;
+
+		      const dot = document.createElement("span");
+		      dot.style.cssText = `width:8px;height:8px;border-radius:999px;display:inline-block;background:${color || "#adb5bd"};`;
+
+		      const label = document.createElement("span");
+		      label.className = "text-truncate";
+		      label.style.maxWidth = "220px";
+		      label.textContent = name;
+
+				      badge.appendChild(dot);
+				      badge.appendChild(label);
+				      const cdEl = document.createElement("span");
+				      cdEl.className = "ms-1 text-muted wan-target-isp-next";
+				      if (hasNext) {
+				        cdEl.dataset.nextMs = String(nextMs);
+				        cdEl.textContent = `(${fmtCountdown(nextMs - Date.now())})`;
+				      } else {
+				        cdEl.textContent = "(n/a)";
+				      }
+			      badge.appendChild(cdEl);
+			      badge.addEventListener("click", () => {
+			        wanTargetIspTouched = true;
+			        if (wanTargetIspEnabled.has(wanId)) wanTargetIspEnabled.delete(wanId);
+			        else wanTargetIspEnabled.add(wanId);
+		        renderWanTargetIspFilter();
+		        for (const targetId of wanTargetMiniData.keys()) updateWanTargetMini(targetId);
+		      });
+		      wanTargetIspFilterEl.appendChild(badge);
+		    }
+		  };
+
+		  const updateWanTargetMini = (targetId) => {
+		    const entry = wanTargetMiniData.get(targetId);
+		    if (!entry || !entry.el || !window.ApexCharts) return;
+
+		    const el = entry.el;
+		    const kpiEl = entry.kpiEl || null;
+		    const hours = entry.hours || 24;
+		    const windowStartMs = entry.windowStartMs;
+		    const windowEndMs = entry.windowEndMs;
+		    const existing = wanTargetMiniCharts.get(targetId) || null;
+
+		    const selected = entry.fullSeries.filter((s) => wanTargetIspEnabled.has(String(s.id || "")));
+		    if (!selected.length) {
+		      if (existing) {
+		        try { existing.destroy(); } catch (e) {}
+		        wanTargetMiniCharts.delete(targetId);
+		      }
+		      el.innerHTML = "<div class='text-muted small'>Select an ISP above.</div>";
+		      if (kpiEl) kpiEl.textContent = "n/a";
+		      return;
+		    }
+
+		    const apexSeries = selected.map((s) => ({
+		      name: s.name,
+		      data: (Array.isArray(s.data) ? s.data : []).filter((point) => isFiniteRttPoint(point?.y)),
+		    }));
+		    const apexColors = selected.map((s) => s.color || "#adb5bd");
+			    const discreteMarkers = [];
+			    apexSeries.forEach((s, seriesIndex) => {
+			      const finiteIdx = [];
+			      for (let i = 0; i < (s.data || []).length; i += 1) {
+			        const p = s.data[i];
+			        if (p && isFiniteRttPoint(p.y)) finiteIdx.push(i);
+			      }
+			      // If a series only has 1–2 real points in the window, the line can be invisible.
+			      // Add discrete markers so the operator can still see that data exists.
+			      if (finiteIdx.length > 0 && finiteIdx.length <= 2) {
+			        for (const idx of finiteIdx) {
+			          discreteMarkers.push({
+			            seriesIndex,
+			            dataPointIndex: idx,
+			            fillColor: apexColors[seriesIndex] || undefined,
+			            strokeColor: "#ffffff",
+			            size: 4,
+			          });
+			        }
+			      }
+			    });
+			    const markers = { size: 0, discrete: discreteMarkers };
+
+			    const hasAnyPoints = apexSeries.some((s) => Array.isArray(s.data) && s.data.length);
+			    const hasAnyRtt = apexSeries.some(
+			      (s) => Array.isArray(s.data) && s.data.some((p) => p && isFiniteRttPoint(p.y))
+			    );
+			    let totalSamples = 0;
+			    let okSamples = 0;
+			    for (const s of selected) {
+			      totalSamples += Number(s?.pollTotal) || 0;
+			      okSamples += Number(s?.pollOk) || 0;
+			    }
+			    const timeoutSamples = Math.max(0, totalSamples - okSamples);
+
+			    if (!hasAnyPoints) {
+			      if (existing) {
+			        try { existing.destroy(); } catch (e) {}
+			        wanTargetMiniCharts.delete(targetId);
+			      }
+			      el.innerHTML = "<div class='text-muted small'>No data yet.</div>";
+			      if (kpiEl) kpiEl.textContent = "n/a";
+			      return;
+			    }
+			    if (!hasAnyRtt) {
+			      if (existing) {
+			        try { existing.destroy(); } catch (e) {}
+			        wanTargetMiniCharts.delete(targetId);
+			      }
+			      const suffix = timeoutSamples ? `: ${timeoutSamples}` : "";
+			      el.innerHTML = `<div class='text-muted small'>No replies yet (timeouts${suffix}).</div>`;
+			      if (kpiEl) kpiEl.textContent = timeoutSamples ? `Timeouts: ${timeoutSamples}` : "n/a";
+			      return;
+			    }
+
+		    let worstWindow = null;
+		    let worstName = "";
+		    for (const s of selected) {
+		      const v = Number(s?.worstRtt);
+		      if (!Number.isFinite(v)) continue;
+		      if (worstWindow === null || v > worstWindow) {
+		        worstWindow = v;
+		        worstName = String(s?.name || "").trim();
+		      }
+		    }
+		    if (kpiEl) {
+		      kpiEl.textContent = worstWindow === null ? "n/a" : `Worst: ${fmtMs(worstWindow)}${worstName ? ` · ${worstName}` : ""}`;
+		    }
+
+		    const tickAmount = xTickAmountForHours(hours);
+		    const xaxis = {
+		      type: "datetime",
+		      tickAmount,
+		      labels: {
+		        show: true,
+		        hideOverlappingLabels: Number(hours) === 24 ? false : true,
+		        style: { fontSize: "10px" },
+		        formatter: (value, timestamp) => {
+		          const ts = Number.isFinite(Number(timestamp)) ? Number(timestamp) : Number(value);
+		          if (!Number.isFinite(ts)) return "";
+		          return xLabelForHours(ts, hours);
+		        },
+		      },
+		      axisBorder: { show: false },
+		      axisTicks: { show: false },
+		    };
+		    if (Number.isFinite(windowStartMs)) xaxis.min = windowStartMs;
+		    if (Number.isFinite(windowEndMs)) xaxis.max = windowEndMs;
+
+			    if (existing) {
+			      existing.updateOptions({ colors: apexColors, xaxis, markers }, false, false);
+			      existing.updateSeries(apexSeries, true);
+			      return;
+			    }
+
+		    el.innerHTML = "";
+		    const chart = new window.ApexCharts(el, {
+		      chart: {
+		        type: "line",
+		        height: 160,
+		        toolbar: { show: false },
+		        zoom: { enabled: false },
+		        animations: { enabled: false },
+		      },
+		      series: apexSeries,
+		      colors: apexColors,
+			      stroke: { width: 1, curve: "straight" },
+			      markers,
+			      legend: { show: false },
+			      xaxis,
+		      yaxis: {
+		        labels: { show: false },
+		        axisBorder: { show: false },
+		        axisTicks: { show: false },
+		      },
+		      grid: { strokeDashArray: 4, padding: { left: 0, right: 0, top: 0 } },
+			      tooltip: {
+			        shared: true,
+			        intersect: false,
+			        followCursor: true,
+			        hideEmptySeries: false,
+			        custom: ({ seriesIndex, dataPointIndex, w }) => {
+			          const idx = Number(dataPointIndex);
+			          if (!Number.isFinite(idx) || idx < 0) return "";
+			          const cfgSeries = Array.isArray(w?.config?.series) ? w.config.series : [];
+			          if (!cfgSeries.length) return "";
+			          let xValue = null;
+			          if (Number.isFinite(Number(seriesIndex)) && Number(seriesIndex) >= 0) {
+			            const point = cfgSeries[Number(seriesIndex)]?.data?.[idx];
+			            if (point && Number.isFinite(Number(point.x))) xValue = Number(point.x);
+			          }
+			          if (!Number.isFinite(xValue)) {
+			            for (const item of cfgSeries) {
+			              const point = item?.data?.[idx];
+			              if (point && Number.isFinite(Number(point.x))) {
+			                xValue = Number(point.x);
+			                break;
+			              }
+			            }
+			          }
+			          const timeLabel = Number.isFinite(xValue)
+			            ? formatTsPH(xValue, {
+			                month: "short",
+			                day: "2-digit",
+			                hour: "2-digit",
+			                minute: "2-digit",
+			                hour12: true,
+			              })
+			            : "n/a";
+			          const colors = Array.isArray(w?.config?.colors) ? w.config.colors : [];
+			          const rows = cfgSeries.map((item, idxSeries) => {
+			            const points = Array.isArray(item?.data) ? item.data : [];
+			            const point = Number.isFinite(xValue)
+			              ? points.find((p) => Number(p?.x) === xValue)
+			              : points[idx];
+			            const y = point?.y;
+			            const state = String(point?.state || "");
+			            let valueLabel = "n/a";
+			            if (typeof y === "number" && Number.isFinite(y)) {
+			              valueLabel = fmtMs(y);
+			            } else if (state === "timeout") {
+			              valueLabel = "Timeout";
+			            }
+			            const color = String(colors[idxSeries] || "#adb5bd");
+			            const name = escapeHtml(item?.name || `ISP ${idxSeries + 1}`);
+			            return `<div class=\"d-flex justify-content-between align-items-center\" style=\"gap:12px;\">
+			              <div class=\"d-inline-flex align-items-center\" style=\"gap:6px;\"><span style=\"width:8px;height:8px;border-radius:999px;display:inline-block;background:${color};\"></span><span>${name}</span></div>
+			              <span class=\"fw-semibold\">${escapeHtml(valueLabel)}</span>
+			            </div>`;
+			          }).join("");
+			          return `<div class=\"p-2\" style=\"min-width:240px;\">
+			            <div class=\"text-muted small mb-1\">${escapeHtml(timeLabel)}</div>
+			            ${rows}
+			          </div>`;
+			        },
+			      },
+			    });
+		    chart.render();
+		    wanTargetMiniCharts.set(targetId, chart);
+		  };
+
+			  const renderWanTargetMini = (el, payload, hours) => {
+			    if (!el || !window.ApexCharts) return;
+			    const targetId = String(el.dataset.targetId || "").trim();
+			    if (!targetId) return;
+			    const kpiId = String(el.dataset.kpiId || "").trim();
+			    const kpiEl = kpiId ? document.getElementById(kpiId) : null;
+
+		    const payloadBucketSeconds = Number(payload?.window?.bucket_seconds || 0);
+		    const bucketMs = Number.isFinite(payloadBucketSeconds) && payloadBucketSeconds > 0
+		      ? payloadBucketSeconds * 1000
+		      : bucketMsForHours(hours);
+		    const windowStartMs = Date.parse(String(payload?.window?.start || ""));
+		    const windowEndMs = Date.parse(String(payload?.window?.end || ""));
+		    const multi = buildMultiSeries(payload, bucketMs, windowStartMs);
+
+	    for (const s of multi) {
+	      if (!s?.name) continue;
+	      const name = String(s.name).trim();
+	      const color = String(s.color || "").trim() || "#adb5bd";
+	      const wanId = String(s.id || "").trim();
+	      if (wanId) {
+	        wanTargetWanMeta.set(wanId, { name, color });
+	        wanTargetIspMeta.set(wanId, { name, color });
+	        if (!wanTargetIspTouched) wanTargetIspEnabled.add(wanId);
+	      }
+	    }
+
+			    wanTargetMiniData.set(targetId, {
+			      el,
+			      kpiEl,
+			      hours,
+			      windowStartMs: Number.isFinite(windowStartMs) ? windowStartMs : NaN,
+			      windowEndMs: Number.isFinite(windowEndMs) ? windowEndMs : NaN,
+			      fullSeries: multi,
+			    });
+			    renderWanTargetIspFilter();
+			    updateWanTargetMini(targetId);
+			  };
+
+				  const renderWanTargetPolling = (payload) => {
+				    if (!payload || (!wanTargetPollingTableEl && !wanTargetPollingMetaEl)) return;
+				    const rows = Array.isArray(payload?.rows) ? payload.rows : [];
+				    const intervalSeconds = Math.max(Number(wanTargetRefreshSeconds || 30), 1);
+				    const intervalMs = intervalSeconds * 1000;
+				    const nowMs = Date.now();
+				    wanTargetIspNextMs.clear();
+
+	    const items = [];
+	    for (const row of rows) {
+	      const wanId = String(row?.id || "").trim();
+	      if (!wanId) continue;
+	      const meta = wanTargetWanMeta.get(wanId) || {};
+	      const name = String(meta?.name || row?.label || wanId).trim() || wanId;
+	      const color = String(meta?.color || "").trim() || "#adb5bd";
+	      wanTargetIspMeta.set(wanId, { name, color });
+	      const coreId = String(row?.core_id || "").trim();
+		      const coreLabel = String(row?.core_label || "").trim();
+			      const mode = String(row?.mode || "").trim().toLowerCase();
+			      const pppoeRouterId = String(row?.pppoe_router_id || "").trim();
+			      const pppoeRouterName = String(row?.pppoe_router_name || "").trim();
+			      const localIp = String(row?.local_ip || "").trim();
+			      const targetSrcAddress = String(row?.target_src_address || "").trim();
+			      const lastMs = row?.last_target_check
+			        ? Date.parse(String(row.last_target_check))
+			        : row?.last_check
+			          ? Date.parse(String(row.last_check))
+			          : NaN;
+			      items.push({ wanId, name, color, lastMs, nextMs: NaN, coreId, coreLabel, mode, pppoeRouterId, pppoeRouterName, localIp, targetSrcAddress });
+			    }
+			    items.sort((a, b) => a.name.localeCompare(b.name));
+
+			    for (const item of items) {
+			      if (Number.isFinite(item.lastMs)) {
+			        let nextMs = item.lastMs + intervalMs;
+			        while (Number.isFinite(nextMs) && nextMs < nowMs - 2000) {
+			          nextMs += intervalMs;
+			        }
+			        item.nextMs = nextMs;
+			      }
+			    }
+		    for (const item of items) {
+		      const wanId = String(item?.wanId || "").trim();
+		      if (!wanId) continue;
+		      if (Number.isFinite(item.nextMs)) wanTargetIspNextMs.set(wanId, item.nextMs);
+		    }
+			    renderWanTargetIspFilter();
+
+		    if (wanTargetPollingMetaEl) {
+		      const targetCount = wanTargetMiniEls.length;
+		      const pollsPerCycle = wanTargetTargetsPerPoll > 0
+		        ? Math.max(1, Math.ceil(Math.max(1, targetCount) / Math.max(1, Math.min(targetCount, wanTargetTargetsPerPoll))))
+		        : null;
+			      const perTargetSeconds = pollsPerCycle ? pollsPerCycle * intervalSeconds : null;
+			      const perTargetLabel = perTargetSeconds === null
+			        ? "n/a"
+			        : perTargetSeconds >= 3600
+			        ? `${(perTargetSeconds / 3600).toFixed(1)}h`
+			        : perTargetSeconds >= 60
+			          ? `${Math.round(perTargetSeconds / 60)}m`
+			          : `${perTargetSeconds}s`;
+		      const staleThresholdMs = intervalMs * 3;
+		      const delayedCount = items.filter((item) => Number.isFinite(item.lastMs) && (nowMs - item.lastMs) > staleThresholdMs).length;
+		      const delayedNote = delayedCount > 0 ? ` · Delayed ISPs: ${delayedCount}` : "";
+		      const workersLabel = wanTargetParallelWorkers <= 0 ? "auto/all" : String(wanTargetParallelWorkers);
+		      const rotateNote = wanTargetTargetsPerPoll <= 0
+		        ? "Target Latency sampling is disabled (Targets per ISP per poll = 0)"
+		        : targetCount
+		          ? (wanTargetRotationEnabled
+		            ? `Rotation: ON · Targets enabled: ${targetCount} · Targets/poll: ${Math.min(wanTargetTargetsPerPoll, targetCount)} · Workers: ${workersLabel} · Est. per-target: ~${perTargetLabel}`
+		            : `Rotation: OFF · Targets enabled: ${targetCount} · Targets/poll: ${targetCount} (all targets each poll) · Workers: ${workersLabel}`)
+		          : "No targets enabled";
+		      wanTargetPollingMetaEl.textContent = `Interval: ${intervalSeconds}s per ISP · ${rotateNote}${delayedNote}`;
+		    }
+
+		    if (wanTargetPollingTableEl) {
+		      if (!items.length) {
+		        wanTargetPollingTableEl.innerHTML = "<tr><td colspan='4' class='text-muted'>No ISPs configured.</td></tr>";
+		      } else {
+		        wanTargetPollingTableEl.innerHTML = "";
+		        for (const item of items) {
+		          const tr = document.createElement("tr");
+		          const tdIsp = document.createElement("td");
+		          const tdCmd = document.createElement("td");
+		          const tdLast = document.createElement("td");
+		          const tdNext = document.createElement("td");
+
+		          const wrap = document.createElement("div");
+		          wrap.className = "d-inline-flex align-items-center gap-2";
+		          const dot = document.createElement("span");
+		          dot.style.cssText = `width:10px;height:10px;border-radius:999px;display:inline-block;background:${item.color};`;
+		          const label = document.createElement("span");
+		          label.className = "text-truncate";
+		          label.style.maxWidth = "420px";
+		          label.textContent = item.name;
+		          wrap.appendChild(dot);
+		          wrap.appendChild(label);
+		          tdIsp.appendChild(wrap);
+
+		          const host = String(wanTargetCommandHost || "").trim() || "<target>";
+		          const extra = wanTargetCommandExtraTargets > 0 ? `(+ ${wanTargetCommandExtraTargets} targets)` : "";
+		          const routerLabel = item.mode === "bridged"
+		            ? (item.pppoeRouterName || item.pppoeRouterId)
+		            : (item.coreLabel || item.coreId);
+			          const srcValue = String(item.targetSrcAddress || item.localIp || "").trim();
+			          const srcPart = srcValue ? ` src-address=${srcValue}` : "";
+			          const routerPart = routerLabel ? ` at router=${routerLabel}` : "";
+			          const cmd = `ping ${host}${extra}${srcPart}${routerPart}`;
+		          tdCmd.className = "text-muted";
+		          tdCmd.style.maxWidth = "520px";
+		          const cmdCode = document.createElement("code");
+		          cmdCode.className = "small";
+		          cmdCode.style.whiteSpace = "normal";
+		          cmdCode.textContent = cmd;
+		          tdCmd.appendChild(cmdCode);
+
+		          tdLast.className = "text-muted";
+		          tdNext.className = "text-muted";
+		          tdLast.textContent = Number.isFinite(item.lastMs)
+		            ? formatTsPH(item.lastMs, { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true })
+		            : "n/a";
+		          if (Number.isFinite(item.nextMs)) {
+		            const nextLabel = formatTsPH(item.nextMs, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true });
+		            const nextTime = document.createElement("span");
+		            nextTime.textContent = nextLabel;
+		            const countdownEl = document.createElement("span");
+		            countdownEl.className = "text-muted wan-target-countdown";
+		            countdownEl.dataset.nextMs = String(item.nextMs);
+		            tdNext.appendChild(nextTime);
+		            tdNext.appendChild(countdownEl);
+		          } else {
+		            tdNext.textContent = "n/a";
+		          }
+
+		          tr.appendChild(tdIsp);
+		          tr.appendChild(tdCmd);
+		          tr.appendChild(tdLast);
+		          tr.appendChild(tdNext);
+		          wanTargetPollingTableEl.appendChild(tr);
+		        }
+		      }
+		    }
+		  };
+
+		  let wanTargetCountdownTimer = null;
+		  const updateWanTargetCountdowns = () => {
+		    const nowMs = Date.now();
+		    const els = Array.from(document.querySelectorAll(".wan-target-countdown[data-next-ms], .wan-target-isp-next[data-next-ms]"));
+		    for (const el of els) {
+		      const nextMs = Number(el.dataset.nextMs);
+		      if (!Number.isFinite(nextMs)) {
+		        el.textContent = "";
+		        continue;
+		      }
+		      const cd = fmtCountdown(nextMs - nowMs);
+		      if (el.classList.contains("wan-target-countdown")) {
+		        el.textContent = cd ? ` (in ${cd})` : " (now)";
+		      } else {
+		        el.textContent = cd ? `(${cd})` : "(now)";
+		      }
+		    }
+		  };
+
+		  const fetchWanTargetPolling = async () => {
+		    if (!wanTargetPollingTableEl && !wanTargetPollingMetaEl) return;
+		    try {
+		      const res = await fetch("/wan/status", { headers: { "Accept": "application/json" }, cache: "no-store" });
+		      if (!res.ok) throw new Error("Failed to load WAN status");
+		      const data = await res.json().catch(() => null);
+		      renderWanTargetPolling(data);
+		      updateWanTargetCountdowns();
+		      if (!wanTargetCountdownTimer) {
+		        wanTargetCountdownTimer = setInterval(updateWanTargetCountdowns, 1000);
+		      }
+		    } catch (err) {
+		      if (wanTargetPollingTableEl) {
+		        wanTargetPollingTableEl.innerHTML = "<tr><td colspan='4' class='text-muted'>Unable to load polling status.</td></tr>";
+		      }
+		    }
+		  };
+
+		  const fetchWanTargetMini = async (el, hours) => {
+		    const targetId = String(el?.dataset?.targetId || "").trim();
+		    if (!targetId) return;
+	    const hasExistingChart = wanTargetMiniCharts.has(targetId);
+	    if (!hasExistingChart) {
+	      el.innerHTML = `
+	        <div class="h-100 d-flex align-items-center justify-content-center">
+	          <div class="text-center text-muted small">
+	            <div class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></div>
+	            Loading target latency…
+	          </div>
+	        </div>
+	      `;
+	    }
+	    const params = new URLSearchParams({ target_id: targetId, hours: String(hours || 24) });
+	    const res = await fetch(`/wan/targets/series?${params.toString()}`, {
+	      headers: { "Accept": "application/json" },
+	      cache: "no-store",
+	    });
+	    if (!res.ok) {
+	      throw new Error("Failed to load target latency");
+	    }
+	    const payload = await res.json().catch(() => null);
+	    renderWanTargetMini(el, payload, hours);
+	  };
+
+			  const fetchAllWanTargetMinis = async () => {
+			    if (!wanTargetMiniEls.length || !wanTargetWindowEl) return;
+			    const hours = String(wanTargetWindowEl.value || "24").trim();
+			    const hoursNum = Number(hours) || 24;
+			    const windowLabel = (wanTargetWindowEl.selectedOptions?.[0]?.textContent || "").trim();
+			    if (wanTargetMetaEl) {
+			      const metaLabel = windowLabel ? `Window: ${windowLabel}` : `Window: ${hoursNum}h`;
+			      wanTargetMetaEl.textContent = `${metaLabel} · Click ISP badges to filter charts`;
+			    }
+
+			    fetchWanTargetPolling();
+
+		    const queue = wanTargetMiniEls.slice();
+		    const concurrency = Math.min(wanTargetMiniFirstLoadDone ? 4 : 6, queue.length);
+		    const workers = Array.from({ length: concurrency }, async () => {
+		      while (queue.length) {
+	        const el = queue.shift();
+	        if (!el) break;
+	        try {
+	          await fetchWanTargetMini(el, hoursNum);
+		        } catch (err) {
+		          const targetId = String(el.dataset.targetId || "").trim();
+		          const existing = targetId ? wanTargetMiniCharts.get(targetId) : null;
+		          if (existing) {
+		            try { existing.destroy(); } catch (e) {}
+		            wanTargetMiniCharts.delete(targetId);
+		          }
+		          if (targetId) {
+		            wanTargetMiniData.delete(targetId);
+		          }
+		          el.innerHTML = "<div class='text-muted small'>Failed to load.</div>";
+		        }
+		      }
+		    });
+	    await Promise.all(workers);
+	    wanTargetMiniFirstLoadDone = true;
+	  };
+
+	  const wanTargetPingBtn = document.getElementById("wan-target-ping-all");
+	  const wanTargetPingModalEl = document.getElementById("wan-target-ping-modal");
+	  const wanTargetPingGridEl = document.getElementById("wan-target-ping-grid");
+	  const wanTargetPingStatusEl = document.getElementById("wan-target-ping-status");
+	  const wanTargetPingSubtitleEl = document.getElementById("wan-target-ping-subtitle");
+	  const wanTargetPingTargetFilterEl = document.getElementById("wan-target-ping-target-filter");
+	  const wanTargetPingSkippedEl = document.getElementById("wan-target-ping-skipped");
+	  const wanTargetPingFreezeAllEl = document.getElementById("wan-target-ping-freeze-all");
+
+	  let wanTargetPingModal = null;
+	  let wanTargetPingSource = null;
+	  let wanTargetPingReconnectTimer = null;
+	  let wanTargetPingUserStopped = false;
+	  let wanTargetPingFreezeAll = false;
+	  const wanTargetPingPanels = new Map(); // wan_id -> {headerRightEl, rows:Map}
+	  let wanTargetPingTargetFilterId = "all";
+	  let wanTargetPingTargets = [];
+	  const wanModalCtor = () => window.bootstrap?.Modal || window.tabler?.Modal || window.tabler?.bootstrap?.Modal || null;
+
+	  const setWanTargetPingFreezeAll = (frozen) => {
+	    wanTargetPingFreezeAll = Boolean(frozen);
+	    if (!wanTargetPingFreezeAllEl) return;
+	    wanTargetPingFreezeAllEl.dataset.frozen = wanTargetPingFreezeAll ? "1" : "0";
+	    wanTargetPingFreezeAllEl.textContent = wanTargetPingFreezeAll ? "Unfreeze All" : "Freeze All";
+	    wanTargetPingFreezeAllEl.classList.toggle("btn-outline-secondary", !wanTargetPingFreezeAll);
+	    wanTargetPingFreezeAllEl.classList.toggle("btn-warning", wanTargetPingFreezeAll);
+	  };
+
+	  const clearWanTargetPingReconnect = () => {
+	    if (!wanTargetPingReconnectTimer) return;
+	    try { clearTimeout(wanTargetPingReconnectTimer); } catch (e) {}
+	    wanTargetPingReconnectTimer = null;
+	  };
+
+	  const scheduleWanTargetPingReconnect = (delayMs = 1200) => {
+	    clearWanTargetPingReconnect();
+	    if (wanTargetPingUserStopped) return;
+	    if (!wanTargetPingModalEl || !wanTargetPingModalEl.classList.contains("show")) return;
+	    wanTargetPingReconnectTimer = setTimeout(() => {
+	      wanTargetPingReconnectTimer = null;
+	      if (wanTargetPingUserStopped) return;
+	      if (!wanTargetPingModalEl || !wanTargetPingModalEl.classList.contains("show")) return;
+	      setWanTargetPingStatus("Reconnecting live ping…");
+	      openWanTargetPingStream({ rebuild: false });
+	    }, Math.max(Number(delayMs) || 0, 300));
+	  };
+
+	  const closeWanTargetPingStream = () => {
+	    clearWanTargetPingReconnect();
+	    if (wanTargetPingSource) {
+	      try { wanTargetPingSource.close(); } catch (e) {}
+	    }
+	    wanTargetPingSource = null;
+	    if (wanTargetPingBtn) {
+	      wanTargetPingBtn.disabled = false;
+	    }
+	  };
+
+	  const setWanTargetPingStatus = (text) => {
+	    if (!wanTargetPingStatusEl) return;
+	    wanTargetPingStatusEl.textContent = text || "";
+	  };
+
+	  const resetWanTargetPingUI = () => {
+	    wanTargetPingPanels.clear();
+	    wanTargetPingUserStopped = false;
+	    wanTargetPingTargets = [];
+	    wanTargetPingTargetFilterId = "all";
+	    setWanTargetPingFreezeAll(false);
+	    if (wanTargetPingGridEl) wanTargetPingGridEl.innerHTML = "";
+	    if (wanTargetPingTargetFilterEl) wanTargetPingTargetFilterEl.innerHTML = "";
+	    if (wanTargetPingSkippedEl) {
+	      wanTargetPingSkippedEl.style.display = "none";
+	      wanTargetPingSkippedEl.textContent = "";
+	    }
+		    setWanTargetPingStatus("");
+		    if (wanTargetPingSubtitleEl) {
+		      wanTargetPingSubtitleEl.innerHTML = 'Live ping runs RouterOS <code>/tool/ping</code> inside each MikroTik at a <span class="fw-semibold">~1s interval</span> per ISP.';
+		    }
+		  };
+
+	  const computeFilteredWanIds = () => {
+	    if (!wanTargetWanMeta.size) return [];
+	    return Array.from(wanTargetWanMeta.keys()).filter(Boolean);
+	  };
+
+	  const setRowExpanded = (row, expanded) => {
+	    if (!row || !row.detailRow || !row.toggleIcon) return;
+	    row.detailRow.style.display = expanded ? "" : "none";
+	    row.toggleIcon.className = expanded ? "ti ti-chevron-down" : "ti ti-chevron-right";
+	    row.toggleBtn?.setAttribute("aria-expanded", expanded ? "true" : "false");
+	  };
+
+	  const setRowFrozen = (row, frozen) => {
+	    if (!row) return;
+	    row.frozen = Boolean(frozen);
+	    if (!row.freezeBtn) return;
+	    row.freezeBtn.dataset.frozen = row.frozen ? "1" : "0";
+	    row.freezeBtn.textContent = row.frozen ? "Unfreeze" : "Freeze";
+	    row.freezeBtn.classList.toggle("btn-outline-secondary", !row.frozen);
+	    row.freezeBtn.classList.toggle("btn-warning", row.frozen);
+	  };
+
+	  const resolveWanTargetFilterLabel = () => {
+	    if (wanTargetPingTargetFilterId === "all") return "All targets";
+	    const found = wanTargetPingTargets.find((item) => String(item?.id || "") === String(wanTargetPingTargetFilterId || ""));
+	    return (found?.label || found?.host || "Target").toString();
+	  };
+
+	  const updateWanTargetPanelHeaders = () => {
+	    const label = resolveWanTargetFilterLabel();
+	    for (const panel of wanTargetPingPanels.values()) {
+	      if (!panel?.headerRightEl) continue;
+	      panel.headerRightEl.textContent = `Live: ${label}`;
+	    }
+	  };
+
+	  const applyWanTargetFilterHighlight = () => {
+	    const current = String(wanTargetPingTargetFilterId || "all");
+	    for (const panel of wanTargetPingPanels.values()) {
+	      const rows = panel?.rows instanceof Map ? panel.rows : new Map();
+	      for (const [tid, row] of rows.entries()) {
+	        const rowId = String(tid || "");
+	        const isFiltered = current !== "all";
+	        const isActive = isFiltered && rowId === current;
+	        const visible = !isFiltered || isActive;
+	        if (row?.tr) {
+	          row.tr.classList.toggle("table-active", isActive);
+	          row.tr.style.display = visible ? "" : "none";
+	        }
+	        if (row?.detailRow) {
+	          if (!visible) {
+	            row.detailRow.style.display = "none";
+	          } else if (isActive) {
+	            setRowExpanded(row, true);
+	          }
+	        }
+	        if (row?.toggleBtn) {
+	          row.toggleBtn.style.display = visible ? "" : "none";
+	        }
+	      }
+	    }
+	  };
+
+	  const renderWanTargetPingTargetFilter = () => {
+	    if (!wanTargetPingTargetFilterEl) return;
+	    const targets = Array.isArray(wanTargetPingTargets) ? wanTargetPingTargets : [];
+	    const validIds = new Set(targets.map((item) => String(item?.id || "").trim()).filter(Boolean));
+	    if (wanTargetPingTargetFilterId !== "all" && !validIds.has(wanTargetPingTargetFilterId)) {
+	      wanTargetPingTargetFilterId = "all";
+	    }
+	    wanTargetPingTargetFilterEl.innerHTML = "";
+
+	    const addFilter = (id, label) => {
+	      const active = String(wanTargetPingTargetFilterId || "all") === String(id);
+	      const btn = document.createElement("button");
+	      btn.type = "button";
+	      btn.className = active ? "btn btn-sm btn-primary" : "btn btn-sm btn-outline-secondary";
+	      btn.textContent = label;
+	      btn.addEventListener("click", () => {
+	        const next = String(id || "all");
+	        if (wanTargetPingTargetFilterId === next) return;
+	        wanTargetPingTargetFilterId = next;
+	        renderWanTargetPingTargetFilter();
+	        updateWanTargetPanelHeaders();
+	        applyWanTargetFilterHighlight();
+	        if (wanTargetPingModalEl && wanTargetPingModalEl.classList.contains("show")) {
+	          wanTargetPingUserStopped = false;
+	          setWanTargetPingStatus("Applying target filter…");
+	          openWanTargetPingStream({ rebuild: false });
+	        }
+	      });
+	      wanTargetPingTargetFilterEl.appendChild(btn);
+	    };
+
+	    addFilter("all", "All Targets");
+	    targets.forEach((target) => {
+	      const id = String(target?.id || "").trim();
+	      if (!id) return;
+	      const label = (target?.label || target?.host || id).toString();
+	      addFilter(id, label);
+	    });
+	  };
+
+	  const buildWanTargetPingPanel = (wan, targets) => {
+	    if (!wanTargetPingGridEl) return;
+	    const wanId = String(wan?.id || "").trim();
+	    if (!wanId) return;
+	    const targetList = Array.isArray(targets) ? targets : [];
+
+	    const card = document.createElement("div");
+	    card.className = "card card-sm";
+
+	    const header = document.createElement("div");
+	    header.className = "card-header d-flex align-items-center";
+
+	    const headerLeft = document.createElement("div");
+	    headerLeft.className = "me-2";
+	    const title = document.createElement("div");
+	    title.className = "card-title mb-0";
+	    title.textContent = (wan.name || wan.id || "").toString();
+	    const sub = document.createElement("div");
+	    sub.className = "small text-muted";
+	    const routerName = (wan.router_name || "").toString().trim();
+	    const srcAddr = (wan.src_address || "").toString().trim();
+	    const metaParts = [];
+	    if (routerName) metaParts.push(`Router: ${routerName}`);
+	    if (srcAddr) metaParts.push(`src-address: ${srcAddr}`);
+	    sub.textContent = metaParts.join(" · ");
+	    headerLeft.appendChild(title);
+	    headerLeft.appendChild(sub);
+
+	    const headerRight = document.createElement("div");
+	    headerRight.className = "ms-auto small text-muted";
+	    headerRight.textContent = "Live: All targets";
+
+	    header.appendChild(headerLeft);
+	    header.appendChild(headerRight);
+	    card.appendChild(header);
+
+	    const body = document.createElement("div");
+	    body.className = "card-body p-0";
+	    const tableWrap = document.createElement("div");
+	    tableWrap.className = "w-100";
+	    tableWrap.style.overflowX = "hidden";
+	    const table = document.createElement("table");
+	    table.className = "table table-sm table-vcenter mb-0";
+	    table.style.tableLayout = "fixed";
+	    table.style.width = "100%";
+	    table.innerHTML = `
+	      <thead>
+	        <tr>
+	          <th style="width: 32px;"></th>
+	          <th>Target</th>
+	          <th style="width: 90px;">RTT</th>
+	          <th style="width: 110px;">Time</th>
+	        </tr>
+	      </thead>
+	    `;
+	    const tbody = document.createElement("tbody");
+	    const rows = new Map();
+	    targetList.forEach((t) => {
+	      const tid = String(t?.id || "").trim();
+	      if (!tid) return;
+	      const tr = document.createElement("tr");
+	      const trDetail = document.createElement("tr");
+	      trDetail.style.display = "none";
+
+	      const tdToggle = document.createElement("td");
+	      tdToggle.style.width = "32px";
+	      const toggleBtn = document.createElement("button");
+	      toggleBtn.type = "button";
+	      toggleBtn.className = "btn btn-sm btn-ghost-secondary btn-icon";
+	      toggleBtn.setAttribute("aria-label", "Toggle ping output");
+	      toggleBtn.setAttribute("aria-expanded", "false");
+	      const toggleIcon = document.createElement("i");
+	      toggleIcon.className = "ti ti-chevron-right";
+	      toggleBtn.appendChild(toggleIcon);
+	      tdToggle.appendChild(toggleBtn);
+
+	      const tdTarget = document.createElement("td");
+	      tdTarget.style.minWidth = "0";
+	      const lbl = document.createElement("div");
+	      lbl.className = "fw-semibold text-break";
+	      lbl.textContent = (t.label || t.host || tid || "").toString();
+	      const host = document.createElement("div");
+	      host.className = "small text-muted text-break";
+	      host.textContent = (t.host || "").toString();
+	      tdTarget.appendChild(lbl);
+	      tdTarget.appendChild(host);
+
+	      const tdRtt = document.createElement("td");
+	      tdRtt.className = "text-muted text-nowrap";
+	      tdRtt.textContent = "—";
+
+	      const tdTime = document.createElement("td");
+	      tdTime.className = "text-muted text-nowrap";
+	      tdTime.style.fontSize = "12px";
+	      tdTime.textContent = "—";
+
+	      tr.appendChild(tdToggle);
+	      tr.appendChild(tdTarget);
+	      tr.appendChild(tdRtt);
+	      tr.appendChild(tdTime);
+	      tbody.appendChild(tr);
+
+	      const tdDetail = document.createElement("td");
+	      tdDetail.colSpan = 4;
+	      const detailWrap = document.createElement("div");
+	      detailWrap.className = "p-2";
+	      const hintRow = document.createElement("div");
+	      hintRow.className = "d-flex flex-wrap align-items-center justify-content-between gap-2 mb-1";
+	      const hint = document.createElement("div");
+	      hint.className = "small text-muted";
+	      hint.textContent = "Latest ping results (newest at bottom)";
+	      const freezeBtn = document.createElement("button");
+	      freezeBtn.type = "button";
+	      freezeBtn.className = "btn btn-sm btn-outline-secondary";
+	      freezeBtn.dataset.frozen = "0";
+	      freezeBtn.textContent = "Freeze";
+	      const outputWrap = document.createElement("div");
+	      outputWrap.className = "border rounded bg-light";
+	      outputWrap.style.maxHeight = "120px";
+	      outputWrap.style.overflow = "auto";
+	      const pre = document.createElement("pre");
+	      pre.className = "m-0 p-2 small";
+	      pre.style.whiteSpace = "pre-wrap";
+	      pre.style.overflowWrap = "anywhere";
+	      pre.style.wordBreak = "break-word";
+	      pre.textContent = "";
+	      outputWrap.appendChild(pre);
+	      hintRow.appendChild(hint);
+	      hintRow.appendChild(freezeBtn);
+	      detailWrap.appendChild(hintRow);
+	      detailWrap.appendChild(outputWrap);
+	      tdDetail.appendChild(detailWrap);
+	      trDetail.appendChild(tdDetail);
+	      tbody.appendChild(trDetail);
+
+	      const rowObj = {
+	        tr,
+	        toggleBtn,
+	        toggleIcon,
+	        tdRtt,
+	        tdTime,
+	        detailRow: trDetail,
+	        outputWrap,
+	        preEl: pre,
+	        lines: [],
+	        freezeBtn,
+	        frozen: false,
+	        targetLabel: lbl.textContent || "",
+	      };
+	      setRowFrozen(rowObj, false);
+	      rows.set(tid, rowObj);
+	      toggleBtn.addEventListener("click", () => toggleWanTargetRow(wanId, tid));
+	      freezeBtn.addEventListener("click", () => setRowFrozen(rowObj, !rowObj.frozen));
+	    });
+	    table.appendChild(tbody);
+	    tableWrap.appendChild(table);
+	    body.appendChild(tableWrap);
+	    card.appendChild(body);
+	    wanTargetPingGridEl.appendChild(card);
+
+	    wanTargetPingPanels.set(wanId, { headerRightEl: headerRight, rows });
+	  };
+
+	  const toggleWanTargetRow = (wanId, targetId) => {
+	    const w = String(wanId || "").trim();
+	    const t = String(targetId || "").trim();
+	    const panel = wanTargetPingPanels.get(w);
+	    if (!panel) return;
+	    const row = panel.rows.get(t);
+	    if (!row) return;
+	    const expanded = row.detailRow && row.detailRow.style.display !== "none";
+	    setRowExpanded(row, !expanded);
+	  };
+
+	  const openWanTargetPingStream = ({ rebuild } = {}) => {
+	    wanTargetPingUserStopped = false;
+	    const params = new URLSearchParams();
+	    const filteredWanIds = computeFilteredWanIds();
+	    if (filteredWanIds.length) {
+	      params.set("wan_ids", filteredWanIds.join(","));
+	    }
+	    params.set("interval_s", "1");
+	    params.set("count", "1");
+	    if (wanTargetPingTargetFilterId && wanTargetPingTargetFilterId !== "all") {
+	      params.set("target_id", wanTargetPingTargetFilterId);
+	    }
+	    params.set("rid", String(Date.now()));
+	    const url = `/wan/targets/ping/stream?${params.toString()}`;
+
+	    closeWanTargetPingStream();
+	    const streamSource = new EventSource(url);
+	    wanTargetPingSource = streamSource;
+	    const isCurrentStream = () => wanTargetPingSource === streamSource;
+	    let gotInit = false;
+	    scheduleWanTargetPingReconnect(5000);
+
+	    streamSource.addEventListener("init", (event) => {
+	      if (!isCurrentStream()) return;
+	      gotInit = true;
+	      clearWanTargetPingReconnect();
+	      let payload = null;
+	      try { payload = JSON.parse(event.data || "{}"); } catch (e) { payload = null; }
+	      const wans = Array.isArray(payload?.wans) ? payload.wans : [];
+	      const targets = Array.isArray(payload?.targets) ? payload.targets : [];
+	      const skipped = Array.isArray(payload?.skipped) ? payload.skipped : [];
+	      const targetFilterId = String(payload?.target_filter_id || "").trim();
+	      const interval = Number(payload?.interval_s) || 1;
+	      wanTargetPingTargets = targets;
+	      if (targetFilterId) {
+	        wanTargetPingTargetFilterId = targetFilterId;
+	      } else if (!wanTargetPingTargetFilterId) {
+	        wanTargetPingTargetFilterId = "all";
+	      }
+	      renderWanTargetPingTargetFilter();
+
+	      if (wanTargetPingSubtitleEl) {
+	        const modeLabel = wanTargetPingTargetFilterId === "all"
+	          ? "all targets per ISP"
+	          : `target "${resolveWanTargetFilterLabel()}"`;
+	        wanTargetPingSubtitleEl.textContent = `Live ping: ${wans.length} ISP(s) · ${modeLabel} · ~${interval}s interval`;
+	      }
+
+	      if (wanTargetPingSkippedEl) {
+	        if (skipped.length) {
+	          const max = 6;
+	          const lines = skipped.slice(0, max).map((item) => `${item.wan_id || "wan"}: ${item.reason || "skipped"}`);
+	          const more = skipped.length > max ? ` …and ${skipped.length - max} more` : "";
+	          wanTargetPingSkippedEl.textContent = `Skipped: ${lines.join(" · ")}${more}`;
+	          wanTargetPingSkippedEl.style.display = "block";
+	        } else {
+	          wanTargetPingSkippedEl.style.display = "none";
+	          wanTargetPingSkippedEl.textContent = "";
+	        }
+	      }
+
+	      const incomingWanIds = new Set(wans.map((w) => String(w?.id || "").trim()).filter(Boolean));
+	      const existingWanIds = new Set(Array.from(wanTargetPingPanels.keys()));
+	      const sameWans = incomingWanIds.size === existingWanIds.size && Array.from(incomingWanIds).every((id) => existingWanIds.has(id));
+	      const shouldRebuild = Boolean(rebuild) || !sameWans || !wanTargetPingPanels.size;
+
+	      if (shouldRebuild) {
+	        wanTargetPingPanels.clear();
+	        if (wanTargetPingGridEl) wanTargetPingGridEl.innerHTML = "";
+	        wans.forEach((wan) => buildWanTargetPingPanel(wan, targets));
+	      }
+	      updateWanTargetPanelHeaders();
+	      applyWanTargetFilterHighlight();
+
+	      setWanTargetPingStatus(wans.length ? "Live ping running…" : "No eligible ISPs found.");
+	    });
+
+	    streamSource.addEventListener("result", (event) => {
+	      if (!isCurrentStream()) return;
+	      let payload = null;
+	      try { payload = JSON.parse(event.data || "{}"); } catch (e) { payload = null; }
+	      const wanId = String(payload?.wan_id || "").trim();
+	      const targetId = String(payload?.target_id || "").trim();
+	      if (!wanId || !targetId) return;
+	      const panel = wanTargetPingPanels.get(wanId);
+	      const row = panel?.rows?.get(targetId);
+	      if (!panel || !row) return;
+
+	      const ok = Number(payload?.ok) === 1;
+	      const rtt = payload?.rtt_ms;
+	      const note = String(payload?.note || "").trim();
+	      const when = String(payload?.timestamp || "").trim();
+	      const whenLabel = when ? formatTsPH(when, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true }) : "";
+	      const base = `${whenLabel || "—"} ${ok ? "Reply" : "Timeout"}`;
+	      const rttPart = ok && Number.isFinite(Number(rtt)) ? ` ${fmtMs(rtt)}` : "";
+	      const notePart = note ? ` · ${note}` : "";
+	      const line = `${base}${rttPart}${notePart}`.trim();
+
+	      row.tdRtt.textContent = ok && Number.isFinite(Number(rtt)) ? fmtMs(rtt) : "Timeout";
+	      row.tdRtt.className = ok ? "text-green" : "text-red";
+	      row.tdTime.textContent = whenLabel || "—";
+	      row.tdTime.className = "text-muted";
+
+	      row.lines.push(line);
+	      if (row.lines.length > 120) {
+	        row.lines.splice(0, row.lines.length - 120);
+	      }
+	      if (row.preEl) {
+	        const wrap = row.outputWrap;
+	        const keepFollowing = !(wanTargetPingFreezeAll || row.frozen);
+	        row.preEl.textContent = row.lines.join("\n");
+	        if (wrap && keepFollowing) {
+	          wrap.scrollTop = wrap.scrollHeight;
+	        }
+	      }
+	    });
+
+	    streamSource.addEventListener("error", (event) => {
+	      if (!isCurrentStream()) return;
+	      let message = "";
+	      const raw = (event && Object.prototype.hasOwnProperty.call(event, "data")) ? event.data : "";
+	      if (raw) {
+	        try {
+	          const parsed = JSON.parse(raw);
+	          message = String(parsed?.error || "").trim();
+	        } catch (e) {
+	          message = String(raw || "").trim();
+	        }
+	      }
+	      if (message) {
+	        setWanTargetPingStatus(message);
+	        scheduleWanTargetPingReconnect(1200);
+	        return;
+	      }
+	      if (!wanTargetPingStatusEl || !wanTargetPingSource) return;
+	      if (!wanTargetPingStatusEl.textContent) {
+	        wanTargetPingStatusEl.textContent = "Ping stream disconnected.";
+	      }
+	      scheduleWanTargetPingReconnect(1200);
+	    });
+
+	    streamSource.addEventListener("done", async () => {
+	      if (!isCurrentStream()) return;
+	      closeWanTargetPingStream();
+	      setWanTargetPingStatus("Ping stream stopped.");
+	      try { await fetchAllWanTargetMinis(); } catch (e) {}
+	      if (!wanTargetPingUserStopped && gotInit) {
+	        scheduleWanTargetPingReconnect(900);
+	      }
+	    });
+	  };
+
+	  const startWanTargetPingAll = () => {
+	    if (!wanTargetPingBtn || !wanTargetPingModalEl) return;
+	    const ModalCtor = wanModalCtor();
+	    if (!ModalCtor) return;
+	    resetWanTargetPingUI();
+
+	    wanTargetPingModal = wanTargetPingModal || new ModalCtor(wanTargetPingModalEl);
+	    wanTargetPingModal.show();
+	    setWanTargetPingStatus("Starting ping…");
+	    openWanTargetPingStream({ rebuild: true });
+	  };
+
+	  if (wanTargetPingBtn) {
+	    wanTargetPingBtn.addEventListener("click", startWanTargetPingAll);
+	  }
+	  if (wanTargetPingFreezeAllEl) {
+	    setWanTargetPingFreezeAll(false);
+	    wanTargetPingFreezeAllEl.addEventListener("click", () => {
+	      setWanTargetPingFreezeAll(!wanTargetPingFreezeAll);
+	    });
+	  }
+	  if (wanTargetPingModalEl) {
+	    wanTargetPingModalEl.addEventListener("hidden.bs.modal", () => {
+	      wanTargetPingUserStopped = true;
+	      closeWanTargetPingStream();
+	    });
+	  }
+
+		  if (wanTargetWindowEl) {
+		    wanTargetWindowEl.addEventListener("change", () => {
+		      wanTargetMiniCharts.forEach((chart) => {
+		        try { chart.destroy(); } catch (e) {}
+		      });
+				      wanTargetMiniCharts.clear();
+				      wanTargetMiniData.clear();
+				      wanTargetIspMeta.clear();
+				      wanTargetIspNextMs.clear();
+				      wanTargetWanMeta.clear();
+				      if (wanTargetIspFilterEl) wanTargetIspFilterEl.innerHTML = "";
+				      fetchAllWanTargetMinis();
+				    });
+				  }
+
+			  fetchAllWanTargetMinis();
+		  setInterval(fetchAllWanTargetMinis, wanTargetUiRefreshSeconds * 1000);
+		</script>
+		{% endblock %}
