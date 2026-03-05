@@ -2,7 +2,7 @@
 {% block title %}Accounts Ping{% endblock %}
 {% block header_title %}Accounts Ping{% endblock %}
 {% block header_badge %}
-  <span class="badge bg-indigo-lt text-indigo header-icon-badge"><i class="ti ti-wifi"></i></span>
+  <span class="badge bg-green-lt text-green header-icon-badge"><i class="ti ti-wifi"></i></span>
 {% endblock %}
 {% block content %}
 {% if message %}
@@ -376,6 +376,66 @@
                     <div class="col-md-4">
                       <label class="form-label">Ping Timeout (seconds) <span class="info" data-tip="Timeout per ICMP echo request in normal mode (seconds).">i</span></label>
                       <input class="form-control" type="number" name="ping_timeout_seconds" value="{{ settings.ping.timeout_seconds }}" min="1" />
+                    </div>
+                  </div>
+                  <div class="alert alert-warning mt-3 mb-0">
+                    <div class="d-flex align-items-start">
+                      <span class="me-2"><i class="ti ti-cpu"></i></span>
+                      <div class="w-100">
+                        <div class="fw-semibold">Hardware Sizing & Tuning Guide</div>
+                        <div class="small">
+                          Detected server: <strong>{{ accounts_ping_tuning.cpu_cores }}</strong> CPU cores · <strong>{{ accounts_ping_tuning.ram_gb }}</strong> GB RAM.
+                          Safety cap for this server: <strong>{{ accounts_ping_tuning.safe_parallel_cap }}</strong> Max Parallel.
+                        </div>
+                        {% if accounts_ping_tuning.was_clamped %}
+                          <div class="text-danger small mt-1">
+                            Saved value {{ accounts_ping_tuning.configured_parallel }} was above hardware-safe limit and is now capped to {{ accounts_ping_tuning.effective_parallel }}.
+                          </div>
+                        {% endif %}
+                        <div class="table-responsive mt-2">
+                          <table class="table table-sm table-vcenter mb-2">
+                            <thead>
+                              <tr>
+                                <th>Hardware Tier</th>
+                                <th>Max Parallel</th>
+                                <th>Base Interval</th>
+                                <th>Ping Count</th>
+                                <th>Timeout</th>
+                                <th>Source Refresh</th>
+                                <th>Raw Retention</th>
+                                <th>Rollup Bucket</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {% for tier in accounts_ping_tuning.tiers %}
+                                <tr>
+                                  <td>{{ tier.label }}</td>
+                                  <td>{{ tier.max_parallel }}</td>
+                                  <td>{{ tier.base_interval_seconds }}</td>
+                                  <td>{{ tier.ping_count }}</td>
+                                  <td>{{ tier.ping_timeout_seconds }}</td>
+                                  <td>{{ tier.source_refresh_minutes }}</td>
+                                  <td>{{ tier.raw_retention_days }}</td>
+                                  <td>{{ tier.bucket_seconds }}</td>
+                                </tr>
+                              {% endfor %}
+                            </tbody>
+                          </table>
+                        </div>
+                        <div class="small">
+                          <strong>Recommended for this server ({{ accounts_ping_tuning.recommendation.tier }}):</strong>
+                          Max Parallel <strong>{{ accounts_ping_tuning.recommendation.max_parallel }}</strong>,
+                          Base Interval <strong>{{ accounts_ping_tuning.recommendation.base_interval_seconds }}s</strong>,
+                          Ping Count <strong>{{ accounts_ping_tuning.recommendation.ping_count }}</strong>,
+                          Timeout <strong>{{ accounts_ping_tuning.recommendation.ping_timeout_seconds }}s</strong>,
+                          Source Refresh <strong>{{ accounts_ping_tuning.recommendation.source_refresh_minutes }}m</strong>,
+                          Raw Retention <strong>{{ accounts_ping_tuning.recommendation.raw_retention_days }}d</strong>,
+                          Bucket <strong>{{ accounts_ping_tuning.recommendation.bucket_seconds }}s</strong>.
+                        </div>
+                        <div class="small text-muted mt-1">
+                          Load formula guide: lower Base Interval, higher Max Parallel, higher Ping Count, and longer Timeout will all increase CPU/DB usage.
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>

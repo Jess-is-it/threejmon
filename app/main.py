@@ -28,6 +28,7 @@ from fastapi.templating import Jinja2Templates
 from .db import (
     clear_accounts_ping_data,
     clear_pppoe_usage_samples,
+    clear_surveillance_history,
     clear_wan_history,
     delete_wan_target_ping_results_for_targets,
     end_surveillance_session,
@@ -39,6 +40,7 @@ from .db import (
     get_accounts_ping_rollups_since,
     get_accounts_ping_series,
     get_accounts_ping_series_range,
+    get_accounts_ping_checker_stats_map,
     get_accounts_ping_window_stats,
     get_accounts_ping_window_stats_by_ip,
     get_job_status,
@@ -46,12 +48,15 @@ from .db import (
     get_latest_optical_by_pppoe,
     get_latest_optical_device_for_ip,
     get_latest_optical_identity,
+    get_surveillance_fixed_cycles_map,
+    get_surveillance_session_by_id,
     get_optical_latest_results_since,
     get_optical_results_for_device_since,
     get_optical_rx_series_for_devices_since,
     get_optical_samples_for_devices_since,
     get_optical_worst_candidates,
     get_wan_status_counts,
+    increment_surveillance_observed,
     get_offline_history_since,
     get_pppoe_usage_series_since,
     get_recent_optical_readings,
@@ -65,6 +70,8 @@ from .db import (
 from .forms import parse_bool, parse_float, parse_int, parse_int_list, parse_lines
 from .jobs import JobsManager
 from .mikrotik import RouterOSClient
+from .feature_usage import add_feature_cpu, sample_feature_cpu_percent, register_feature
+from .ai_investigator import AIInvestigatorError, generate_investigation_report
 from .notifiers import optical as optical_notifier
 from .notifiers import rto as rto_notifier
 from .notifiers import wan_ping as wan_ping_notifier
@@ -98,7 +105,27 @@ SYSTEM_DEFAULTS = {
             "content_type": "",
             "updated_at": "",
         },
-    }
+    },
+    "ai": {
+        "enabled": False,
+        "provider": "chatgpt",
+        "chatgpt": {
+            "api_key": "",
+            "model": "gpt-4o-mini",
+            "timeout_seconds": 30,
+            "max_tokens": 900,
+        },
+        "gemini": {
+            "api_key": "",
+            "model": "gemini-2.5-flash-preview-09-2025",
+            "timeout_seconds": 30,
+            "max_tokens": 900,
+        },
+        "report": {
+            "lookback_hours": 24,
+            "max_samples": 60,
+        },
+    },
 }
 
 app = FastAPI()
@@ -106,7 +133,183 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="stat
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 jobs_manager = JobsManager()
-_cpu_sample = {"total": None, "idle": None}
+_cpu_sample = {"total": None, "idle": None, "at": 0.0, "pct": 0.0}
+_surv_ai_lock = threading.Lock()
+_surv_ai_running = set()
+_SURV_AI_MAX_PARALLEL = 1
+_SURV_AI_STAGES = ("under", "level2", "observe")
+_SURV_AI_STAGE_LABELS = {
+    "under": "Active Monitoring",
+    "level2": "Needs Manual Fix",
+    "observe": "Post-Fix Observation",
+}
+for _feature_name in (
+    "WAN Ping",
+    "Accounts Ping",
+    "Under Surveillance",
+    "Usage",
+    "Offline",
+    "Optical Monitoring",
+    "Telegram",
+    "Dashboard/API",
+):
+    register_feature(_feature_name)
+
+AI_MODEL_PRICING = {
+    "chatgpt": [
+        {
+            "id": "gpt-4o-mini",
+            "label": "gpt-4o-mini",
+            "input_per_1m": 0.15,
+            "output_per_1m": 0.60,
+            "free_tier": False,
+            "recommended_max_tokens": 900,
+            "max_tokens_hint": "Balanced cost for frequent investigations.",
+        },
+        {
+            "id": "gpt-4o",
+            "label": "gpt-4o",
+            "input_per_1m": 2.50,
+            "output_per_1m": 10.00,
+            "free_tier": False,
+            "recommended_max_tokens": 1200,
+            "max_tokens_hint": "Higher quality, higher cost.",
+        },
+        {
+            "id": "gpt-4.1",
+            "label": "gpt-4.1",
+            "input_per_1m": 2.00,
+            "output_per_1m": 8.00,
+            "free_tier": False,
+            "recommended_max_tokens": 1200,
+            "max_tokens_hint": "Strong reasoning for complex diagnostics.",
+        },
+        {
+            "id": "gpt-4.1-mini",
+            "label": "gpt-4.1-mini",
+            "input_per_1m": 0.40,
+            "output_per_1m": 1.60,
+            "free_tier": False,
+            "recommended_max_tokens": 900,
+            "max_tokens_hint": "Good quality with lower spend.",
+        },
+        {
+            "id": "gpt-4.1-nano",
+            "label": "gpt-4.1-nano",
+            "input_per_1m": 0.10,
+            "output_per_1m": 0.40,
+            "free_tier": False,
+            "recommended_max_tokens": 700,
+            "max_tokens_hint": "Lowest cost, concise outputs.",
+        },
+        {
+            "id": "o3",
+            "label": "o3",
+            "input_per_1m": 2.00,
+            "output_per_1m": 8.00,
+            "free_tier": False,
+            "recommended_max_tokens": 1000,
+            "max_tokens_hint": "Reasoning model; cost can rise with deeper analysis.",
+        },
+        {
+            "id": "o4-mini",
+            "label": "o4-mini",
+            "input_per_1m": 1.10,
+            "output_per_1m": 4.40,
+            "free_tier": False,
+            "recommended_max_tokens": 900,
+            "max_tokens_hint": "Reasoning-focused and mid-cost.",
+        },
+    ],
+    "gemini": [
+        {
+            "id": "gemini-2.5-flash-preview-09-2025",
+            "label": "gemini-2.5-flash-preview-09-2025",
+            "input_per_1m": 0.30,
+            "output_per_1m": 2.50,
+            "free_tier": True,
+            "recommended_max_tokens": 900,
+            "max_tokens_hint": "Fast and cost-effective for high-volume reports.",
+        },
+        {
+            "id": "gemini-2.5-flash-lite-preview-09-2025",
+            "label": "gemini-2.5-flash-lite-preview-09-2025",
+            "input_per_1m": 0.10,
+            "output_per_1m": 0.40,
+            "free_tier": True,
+            "recommended_max_tokens": 700,
+            "max_tokens_hint": "Lowest-cost Gemini option.",
+        },
+        {
+            "id": "gemini-2.5-pro",
+            "label": "gemini-2.5-pro",
+            "input_per_1m": 1.25,
+            "output_per_1m": 10.00,
+            "free_tier": True,
+            "recommended_max_tokens": 1200,
+            "max_tokens_hint": "Best for deeper technical analysis.",
+        },
+        {
+            "id": "gemini-3-flash-preview",
+            "label": "gemini-3-flash-preview",
+            "input_per_1m": 0.50,
+            "output_per_1m": 3.00,
+            "free_tier": True,
+            "recommended_max_tokens": 1000,
+            "max_tokens_hint": "Fast latest-generation preview model.",
+        },
+        {
+            "id": "gemini-3-pro-preview",
+            "label": "gemini-3-pro-preview",
+            "input_per_1m": 2.00,
+            "output_per_1m": 12.00,
+            "free_tier": False,
+            "recommended_max_tokens": 1200,
+            "max_tokens_hint": "Highest capability, highest cost.",
+        },
+        {
+            "id": "gemini-2.0-flash-lite",
+            "label": "gemini-2.0-flash-lite",
+            "input_per_1m": 0.075,
+            "output_per_1m": 0.30,
+            "free_tier": True,
+            "recommended_max_tokens": 700,
+            "max_tokens_hint": "Legacy low-cost fallback.",
+        },
+    ],
+}
+
+
+def _runtime_feature_from_path(path: str):
+    value = (path or "").strip().lower()
+    if not value:
+        return ""
+    if value.startswith("/static/") or value == "/favicon.ico":
+        return ""
+    if value.startswith("/surveillance"):
+        return "Under Surveillance"
+    if value.startswith("/accounts-ping") or value.startswith("/settings/accounts-ping"):
+        return "Accounts Ping"
+    if value.startswith("/settings/wan") or value.startswith("/wan"):
+        return "WAN Ping"
+    if value.startswith("/settings/optical") or value.startswith("/optical"):
+        return "Optical Monitoring"
+    if value.startswith("/usage") or value.startswith("/settings/usage"):
+        return "Usage"
+    if value.startswith("/offline") or value.startswith("/settings/offline"):
+        return "Offline"
+    return "Dashboard/API"
+
+
+@app.middleware("http")
+async def runtime_feature_cpu_middleware(request: Request, call_next):
+    feature = _runtime_feature_from_path(request.url.path)
+    start = time.thread_time() if feature else 0.0
+    try:
+        return await call_next(request)
+    finally:
+        if feature:
+            add_feature_cpu(feature, max(time.thread_time() - start, 0.0))
 
 
 @app.on_event("startup")
@@ -1829,9 +2032,19 @@ def fetch_mikrotik_lists(cores):
     return list_map
 
 
-def _read_cpu_times():
+def _process_proc_root():
+    host_root = "/host_proc"
     try:
-        with open("/proc/stat", "r", encoding="utf-8") as handle:
+        if os.path.isfile(f"{host_root}/stat") and os.path.isdir(f"{host_root}/1"):
+            return host_root
+    except Exception:
+        pass
+    return "/proc"
+
+
+def _read_cpu_times(proc_root: str = "/proc"):
+    try:
+        with open(f"{proc_root}/stat", "r", encoding="utf-8") as handle:
             line = handle.readline()
         parts = line.split()
         if len(parts) < 5 or parts[0] != "cpu":
@@ -1845,21 +2058,29 @@ def _read_cpu_times():
 
 
 def _cpu_percent():
-    sample = _read_cpu_times()
-    if not sample:
-        return 0.0
-    total, idle = sample
-    last_total = _cpu_sample.get("total")
-    last_idle = _cpu_sample.get("idle")
-    _cpu_sample["total"] = total
-    _cpu_sample["idle"] = idle
-    if last_total is None or last_idle is None:
-        return 0.0
-    total_delta = total - last_total
-    idle_delta = idle - last_idle
+    now = time.monotonic()
+    last_at = float(_cpu_sample.get("at") or 0.0)
+    if last_at > 0 and (now - last_at) < 1.0:
+        return float(_cpu_sample.get("pct") or 0.0)
+    proc_root = _process_proc_root()
+    first = _read_cpu_times(proc_root=proc_root)
+    if not first:
+        return float(_cpu_sample.get("pct") or 0.0)
+    time.sleep(0.20)
+    second = _read_cpu_times(proc_root=proc_root)
+    if not second:
+        return float(_cpu_sample.get("pct") or 0.0)
+    total_delta = int(second[0]) - int(first[0])
+    idle_delta = int(second[1]) - int(first[1])
     if total_delta <= 0:
-        return 0.0
-    return max(0.0, min(100.0, 100.0 * (total_delta - idle_delta) / total_delta))
+        pct = float(_cpu_sample.get("pct") or 0.0)
+    else:
+        pct = max(0.0, min(100.0, 100.0 * (total_delta - idle_delta) / total_delta))
+    _cpu_sample["total"] = int(second[0])
+    _cpu_sample["idle"] = int(second[1])
+    _cpu_sample["pct"] = pct
+    _cpu_sample["at"] = now
+    return pct
 
 
 def _memory_percent():
@@ -1952,6 +2173,339 @@ def _uptime_seconds():
         return int(float(value))
     except Exception:
         return 0
+
+
+def _classify_process_feature(proc_name: str, proc_args: str):
+    hay = f"{proc_name or ''} {proc_args or ''}".strip().lower()
+    if proc_name == "ping" or hay.startswith("ping ") or " ping " in hay:
+        return "WAN Ping Probes"
+    if "uvicorn" in hay or "app.main:app" in hay or "threejnotif" in hay:
+        return "ThreeJ API / Jobs"
+    if "postgres" in hay:
+        return "PostgreSQL"
+    if "docker" in hay or "containerd" in hay:
+        return "Docker Engine"
+    if "sshd" in hay:
+        return "SSH Sessions"
+    if "python" in hay:
+        return "Python Worker"
+    if "nginx" in hay:
+        return "Web Proxy"
+    return (proc_name or "System Process").strip()
+
+
+def _read_proc_snapshot(proc_root: str = "/proc"):
+    snapshot = {}
+    try:
+        names = os.listdir(proc_root)
+    except Exception:
+        return snapshot
+    try:
+        page_size_kb = max(int(os.sysconf("SC_PAGE_SIZE")) // 1024, 1)
+    except Exception:
+        page_size_kb = 4
+    for entry in names:
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        base = f"{proc_root}/{entry}"
+        try:
+            with open(f"{base}/stat", "r", encoding="utf-8") as handle:
+                stat_line = handle.read().strip()
+            left = stat_line.find("(")
+            right = stat_line.rfind(")")
+            if left < 0 or right <= left:
+                continue
+            proc_name = stat_line[left + 1 : right].strip() or "n/a"
+            parts = stat_line[right + 2 :].split()
+            if len(parts) < 15:
+                continue
+            utime = int(parts[11])
+            stime = int(parts[12])
+            rss_kb = 0
+            try:
+                with open(f"{base}/statm", "r", encoding="utf-8") as handle:
+                    statm = handle.read().strip().split()
+                if len(statm) >= 2:
+                    rss_kb = max(int(statm[1]), 0) * page_size_kb
+            except Exception:
+                rss_kb = 0
+            snapshot[pid] = {
+                "pid": pid,
+                "name": proc_name,
+                "args": proc_name,
+                "cpu_ticks": max(utime + stime, 0),
+                "rss_kb": max(rss_kb, 0),
+            }
+        except Exception:
+            continue
+    return snapshot
+
+
+def _top_process_usage_from_proc(limit: int = 12, proc_root: str = "/proc"):
+    return _sample_process_usage(limit=limit, sample_seconds=0.25, proc_root=proc_root).get("rows", [])
+
+
+def _read_mem_total_kb(proc_root: str = "/proc"):
+    try:
+        with open(f"{proc_root}/meminfo", "r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("MemTotal:"):
+                    return int(line.split()[1])
+    except Exception:
+        pass
+    return int(_memory_details_kb().get("mem_total_kb") or 0)
+
+
+def _sample_process_usage(limit: int = 12, sample_seconds: float = 0.25, proc_root: str = "/proc"):
+    try:
+        first = _read_proc_snapshot(proc_root=proc_root)
+        if not first:
+            return {"rows": [], "total_cpu_pct": 0.0, "process_count": 0}
+        hz = 100
+        try:
+            hz = max(int(os.sysconf("SC_CLK_TCK")), 1)
+        except Exception:
+            hz = 100
+        cpu_count = max(int(os.cpu_count() or 1), 1)
+        wait_seconds = max(0.05, min(float(sample_seconds or 0.25), 1.0))
+        start_ts = time.monotonic()
+        time.sleep(wait_seconds)
+        second = _read_proc_snapshot(proc_root=proc_root)
+        elapsed = max(time.monotonic() - start_ts, 0.05)
+        if not second:
+            return {"rows": [], "total_cpu_pct": 0.0, "process_count": 0}
+        mem_total_kb = _read_mem_total_kb(proc_root=proc_root)
+        rows = []
+        total_cpu_pct = 0.0
+        for pid, cur in second.items():
+            prev = first.get(pid)
+            if prev:
+                proc_delta = max(int(cur.get("cpu_ticks") or 0) - int(prev.get("cpu_ticks") or 0), 0)
+                cpu_pct = (100.0 * float(proc_delta) / float(hz * cpu_count * elapsed)) if hz > 0 else 0.0
+            else:
+                cpu_pct = 0.0
+            rss_kb = max(int(cur.get("rss_kb") or 0), 0)
+            ram_pct = (100.0 * rss_kb / mem_total_kb) if mem_total_kb > 0 else 0.0
+            cpu_pct = max(cpu_pct, 0.0)
+            total_cpu_pct += cpu_pct
+            rows.append(
+                {
+                    "pid": int(cur.get("pid") or pid),
+                    "name": (cur.get("name") or "n/a").strip(),
+                    "feature": _classify_process_feature(cur.get("name") or "", cur.get("args") or ""),
+                    "cpu_pct": round(cpu_pct, 1),
+                    "ram_pct": round(max(ram_pct, 0.0), 1),
+                    "rss_mb": round(rss_kb / 1024.0, 1),
+                }
+            )
+        rows.sort(key=lambda item: (item.get("cpu_pct") or 0.0, item.get("ram_pct") or 0.0), reverse=True)
+        limit_value = None
+        try:
+            if limit is not None:
+                limit_value = int(limit)
+        except Exception:
+            limit_value = None
+        if limit_value is None or limit_value <= 0:
+            top = list(rows)
+        else:
+            top = rows[:limit_value]
+        if any((item.get("cpu_pct") or 0.0) > 0 for item in top):
+            return {
+                "rows": top,
+                "total_cpu_pct": round(max(0.0, min(100.0, total_cpu_pct)), 1),
+                "process_count": len(rows),
+            }
+        rows.sort(key=lambda item: (item.get("ram_pct") or 0.0, item.get("rss_mb") or 0.0), reverse=True)
+        if limit_value is None or limit_value <= 0:
+            top = list(rows)
+        else:
+            top = rows[:limit_value]
+        return {
+            "rows": top,
+            "total_cpu_pct": round(max(0.0, min(100.0, total_cpu_pct)), 1),
+            "process_count": len(rows),
+        }
+    except Exception:
+        return {"rows": [], "total_cpu_pct": 0.0, "process_count": 0}
+
+
+def _is_threej_feature(feature: str):
+    item = (feature or "").strip()
+    if not item:
+        return False
+    if item.startswith("ThreeJ "):
+        return True
+    return item in {
+        "WAN Ping Probes",
+        "Accounts Ping Probes",
+        "Usage Probes",
+        "Optical Monitor",
+        "Offline Monitor",
+        "WAN Ping",
+        "Accounts Ping",
+        "Under Surveillance",
+        "Usage",
+        "Offline",
+        "Optical Monitoring",
+        "Telegram",
+        "Dashboard/API",
+    }
+
+
+def _aggregate_threej_vs_system(process_rows, limit_threej: int = 8):
+    threej = {}
+    system_bucket = {"cpu_pct": 0.0, "ram_pct": 0.0, "process_count": 0}
+    for row in process_rows or []:
+        feature = (row.get("feature") or "Unknown").strip() or "Unknown"
+        cpu = float(row.get("cpu_pct") or 0.0)
+        ram = float(row.get("ram_pct") or 0.0)
+        if _is_threej_feature(feature):
+            bucket = threej.setdefault(feature, {"cpu_pct": 0.0, "ram_pct": 0.0, "process_count": 0})
+            bucket["cpu_pct"] += cpu
+            bucket["ram_pct"] += ram
+            bucket["process_count"] += 1
+        else:
+            system_bucket["cpu_pct"] += cpu
+            system_bucket["ram_pct"] += ram
+            system_bucket["process_count"] += 1
+    rows = sorted(
+        (
+            {
+                "name": name,
+                "cpu_pct": round(values["cpu_pct"], 1),
+                "ram_pct": round(values["ram_pct"], 1),
+                "process_count": int(values["process_count"] or 0),
+                "kind": "threej",
+            }
+            for name, values in threej.items()
+        ),
+        key=lambda item: (item.get("cpu_pct") or 0.0, item.get("ram_pct") or 0.0),
+        reverse=True,
+    )
+    limit_value = max(int(limit_threej or 0), 1)
+    rows = rows[:limit_value]
+    rows.append(
+        {
+            "name": "System",
+            "cpu_pct": round(system_bucket["cpu_pct"], 1),
+            "ram_pct": round(system_bucket["ram_pct"], 1),
+            "process_count": int(system_bucket["process_count"] or 0),
+            "kind": "system",
+        }
+    )
+    return rows
+
+
+def _build_runtime_threej_summary(feature_cpu_rows, process_rows, host_cpu_pct: float):
+    mandatory = {"Accounts Ping", "Under Surveillance"}
+    rows = []
+    threej_cpu_total = 0.0
+    for item in feature_cpu_rows or []:
+        name = (item.get("name") or "").strip()
+        if not name:
+            continue
+        cpu = float(item.get("cpu_pct") or 0.0)
+        if cpu <= 0 and name not in mandatory:
+            continue
+        rows.append(
+            {
+                "name": name,
+                "cpu_pct": round(max(cpu, 0.0), 1),
+                "ram_pct": None,
+                "process_count": None,
+                "kind": "threej",
+                "source": "ThreeJ runtime",
+            }
+        )
+        threej_cpu_total += max(cpu, 0.0)
+    system_ram = 0.0
+    system_count = 0
+    for row in process_rows or []:
+        feature = (row.get("feature") or "").strip()
+        if _is_threej_feature(feature):
+            continue
+        system_ram += float(row.get("ram_pct") or 0.0)
+        system_count += 1
+    system_cpu = max(float(host_cpu_pct or 0.0) - threej_cpu_total, 0.0)
+    rows.sort(key=lambda item: (item.get("cpu_pct") or 0.0, item.get("name") or ""), reverse=True)
+    rows.append(
+        {
+            "name": "System",
+            "cpu_pct": round(system_cpu, 1),
+            "ram_pct": round(system_ram, 1),
+            "process_count": int(system_count),
+            "kind": "system",
+            "source": "Host OS / other processes",
+        }
+    )
+    return rows
+
+
+def _top_process_usage(limit: int = 12):
+    try:
+        cmd = ["ps", "-eo", "pid=,comm=,pcpu=,pmem=,rss=,args=", "--sort=-pcpu"]
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=2.0, check=False)
+        lines = (out.stdout or "").splitlines()
+        items = []
+        for raw in lines:
+            line = raw.strip()
+            if not line:
+                continue
+            parts = line.split(None, 5)
+            if len(parts) < 5:
+                continue
+            pid_raw, comm_raw, cpu_raw, mem_raw, rss_raw = parts[:5]
+            args_raw = parts[5] if len(parts) > 5 else comm_raw
+            try:
+                pid = int(pid_raw)
+                cpu_pct = max(float(cpu_raw), 0.0)
+                ram_pct = max(float(mem_raw), 0.0)
+                rss_kb = max(int(float(rss_raw)), 0)
+            except Exception:
+                continue
+            feature = _classify_process_feature(comm_raw, args_raw)
+            items.append(
+                {
+                    "pid": pid,
+                    "name": (comm_raw or "").strip() or "n/a",
+                    "feature": feature,
+                    "cpu_pct": round(cpu_pct, 1),
+                    "ram_pct": round(ram_pct, 1),
+                    "rss_mb": round(rss_kb / 1024.0, 1),
+                }
+            )
+            if len(items) >= max(int(limit or 0), 1):
+                break
+        if items:
+            return items
+        return _top_process_usage_from_proc(limit=limit)
+    except Exception:
+        return _top_process_usage_from_proc(limit=limit)
+
+
+def _aggregate_feature_usage(process_rows, limit: int = 8):
+    summary = {}
+    for row in process_rows or []:
+        feature = (row.get("feature") or "Unknown").strip() or "Unknown"
+        bucket = summary.setdefault(feature, {"cpu_pct": 0.0, "ram_pct": 0.0, "process_count": 0})
+        bucket["cpu_pct"] += float(row.get("cpu_pct") or 0.0)
+        bucket["ram_pct"] += float(row.get("ram_pct") or 0.0)
+        bucket["process_count"] += 1
+    ranked = sorted(
+        (
+            {
+                "feature": feature,
+                "cpu_pct": round(vals["cpu_pct"], 1),
+                "ram_pct": round(vals["ram_pct"], 1),
+                "process_count": int(vals["process_count"] or 0),
+            }
+            for feature, vals in summary.items()
+        ),
+        key=lambda item: (item.get("cpu_pct") or 0.0, item.get("ram_pct") or 0.0),
+        reverse=True,
+    )
+    return ranked[: max(int(limit or 0), 1)]
 
 
 def _sparkline_points_fixed(values, min_val, max_val, width=120, height=30):
@@ -2210,6 +2764,430 @@ def build_wan_latency_series(rows, state, hours=24, window_start=None, window_en
     return series
 
 
+def _dashboard_job_health(enabled, status):
+    if not enabled:
+        return ("Disabled", "secondary")
+    status = status or {}
+    if status.get("last_error"):
+        return ("Error", "danger")
+    if status.get("last_success_at"):
+        return ("OK", "success")
+    if status.get("last_run_at"):
+        return ("Running", "warning")
+    return ("Idle", "secondary")
+
+
+def _build_dashboard_kpis(job_status):
+    now = datetime.utcnow()
+    out = {
+        "features": [],
+        "surveillance": {},
+        "wan": {},
+        "usage": {},
+        "accounts_ping": {},
+        "optical": {},
+        "offline": {},
+        "attention": {},
+    }
+
+    try:
+        surv_cfg = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
+        entries = surv_cfg.get("entries") if isinstance(surv_cfg.get("entries"), list) else []
+        under = level2 = observe = auto = manual = 0
+        ai_pending = ai_error = 0
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            status = (entry.get("status") or "under").strip().lower()
+            if status == "level2":
+                level2 += 1
+            elif status == "observe":
+                observe += 1
+            else:
+                under += 1
+            if (entry.get("added_mode") or "manual").strip().lower() == "auto":
+                auto += 1
+            else:
+                manual += 1
+            reports = entry.get("ai_reports") if isinstance(entry.get("ai_reports"), dict) else {}
+            for stage in ("under", "level2", "observe"):
+                item = reports.get(stage) if isinstance(reports.get(stage), dict) else {}
+                st = (item.get("status") or "").strip().lower()
+                if st in ("queued", "running"):
+                    ai_pending += 1
+                elif st == "error":
+                    ai_error += 1
+        history_total = 0
+        try:
+            history_total = int((list_surveillance_history(page=1, limit=1) or {}).get("total") or 0)
+        except Exception:
+            history_total = 0
+        out["surveillance"] = {
+            "total": under + level2 + observe,
+            "under": under,
+            "level2": level2,
+            "observe": observe,
+            "auto": auto,
+            "manual": manual,
+            "history_total": history_total,
+            "ai_pending": ai_pending,
+            "ai_error": ai_error,
+            "enabled": bool(surv_cfg.get("enabled", True)),
+        }
+    except Exception:
+        out["surveillance"] = {
+            "total": 0,
+            "under": 0,
+            "level2": 0,
+            "observe": 0,
+            "auto": 0,
+            "manual": 0,
+            "history_total": 0,
+            "ai_pending": 0,
+            "ai_error": 0,
+            "enabled": False,
+        }
+
+    try:
+        wan_cfg = get_settings("wan_ping", WAN_PING_DEFAULTS)
+        wan_state = get_state("wan_ping_state", {})
+        wans_cfg = wan_cfg.get("wans") if isinstance(wan_cfg.get("wans"), list) else []
+        wan_rows = wan_state.get("wans") if isinstance(wan_state.get("wans"), dict) else {}
+        up = down = unknown = 0
+        latency_ready = 0
+        for info in wan_rows.values():
+            if not isinstance(info, dict):
+                continue
+            status = (info.get("status") or "").strip().lower()
+            if status == "up":
+                up += 1
+            elif status == "down":
+                down += 1
+            else:
+                unknown += 1
+            if info.get("last_target_check"):
+                latency_ready += 1
+        targets = [
+            item
+            for item in ((wan_cfg.get("general") or {}).get("targets") or [])
+            if isinstance(item, dict) and bool(item.get("enabled", True))
+        ]
+        out["wan"] = {
+            "configured": len(wans_cfg),
+            "up": up,
+            "down": down,
+            "unknown": unknown,
+            "targets_enabled": len(targets),
+            "routers": len(wan_cfg.get("pppoe_routers") or []),
+            "latency_ready": latency_ready,
+            "interval_seconds": int(((wan_cfg.get("general") or {}).get("interval_seconds") or 30)),
+            "target_interval_seconds": int(((wan_cfg.get("general") or {}).get("target_latency_interval_seconds") or 30)),
+            "enabled": bool(wan_cfg.get("enabled")),
+            "last_poll_at_ph": format_ts_ph(wan_state.get("last_status_poll_at")),
+        }
+    except Exception:
+        out["wan"] = {
+            "configured": 0,
+            "up": 0,
+            "down": 0,
+            "unknown": 0,
+            "targets_enabled": 0,
+            "routers": 0,
+            "latency_ready": 0,
+            "interval_seconds": 30,
+            "target_interval_seconds": 30,
+            "enabled": False,
+            "last_poll_at_ph": "n/a",
+        }
+
+    try:
+        usage_cfg = get_settings("usage", USAGE_DEFAULTS)
+        usage_state = get_state("usage_state", {})
+        active_rows = usage_state.get("active_rows") if isinstance(usage_state.get("active_rows"), list) else []
+        active_accounts = {
+            (row.get("pppoe") or "").strip().lower()
+            for row in active_rows
+            if isinstance(row, dict) and (row.get("pppoe") or "").strip()
+        }
+        routers = usage_state.get("routers") if isinstance(usage_state.get("routers"), list) else []
+        connected_routers = sum(1 for row in routers if isinstance(row, dict) and bool(row.get("connected")))
+        router_errors = sum(1 for row in routers if isinstance(row, dict) and (row.get("error") or "").strip())
+        anytime_issues = usage_state.get("anytime_issues") if isinstance(usage_state.get("anytime_issues"), dict) else {}
+        out["usage"] = {
+            "active_sessions": len(active_rows),
+            "active_accounts": len(active_accounts),
+            "offline_accounts": len(usage_state.get("offline_rows") or []),
+            "router_count": len(routers),
+            "router_connected": connected_routers,
+            "router_errors": router_errors,
+            "anytime_issues": len(anytime_issues),
+            "sample_interval_seconds": int(((usage_cfg.get("storage") or {}).get("sample_interval_seconds") or 60)),
+            "enabled": bool(usage_cfg.get("enabled")),
+            "last_check_at_ph": format_ts_ph(usage_state.get("last_check_at")),
+        }
+    except Exception:
+        out["usage"] = {
+            "active_sessions": 0,
+            "active_accounts": 0,
+            "offline_accounts": 0,
+            "router_count": 0,
+            "router_connected": 0,
+            "router_errors": 0,
+            "anytime_issues": 0,
+            "sample_interval_seconds": 60,
+            "enabled": False,
+            "last_check_at_ph": "n/a",
+        }
+
+    try:
+        acc_cfg = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
+        acc_state = get_state("accounts_ping_state", {})
+        accounts = acc_state.get("accounts") if isinstance(acc_state.get("accounts"), dict) else {}
+        down = issue = up = burst = 0
+        for item in accounts.values():
+            if not isinstance(item, dict):
+                continue
+            status = (item.get("last_status") or "").strip().lower()
+            if status == "down":
+                down += 1
+            elif status == "issue":
+                issue += 1
+            elif status == "up":
+                up += 1
+            if item.get("burst_until"):
+                burst += 1
+        dashboard_status = None
+        try:
+            dashboard_status = build_accounts_ping_status(
+                acc_cfg,
+                window_hours=24,
+                limit=1,
+                issues_page=1,
+                stable_page=1,
+            )
+        except Exception:
+            dashboard_status = None
+        total_accounts = len(accounts)
+        issue_total = issue
+        stable_total = up
+        pending_total = 0
+        if isinstance(dashboard_status, dict):
+            total_accounts = int(dashboard_status.get("total") or total_accounts)
+            issue_total = int(dashboard_status.get("issue_total") or 0)
+            stable_total = int(dashboard_status.get("stable_total") or 0)
+            pending_total = int(dashboard_status.get("pending_total") or 0)
+            down = int(dashboard_status.get("down_total") or 0)
+        out["accounts_ping"] = {
+            "accounts": total_accounts,
+            "devices": len(acc_state.get("devices") or []),
+            "up": stable_total,
+            "down": down,
+            "issue": issue_total,
+            "pending": pending_total,
+            "burst": burst,
+            "interval_seconds": int(((acc_cfg.get("general") or {}).get("base_interval_seconds") or 30)),
+            "max_parallel": int(((acc_cfg.get("general") or {}).get("max_parallel") or 16)),
+            "enabled": bool(acc_cfg.get("enabled")),
+            "last_refresh_at_ph": format_ts_ph(acc_state.get("devices_refreshed_at")),
+        }
+    except Exception:
+        out["accounts_ping"] = {
+            "accounts": 0,
+            "devices": 0,
+            "up": 0,
+            "down": 0,
+            "issue": 0,
+            "burst": 0,
+            "interval_seconds": 30,
+            "max_parallel": 16,
+            "enabled": False,
+            "last_refresh_at_ph": "n/a",
+        }
+
+    try:
+        opt_cfg = get_settings("optical", OPTICAL_DEFAULTS)
+        classification = opt_cfg.get("classification") if isinstance(opt_cfg.get("classification"), dict) else {}
+        issue_rx = float(classification.get("issue_rx_dbm", -27.0) or -27.0)
+        issue_tx = float(classification.get("issue_tx_dbm", -2.0) or -2.0)
+        tx_real_min = float(classification.get("tx_realistic_min_dbm", -10.0) or -10.0)
+        tx_real_max = float(classification.get("tx_realistic_max_dbm", 10.0) or 10.0)
+        since_iso = (now - timedelta(days=7)).replace(microsecond=0).isoformat() + "Z"
+        latest = get_optical_latest_results_since(since_iso)
+        issue_rx_count = 0
+        issue_tx_count = 0
+        priority_count = 0
+        pppoe_set = set()
+        for row in latest:
+            if not isinstance(row, dict):
+                continue
+            pppoe = (row.get("pppoe") or "").strip().lower()
+            if pppoe:
+                pppoe_set.add(pppoe)
+            rx = row.get("rx")
+            tx = row.get("tx")
+            if row.get("priority"):
+                priority_count += 1
+            try:
+                if rx is not None and float(rx) <= issue_rx:
+                    issue_rx_count += 1
+            except Exception:
+                pass
+            try:
+                if tx is not None:
+                    tx_value = float(tx)
+                    if tx_real_min <= tx_value <= tx_real_max and tx_value <= issue_tx:
+                        issue_tx_count += 1
+            except Exception:
+                pass
+        out["optical"] = {
+            "latest_devices": len(latest),
+            "latest_accounts": len(pppoe_set),
+            "issue_rx": issue_rx_count,
+            "issue_tx": issue_tx_count,
+            "priority": priority_count,
+            "enabled": bool(opt_cfg.get("enabled")),
+            "threshold_rx": issue_rx,
+            "threshold_tx": issue_tx,
+        }
+    except Exception:
+        out["optical"] = {
+            "latest_devices": 0,
+            "latest_accounts": 0,
+            "issue_rx": 0,
+            "issue_tx": 0,
+            "priority": 0,
+            "enabled": False,
+            "threshold_rx": -27.0,
+            "threshold_tx": -2.0,
+        }
+
+    try:
+        off_cfg = get_settings("offline", OFFLINE_DEFAULTS)
+        off_state = get_state("offline_state", {})
+        history_since = (now - timedelta(days=1)).replace(microsecond=0).isoformat() + "Z"
+        off_hist = get_offline_history_since(history_since, limit=2000)
+        out["offline"] = {
+            "current": len(off_state.get("rows") or []),
+            "history_24h": len(off_hist),
+            "routers": len(off_state.get("routers") or []),
+            "router_errors": len(off_state.get("router_errors") or []),
+            "mode": (off_state.get("mode") or off_cfg.get("mode") or "secrets"),
+            "threshold_minutes": int(off_state.get("min_offline_minutes") or 0),
+            "enabled": bool(off_cfg.get("enabled")),
+            "last_check_at_ph": format_ts_ph(off_state.get("last_check_at")),
+        }
+    except Exception:
+        out["offline"] = {
+            "current": 0,
+            "history_24h": 0,
+            "routers": 0,
+            "router_errors": 0,
+            "mode": "secrets",
+            "threshold_minutes": 0,
+            "enabled": False,
+            "last_check_at_ph": "n/a",
+        }
+
+    try:
+        accounts_issue_total = int(out["accounts_ping"].get("issue") or 0)
+        optical_issue_total = int(out["optical"].get("issue_rx") or 0) + int(out["optical"].get("issue_tx") or 0)
+        active_monitoring_total = int(out["surveillance"].get("under") or 0)
+        needs_manual_fix_total = int(out["surveillance"].get("level2") or 0)
+        wan_down_total = int(out["wan"].get("down") or 0)
+        offline_total = int(out["offline"].get("current") or 0)
+        cpu_pct = round(float(_cpu_percent()), 1)
+        ram_pct = round(float(_memory_percent()), 1)
+        attention_items = [
+            {
+                "label": "Accounts Ping Issues",
+                "value_label": f"{accounts_issue_total} accounts",
+                "active": accounts_issue_total > 0,
+                "note": "Accounts currently classified as issue/down.",
+            },
+            {
+                "label": "Optical Monitoring Issues",
+                "value_label": f"{optical_issue_total} findings",
+                "active": optical_issue_total > 0,
+                "note": "RX/TX threshold violations from latest optical data.",
+            },
+            {
+                "label": "Under Surveillance · Active Monitoring",
+                "value_label": f"{active_monitoring_total} accounts",
+                "active": active_monitoring_total > 0,
+                "note": "Accounts still under active watch.",
+            },
+            {
+                "label": "Under Surveillance · Needs Manual Fix",
+                "value_label": f"{needs_manual_fix_total} accounts",
+                "active": needs_manual_fix_total > 0,
+                "note": "Accounts requiring manual intervention.",
+            },
+            {
+                "label": "WAN Ping · Down ISPs",
+                "value_label": f"{wan_down_total} down",
+                "active": wan_down_total > 0,
+                "note": "Any ISP marked down by WAN Ping/Netwatch.",
+            },
+            {
+                "label": "Offline Accounts",
+                "value_label": f"{offline_total} offline",
+                "active": offline_total > 0,
+                "note": "Accounts currently in Offline state.",
+            },
+            {
+                "label": "CPU Usage",
+                "value_label": f"{cpu_pct:.1f}%",
+                "active": cpu_pct >= 85.0,
+                "note": "Triggers attention at 85% and above.",
+            },
+            {
+                "label": "RAM Usage",
+                "value_label": f"{ram_pct:.1f}%",
+                "active": ram_pct >= 85.0,
+                "note": "Triggers attention at 85% and above.",
+            },
+        ]
+        active_total = sum(1 for item in attention_items if bool(item.get("active")))
+        out["attention"] = {
+            "title": "Operations Attention Board",
+            "active_total": active_total,
+            "items": attention_items,
+            "healthy": active_total == 0,
+        }
+    except Exception:
+        out["attention"] = {
+            "title": "Operations Attention Board",
+            "active_total": 0,
+            "items": [],
+            "healthy": True,
+        }
+
+    feature_defs = [
+        ("WAN Ping", "wan_ping", out["wan"].get("enabled"), f"{out['wan'].get('configured', 0)} ISPs · {out['wan'].get('targets_enabled', 0)} targets"),
+        ("Accounts Ping", "accounts_ping", out["accounts_ping"].get("enabled"), f"{out['accounts_ping'].get('accounts', 0)} accounts"),
+        ("Under Surveillance", "", out["surveillance"].get("enabled"), f"{out['surveillance'].get('total', 0)} active"),
+        ("Usage", "usage", out["usage"].get("enabled"), f"{out['usage'].get('active_accounts', 0)} active accounts"),
+        ("Offline", "offline", out["offline"].get("enabled"), f"{out['offline'].get('current', 0)} offline now"),
+        ("Optical Monitoring", "optical", out["optical"].get("enabled"), f"{out['optical'].get('latest_devices', 0)} devices"),
+    ]
+    features = []
+    for label, job_key, enabled, subtitle in feature_defs:
+        status = job_status.get(job_key) if job_key else {}
+        state_label, tone = _dashboard_job_health(bool(enabled), status)
+        features.append(
+            {
+                "label": label,
+                "state_label": state_label,
+                "tone": tone,
+                "subtitle": subtitle,
+                "last_run_at_ph": format_ts_ph((status or {}).get("last_run_at")) if job_key else "n/a",
+                "last_success_at_ph": format_ts_ph((status or {}).get("last_success_at")) if job_key else "n/a",
+            }
+        )
+    out["features"] = features
+    return out
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     job_status = {item["job_name"]: dict(item) for item in get_job_status()}
@@ -2217,9 +3195,10 @@ async def dashboard(request: Request):
         status["last_run_at_ph"] = format_ts_ph(status.get("last_run_at"))
         status["last_success_at_ph"] = format_ts_ph(status.get("last_success_at"))
         status["last_error_at_ph"] = format_ts_ph(status.get("last_error_at"))
+    dashboard_kpis = _build_dashboard_kpis(job_status)
     return templates.TemplateResponse(
         "dashboard.html",
-        make_context(request, {"job_status": job_status}),
+        make_context(request, {"job_status": job_status, "dashboard_kpis": dashboard_kpis}),
     )
 
 
@@ -3189,11 +4168,7 @@ async def import_settings_route(request: Request):
             message = f"{message} {netplan_msg}"
         if apply_msg and not apply_msg.startswith("Netplan applied"):
             message = f"{message} {apply_msg}"
-    interfaces = get_interface_options()
-    return templates.TemplateResponse(
-        "settings_system.html",
-        make_context(request, {"message": message, "settings": settings, "interfaces": interfaces}),
-    )
+    return render_system_settings_response(request, message, active_tab="backup", routers_tab="cores")
 
 
 @app.get("/settings/db/export")
@@ -3223,12 +4198,7 @@ async def import_db_route(request: Request):
     db_url = (os.environ.get("THREEJ_DATABASE_URL") or "").strip().lower()
     if db_url.startswith("postgres://") or db_url.startswith("postgresql://"):
         message = "Database restore is not available in the UI when using Postgres. Use psql/pg_restore instead."
-        settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
-        interfaces = get_interface_options()
-        return templates.TemplateResponse(
-            "settings_system.html",
-            make_context(request, {"message": message, "settings": settings, "interfaces": interfaces}),
-        )
+        return render_system_settings_response(request, message, active_tab="backup", routers_tab="cores")
     db_path = os.environ.get("THREEJ_DB_PATH", "/data/threejnotif.db")
     if not uploaded:
         message = "No database file uploaded."
@@ -3244,12 +4214,7 @@ async def import_db_route(request: Request):
             message = "Database restored successfully."
         except Exception as exc:
             message = f"Database restore failed: {exc}"
-    settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
-    interfaces = get_interface_options()
-    return templates.TemplateResponse(
-        "settings_system.html",
-        make_context(request, {"message": message, "settings": settings, "interfaces": interfaces}),
-    )
+    return render_system_settings_response(request, message, active_tab="backup", routers_tab="cores")
 
 
 OPTICAL_WINDOW_OPTIONS = WAN_STATUS_WINDOW_OPTIONS
@@ -5130,6 +6095,10 @@ async def profile_review(request: Request):
 @app.get("/settings/accounts-ping", response_class=HTMLResponse)
 async def accounts_ping_settings(request: Request):
     settings = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
+    normalized_settings, tuning = _accounts_ping_tuning_context(settings)
+    if tuning.get("was_clamped"):
+        save_settings("accounts_ping", normalized_settings)
+    settings = normalized_settings
     window_hours = _normalize_wan_window(request.query_params.get("window"))
     limit = _parse_table_limit(request.query_params.get("limit"), default=50)
     issues_page = _parse_table_page(request.query_params.get("issues_page"), default=1)
@@ -5155,6 +6124,131 @@ async def accounts_ping_settings(request: Request):
         stable_dir=stable_dir,
         query=query,
     )
+
+
+def _accounts_ping_tuning_context(settings):
+    normalized = copy.deepcopy(settings or {})
+    general = normalized.get("general") if isinstance(normalized.get("general"), dict) else {}
+    ping_cfg = normalized.get("ping") if isinstance(normalized.get("ping"), dict) else {}
+    source_cfg = normalized.get("source") if isinstance(normalized.get("source"), dict) else {}
+    storage_cfg = normalized.get("storage") if isinstance(normalized.get("storage"), dict) else {}
+
+    try:
+        configured_parallel = int(general.get("max_parallel", ACCOUNTS_PING_DEFAULTS["general"]["max_parallel"]) or 1)
+    except Exception:
+        configured_parallel = int(ACCOUNTS_PING_DEFAULTS["general"]["max_parallel"])
+    configured_parallel = max(configured_parallel, 1)
+
+    cpu_cores = max(int(os.cpu_count() or 1), 1)
+    mem_total_kb = int((_memory_details_kb() or {}).get("mem_total_kb") or 0)
+    ram_gb = round(mem_total_kb / (1024 * 1024), 1) if mem_total_kb > 0 else 0.0
+    safe_parallel_cap = max(8, min(32, cpu_cores * 4))
+    effective_parallel = min(configured_parallel, safe_parallel_cap)
+
+    general["max_parallel"] = effective_parallel
+    normalized["general"] = general
+    normalized["ping"] = ping_cfg
+    normalized["source"] = source_cfg
+    normalized["storage"] = storage_cfg
+
+    if cpu_cores <= 2 or ram_gb < 4:
+        recommendation = {
+            "tier": "Low Hardware",
+            "max_parallel": min(8, safe_parallel_cap),
+            "base_interval_seconds": 20,
+            "ping_count": 1,
+            "ping_timeout_seconds": 1,
+            "source_refresh_minutes": 30,
+            "raw_retention_days": 30,
+            "bucket_seconds": 120,
+        }
+    elif cpu_cores <= 4 or ram_gb < 8:
+        recommendation = {
+            "tier": "Balanced Hardware",
+            "max_parallel": min(12, safe_parallel_cap),
+            "base_interval_seconds": 10,
+            "ping_count": 1,
+            "ping_timeout_seconds": 1,
+            "source_refresh_minutes": 20,
+            "raw_retention_days": 90,
+            "bucket_seconds": 60,
+        }
+    elif cpu_cores <= 8 or ram_gb < 16:
+        recommendation = {
+            "tier": "High Hardware",
+            "max_parallel": min(16, safe_parallel_cap),
+            "base_interval_seconds": 5,
+            "ping_count": 1,
+            "ping_timeout_seconds": 1,
+            "source_refresh_minutes": 15,
+            "raw_retention_days": 180,
+            "bucket_seconds": 60,
+        }
+    else:
+        recommendation = {
+            "tier": "Very High Hardware",
+            "max_parallel": min(24, safe_parallel_cap),
+            "base_interval_seconds": 3,
+            "ping_count": 1,
+            "ping_timeout_seconds": 1,
+            "source_refresh_minutes": 10,
+            "raw_retention_days": 365,
+            "bucket_seconds": 30,
+        }
+
+    tiers = [
+        {
+            "label": "Low (2 cores / 4GB)",
+            "max_parallel": "4–8",
+            "base_interval_seconds": "20–30s",
+            "ping_count": "1",
+            "ping_timeout_seconds": "1s",
+            "source_refresh_minutes": "30m",
+            "raw_retention_days": "30d",
+            "bucket_seconds": "120s",
+        },
+        {
+            "label": "Balanced (4 cores / 8GB)",
+            "max_parallel": "8–12",
+            "base_interval_seconds": "10–20s",
+            "ping_count": "1",
+            "ping_timeout_seconds": "1s",
+            "source_refresh_minutes": "15–20m",
+            "raw_retention_days": "90d",
+            "bucket_seconds": "60s",
+        },
+        {
+            "label": "High (8 cores / 16GB)",
+            "max_parallel": "12–16",
+            "base_interval_seconds": "5–10s",
+            "ping_count": "1",
+            "ping_timeout_seconds": "1s",
+            "source_refresh_minutes": "10–15m",
+            "raw_retention_days": "180d",
+            "bucket_seconds": "60s",
+        },
+        {
+            "label": "Very High (12+ cores / 24GB+)",
+            "max_parallel": "16–24",
+            "base_interval_seconds": "3–5s",
+            "ping_count": "1",
+            "ping_timeout_seconds": "1s",
+            "source_refresh_minutes": "10m",
+            "raw_retention_days": "365d",
+            "bucket_seconds": "30–60s",
+        },
+    ]
+
+    return normalized, {
+        "cpu_cores": cpu_cores,
+        "ram_gb": ram_gb,
+        "safe_parallel_cap": safe_parallel_cap,
+        "configured_parallel": configured_parallel,
+        "effective_parallel": effective_parallel,
+        "was_clamped": configured_parallel != effective_parallel,
+        "recommendation": recommendation,
+        "tiers": tiers,
+    }
 
 
 @app.get("/accounts-ping/series", response_class=JSONResponse)
@@ -5422,6 +6516,8 @@ def build_accounts_ping_status(
     )
 
     stable_up_total = sum(1 for row in stable_rows if row.get("status") == "up")
+    down_total = sum(1 for row in issue_rows if row.get("status") == "down")
+    monitor_total = sum(1 for row in issue_rows if row.get("status") == "monitor")
 
     paged_issue, issue_page_meta = _paginate_items(issue_rows, issues_page, limit)
     paged_stable, stable_page_meta = _paginate_items(stable_rows, stable_page, limit)
@@ -5463,6 +6559,8 @@ def build_accounts_ping_status(
     return {
         "total": len(issue_rows) + len(stable_rows),
         "issue_total": len(issue_rows),
+        "down_total": down_total,
+        "monitor_total": monitor_total,
         "stable_total": stable_up_total,
         "pending_total": pending_total,
         "issue_rows": paged_issue,
@@ -5507,6 +6605,7 @@ def render_accounts_ping_response(
     stable_dir="",
     query="",
 ):
+    settings, tuning = _accounts_ping_tuning_context(settings)
     status_map = {item["job_name"]: dict(item) for item in get_job_status()}
     job_status = status_map.get("accounts_ping", {})
     job_status["last_run_at_ph"] = format_ts_ph(job_status.get("last_run_at"))
@@ -5551,6 +6650,7 @@ def render_accounts_ping_response(
                 "accounts_ping_status": status,
                 "accounts_ping_job": job_status,
                 "accounts_ping_window_options": WAN_STATUS_WINDOW_OPTIONS,
+                "accounts_ping_tuning": tuning,
             },
         ),
     )
@@ -5571,7 +6671,6 @@ def _accounts_ping_account_id_for_ip(ip):
 @app.post("/settings/accounts-ping", response_class=HTMLResponse)
 async def accounts_ping_settings_save(request: Request):
     form = await request.form()
-    current = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
     settings = {
         "enabled": parse_bool(form, "enabled"),
         "ssh": {
@@ -5588,7 +6687,7 @@ async def accounts_ping_settings_save(request: Request):
         },
         "general": {
             "base_interval_seconds": parse_int(form, "base_interval_seconds", 30),
-            "max_parallel": parse_int(form, "max_parallel", 64),
+            "max_parallel": parse_int(form, "max_parallel", ACCOUNTS_PING_DEFAULTS["general"]["max_parallel"]),
         },
         "ping": {
             "count": parse_int(form, "ping_count", 3),
@@ -5608,13 +6707,21 @@ async def accounts_ping_settings_save(request: Request):
             "bucket_seconds": parse_int(form, "bucket_seconds", 60),
         },
     }
+    requested_parallel = int(settings.get("general", {}).get("max_parallel") or 1)
+    settings, tuning = _accounts_ping_tuning_context(settings)
     save_settings("accounts_ping", settings)
     window_hours = _normalize_wan_window(request.query_params.get("window"))
     active_tab = form.get("active_tab", "settings")
     settings_tab = (form.get("settings_tab") or "general").strip().lower()
     if settings_tab not in ("general", "source", "classification", "storage", "danger"):
         settings_tab = "general"
-    return render_accounts_ping_response(request, settings, "Accounts Ping settings saved.", active_tab, settings_tab, window_hours)
+    message = "Accounts Ping settings saved."
+    if requested_parallel > int(tuning.get("effective_parallel") or requested_parallel):
+        message = (
+            f"Accounts Ping settings saved. Max Parallel was capped to {tuning.get('effective_parallel')} "
+            f"for this server ({tuning.get('cpu_cores')} cores / {tuning.get('ram_gb')} GB RAM)."
+        )
+    return render_accounts_ping_response(request, settings, message, active_tab, settings_tab, window_hours)
 
 
 @app.post("/settings/accounts-ping/test", response_class=HTMLResponse)
@@ -5687,6 +6794,896 @@ async def accounts_ping_investigate(request: Request):
     return RedirectResponse(url="/settings/accounts-ping", status_code=303)
 
 
+def normalize_system_settings(raw):
+    cfg = copy.deepcopy(SYSTEM_DEFAULTS)
+    if isinstance(raw, dict):
+        branding = raw.get("branding")
+        if isinstance(branding, dict):
+            cfg["branding"]["company_logo"].update(branding.get("company_logo") or {})
+            cfg["branding"]["browser_logo"].update(branding.get("browser_logo") or {})
+        ai = raw.get("ai")
+        if isinstance(ai, dict):
+            cfg["ai"]["enabled"] = bool(ai.get("enabled", cfg["ai"]["enabled"]))
+            provider = (ai.get("provider") or cfg["ai"]["provider"]).strip().lower()
+            if provider not in ("chatgpt", "gemini"):
+                provider = "chatgpt"
+            cfg["ai"]["provider"] = provider
+            if isinstance(ai.get("chatgpt"), dict):
+                cfg["ai"]["chatgpt"].update(ai.get("chatgpt") or {})
+            if isinstance(ai.get("gemini"), dict):
+                cfg["ai"]["gemini"].update(ai.get("gemini") or {})
+            if isinstance(ai.get("report"), dict):
+                cfg["ai"]["report"].update(ai.get("report") or {})
+
+    for provider in ("chatgpt", "gemini"):
+        block = cfg["ai"].get(provider) if isinstance(cfg["ai"].get(provider), dict) else {}
+        block["api_key"] = (block.get("api_key") or "").strip()
+        block["model"] = (block.get("model") or "").strip() or (
+            "gpt-4o-mini" if provider == "chatgpt" else "gemini-2.5-flash-preview-09-2025"
+        )
+        block["model"] = _normalize_provider_model_id(provider, block["model"])
+        try:
+            timeout_seconds = int(block.get("timeout_seconds") or 30)
+        except Exception:
+            timeout_seconds = 30
+        try:
+            max_tokens = int(block.get("max_tokens") or 900)
+        except Exception:
+            max_tokens = 900
+        block["timeout_seconds"] = max(5, min(timeout_seconds, 180))
+        block["max_tokens"] = max(200, min(max_tokens, 4000))
+        cfg["ai"][provider] = block
+
+    report = cfg["ai"].get("report") if isinstance(cfg["ai"].get("report"), dict) else {}
+    try:
+        lookback = int(report.get("lookback_hours") or 24)
+    except Exception:
+        lookback = 24
+    try:
+        max_samples = int(report.get("max_samples") or 60)
+    except Exception:
+        max_samples = 60
+    report["lookback_hours"] = max(1, min(lookback, 168))
+    report["max_samples"] = max(10, min(max_samples, 300))
+    cfg["ai"]["report"] = report
+    cfg["ai"]["enabled"] = bool(cfg["ai"].get("enabled"))
+    provider = (cfg["ai"].get("provider") or "chatgpt").strip().lower()
+    cfg["ai"]["provider"] = provider if provider in ("chatgpt", "gemini") else "chatgpt"
+    return cfg
+
+
+def _format_model_price(value):
+    if value is None:
+        return "n/a"
+    try:
+        amount = float(value)
+    except Exception:
+        return "n/a"
+    if amount >= 1:
+        return f"${amount:.2f}"
+    if amount >= 0.1:
+        return f"${amount:.3f}".rstrip("0").rstrip(".")
+    return f"${amount:.4f}".rstrip("0").rstrip(".")
+
+
+def _normalize_provider_model_id(provider, model):
+    provider = (provider or "").strip().lower()
+    model = (model or "").strip()
+    if provider == "gemini":
+        if model.startswith("models/"):
+            model = model.split("/", 1)[1].strip()
+    return model
+
+
+def _fetch_chatgpt_model_ids(api_key, timeout_seconds=8):
+    api_key = (api_key or "").strip()
+    if not api_key:
+        return [], ""
+    try:
+        req = urllib.request.Request(
+            "https://api.openai.com/v1/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        with urllib.request.urlopen(req, timeout=max(int(timeout_seconds or 8), 5)) as resp:
+            payload = json.loads(resp.read().decode("utf-8", errors="ignore"))
+        rows = payload.get("data") if isinstance(payload, dict) else []
+        out = []
+        for row in rows or []:
+            model_id = (row.get("id") or "").strip() if isinstance(row, dict) else ""
+            if not model_id:
+                continue
+            low = model_id.lower()
+            if low.startswith(("gpt-", "o1", "o3", "o4", "o5")):
+                out.append(model_id)
+        out = sorted(set(out), key=lambda x: x.lower())
+        return out, ""
+    except Exception:
+        return [], "Unable to auto-load ChatGPT model list from API key."
+
+
+def _fetch_gemini_model_ids(api_key, timeout_seconds=8):
+    api_key = (api_key or "").strip()
+    if not api_key:
+        return [], ""
+    out = set()
+    next_token = ""
+    pages = 0
+    try:
+        while pages < 5:
+            pages += 1
+            query = {"key": api_key, "pageSize": 1000}
+            if next_token:
+                query["pageToken"] = next_token
+            url = "https://generativelanguage.googleapis.com/v1beta/models?" + urllib.parse.urlencode(query)
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=max(int(timeout_seconds or 8), 5)) as resp:
+                payload = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            rows = payload.get("models") if isinstance(payload, dict) else []
+            for row in rows or []:
+                if not isinstance(row, dict):
+                    continue
+                model_name = _normalize_provider_model_id("gemini", row.get("name") or "")
+                methods = row.get("supportedGenerationMethods") if isinstance(row.get("supportedGenerationMethods"), list) else []
+                if not model_name.lower().startswith("gemini-"):
+                    continue
+                if methods and "generateContent" not in methods:
+                    continue
+                out.add(model_name)
+            next_token = (payload.get("nextPageToken") or "").strip() if isinstance(payload, dict) else ""
+            if not next_token:
+                break
+        return sorted(out, key=lambda x: x.lower()), ""
+    except Exception:
+        return [], "Unable to auto-load Gemini model list from API key."
+
+
+def _build_ai_model_options(ai_settings, active_tab):
+    ai_settings = ai_settings or {}
+    catalog_map = {}
+    catalog_order = {}
+    for provider, rows in AI_MODEL_PRICING.items():
+        local_map = {}
+        local_order = []
+        for item in rows or []:
+            model_id = _normalize_provider_model_id(provider, item.get("id") or "")
+            if not model_id:
+                continue
+            local_map[model_id] = {
+                "id": model_id,
+                "label": (item.get("label") or model_id).strip(),
+                "input_per_1m": item.get("input_per_1m"),
+                "output_per_1m": item.get("output_per_1m"),
+                "free_tier": item.get("free_tier"),
+                "recommended_max_tokens": int(item.get("recommended_max_tokens") or 900),
+                "max_tokens_hint": (item.get("max_tokens_hint") or "").strip(),
+            }
+            local_order.append(model_id)
+        catalog_map[provider] = local_map
+        catalog_order[provider] = local_order
+
+    discovered = {"chatgpt": [], "gemini": []}
+    fetch_errors = {"chatgpt": "", "gemini": ""}
+    if active_tab == "ai":
+        chatgpt_key = ((ai_settings.get("chatgpt") or {}).get("api_key") or "").strip()
+        gemini_key = ((ai_settings.get("gemini") or {}).get("api_key") or "").strip()
+        discovered["chatgpt"], fetch_errors["chatgpt"] = _fetch_chatgpt_model_ids(chatgpt_key)
+        discovered["gemini"], fetch_errors["gemini"] = _fetch_gemini_model_ids(gemini_key)
+
+    options = {}
+    for provider in ("chatgpt", "gemini"):
+        selected = _normalize_provider_model_id(provider, ((ai_settings.get(provider) or {}).get("model") or ""))
+        ids = set(catalog_map.get(provider, {}).keys())
+        ids.update([_normalize_provider_model_id(provider, x) for x in discovered.get(provider, []) if x])
+        if selected:
+            ids.add(selected)
+
+        ordered = []
+        for known in catalog_order.get(provider, []):
+            if known in ids:
+                ordered.append(known)
+        for model_id in sorted(ids, key=lambda x: x.lower()):
+            if model_id not in ordered:
+                ordered.append(model_id)
+
+        provider_options = []
+        for model_id in ordered:
+            cat = (catalog_map.get(provider) or {}).get(model_id) or {}
+            input_cost = cat.get("input_per_1m")
+            output_cost = cat.get("output_per_1m")
+            free_tier = cat.get("free_tier")
+            recommended = int(cat.get("recommended_max_tokens") or 900)
+            hint = (cat.get("max_tokens_hint") or "").strip()
+            if input_cost is not None and output_cost is not None:
+                cost_text = f"In { _format_model_price(input_cost) } / Out { _format_model_price(output_cost) } per 1M tokens"
+            else:
+                cost_text = "Pricing n/a (check provider billing page)"
+            if free_tier is True:
+                free_tier_text = "Free Tier: Available"
+            elif free_tier is False:
+                free_tier_text = "Free Tier: Paid only"
+            else:
+                free_tier_text = "Free Tier: Unknown"
+            provider_options.append(
+                {
+                    "id": model_id,
+                    "label": (cat.get("label") or model_id).strip(),
+                    "input_cost_text": _format_model_price(input_cost),
+                    "output_cost_text": _format_model_price(output_cost),
+                    "cost_text": cost_text,
+                    "free_tier": free_tier,
+                    "free_tier_text": free_tier_text,
+                    "recommended_max_tokens": recommended,
+                    "max_tokens_hint": hint or "Set lower values to control report size and cost.",
+                }
+            )
+        options[provider] = provider_options
+
+    return {"options": options, "errors": fetch_errors}
+
+
+def _ai_report_status_badge(status: str):
+    status = (status or "").strip().lower()
+    if status in ("queued", "running"):
+        return "Generating"
+    if status in ("ready", "done"):
+        return "Ready"
+    if status in ("disabled",):
+        return "Disabled"
+    if status in ("error",):
+        return "Error"
+    if status in ("missing_api_key", "missing_key"):
+        return "Missing API Key"
+    return "n/a"
+
+
+def _ai_safe_error(exc: Exception):
+    text = str(exc or "").strip() or "Unknown error"
+    lowered = text.lower()
+    if "unauthorized" in lowered or "invalid api key" in lowered or "permission denied" in lowered:
+        return "Authentication failed. Check API key and model access."
+    if "http 429" in lowered:
+        return "AI rate limit reached. Wait a bit, then generate again."
+    if "http 503" in lowered or "http 502" in lowered or "http 504" in lowered or "http 500" in lowered:
+        return "AI provider is temporarily unavailable. Retry in a few seconds."
+    if len(text) > 220:
+        text = text[:220].rstrip() + "…"
+    return text
+
+
+def _sample_rows_for_ai(rows, max_samples):
+    rows = list(rows or [])
+    if len(rows) <= max_samples:
+        return rows
+    if max_samples <= 1:
+        return [rows[-1]]
+    out = []
+    last_idx = len(rows) - 1
+    for idx in range(max_samples):
+        pick = round((idx * last_idx) / (max_samples - 1))
+        out.append(rows[pick])
+    return out
+
+
+def _normalize_ai_recommendation(value):
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    text = str(value or "").strip().lower()
+    if text in ("1", "true", "yes", "y", "recommend", "recommended"):
+        return "yes"
+    if text in ("0", "false", "no", "n", "not_recommended", "not-recommended"):
+        return "no"
+    return "unknown"
+
+
+def _normalize_ai_potential_problems(value):
+    if isinstance(value, str):
+        rows = [line.strip("-• ").strip() for line in value.splitlines() if line.strip()]
+    elif isinstance(value, list):
+        rows = [str(item or "").strip() for item in value if str(item or "").strip()]
+    else:
+        rows = []
+    return rows[:8]
+
+
+def _empty_surveillance_ai_report():
+    return {
+        "status": "",
+        "error": "",
+        "generated_at": "",
+        "cycle_index": 1,
+        "provider": "",
+        "model": "",
+        "text": "",
+        "recommend_needs_manual_fix": "unknown",
+        "recommendation_reason": "",
+        "potential_problems": [],
+        "provider_override": "",
+        "model_override": "",
+    }
+
+
+def _normalize_surveillance_ai_report(raw):
+    report = _empty_surveillance_ai_report()
+    if isinstance(raw, dict):
+        report["status"] = (raw.get("status") or "").strip().lower()
+        report["error"] = (raw.get("error") or "").strip()
+        report["generated_at"] = (raw.get("generated_at") or "").strip()
+        try:
+            report["cycle_index"] = max(int(raw.get("cycle_index") or 1), 1)
+        except Exception:
+            report["cycle_index"] = 1
+        report["provider"] = (raw.get("provider") or "").strip()
+        report["model"] = (raw.get("model") or "").strip()
+        report["text"] = (raw.get("text") or "").strip()
+        report["recommend_needs_manual_fix"] = _normalize_ai_recommendation(raw.get("recommend_needs_manual_fix"))
+        report["recommendation_reason"] = (raw.get("recommendation_reason") or "").strip()
+        report["potential_problems"] = _normalize_ai_potential_problems(raw.get("potential_problems"))
+        report["provider_override"] = (raw.get("provider_override") or "").strip().lower()
+        report["model_override"] = (raw.get("model_override") or "").strip()
+    if report["text"] and report["status"] in ("error", "missing_api_key", "missing_key", "disabled"):
+        report["status"] = "ready"
+        report["error"] = ""
+    return report
+
+
+def _surveillance_ai_report_has_content(report):
+    report = report or {}
+    return bool(
+        (report.get("status") or "").strip()
+        or (report.get("error") or "").strip()
+        or (report.get("generated_at") or "").strip()
+        or int(report.get("cycle_index") or 0) > 1
+        or (report.get("provider") or "").strip()
+        or (report.get("model") or "").strip()
+        or (report.get("text") or "").strip()
+    )
+
+
+def _normalize_surveillance_ai_history(raw):
+    out = []
+    if not isinstance(raw, list):
+        return out
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        stage = (item.get("stage") or "").strip().lower()
+        if stage not in _SURV_AI_STAGES:
+            continue
+        generated_at = (item.get("generated_at") or "").strip()
+        text = (item.get("text") or "").strip()
+        if not generated_at and not text:
+            continue
+        try:
+            cycle_index = max(int(item.get("cycle_index") or 1), 1)
+        except Exception:
+            cycle_index = 1
+        out.append(
+            {
+                "stage": stage,
+                "cycle_index": cycle_index,
+                "generated_at": generated_at,
+                "provider": (item.get("provider") or "").strip(),
+                "model": (item.get("model") or "").strip(),
+                "status": (item.get("status") or "").strip().lower(),
+                "error": (item.get("error") or "").strip(),
+                "text": text,
+                "recommend_needs_manual_fix": _normalize_ai_recommendation(item.get("recommend_needs_manual_fix")),
+                "recommendation_reason": (item.get("recommendation_reason") or "").strip(),
+                "potential_problems": _normalize_ai_potential_problems(item.get("potential_problems")),
+            }
+        )
+    if len(out) > 400:
+        out = out[-400:]
+    return out
+
+
+def _surveillance_fixed_cycle_count(entry):
+    history = _normalize_surveillance_stage_history((entry or {}).get("stage_history"))
+    count = 0
+    for item in history:
+        action = (item.get("action") or "").strip().lower()
+        from_stage = (item.get("from") or "").strip().lower()
+        to_stage = (item.get("to") or "").strip().lower()
+        if action == "mark_fixed" or (from_stage == "level2" and to_stage == "observe"):
+            count += 1
+    if count <= 0 and (entry or {}).get("last_fixed_at"):
+        count = 1
+    return max(count, 0)
+
+
+def _surveillance_cycle_index_for_stage(entry, stage):
+    stage = _resolve_surveillance_ai_stage(entry, stage)
+    fixed_count = _surveillance_fixed_cycle_count(entry)
+    if stage == "observe":
+        return max(fixed_count, 1)
+    return max(fixed_count + 1, 1)
+
+
+def _legacy_surveillance_ai_report(entry):
+    if not isinstance(entry, dict):
+        return _empty_surveillance_ai_report()
+    raw = {
+        "status": (entry.get("ai_report_status") or "").strip().lower(),
+        "error": (entry.get("ai_report_error") or "").strip(),
+        "generated_at": (entry.get("ai_report_generated_at") or "").strip(),
+        "provider": (entry.get("ai_report_provider") or "").strip(),
+        "model": (entry.get("ai_report_model") or "").strip(),
+        "text": (entry.get("ai_report_text") or "").strip(),
+        "recommend_needs_manual_fix": entry.get("ai_recommend_needs_manual_fix"),
+        "recommendation_reason": (entry.get("ai_recommendation_reason") or "").strip(),
+        "potential_problems": entry.get("ai_potential_problems"),
+        "provider_override": (entry.get("ai_report_provider_override") or "").strip().lower(),
+        "model_override": (entry.get("ai_report_model_override") or "").strip(),
+    }
+    return _normalize_surveillance_ai_report(raw)
+
+
+def _legacy_surveillance_ai_stage(entry, legacy_report):
+    status = ((entry or {}).get("status") or "under").strip().lower()
+    if status not in _SURV_AI_STAGES:
+        status = "under"
+    generated_at = _parse_iso_z((legacy_report or {}).get("generated_at"))
+    level2_at = _parse_iso_z((entry or {}).get("level2_at"))
+    fixed_at = _parse_iso_z((entry or {}).get("last_fixed_at"))
+    if status == "level2":
+        if generated_at and level2_at and generated_at < level2_at:
+            return "under"
+        return "level2"
+    if status == "under" and fixed_at:
+        if generated_at and generated_at >= fixed_at:
+            return "observe"
+        return "under"
+    return "under"
+
+
+def _entry_surveillance_ai_reports(entry):
+    if not isinstance(entry, dict):
+        return {stage: _empty_surveillance_ai_report() for stage in _SURV_AI_STAGES}
+    raw_reports = entry.get("ai_reports") if isinstance(entry.get("ai_reports"), dict) else {}
+    reports = {stage: _normalize_surveillance_ai_report(raw_reports.get(stage)) for stage in _SURV_AI_STAGES}
+    has_stage_content = any(_surveillance_ai_report_has_content(reports.get(stage)) for stage in _SURV_AI_STAGES)
+    if not has_stage_content:
+        legacy = _legacy_surveillance_ai_report(entry)
+        if _surveillance_ai_report_has_content(legacy):
+            stage = _legacy_surveillance_ai_stage(entry, legacy)
+            reports[stage] = legacy
+    entry["ai_reports"] = reports
+    entry["ai_report_history"] = _normalize_surveillance_ai_history(entry.get("ai_report_history"))
+    pending_stage = (entry.get("ai_report_pending_stage") or "").strip().lower()
+    if pending_stage not in _SURV_AI_STAGES:
+        pending_stage = ""
+    entry["ai_report_pending_stage"] = pending_stage
+    return reports
+
+
+def _resolve_surveillance_ai_stage(entry, fallback_stage=""):
+    fallback_stage = (fallback_stage or "").strip().lower()
+    if fallback_stage in _SURV_AI_STAGES:
+        return fallback_stage
+    if isinstance(entry, dict):
+        pending = (entry.get("ai_report_pending_stage") or "").strip().lower()
+        if pending in _SURV_AI_STAGES:
+            return pending
+        reports = _entry_surveillance_ai_reports(entry)
+        for stage in _SURV_AI_STAGES:
+            if (reports.get(stage, {}).get("status") or "").strip().lower() == "queued":
+                return stage
+        status = (entry.get("status") or "under").strip().lower()
+        if status == "level2":
+            return "level2"
+        if status == "under" and (entry.get("last_fixed_at") or "").strip():
+            return "observe"
+    return "under"
+
+
+def _queue_surveillance_ai_report(entry, stage="under", now_iso=None, reset_text=True):
+    if not isinstance(entry, dict):
+        return
+    now_iso = (now_iso or "").strip() or utc_now_iso()
+    stage = _resolve_surveillance_ai_stage(entry, stage)
+    cycle_index = _surveillance_cycle_index_for_stage(entry, stage)
+    reports = _entry_surveillance_ai_reports(entry)
+    report = reports.get(stage) or _empty_surveillance_ai_report()
+    report["status"] = "queued"
+    report["error"] = ""
+    report["generated_at"] = ""
+    report["cycle_index"] = cycle_index
+    report["provider"] = ""
+    report["model"] = ""
+    report["recommend_needs_manual_fix"] = "unknown"
+    report["recommendation_reason"] = ""
+    report["potential_problems"] = []
+    report["provider_override"] = ""
+    report["model_override"] = ""
+    if reset_text:
+        report["text"] = ""
+    reports[stage] = report
+    entry["ai_reports"] = reports
+    entry["ai_report_pending_stage"] = stage
+    entry["updated_at"] = now_iso
+
+
+def _build_surveillance_ai_context(pppoe, entry, ai_cfg):
+    pppoe = (pppoe or "").strip()
+    entry = entry or {}
+    lookback_hours = int((ai_cfg.get("report") or {}).get("lookback_hours") or 24)
+    max_samples = int((ai_cfg.get("report") or {}).get("max_samples") or 60)
+    now = datetime.utcnow().replace(microsecond=0)
+    since = now - timedelta(hours=max(lookback_hours, 1))
+    since_iso = since.isoformat() + "Z"
+    until_iso = now.isoformat() + "Z"
+    account_id = _accounts_ping_account_id_for_pppoe(pppoe)
+
+    latest_map = get_latest_accounts_ping_map([account_id])
+    latest = latest_map.get(account_id) if isinstance(latest_map, dict) else {}
+    ping_series = get_accounts_ping_series_range(account_id, since_iso, until_iso)
+    ping_series = _sample_rows_for_ai(ping_series, max_samples)
+    ping_samples = []
+    down_samples = 0
+    for row in ping_series:
+        ok = bool(row.get("ok"))
+        if not ok:
+            down_samples += 1
+        ping_samples.append(
+            {
+                "ts": row.get("timestamp"),
+                "ok": ok,
+                "loss": row.get("loss"),
+                "avg_ms": row.get("avg_ms"),
+                "mode": row.get("mode"),
+                "ip": row.get("ip"),
+            }
+        )
+
+    ping_window_stats = get_accounts_ping_window_stats([account_id], since_iso)
+    ping_window = ping_window_stats.get(account_id) if isinstance(ping_window_stats, dict) else {}
+
+    optical_latest_map = get_latest_optical_by_pppoe([pppoe])
+    optical_latest = optical_latest_map.get(pppoe) if isinstance(optical_latest_map, dict) else {}
+    device_id = (optical_latest.get("device_id") or "").strip() if isinstance(optical_latest, dict) else ""
+    optical_samples_raw = get_optical_results_for_device_since(device_id, since_iso) if device_id else []
+    optical_samples_raw = _sample_rows_for_ai(optical_samples_raw, max_samples)
+    optical_samples = [
+        {"ts": row.get("timestamp"), "rx": row.get("rx"), "tx": row.get("tx")} for row in optical_samples_raw
+    ]
+
+    usage_series = get_pppoe_usage_series_since("", pppoe, since_iso)
+    usage_series = _sample_rows_for_ai(usage_series, max_samples)
+    usage_points = []
+    usage_zero_count = 0
+    usage_max_total = 0.0
+    for row in usage_series:
+        rx_bps = float(row.get("rx_bps") or 0.0)
+        tx_bps = float(row.get("tx_bps") or 0.0)
+        total_bps = max(rx_bps, 0.0) + max(tx_bps, 0.0)
+        if total_bps < 1.0:
+            usage_zero_count += 1
+        usage_max_total = max(usage_max_total, total_bps)
+        usage_points.append(
+            {
+                "ts": row.get("timestamp"),
+                "rx_bps": rx_bps,
+                "tx_bps": tx_bps,
+                "total_bps": total_bps,
+                "host_count": row.get("host_count"),
+            }
+        )
+
+    return {
+        "timeframe": {
+            "from_utc": since_iso,
+            "to_utc": until_iso,
+            "lookback_hours": lookback_hours,
+        },
+        "account": {
+            "pppoe": pppoe,
+            "status": (entry.get("status") or "").strip(),
+            "source": (entry.get("source") or "").strip(),
+            "added_mode": (entry.get("added_mode") or "").strip(),
+            "added_at": (entry.get("added_at") or "").strip(),
+            "moved_to_needs_manual_fix_at": (entry.get("level2_at") or "").strip(),
+            "needs_manual_fix_reason": (entry.get("level2_reason") or "").strip(),
+            "last_ip": (entry.get("ip") or "").strip(),
+        },
+        "accounts_ping": {
+            "latest": {
+                "timestamp": latest.get("timestamp") if isinstance(latest, dict) else None,
+                "ok": latest.get("ok") if isinstance(latest, dict) else None,
+                "loss": latest.get("loss") if isinstance(latest, dict) else None,
+                "avg_ms": latest.get("avg_ms") if isinstance(latest, dict) else None,
+                "ip": latest.get("ip") if isinstance(latest, dict) else None,
+                "mode": latest.get("mode") if isinstance(latest, dict) else None,
+            },
+            "window_summary": {
+                "sample_total": int((ping_window or {}).get("total") or 0),
+                "failure_total": int((ping_window or {}).get("failures") or 0),
+                "loss_avg": (ping_window or {}).get("loss_avg"),
+                "latency_avg_ms": (ping_window or {}).get("avg_ms_avg"),
+                "down_sample_total": down_samples,
+            },
+            "series": ping_samples,
+        },
+        "optical": {
+            "latest": optical_latest if isinstance(optical_latest, dict) else {},
+            "series": optical_samples,
+        },
+        "usage": {
+            "series": usage_points,
+            "max_total_bps": usage_max_total,
+            "zero_usage_samples": usage_zero_count,
+            "total_samples": len(usage_points),
+        },
+    }
+
+
+def _set_surveillance_ai_fields(pppoe, stage, report_fields=None, entry_fields=None, append_history=None):
+    pppoe = (pppoe or "").strip()
+    if not pppoe:
+        return False
+    stage = _resolve_surveillance_ai_stage({}, stage)
+    settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
+    entry_map = _surveillance_entry_map(settings)
+    entry = entry_map.get(pppoe)
+    if not isinstance(entry, dict):
+        return False
+    reports = _entry_surveillance_ai_reports(entry)
+    report = reports.get(stage) or _empty_surveillance_ai_report()
+    for key, value in (report_fields or {}).items():
+        report[key] = value
+    reports[stage] = _normalize_surveillance_ai_report(report)
+    entry["ai_reports"] = reports
+    if isinstance(append_history, dict):
+        history = _normalize_surveillance_ai_history(entry.get("ai_report_history"))
+        try:
+            history_cycle_index = max(int(append_history.get("cycle_index") or report.get("cycle_index") or 1), 1)
+        except Exception:
+            history_cycle_index = 1
+        item = {
+            "stage": stage,
+            "cycle_index": history_cycle_index,
+            "generated_at": (append_history.get("generated_at") or report.get("generated_at") or "").strip(),
+            "provider": (append_history.get("provider") or report.get("provider") or "").strip(),
+            "model": (append_history.get("model") or report.get("model") or "").strip(),
+            "status": (append_history.get("status") or report.get("status") or "").strip().lower(),
+            "error": (append_history.get("error") or report.get("error") or "").strip(),
+            "text": (append_history.get("text") or report.get("text") or "").strip(),
+            "recommend_needs_manual_fix": _normalize_ai_recommendation(
+                append_history.get("recommend_needs_manual_fix") or report.get("recommend_needs_manual_fix")
+            ),
+            "recommendation_reason": (append_history.get("recommendation_reason") or report.get("recommendation_reason") or "").strip(),
+            "potential_problems": _normalize_ai_potential_problems(
+                append_history.get("potential_problems") or report.get("potential_problems")
+            ),
+        }
+        if item.get("generated_at") or item.get("text"):
+            history.append(item)
+            entry["ai_report_history"] = _normalize_surveillance_ai_history(history)
+    for key, value in (entry_fields or {}).items():
+        entry[key] = value
+    entry["updated_at"] = utc_now_iso()
+    settings["entries"] = list(entry_map.values())
+    save_settings("surveillance", settings)
+    return True
+
+
+def _run_surveillance_ai_report(pppoe):
+    pppoe = (pppoe or "").strip()
+    if not pppoe:
+        return
+    stage = "under"
+    try:
+        system_cfg = normalize_system_settings(get_settings("system", SYSTEM_DEFAULTS))
+        ai_cfg = system_cfg.get("ai") if isinstance(system_cfg.get("ai"), dict) else {}
+
+        settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
+        entry_map = _surveillance_entry_map(settings)
+        entry = entry_map.get(pppoe) or {}
+        stage = _resolve_surveillance_ai_stage(entry)
+        cycle_index = _surveillance_cycle_index_for_stage(entry, stage)
+
+        if not ai_cfg or not ai_cfg.get("enabled"):
+            _set_surveillance_ai_fields(
+                pppoe,
+                stage,
+                report_fields={
+                    "status": "disabled",
+                    "error": "AI Investigator is disabled in System Settings.",
+                    "generated_at": utc_now_iso(),
+                    "cycle_index": cycle_index,
+                    "recommend_needs_manual_fix": "unknown",
+                    "recommendation_reason": "",
+                    "potential_problems": [],
+                },
+                entry_fields={"ai_report_pending_stage": ""},
+            )
+            return
+
+        effective_ai_cfg = copy.deepcopy(ai_cfg if isinstance(ai_cfg, dict) else {})
+        reports = _entry_surveillance_ai_reports(entry)
+        stage_report = reports.get(stage) or _empty_surveillance_ai_report()
+        override_provider = (stage_report.get("provider_override") or "").strip().lower()
+        override_model = (stage_report.get("model_override") or "").strip()
+        if override_provider in ("chatgpt", "gemini"):
+            effective_ai_cfg["provider"] = override_provider
+        provider = (effective_ai_cfg.get("provider") or "chatgpt").strip().lower()
+        if provider not in ("chatgpt", "gemini"):
+            provider = "chatgpt"
+            effective_ai_cfg["provider"] = provider
+        provider_cfg = effective_ai_cfg.get(provider) if isinstance(effective_ai_cfg.get(provider), dict) else {}
+        if override_model:
+            provider_cfg["model"] = _normalize_provider_model_id(provider, override_model)
+            effective_ai_cfg[provider] = provider_cfg
+        if not (provider_cfg.get("api_key") or "").strip():
+            _set_surveillance_ai_fields(
+                pppoe,
+                stage,
+                report_fields={
+                    "status": "missing_api_key",
+                    "error": f"Missing API key for {provider}.",
+                    "generated_at": utc_now_iso(),
+                    "cycle_index": cycle_index,
+                    "recommend_needs_manual_fix": "unknown",
+                    "recommendation_reason": "",
+                    "potential_problems": [],
+                    "provider_override": "",
+                    "model_override": "",
+                },
+                entry_fields={"ai_report_pending_stage": ""},
+            )
+            return
+
+        _set_surveillance_ai_fields(
+            pppoe,
+            stage,
+            report_fields={
+                "status": "running",
+                "error": "",
+                "generated_at": "",
+                "cycle_index": cycle_index,
+                "recommend_needs_manual_fix": "unknown",
+                "recommendation_reason": "",
+                "potential_problems": [],
+            },
+        )
+        settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
+        entry_map = _surveillance_entry_map(settings)
+        entry = entry_map.get(pppoe) or {}
+        context = _build_surveillance_ai_context(pppoe, entry, effective_ai_cfg)
+        try:
+            report = generate_investigation_report(effective_ai_cfg, context)
+        except AIInvestigatorError as exc:
+            err_text = str(exc or "").lower()
+            if "timed out" not in err_text:
+                raise
+            retry_ai_cfg = copy.deepcopy(effective_ai_cfg if isinstance(effective_ai_cfg, dict) else {})
+            retry_report_cfg = retry_ai_cfg.get("report") if isinstance(retry_ai_cfg.get("report"), dict) else {}
+            current_samples = int(retry_report_cfg.get("max_samples") or 60)
+            current_hours = int(retry_report_cfg.get("lookback_hours") or 24)
+            retry_report_cfg["max_samples"] = max(10, min(current_samples // 2 if current_samples > 20 else 20, 40))
+            retry_report_cfg["lookback_hours"] = max(1, min(current_hours, 48))
+            retry_ai_cfg["report"] = retry_report_cfg
+            context = _build_surveillance_ai_context(pppoe, entry, retry_ai_cfg)
+            report = generate_investigation_report(retry_ai_cfg, context)
+        ready_at_iso = utc_now_iso()
+        _set_surveillance_ai_fields(
+            pppoe,
+            stage,
+            report_fields={
+                "status": "ready",
+                "error": "",
+                "generated_at": ready_at_iso,
+                "cycle_index": cycle_index,
+                "provider": report.get("provider") or provider,
+                "model": report.get("model") or (provider_cfg.get("model") or ""),
+                "text": (report.get("text") or "").strip(),
+                "recommend_needs_manual_fix": _normalize_ai_recommendation(report.get("recommend_needs_manual_fix")),
+                "recommendation_reason": (report.get("recommendation_reason") or "").strip(),
+                "potential_problems": _normalize_ai_potential_problems(report.get("potential_problems")),
+                "provider_override": "",
+                "model_override": "",
+            },
+            entry_fields={"ai_report_pending_stage": ""},
+            append_history={
+                "stage": stage,
+                "cycle_index": cycle_index,
+                "generated_at": ready_at_iso,
+                "provider": report.get("provider") or provider,
+                "model": report.get("model") or (provider_cfg.get("model") or ""),
+                "status": "ready",
+                "error": "",
+                "text": (report.get("text") or "").strip(),
+                "recommend_needs_manual_fix": _normalize_ai_recommendation(report.get("recommend_needs_manual_fix")),
+                "recommendation_reason": (report.get("recommendation_reason") or "").strip(),
+                "potential_problems": _normalize_ai_potential_problems(report.get("potential_problems")),
+            },
+        )
+    except AIInvestigatorError as exc:
+        _set_surveillance_ai_fields(
+            pppoe,
+            stage,
+            report_fields={
+                "status": "error",
+                "error": _ai_safe_error(exc),
+                "generated_at": utc_now_iso(),
+                "cycle_index": cycle_index,
+                "recommend_needs_manual_fix": "unknown",
+                "recommendation_reason": "",
+                "potential_problems": [],
+                "provider_override": "",
+                "model_override": "",
+            },
+            entry_fields={"ai_report_pending_stage": ""},
+        )
+    except Exception as exc:
+        _set_surveillance_ai_fields(
+            pppoe,
+            stage,
+            report_fields={
+                "status": "error",
+                "error": _ai_safe_error(exc),
+                "generated_at": utc_now_iso(),
+                "cycle_index": cycle_index,
+                "recommend_needs_manual_fix": "unknown",
+                "recommendation_reason": "",
+                "potential_problems": [],
+                "provider_override": "",
+                "model_override": "",
+            },
+            entry_fields={"ai_report_pending_stage": ""},
+        )
+    finally:
+        with _surv_ai_lock:
+            _surv_ai_running.discard(pppoe)
+        _start_next_queued_surveillance_ai_report(exclude_pppoe=pppoe)
+
+
+def _start_surveillance_ai_report(pppoe):
+    pppoe = (pppoe or "").strip()
+    if not pppoe:
+        return False
+    with _surv_ai_lock:
+        if pppoe in _surv_ai_running:
+            return False
+        if len(_surv_ai_running) >= max(int(_SURV_AI_MAX_PARALLEL), 1):
+            return False
+        _surv_ai_running.add(pppoe)
+    worker = threading.Thread(target=_run_surveillance_ai_report, args=(pppoe,), daemon=True)
+    worker.start()
+    return True
+
+
+def _start_next_queued_surveillance_ai_report(exclude_pppoe=""):
+    exclude_pppoe = (exclude_pppoe or "").strip()
+    try:
+        settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
+        entry_map = _surveillance_entry_map(settings)
+    except Exception:
+        return False
+    for pppoe, entry in entry_map.items():
+        if not isinstance(entry, dict):
+            continue
+        pppoe = (pppoe or "").strip()
+        if not pppoe or pppoe == exclude_pppoe:
+            continue
+        status = (entry.get("status") or "under").strip().lower()
+        if status not in ("under", "level2"):
+            continue
+        reports = _entry_surveillance_ai_reports(entry)
+        queued_stage = ""
+        for stage in _SURV_AI_STAGES:
+            if (reports.get(stage, {}).get("status") or "").strip().lower() == "queued":
+                queued_stage = stage
+                break
+        if not queued_stage:
+            continue
+        entry["ai_report_pending_stage"] = queued_stage
+        settings["entries"] = list(entry_map.values())
+        save_settings("surveillance", settings)
+        if _start_surveillance_ai_report(pppoe):
+            return True
+    return False
+
+
 def normalize_surveillance_settings(raw):
     cfg = copy.deepcopy(SURVEILLANCE_DEFAULTS)
     if isinstance(raw, dict):
@@ -5701,6 +7698,30 @@ def normalize_surveillance_settings(raw):
     now_iso = utc_now_iso()
     cfg.setdefault("stability", {})
     cfg["stability"]["require_optical"] = True
+    try:
+        fixed_minutes = int(cfg["stability"].get("fixed_observation_minutes", cfg["stability"].get("stable_window_minutes", 10)) or 10)
+    except Exception:
+        fixed_minutes = int(cfg["stability"].get("stable_window_minutes", 10) or 10)
+    if fixed_minutes < 1:
+        fixed_minutes = 1
+    cfg["stability"]["fixed_observation_minutes"] = fixed_minutes
+    try:
+        loss_max_minutes = float(cfg["stability"].get("loss_max_minutes", 10.0) or 10.0)
+    except Exception:
+        loss_max_minutes = 10.0
+    if loss_max_minutes < 0:
+        loss_max_minutes = 0.0
+    cfg["stability"]["loss_max_minutes"] = loss_max_minutes
+    try:
+        loss_event_max_count = int(cfg["stability"].get("loss_event_max_count", 5) or 5)
+    except Exception:
+        loss_event_max_count = 5
+    if loss_event_max_count < 0:
+        loss_event_max_count = 0
+    cfg["stability"]["loss_event_max_count"] = loss_event_max_count
+    cfg["stability"].pop("loss_max_pct", None)
+    cfg["stability"].pop("level2_autofix_after_minutes", None)
+    cfg["stability"].pop("escalate_after_minutes", None)
     cfg.setdefault("auto_add", {})
     if not isinstance(cfg["auto_add"], dict):
         cfg["auto_add"] = copy.deepcopy(SURVEILLANCE_DEFAULTS.get("auto_add") or {})
@@ -5747,6 +7768,10 @@ def normalize_surveillance_settings(raw):
         status = (entry.get("status") or "under").strip().lower()
         if status not in ("under", "level2"):
             status = "under"
+        ai_reports = _entry_surveillance_ai_reports(entry)
+        pending_stage = _resolve_surveillance_ai_stage(entry, entry.get("ai_report_pending_stage") or "")
+        if (ai_reports.get(pending_stage, {}).get("status") or "").strip().lower() != "queued":
+            pending_stage = ""
         normalized.append(
             {
                 "pppoe": pppoe,
@@ -5755,14 +7780,20 @@ def normalize_surveillance_settings(raw):
                 "source": (entry.get("source") or "").strip(),
                 "status": status,
                 "added_at": (entry.get("added_at") or "").strip() or now_iso,
+                "first_added_at": (entry.get("first_added_at") or entry.get("added_at") or "").strip() or now_iso,
                 "updated_at": (entry.get("updated_at") or "").strip() or now_iso,
                 "level2_at": (entry.get("level2_at") or "").strip(),
+                "level2_reason": (entry.get("level2_reason") or "").strip(),
                 "last_fixed_at": (entry.get("last_fixed_at") or "").strip(),
                 "last_fixed_reason": (entry.get("last_fixed_reason") or "").strip(),
                 "last_fixed_mode": (entry.get("last_fixed_mode") or "").strip(),
                 "added_mode": (entry.get("added_mode") or "").strip().lower() or "manual",
                 "auto_source": (entry.get("auto_source") or "").strip(),
                 "auto_reason": (entry.get("auto_reason") or "").strip(),
+                "stage_history": _normalize_surveillance_stage_history(entry.get("stage_history")),
+                "ai_reports": ai_reports,
+                "ai_report_history": _normalize_surveillance_ai_history(entry.get("ai_report_history")),
+                "ai_report_pending_stage": pending_stage,
             }
         )
     cfg["entries"] = normalized
@@ -5783,6 +7814,143 @@ def _surveillance_entry_map(settings):
     return merged
 
 
+def _normalize_surveillance_stage_history(raw_items):
+    out = []
+    if not isinstance(raw_items, list):
+        return out
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        ts = (item.get("ts") or item.get("at") or "").strip()
+        if not ts:
+            ts = utc_now_iso()
+        from_stage = (item.get("from") or item.get("from_stage") or "").strip().lower()
+        to_stage = (item.get("to") or item.get("to_stage") or "").strip().lower()
+        reason = (item.get("reason") or item.get("note") or "").strip()
+        action = (item.get("action") or "").strip().lower()
+        actor = (item.get("actor") or "admin").strip().lower() or "admin"
+        out.append(
+            {
+                "ts": ts,
+                "from": from_stage,
+                "to": to_stage,
+                "reason": reason[:500],
+                "action": action[:64],
+                "actor": actor[:32],
+            }
+        )
+    if len(out) > 250:
+        out = out[-250:]
+    return out
+
+
+def _append_surveillance_stage_history(entry, from_stage, to_stage, reason="", action="", at_iso=""):
+    if not isinstance(entry, dict):
+        return
+    history = _normalize_surveillance_stage_history(entry.get("stage_history"))
+    history.append(
+        {
+            "ts": (at_iso or "").strip() or utc_now_iso(),
+            "from": (from_stage or "").strip().lower(),
+            "to": (to_stage or "").strip().lower(),
+            "reason": (reason or "").strip()[:500],
+            "action": (action or "").strip().lower()[:64],
+            "actor": "admin",
+        }
+    )
+    entry["stage_history"] = _normalize_surveillance_stage_history(history)
+
+
+def _surveillance_stage_seconds(entry, ended_at=None):
+    end_dt = ended_at if isinstance(ended_at, datetime) else datetime.utcnow()
+    added_at = _parse_iso_z((entry or {}).get("added_at"))
+    level2_at = _parse_iso_z((entry or {}).get("level2_at"))
+    fixed_at = _parse_iso_z((entry or {}).get("last_fixed_at"))
+    status = ((entry or {}).get("status") or "under").strip().lower()
+
+    under_seconds = 0
+    level2_seconds = 0
+    observe_seconds = 0
+
+    if not added_at:
+        return under_seconds, level2_seconds, observe_seconds
+
+    if status == "level2":
+        if level2_at and level2_at > added_at:
+            under_seconds = max(int((level2_at - added_at).total_seconds()), 0)
+            level2_seconds = max(int((end_dt - level2_at).total_seconds()), 0)
+        else:
+            level2_seconds = max(int((end_dt - added_at).total_seconds()), 0)
+        return under_seconds, level2_seconds, observe_seconds
+
+    is_observation = bool(fixed_at and fixed_at >= added_at)
+    if is_observation:
+        observe_seconds = max(int((end_dt - fixed_at).total_seconds()), 0)
+    else:
+        under_seconds = max(int((end_dt - added_at).total_seconds()), 0)
+    return under_seconds, level2_seconds, observe_seconds
+
+
+def _normalize_surveillance_stage(stage_value):
+    stage = (stage_value or "").strip().lower()
+    if stage in ("under", "level2", "observe"):
+        return stage
+    return "under"
+
+
+def _surveillance_entry_anchors(entry, stage="under", now_utc=None):
+    now = now_utc if isinstance(now_utc, datetime) else datetime.utcnow().replace(microsecond=0)
+    stage = _normalize_surveillance_stage(stage)
+    entry = entry if isinstance(entry, dict) else {}
+
+    added_iso = (entry.get("added_at") or "").strip()
+    fixed_iso = (entry.get("last_fixed_at") or "").strip()
+    first_added_iso = (entry.get("first_added_at") or "").strip() or added_iso
+
+    added_dt = _parse_iso_z(added_iso)
+    fixed_dt = _parse_iso_z(fixed_iso)
+    first_added_dt = _parse_iso_z(first_added_iso)
+
+    if not added_dt:
+        added_dt = now
+        added_iso = now.isoformat() + "Z"
+    if not first_added_dt:
+        first_added_dt = added_dt
+        first_added_iso = added_iso
+
+    checker_anchor_iso = added_iso
+    checker_anchor_dt = added_dt
+    checker_anchor_source = "added"
+    if fixed_dt and fixed_iso and fixed_dt <= now:
+        checker_anchor_iso = fixed_iso
+        checker_anchor_dt = fixed_dt
+        checker_anchor_source = "fixed"
+
+    stage_anchor_iso = added_iso
+    stage_anchor_dt = added_dt
+    stage_anchor_source = "added"
+    if stage == "observe" and fixed_dt and fixed_iso and fixed_dt <= now:
+        stage_anchor_iso = fixed_iso
+        stage_anchor_dt = fixed_dt
+        stage_anchor_source = "fixed"
+
+    return {
+        "stage": stage,
+        "added_iso": added_iso,
+        "added_dt": added_dt,
+        "fixed_iso": fixed_iso,
+        "fixed_dt": fixed_dt,
+        "first_added_iso": first_added_iso,
+        "first_added_dt": first_added_dt,
+        "checker_anchor_iso": checker_anchor_iso,
+        "checker_anchor_dt": checker_anchor_dt,
+        "checker_anchor_source": checker_anchor_source,
+        "stage_anchor_iso": stage_anchor_iso,
+        "stage_anchor_dt": stage_anchor_dt,
+        "stage_anchor_source": stage_anchor_source,
+    }
+
+
 @app.get("/surveillance", response_class=HTMLResponse)
 async def surveillance_page(request: Request):
     raw = get_settings("surveillance", SURVEILLANCE_DEFAULTS)
@@ -5792,7 +7960,7 @@ async def surveillance_page(request: Request):
 
     active_tab = (request.query_params.get("tab") or "").strip().lower()
     focus = (request.query_params.get("focus") or "").strip()
-    if active_tab not in ("under", "level2", "history", "settings"):
+    if active_tab not in ("under", "observe", "level2", "history", "settings"):
         active_tab = ""
     if focus and focus in entry_map and not active_tab:
         active_tab = "level2" if (entry_map.get(focus, {}).get("status") == "level2") else "under"
@@ -5805,12 +7973,52 @@ async def surveillance_page(request: Request):
     stab_cfg = settings.get("stability", {}) or {}
     stable_window_minutes = max(int(stab_cfg.get("stable_window_minutes", 10) or 10), 1)
     stable_window_days = stable_window_minutes / 1440.0
-    now = datetime.utcnow()
-    since_iso = (now - timedelta(minutes=stable_window_minutes)).replace(microsecond=0).isoformat() + "Z"
+    fixed_observation_minutes = max(
+        int(stab_cfg.get("fixed_observation_minutes", stable_window_minutes) or stable_window_minutes),
+        1,
+    )
+    fixed_observation_days = fixed_observation_minutes / 1440.0
+    now = datetime.utcnow().replace(microsecond=0)
+    now_iso = now.isoformat() + "Z"
+
+    checker_anchor_by_pppoe = {}
+    checker_since_by_account = {}
+    for pppoe in pppoes:
+        entry = entry_map.get(pppoe) or {}
+        added_iso = (entry.get("added_at") or "").strip()
+        fixed_iso = (entry.get("last_fixed_at") or "").strip()
+        added_dt = _parse_iso_z(added_iso)
+        fixed_dt = _parse_iso_z(fixed_iso)
+
+        anchor_iso = added_iso or now_iso
+        anchor_dt = added_dt or now
+        anchor_source = "added"
+        if fixed_dt and fixed_iso and fixed_dt <= now:
+            anchor_iso = fixed_iso
+            anchor_dt = fixed_dt
+            anchor_source = "fixed"
+
+        checker_anchor_by_pppoe[pppoe] = {
+            "since_iso": anchor_iso,
+            "since_dt": anchor_dt,
+            "source": anchor_source,
+        }
+
+        account_id = _accounts_ping_account_id_for_ip(pppoe)
+        if not account_id:
+            continue
+        current_since = checker_since_by_account.get(account_id)
+        if not current_since:
+            checker_since_by_account[account_id] = anchor_iso
+            continue
+        current_dt = _parse_iso_z(current_since)
+        if current_dt is None or anchor_dt > current_dt:
+            checker_since_by_account[account_id] = anchor_iso
 
     latest_map = get_latest_accounts_ping_map(account_ids)
-    stats_map = get_accounts_ping_window_stats(account_ids, since_iso)
+    checker_stats_map = get_accounts_ping_checker_stats_map(checker_since_by_account, now_iso)
     optical_latest_map = get_latest_optical_by_pppoe(pppoes)
+    fixed_cycles_map = get_surveillance_fixed_cycles_map(pppoes, limit_per_pppoe=250)
     ping_state = get_state("accounts_ping_state", {"accounts": {}})
     ping_accounts = ping_state.get("accounts") if isinstance(ping_state.get("accounts"), dict) else {}
 
@@ -5818,16 +8026,102 @@ async def surveillance_page(request: Request):
         entry = entry_map.get(pppoe, {})
         account_id = _accounts_ping_account_id_for_ip(pppoe)
         latest = latest_map.get(account_id) or {}
-        stats = stats_map.get(account_id) or {}
+        checker_meta = checker_anchor_by_pppoe.get(pppoe) or {}
+        checker_since_iso = (checker_meta.get("since_iso") or "").strip() or now_iso
+        checker_since_dt = checker_meta.get("since_dt")
+        if not isinstance(checker_since_dt, datetime):
+            checker_since_dt = _parse_iso_z(checker_since_iso) or now
+        checker_since_source = (checker_meta.get("source") or "added").strip().lower()
+        stats = checker_stats_map.get(account_id) or {}
         opt = optical_latest_map.get(pppoe) or {}
         st = ping_accounts.get(account_id) if isinstance(ping_accounts.get(account_id), dict) else {}
 
         total = int(stats.get("total") or 0)
         failures = int(stats.get("failures") or 0)
         uptime_pct = (100.0 - (failures / total) * 100.0) if total else 0.0
+        checker_downtime_seconds = int(stats.get("downtime_seconds") or 0)
+        checker_loss_events = int(stats.get("loss_events") or 0)
 
         down_since_dt = _parse_iso_z(st.get("down_since"))
-        down_for = _format_duration_short((datetime.utcnow() - down_since_dt).total_seconds()) if down_since_dt else ""
+        down_for = _format_duration_short((now - down_since_dt).total_seconds()) if down_since_dt else ""
+        fixed_at_iso = (entry.get("last_fixed_at") or "").strip()
+        fixed_at_dt = _parse_iso_z(fixed_at_iso)
+        fixed_cycles = fixed_cycles_map.get(pppoe) or []
+        fixed_cycle = fixed_cycles[0] if fixed_cycles else {}
+        prefixed_cycle_start_iso = (fixed_cycle.get("started_at") or "").strip()
+        prefixed_cycle_end_iso = (fixed_cycle.get("ended_at") or "").strip()
+        stage_history = _normalize_surveillance_stage_history(entry.get("stage_history"))
+        if not stage_history:
+            level2_reason = (entry.get("level2_reason") or "").strip()
+            level2_at_iso = (entry.get("level2_at") or "").strip()
+            if level2_reason and level2_at_iso:
+                stage_history.append(
+                    {
+                        "ts": level2_at_iso,
+                        "from": "under",
+                        "to": "level2",
+                        "reason": level2_reason[:500],
+                        "action": "move_to_manual_fix",
+                        "actor": "admin",
+                    }
+                )
+            fixed_reason = (entry.get("last_fixed_reason") or "").strip()
+            if fixed_reason and fixed_at_iso:
+                stage_history.append(
+                    {
+                        "ts": fixed_at_iso,
+                        "from": "level2",
+                        "to": "observe",
+                        "reason": fixed_reason[:500],
+                        "action": "mark_fixed",
+                        "actor": "admin",
+                    }
+                )
+            stage_history = _normalize_surveillance_stage_history(stage_history)
+        observation_due_iso = ""
+        observation_due_ph = ""
+        observation_seconds_left = None
+        observation_left_text = ""
+        if fixed_at_dt:
+            due_dt = fixed_at_dt + timedelta(minutes=fixed_observation_minutes)
+            observation_due_iso = due_dt.replace(microsecond=0).isoformat() + "Z"
+            observation_due_ph = format_ts_ph(observation_due_iso)
+            observation_seconds_left = int((due_dt - now).total_seconds())
+            if observation_seconds_left > 0:
+                observation_left_text = _format_duration_short(observation_seconds_left)
+            else:
+                observation_left_text = "Done"
+        reports = _entry_surveillance_ai_reports(entry)
+        ai_reports = {}
+        for stage_key in _SURV_AI_STAGES:
+            report = reports.get(stage_key) or _empty_surveillance_ai_report()
+            ai_status = (report.get("status") or "").strip().lower()
+            ai_report_text = (report.get("text") or "").strip()
+            ai_report_error = (report.get("error") or "").strip()
+            ai_has_report = bool(ai_report_text)
+            if ai_has_report and ai_status in ("error", "missing_api_key", "missing_key", "disabled"):
+                ai_status = "ready"
+                ai_report_error = ""
+            ai_is_generating = ai_status in ("queued", "running")
+            ai_has_error = (ai_status in ("error", "missing_api_key", "missing_key") or bool(ai_report_error)) and not ai_has_report
+            ai_reports[stage_key] = {
+                "stage": stage_key,
+                "stage_label": _SURV_AI_STAGE_LABELS.get(stage_key) or stage_key,
+                "status": ai_status,
+                "status_label": _ai_report_status_badge(ai_status),
+                "error": ai_report_error,
+                "generated_at_iso": (report.get("generated_at") or "").strip(),
+                "generated_at_ph": format_ts_ph(report.get("generated_at")),
+                "provider": (report.get("provider") or "").strip(),
+                "model": (report.get("model") or "").strip(),
+                "text": ai_report_text,
+                "recommend_needs_manual_fix": _normalize_ai_recommendation(report.get("recommend_needs_manual_fix")),
+                "recommendation_reason": (report.get("recommendation_reason") or "").strip(),
+                "potential_problems": _normalize_ai_potential_problems(report.get("potential_problems")),
+                "has_report": ai_has_report,
+                "is_generating": ai_is_generating,
+                "has_error": ai_has_error,
+            }
 
         return {
             "pppoe": pppoe,
@@ -5840,6 +8134,11 @@ async def surveillance_page(request: Request):
             "auto_reason": (entry.get("auto_reason") or "").strip(),
             "added_at": format_ts_ph(entry.get("added_at")),
             "added_at_iso": (entry.get("added_at") or "").strip(),
+            "first_added_at_iso": (entry.get("first_added_at") or entry.get("added_at") or "").strip(),
+            "first_added_at_ph": format_ts_ph(entry.get("first_added_at") or entry.get("added_at")),
+            "level2_at_iso": (entry.get("level2_at") or "").strip(),
+            "level2_at_ph": format_ts_ph(entry.get("level2_at")),
+            "level2_reason": (entry.get("level2_reason") or "").strip(),
             "last_check": format_ts_ph(latest.get("timestamp")),
             "loss": latest.get("loss"),
             "avg_ms": latest.get("avg_ms"),
@@ -5850,24 +8149,107 @@ async def surveillance_page(request: Request):
             "stable_failures": failures,
             "stable_loss_avg": stats.get("loss_avg"),
             "stable_avg_ms_avg": stats.get("avg_ms_avg"),
+            "stable_downtime_seconds": checker_downtime_seconds,
+            "stable_loss_events": checker_loss_events,
+            "checker_since_iso": checker_since_iso,
+            "checker_since_ph": format_ts_ph(checker_since_iso),
+            "checker_since_source": checker_since_source,
+            "checker_elapsed_seconds": max(int((now - checker_since_dt).total_seconds()), 0),
             "down_for": down_for,
             "down_since_iso": (st.get("down_since") or "").strip(),
             "optical_rx": opt.get("rx"),
             "optical_tx": opt.get("tx"),
             "optical_last": format_ts_ph(opt.get("timestamp")),
             "optical_last_iso": (opt.get("timestamp") or "").strip(),
-            "last_fixed_at_iso": (entry.get("last_fixed_at") or "").strip(),
-            "last_fixed_at_ph": format_ts_ph(entry.get("last_fixed_at")),
+            "last_fixed_at_iso": fixed_at_iso,
+            "last_fixed_at_ph": format_ts_ph(fixed_at_iso),
             "last_fixed_reason": (entry.get("last_fixed_reason") or "").strip(),
             "last_fixed_mode": (entry.get("last_fixed_mode") or "").strip(),
+            "stage_history": stage_history,
+            "prefixed_cycle_start_iso": prefixed_cycle_start_iso,
+            "prefixed_cycle_end_iso": prefixed_cycle_end_iso,
+            "prefixed_cycle_start_ph": format_ts_ph(prefixed_cycle_start_iso),
+            "prefixed_cycle_end_ph": format_ts_ph(prefixed_cycle_end_iso),
+            "prefixed_cycles": fixed_cycles,
+            "fixed_cycle_count": len(fixed_cycles),
+            "ai_reports": ai_reports,
+            "observation_due_iso": observation_due_iso,
+            "observation_due_ph": observation_due_ph,
+            "observation_seconds_left": observation_seconds_left,
+            "observation_left_text": observation_left_text,
         }
 
-    under_rows = [build_row(pppoe) for pppoe in pppoes if (entry_map.get(pppoe, {}).get("status") or "under") == "under"]
-    level2_rows = [build_row(pppoe) for pppoe in pppoes if (entry_map.get(pppoe, {}).get("status") or "") == "level2"]
+    def _apply_ai_stage(row, stage_key):
+        stage_key = stage_key if stage_key in _SURV_AI_STAGES else "under"
+        report = ((row or {}).get("ai_reports") or {}).get(stage_key) or {}
+        out = dict(row or {})
+        out["ai_stage"] = stage_key
+        out["ai_report_status"] = (report.get("status") or "").strip()
+        out["ai_report_status_label"] = report.get("status_label") or _ai_report_status_badge(report.get("status") or "")
+        out["ai_report_error"] = (report.get("error") or "").strip()
+        out["ai_report_generated_at_iso"] = (report.get("generated_at_iso") or "").strip()
+        out["ai_report_generated_at_ph"] = (report.get("generated_at_ph") or "").strip()
+        out["ai_report_provider"] = (report.get("provider") or "").strip()
+        out["ai_report_model"] = (report.get("model") or "").strip()
+        out["ai_report_text"] = (report.get("text") or "").strip()
+        out["ai_recommend_needs_manual_fix"] = _normalize_ai_recommendation(report.get("recommend_needs_manual_fix"))
+        out["ai_recommendation_reason"] = (report.get("recommendation_reason") or "").strip()
+        out["ai_potential_problems"] = _normalize_ai_potential_problems(report.get("potential_problems"))
+        out["ai_has_report"] = bool(report.get("has_report"))
+        out["ai_is_generating"] = bool(report.get("is_generating"))
+        out["ai_has_error"] = bool(report.get("has_error"))
+        return out
+
+    all_under_rows = [build_row(pppoe) for pppoe in pppoes if (entry_map.get(pppoe, {}).get("status") or "under") == "under"]
+    observation_base_rows = [
+        row
+        for row in all_under_rows
+        if row.get("last_fixed_at_iso")
+    ]
+    observation_set = {row.get("pppoe") for row in observation_base_rows if row.get("pppoe")}
+    under_rows = [_apply_ai_stage(row, "under") for row in all_under_rows if row.get("pppoe") not in observation_set]
+    observation_rows = [_apply_ai_stage(row, "observe") for row in observation_base_rows]
+    level2_rows = [
+        _apply_ai_stage(build_row(pppoe), "level2")
+        for pppoe in pppoes
+        if (entry_map.get(pppoe, {}).get("status") or "") == "level2"
+    ]
+
+    def _ai_status_panel(rows):
+        rows = list(rows or [])
+        grouped = {"generating": [], "ready": [], "error": [], "missing": []}
+        for row in rows:
+            pppoe = (row.get("pppoe") or "").strip()
+            if not pppoe:
+                continue
+            if bool(row.get("ai_is_generating")):
+                grouped["generating"].append(pppoe)
+            elif bool(row.get("ai_has_error")):
+                grouped["error"].append(pppoe)
+            elif bool(row.get("ai_has_report")):
+                grouped["ready"].append(pppoe)
+            else:
+                grouped["missing"].append(pppoe)
+        for key in grouped:
+            grouped[key] = sorted(grouped[key], key=lambda value: value.lower())
+        return {
+            "generating": {"label": "Generating", "accounts": grouped["generating"], "count": len(grouped["generating"])},
+            "ready": {"label": "Ready", "accounts": grouped["ready"], "count": len(grouped["ready"])},
+            "error": {"label": "Error", "accounts": grouped["error"], "count": len(grouped["error"])},
+            "missing": {"label": "No Report", "accounts": grouped["missing"], "count": len(grouped["missing"])},
+        }
 
     history_query = (request.query_params.get("q") or "").strip() if active_tab == "history" else ""
+    history_action = (request.query_params.get("action") or "all").strip().lower() if active_tab == "history" else "all"
+    if history_action not in ("all", "false", "fixed", "recovered", "healed", "removed"):
+        history_action = "all"
     history_page = _parse_table_page(request.query_params.get("page"), default=1) if active_tab == "history" else 1
-    history = list_surveillance_history(query=history_query, page=history_page, limit=50)
+    history = list_surveillance_history(
+        query=history_query,
+        page=history_page,
+        limit=50,
+        end_reason=history_action,
+    )
 
     message = (request.query_params.get("msg") or "").strip()
 
@@ -5886,12 +8268,17 @@ async def surveillance_page(request: Request):
                     "observed_count": int(row.get("observed_count") or 0),
                     "end_reason": (row.get("end_reason") or "").strip().lower(),
                     "end_note": (row.get("end_note") or "").strip(),
+                    "under_seconds": int(row.get("under_seconds") or 0),
+                    "level2_seconds": int(row.get("level2_seconds") or 0),
+                    "observe_seconds": int(row.get("observe_seconds") or 0),
+                    "under_for_text": _format_duration_short(row.get("under_seconds") or 0) or "0m",
+                    "level2_for_text": _format_duration_short(row.get("level2_seconds") or 0) or "0m",
+                    "observe_for_text": _format_duration_short(row.get("observe_seconds") or 0) or "0m",
                     "started_at_iso": started_iso,
                     "ended_at_iso": ended_iso,
                     "started_at_ph": format_ts_ph(started_iso),
                     "ended_at_ph": format_ts_ph(ended_iso),
                     "active": not bool(ended_iso),
-                    "currently_active": bool((row.get("pppoe") or "") in entry_map),
                 }
             )
 
@@ -5903,6 +8290,12 @@ async def surveillance_page(request: Request):
 
     optical_cfg = get_settings("optical", OPTICAL_DEFAULTS)
     optical_class = (optical_cfg.get("classification") or {}) if isinstance(optical_cfg.get("classification"), dict) else {}
+    system_settings = normalize_system_settings(get_settings("system", SYSTEM_DEFAULTS))
+    ai_settings = system_settings.get("ai") if isinstance(system_settings.get("ai"), dict) else {}
+    ai_model_options_payload = _build_ai_model_options(ai_settings, active_tab="")
+    ai_model_options = ai_model_options_payload.get("options") if isinstance(ai_model_options_payload, dict) else {}
+    if not isinstance(ai_model_options, dict):
+        ai_model_options = {}
 
     return templates.TemplateResponse(
         "surveillance.html",
@@ -5912,11 +8305,18 @@ async def surveillance_page(request: Request):
                 "settings": settings,
                 "active_tab": active_tab,
                 "under_rows": under_rows,
+                "observation_rows": observation_rows,
                 "level2_rows": level2_rows,
+                "under_ai_panel": _ai_status_panel(under_rows),
+                "level2_ai_panel": _ai_status_panel(level2_rows),
+                "observe_ai_panel": _ai_status_panel(observation_rows),
                 "stable_window_minutes": stable_window_minutes,
                 "stable_window_days": stable_window_days,
+                "fixed_observation_minutes": fixed_observation_minutes,
+                "fixed_observation_days": fixed_observation_days,
                 "history_rows": history_rows,
                 "history_query": history_query,
+                "history_action": history_action,
                 "history_pagination": history_pagination,
                 "message": message,
                 "optical_window_options": OPTICAL_WINDOW_OPTIONS,
@@ -5924,25 +8324,57 @@ async def surveillance_page(request: Request):
                 "surv_optical_chart_max_dbm": float(optical_class.get("chart_max_dbm", -10.0) or -10.0),
                 "surv_optical_tx_realistic_min_dbm": float(optical_class.get("tx_realistic_min_dbm", -10.0) or -10.0),
                 "surv_optical_tx_realistic_max_dbm": float(optical_class.get("tx_realistic_max_dbm", 10.0) or 10.0),
+                "surveillance_ai_model_options": ai_model_options,
             },
         ),
     )
 
 
 @app.get("/surveillance/series", response_class=JSONResponse)
-async def surveillance_series(pppoe: str, window: int = 24):
+async def surveillance_series(pppoe: str, window: str = "24", stage: str = "under"):
     pppoe = (pppoe or "").strip()
     if not pppoe:
         return JSONResponse({"hours": 0, "series": []})
-    try:
-        hours = int(str(window).strip())
-    except Exception:
-        hours = 24
-    if hours not in {1, 6, 12, 24, 168}:
-        hours = 24
+    stage = _normalize_surveillance_stage(stage)
+    raw_window = (window or "").strip().lower()
+    if raw_window in ("pre7d", "baseline", "pre"):
+        window_key = "pre7d"
+    else:
+        try:
+            parsed_hours = int(raw_window)
+        except Exception:
+            parsed_hours = 24
+        if parsed_hours not in {1, 6, 12, 24, 168}:
+            parsed_hours = 24
+        window_key = str(parsed_hours)
+
     now = datetime.utcnow().replace(microsecond=0)
-    since_iso = (now - timedelta(hours=hours)).replace(microsecond=0).isoformat() + "Z"
-    until_iso = now.isoformat() + "Z"
+
+    raw = get_settings("surveillance", SURVEILLANCE_DEFAULTS)
+    settings = normalize_surveillance_settings(raw)
+    entry_map = _surveillance_entry_map(settings)
+    entry = entry_map.get(pppoe) or {}
+    anchors = _surveillance_entry_anchors(entry, stage=stage, now_utc=now)
+
+    if window_key == "pre7d":
+        until_dt = min(anchors["first_added_dt"], now).replace(microsecond=0)
+        since_dt = (until_dt - timedelta(hours=168)).replace(microsecond=0)
+        anchor_iso = anchors["first_added_iso"]
+        anchor_source = "first_added"
+    else:
+        hours = int(window_key)
+        until_dt = now
+        since_dt = max((until_dt - timedelta(hours=hours)).replace(microsecond=0), anchors["stage_anchor_dt"])
+        anchor_iso = anchors["stage_anchor_iso"]
+        anchor_source = anchors["stage_anchor_source"]
+    if until_dt < since_dt:
+        since_dt = until_dt
+
+    until_iso = until_dt.isoformat() + "Z"
+    since_iso = since_dt.isoformat() + "Z"
+    if since_dt > until_dt:
+        since_iso = until_iso
+
     account_id = _accounts_ping_account_id_for_pppoe(pppoe)
     rows = get_accounts_ping_series_range(account_id, since_iso, until_iso)
 
@@ -5988,7 +8420,19 @@ async def surveillance_series(pppoe: str, window: int = 24):
         return merged
 
     series = _merge_rows(rows)
-    return JSONResponse({"pppoe": pppoe, "hours": hours, "since": since_iso, "until": until_iso, "series": series})
+    return JSONResponse(
+        {
+            "pppoe": pppoe,
+            "stage": stage,
+            "hours": int(window_key) if window_key != "pre7d" else 168,
+            "window_key": window_key,
+            "since": since_iso,
+            "until": until_iso,
+            "anchor_since": anchor_iso,
+            "anchor_source": anchor_source,
+            "series": series,
+        }
+    )
 
 
 def _surv_rollup_points_and_stats(rollups, bucket_seconds=60):
@@ -6003,6 +8447,8 @@ def _surv_rollup_points_and_stats(rollups, bucket_seconds=60):
     max_loss = None
     loss100_seconds = 0
     downtime_seconds = 0.0
+    loss_events = 0
+    prev_down = 0
 
     for row in rollups or []:
         ts = (row.get("bucket_ts") or "").strip()
@@ -6040,6 +8486,10 @@ def _surv_rollup_points_and_stats(rollups, bucket_seconds=60):
             max_latency = avg_ms if max_latency is None else max(max_latency, avg_ms)
         if loss_pct is not None:
             max_loss = loss_pct if max_loss is None else max(max_loss, loss_pct)
+            is_down = 1 if loss_pct >= 99.999 else 0
+            if is_down and not prev_down:
+                loss_events += 1
+            prev_down = is_down
             # Downtime is an "equivalent downtime" derived from loss%.
             # Example: 10% loss over a 60s bucket contributes ~6 seconds of downtime.
             try:
@@ -6048,6 +8498,8 @@ def _surv_rollup_points_and_stats(rollups, bucket_seconds=60):
                 pass
             if loss_pct >= 99.999:
                 loss100_seconds += int(bucket_seconds)
+        else:
+            prev_down = 0
 
     avg_latency = (avg_sum_total / avg_count_total) if avg_count_total else None
     avg_loss = (loss_sum_total / loss_count_total) if loss_count_total else None
@@ -6063,6 +8515,7 @@ def _surv_rollup_points_and_stats(rollups, bucket_seconds=60):
             "max_loss_pct": max_loss,
             "loss100_seconds": loss100_seconds,
             "downtime_seconds": int(round(downtime_seconds)),
+            "loss_events": int(loss_events),
             "bucket_seconds": int(bucket_seconds),
         },
     }
@@ -6088,7 +8541,21 @@ def _surv_raw_points_and_stats(rows):
         )
     items.sort(key=lambda x: x["dt"])
     if not items:
-        return {"points": [], "stats": {"samples": 0, "uptime_pct": 0.0, "avg_latency_ms": None, "max_latency_ms": None, "avg_loss_pct": None, "max_loss_pct": None, "loss100_seconds": 0, "downtime_seconds": 0, "bucket_seconds": 0}}
+        return {
+            "points": [],
+            "stats": {
+                "samples": 0,
+                "uptime_pct": 0.0,
+                "avg_latency_ms": None,
+                "max_latency_ms": None,
+                "avg_loss_pct": None,
+                "max_loss_pct": None,
+                "loss100_seconds": 0,
+                "downtime_seconds": 0,
+                "loss_events": 0,
+                "bucket_seconds": 0,
+            },
+        }
 
     # Collapse duplicate timestamps (common when multiple checks happen within the same second)
     # by keeping the "worst" values for that timestamp. Without this, spike samples can be
@@ -6147,6 +8614,8 @@ def _surv_raw_points_and_stats(rows):
     max_loss = None
     loss100_seconds = 0.0
     downtime_seconds = 0.0
+    loss_events = 0
+    prev_down = 0
 
     for i, it in enumerate(items):
         sample_total += 1
@@ -6181,9 +8650,15 @@ def _surv_raw_points_and_stats(rows):
         duration = max(1.0, min(float(duration), 300.0))
 
         if loss_pct is not None:
+            is_down = 1 if loss_pct >= 99.999 else 0
+            if is_down and not prev_down:
+                loss_events += 1
+            prev_down = is_down
             downtime_seconds += (loss_pct / 100.0) * duration
             if loss_pct >= 99.999:
                 loss100_seconds += duration
+        else:
+            prev_down = 0
 
     avg_latency = (avg_sum_total / avg_count_total) if avg_count_total else None
     avg_loss = (loss_sum_total / loss_count_total) if loss_count_total else None
@@ -6200,6 +8675,7 @@ def _surv_raw_points_and_stats(rows):
             "max_loss_pct": max_loss,
             "loss100_seconds": int(round(loss100_seconds)),
             "downtime_seconds": int(round(downtime_seconds)),
+            "loss_events": int(loss_events),
             "bucket_seconds": int(round(default_dt)),
         },
     }
@@ -6285,12 +8761,36 @@ def _surv_downsample_points(points, max_points=96):
 
 
 @app.get("/surveillance/series_range", response_class=JSONResponse)
-async def surveillance_series_range(pppoe: str, since: str, until: str):
+async def surveillance_series_range(pppoe: str, since: str, until: str, stage: str = "under"):
     pppoe = (pppoe or "").strip()
     since = (since or "").strip()
     until = (until or "").strip()
+    stage = _normalize_surveillance_stage(stage)
     if not pppoe or not since or not until:
         return JSONResponse({"pppoe": pppoe, "series": []})
+    raw = get_settings("surveillance", SURVEILLANCE_DEFAULTS)
+    settings = normalize_surveillance_settings(raw)
+    entry_map = _surveillance_entry_map(settings)
+    entry = entry_map.get(pppoe) or {}
+    now_dt = datetime.utcnow().replace(microsecond=0)
+    anchors = _surveillance_entry_anchors(entry, stage=stage, now_utc=now_dt)
+    anchor_source = anchors["stage_anchor_source"]
+    anchor_dt = anchors["stage_anchor_dt"]
+    anchor_iso = anchors["stage_anchor_iso"]
+
+    since_dt = _parse_iso_z(since)
+    until_dt = _parse_iso_z(until)
+    if not since_dt or not until_dt:
+        return JSONResponse({"pppoe": pppoe, "series": []})
+    if since_dt < anchor_dt:
+        since_dt = anchor_dt
+    if until_dt > now_dt:
+        until_dt = now_dt
+    if until_dt < since_dt:
+        until_dt = since_dt
+    since = since_dt.replace(microsecond=0).isoformat() + "Z"
+    until = until_dt.replace(microsecond=0).isoformat() + "Z"
+
     account_id = _accounts_ping_account_id_for_pppoe(pppoe)
     rows = get_accounts_ping_series_range(account_id, since, until)
     # Keep the range chart consistent with the dropdown chart by using the same raw dataset.
@@ -6331,12 +8831,23 @@ async def surveillance_series_range(pppoe: str, since: str, until: str):
                 cur[k] = b if bv > av else a
     if cur is not None:
         series.append(cur)
-    return JSONResponse({"pppoe": pppoe, "since": since, "until": until, "series": series})
+    return JSONResponse(
+        {
+            "pppoe": pppoe,
+            "stage": stage,
+            "since": since,
+            "until": until,
+            "anchor_since": anchor_iso,
+            "anchor_source": anchor_source,
+            "series": series,
+        }
+    )
 
 
 @app.get("/surveillance/timeline", response_class=JSONResponse)
-async def surveillance_timeline(pppoe: str, until: str = ""):
+async def surveillance_timeline(pppoe: str, stage: str = "under", until: str = "", anchor: str = ""):
     pppoe = (pppoe or "").strip()
+    stage = _normalize_surveillance_stage(stage)
     if not pppoe:
         return JSONResponse({"pppoe": "", "days": [], "summary": {}, "total": {}})
 
@@ -6344,15 +8855,35 @@ async def surveillance_timeline(pppoe: str, until: str = ""):
     settings = normalize_surveillance_settings(raw)
     entry_map = _surveillance_entry_map(settings)
     entry = entry_map.get(pppoe) or {}
-    added_at_iso = (entry.get("added_at") or "").strip()
-    added_dt = _parse_iso_z(added_at_iso) or datetime.utcnow().replace(microsecond=0)
-    tz = ZoneInfo("Asia/Manila")
-    added_local = added_dt.replace(tzinfo=timezone.utc).astimezone(tz)
-    now_local = datetime.now(tz)
+    now_utc = datetime.utcnow().replace(microsecond=0)
+    anchors = _surveillance_entry_anchors(entry, stage=stage, now_utc=now_utc)
+    added_at_iso = anchors["added_iso"]
+    anchor_source = anchors["stage_anchor_source"]
+    anchor_iso = anchors["stage_anchor_iso"]
+    anchor_dt = anchors["stage_anchor_dt"]
+    anchor_override = (anchor or "").strip()
+    if anchor_override:
+        anchor_override_dt = _parse_iso_z(anchor_override)
+        if anchor_override_dt and anchor_override_dt <= now_utc:
+            anchor_dt = anchor_override_dt.replace(microsecond=0)
+            anchor_iso = anchor_dt.isoformat() + "Z"
+            anchor_source = "custom"
 
-    # Day 1 is the calendar day the account was added to Surveillance (Asia/Manila).
-    # Day 0 is a 7-day overview (stats + optional chart range).
-    start_day = added_local.date()
+    timeline_until_dt = now_utc
+    until_override = (until or "").strip()
+    if until_override:
+        parsed_until = _parse_iso_z(until_override)
+        if parsed_until:
+            timeline_until_dt = min(parsed_until.replace(microsecond=0), now_utc)
+    if timeline_until_dt < anchor_dt:
+        timeline_until_dt = anchor_dt
+
+    tz = ZoneInfo("Asia/Manila")
+    anchor_local = anchor_dt.replace(tzinfo=timezone.utc).astimezone(tz)
+    now_local = timeline_until_dt.replace(tzinfo=timezone.utc).astimezone(tz)
+
+    # Day 1 is the calendar day the stage anchor starts in Asia/Manila.
+    start_day = anchor_local.date()
     current_day_index = (now_local.date() - start_day).days + 1
     if current_day_index < 1:
         current_day_index = 1
@@ -6367,26 +8898,12 @@ async def surveillance_timeline(pppoe: str, until: str = ""):
     account_id = _accounts_ping_account_id_for_pppoe(pppoe)
 
     day_items = []
-    # Day 0 is a rolling "Last 7d" overview. Anchor it to the same `until` the big chart uses
-    # so the Day 0 tile matches the dropdown's 7d window exactly.
-    anchor_until = (until or "").strip()
-    anchor_dt = _parse_iso_z(anchor_until) if anchor_until else None
-    now_utc = (anchor_dt or datetime.utcnow()).replace(microsecond=0)
-    range7_since_utc = (now_utc - timedelta(hours=168)).replace(microsecond=0)
-    range7_until_utc = now_utc
-    range7_since_iso = range7_since_utc.isoformat() + "Z"
-    range7_until_iso = range7_until_utc.isoformat() + "Z"
-    # Use raw samples for Day 0 to match the big chart's 7d dropdown (investigation view).
-    summary7_rows = get_accounts_ping_series_range(account_id, range7_since_iso, range7_until_iso)
-    summary7_payload = _surv_raw_points_and_stats(summary7_rows)
-    summary7 = summary7_payload["stats"]
-    summary7_points = _surv_downsample_points(summary7_payload["points"], max_points=160)
 
-    # Total since added (rounded down to minute boundary).
-    added_floor = added_dt.replace(second=0, microsecond=0)
+    # Total since stage anchor (rounded down to minute boundary).
+    anchor_floor = anchor_dt.replace(second=0, microsecond=0)
     total_rollups = get_accounts_ping_rollups_range(
         account_id,
-        added_floor.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z"),
+        anchor_floor.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z"),
         to_utc_iso(now_local + timedelta(minutes=1)),
     )
     total_stats = _surv_rollup_points_and_stats(total_rollups, bucket_seconds=60)["stats"]
@@ -6403,11 +8920,14 @@ async def surveillance_timeline(pppoe: str, until: str = ""):
         until_local = day_start_local(day_date + timedelta(days=1))
         # For today, stop at "now" for partial rendering.
         query_until_local = until_local if kind == "past" else min(until_local, now_local + timedelta(minutes=1))
+        query_start_local = start_local
+        if idx == 1:
+            query_start_local = max(start_local, anchor_local)
 
         series = []
         stats = None
         if kind != "future":
-            rollups = get_accounts_ping_rollups_range(account_id, to_utc_iso(start_local), to_utc_iso(query_until_local))
+            rollups = get_accounts_ping_rollups_range(account_id, to_utc_iso(query_start_local), to_utc_iso(query_until_local))
             payload = _surv_rollup_points_and_stats(rollups, bucket_seconds=60)
             stats = payload["stats"]
             series = _surv_downsample_points(payload["points"], max_points=96)
@@ -6425,7 +8945,7 @@ async def surveillance_timeline(pppoe: str, until: str = ""):
                 "date_label": start_local.strftime("%b %d"),
                 "kind": kind,
                 "hours_so_far": hours_so_far,
-                "start_iso": to_utc_iso(start_local),
+                "start_iso": to_utc_iso(query_start_local),
                 "until_iso": to_utc_iso(until_local),
                 "series": [{"ts": p["ts"], "loss": p["loss"], "avg_ms": p["avg_ms"]} for p in series],
                 "stats": stats,
@@ -6435,21 +8955,16 @@ async def surveillance_timeline(pppoe: str, until: str = ""):
     return JSONResponse(
         {
             "pppoe": pppoe,
+            "stage": stage,
             "added_at": added_at_iso,
+            "first_added_at": anchors["first_added_iso"],
+            "anchor_since": anchor_iso,
+            "anchor_source": anchor_source,
+            "until": timeline_until_dt.isoformat() + "Z",
             "start_day": start_day.isoformat(),
             "current_day_index": current_day_index,
             "total_days": total_days,
-            "day0": {
-                "label": "Day 0",
-                "title": "Last 7d",
-                "start_iso": range7_since_iso,
-                "until_iso": range7_until_iso,
-                "query_until_iso": range7_until_iso,
-                "series": [{"ts": p["ts"], "loss": p["loss"], "avg_ms": p["avg_ms"]} for p in summary7_points],
-                "stats": summary7,
-            },
             "days": day_items,
-            "summary7": summary7,
             "total": total_stats,
         }
     )
@@ -6534,19 +9049,16 @@ async def surveillance_settings_save(request: Request):
             ),
             "uptime_threshold_pct": _float("uptime_threshold_pct", current["stability"].get("uptime_threshold_pct", 95.0)),
             "latency_max_ms": _float("latency_max_ms", current["stability"].get("latency_max_ms", 15.0)),
-            "loss_max_pct": _float("loss_max_pct", current["stability"].get("loss_max_pct", 100.0)),
+            "loss_max_minutes": max(_float("loss_max_minutes", current["stability"].get("loss_max_minutes", 10.0)), 0.0),
+            "loss_event_max_count": max(
+                parse_int(form, "loss_event_max_count", current["stability"].get("loss_event_max_count", 5)),
+                0,
+            ),
             "optical_rx_min_dbm": _float("optical_rx_min_dbm", current["stability"].get("optical_rx_min_dbm", -24.0)),
             "require_optical": True,
-            "escalate_after_minutes": _minutes_from_days(
-                "escalate_after_days",
-                current["stability"].get(
-                    "escalate_after_minutes", current["stability"].get("stable_window_minutes", 10)
-                ),
-                min_minutes=1,
-            ),
-            "level2_autofix_after_minutes": _minutes_from_days(
-                "level2_autofix_after_days",
-                current["stability"].get("level2_autofix_after_minutes", 30),
+            "fixed_observation_minutes": _minutes_from_days(
+                "fixed_observation_days",
+                current["stability"].get("fixed_observation_minutes", current["stability"].get("stable_window_minutes", 10)),
                 min_minutes=1,
             ),
         },
@@ -6574,6 +9086,34 @@ async def surveillance_settings_save(request: Request):
     return RedirectResponse(url="/surveillance?tab=settings", status_code=303)
 
 
+@app.post("/surveillance/format", response_class=HTMLResponse)
+async def surveillance_format(request: Request):
+    form = await request.form()
+    message = ""
+    if not parse_bool(form, "confirm_format"):
+        message = "Please confirm format to proceed."
+    else:
+        try:
+            clear_surveillance_history()
+            settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
+            settings["entries"] = []
+            save_settings("surveillance", settings)
+
+            state = get_state("accounts_ping_state", {})
+            if not isinstance(state, dict):
+                state = {}
+            state.pop("surveillance_sessions_seeded", None)
+            state.pop("surveillance_autoadd_seen", None)
+            state.pop("surveillance_autoadd_last_scan_at", None)
+            state.pop("surveillance_last_eval_at", None)
+            save_state("accounts_ping_state", state)
+            message = "Under Surveillance data formatted. Settings preserved."
+        except Exception as exc:
+            message = f"Format failed: {exc}"
+    qs = urllib.parse.urlencode({"tab": "settings", "msg": message})
+    return RedirectResponse(url=f"/surveillance?{qs}", status_code=303)
+
+
 @app.post("/surveillance/add", response_class=JSONResponse)
 async def surveillance_add(request: Request):
     form = await request.form()
@@ -6592,26 +9132,44 @@ async def surveillance_add(request: Request):
         existing["name"] = name or existing.get("name") or pppoe
         existing["ip"] = ip or existing.get("ip") or ""
         existing["updated_at"] = now_iso
+        if not (existing.get("first_added_at") or "").strip():
+            existing["first_added_at"] = (existing.get("added_at") or now_iso).strip() or now_iso
         if source and not existing.get("source"):
             existing["source"] = source
         entry_map[pppoe] = existing
     else:
-        entry_map[pppoe] = {
+        new_entry = {
             "pppoe": pppoe,
             "name": name or pppoe,
             "ip": ip,
             "source": source,
             "status": "under",
             "added_at": now_iso,
+            "first_added_at": now_iso,
             "updated_at": now_iso,
             "level2_at": "",
+            "level2_reason": "",
             "last_fixed_at": "",
             "last_fixed_reason": "",
             "last_fixed_mode": "",
             "added_mode": "manual",
             "auto_source": "",
             "auto_reason": "",
+            "stage_history": [
+                {
+                    "ts": now_iso,
+                    "from": "",
+                    "to": "under",
+                    "reason": "Added manually by admin",
+                    "action": "add_manual",
+                    "actor": "admin",
+                }
+            ],
+            "ai_reports": {stage: _empty_surveillance_ai_report() for stage in _SURV_AI_STAGES},
+            "ai_report_history": [],
+            "ai_report_pending_stage": "",
         }
+        entry_map[pppoe] = new_entry
     settings["entries"] = list(entry_map.values())
     save_settings("surveillance", settings)
     try:
@@ -6637,6 +9195,7 @@ async def surveillance_undo(request: Request):
         return JSONResponse({"ok": False, "error": "Cannot undo"}, status_code=400)
     if (datetime.utcnow() - added).total_seconds() > 5:
         return JSONResponse({"ok": False, "error": "Undo window expired"}, status_code=400)
+    under_seconds, level2_seconds, observe_seconds = _surveillance_stage_seconds(entry)
     try:
         end_surveillance_session(
             pppoe,
@@ -6645,6 +9204,9 @@ async def surveillance_undo(request: Request):
             source=(entry.get("source") or "").strip(),
             ip=(entry.get("ip") or "").strip(),
             state=(entry.get("status") or "under"),
+            under_seconds=under_seconds,
+            level2_seconds=level2_seconds,
+            observe_seconds=observe_seconds,
         )
     except Exception:
         pass
@@ -6662,6 +9224,7 @@ async def surveillance_remove(request: Request):
     entry_map = _surveillance_entry_map(settings)
     if pppoe:
         entry = entry_map.get(pppoe) or {}
+        under_seconds, level2_seconds, observe_seconds = _surveillance_stage_seconds(entry)
         try:
             end_surveillance_session(
                 pppoe,
@@ -6670,6 +9233,9 @@ async def surveillance_remove(request: Request):
                 source=(entry.get("source") or "").strip(),
                 ip=(entry.get("ip") or "").strip(),
                 state=(entry.get("status") or "under"),
+                under_seconds=under_seconds,
+                level2_seconds=level2_seconds,
+                observe_seconds=observe_seconds,
             )
         except Exception:
             pass
@@ -6677,6 +9243,615 @@ async def surveillance_remove(request: Request):
     settings["entries"] = list(entry_map.values())
     save_settings("surveillance", settings)
     tab = (form.get("tab") or "under").strip() or "under"
+    return RedirectResponse(url=f"/surveillance?tab={urllib.parse.quote(tab)}", status_code=303)
+
+
+@app.post("/surveillance/mark_false", response_class=HTMLResponse)
+async def surveillance_mark_false(request: Request):
+    form = await request.form()
+    pppoe = (form.get("pppoe") or "").strip()
+    raw_pppoes = (form.get("pppoes") or "").strip()
+    tab = (form.get("tab") or "under").strip().lower()
+    if tab not in ("under", "level2", "observe"):
+        tab = "under"
+    pppoes: list[str] = []
+    if pppoe:
+        pppoes.append(pppoe)
+    if raw_pppoes:
+        try:
+            parsed = json.loads(raw_pppoes)
+            if isinstance(parsed, list):
+                for item in parsed:
+                    if isinstance(item, str) and item.strip():
+                        pppoes.append(item.strip())
+        except Exception:
+            pppoes.extend([item.strip() for item in raw_pppoes.split(",") if item.strip()])
+    seen = set()
+    unique_pppoes: list[str] = []
+    for item in pppoes:
+        if item in seen:
+            continue
+        seen.add(item)
+        unique_pppoes.append(item)
+    settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
+    entry_map = _surveillance_entry_map(settings)
+    for pppoe in unique_pppoes:
+        entry = entry_map.get(pppoe) or {}
+        if not entry:
+            continue
+        under_seconds, level2_seconds, observe_seconds = _surveillance_stage_seconds(entry)
+        try:
+            end_surveillance_session(
+                pppoe,
+                "false",
+                started_at=(entry.get("added_at") or "").strip(),
+                source=(entry.get("source") or "").strip(),
+                ip=(entry.get("ip") or "").strip(),
+                state=(entry.get("status") or "under"),
+                note="Marked as False by admin",
+                under_seconds=under_seconds,
+                level2_seconds=level2_seconds,
+                observe_seconds=observe_seconds,
+            )
+        except Exception:
+            pass
+        entry_map.pop(pppoe, None)
+    settings["entries"] = list(entry_map.values())
+    save_settings("surveillance", settings)
+    return RedirectResponse(url=f"/surveillance?tab={urllib.parse.quote(tab)}", status_code=303)
+
+
+@app.post("/surveillance/move_level2", response_class=HTMLResponse)
+async def surveillance_move_level2(request: Request):
+    form = await request.form()
+    pppoe = (form.get("pppoe") or "").strip()
+    tab = (form.get("tab") or "under").strip().lower()
+    if tab not in ("under", "level2", "observe"):
+        tab = "under"
+    reason = (form.get("reason") or "").strip()
+    if len(reason) > 500:
+        reason = reason[:500]
+    if not pppoe:
+        qs = urllib.parse.urlencode({"tab": tab, "msg": "Missing PPPoE account for Needs Manual Fix."})
+        return RedirectResponse(url=f"/surveillance?{qs}", status_code=303)
+    if len(reason) < 3:
+        qs = urllib.parse.urlencode({"tab": tab, "focus": pppoe, "msg": "Investigation report is required (minimum 3 characters)."})
+        return RedirectResponse(url=f"/surveillance?{qs}", status_code=303)
+
+    settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
+    entry_map = _surveillance_entry_map(settings)
+    entry = entry_map.get(pppoe) or {}
+    if not entry:
+        qs = urllib.parse.urlencode({"tab": tab, "msg": f"Account `{pppoe}` is no longer active."})
+        return RedirectResponse(url=f"/surveillance?{qs}", status_code=303)
+
+    now_iso = utc_now_iso()
+    added_at = (entry.get("added_at") or "").strip() or now_iso
+    first_added_at = (entry.get("first_added_at") or added_at).strip() or added_at
+    from_stage = "observe" if tab == "observe" else ((entry.get("status") or "under").strip().lower() or "under")
+    if from_stage not in ("under", "level2", "observe"):
+        from_stage = "under"
+    _append_surveillance_stage_history(
+        entry,
+        from_stage=from_stage,
+        to_stage="level2",
+        reason=reason,
+        action="move_to_manual_fix",
+        at_iso=now_iso,
+    )
+    entry["status"] = "level2"
+    entry["level2_at"] = now_iso
+    entry["level2_reason"] = reason
+    entry["updated_at"] = now_iso
+    entry["added_at"] = added_at
+    entry["first_added_at"] = first_added_at
+    try:
+        increment_surveillance_observed(
+            pppoe,
+            started_at=added_at,
+            source=(entry.get("source") or "").strip(),
+            ip=(entry.get("ip") or "").strip(),
+        )
+    except Exception:
+        try:
+            touch_surveillance_session(
+                pppoe,
+                source=(entry.get("source") or "").strip(),
+                ip=(entry.get("ip") or "").strip(),
+                state="level2",
+            )
+        except Exception:
+            pass
+    settings["entries"] = list(entry_map.values())
+    save_settings("surveillance", settings)
+    qs = urllib.parse.urlencode({"tab": "level2", "focus": pppoe})
+    return RedirectResponse(url=f"/surveillance?{qs}", status_code=303)
+
+
+@app.post("/surveillance/ai_regenerate", response_class=HTMLResponse)
+async def surveillance_ai_regenerate(request: Request):
+    form = await request.form()
+    pppoe = (form.get("pppoe") or "").strip()
+    tab = (form.get("tab") or "under").strip().lower()
+    if tab not in _SURV_AI_STAGES:
+        tab = "under"
+    ai_stage = (form.get("ai_stage") or tab).strip().lower()
+    if ai_stage not in _SURV_AI_STAGES:
+        ai_stage = tab if tab in _SURV_AI_STAGES else "under"
+
+    if not pppoe:
+        qs = urllib.parse.urlencode({"tab": tab, "msg": "Missing PPPoE for AI report generation."})
+        return RedirectResponse(url=f"/surveillance?{qs}", status_code=303)
+
+    settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
+    entry_map = _surveillance_entry_map(settings)
+    entry = entry_map.get(pppoe)
+    if not isinstance(entry, dict):
+        qs = urllib.parse.urlencode({"tab": tab, "msg": f"Account `{pppoe}` is no longer active."})
+        return RedirectResponse(url=f"/surveillance?{qs}", status_code=303)
+
+    reports = _entry_surveillance_ai_reports(entry)
+    stage_report = reports.get(ai_stage) or _empty_surveillance_ai_report()
+    stage_text = (stage_report.get("text") or "").strip()
+    stage_status = (stage_report.get("status") or "").strip().lower()
+    current_cycle_index = _surveillance_cycle_index_for_stage(entry, ai_stage)
+    try:
+        report_cycle_index = max(int(stage_report.get("cycle_index") or 1), 1)
+    except Exception:
+        report_cycle_index = 1
+    same_cycle_report = report_cycle_index == current_cycle_index
+    if same_cycle_report and (stage_text or stage_status in ("ready", "done")):
+        stage_label = _SURV_AI_STAGE_LABELS.get(ai_stage) or ai_stage
+        qs = urllib.parse.urlencode({"tab": tab, "msg": f"AI report already exists for {stage_label} in this cycle."})
+        return RedirectResponse(url=f"/surveillance?{qs}", status_code=303)
+    if stage_status in ("queued", "running"):
+        stage_label = _SURV_AI_STAGE_LABELS.get(ai_stage) or ai_stage
+        qs = urllib.parse.urlencode({"tab": tab, "msg": f"AI report generation is already running for {stage_label}."})
+        return RedirectResponse(url=f"/surveillance?{qs}", status_code=303)
+
+    with _surv_ai_lock:
+        already_running = pppoe in _surv_ai_running
+    if already_running:
+        qs = urllib.parse.urlencode({"tab": tab, "msg": "AI report generation is already running."})
+        return RedirectResponse(url=f"/surveillance?{qs}", status_code=303)
+
+    provider_override = (form.get("ai_provider_override") or "").strip().lower()
+    if provider_override not in ("chatgpt", "gemini"):
+        provider_override = ""
+    model_override_raw = (form.get("ai_model_override") or "").strip()
+    model_override = _normalize_provider_model_id(provider_override, model_override_raw) if provider_override else ""
+
+    now_iso = utc_now_iso()
+    _queue_surveillance_ai_report(entry, stage=ai_stage, now_iso=now_iso, reset_text=True)
+    if provider_override and model_override:
+        reports = _entry_surveillance_ai_reports(entry)
+        stage_report = reports.get(ai_stage) or _empty_surveillance_ai_report()
+        stage_report["provider_override"] = provider_override
+        stage_report["model_override"] = model_override
+        reports[ai_stage] = stage_report
+        entry["ai_reports"] = reports
+    settings["entries"] = list(entry_map.values())
+    save_settings("surveillance", settings)
+    started = _start_surveillance_ai_report(pppoe)
+    stage_label = _SURV_AI_STAGE_LABELS.get(ai_stage) or ai_stage
+    if started:
+        if provider_override and model_override:
+            message = f"{stage_label}: AI report generation queued using {provider_override}:{model_override}."
+        else:
+            message = f"{stage_label}: AI report generation queued."
+    else:
+        message = f"{stage_label}: AI report queued. Waiting for the current AI generation to finish."
+    qs = urllib.parse.urlencode({"tab": tab, "msg": message})
+    return RedirectResponse(url=f"/surveillance?{qs}", status_code=303)
+
+
+@app.get("/surveillance/ai_reports", response_class=JSONResponse)
+async def surveillance_ai_reports(pppoe: str):
+    pppoe = (pppoe or "").strip()
+    if not pppoe:
+        return JSONResponse({"ok": False, "error": "Missing PPPoE."}, status_code=400)
+    settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
+    entry_map = _surveillance_entry_map(settings)
+    entry = entry_map.get(pppoe)
+    if not isinstance(entry, dict):
+        return JSONResponse({"ok": False, "error": "Account not found."}, status_code=404)
+
+    reports = _entry_surveillance_ai_reports(entry)
+    ai_history = _normalize_surveillance_ai_history(entry.get("ai_report_history"))
+    payload = {}
+    for stage in _SURV_AI_STAGES:
+        report = reports.get(stage) or _empty_surveillance_ai_report()
+        status = (report.get("status") or "").strip().lower()
+        text = (report.get("text") or "").strip()
+        error = (report.get("error") or "").strip()
+        has_report = bool(text)
+        if has_report and status in ("error", "missing_api_key", "missing_key", "disabled"):
+            status = "ready"
+            error = ""
+        is_generating = status in ("queued", "running")
+        has_error = (status in ("error", "missing_api_key", "missing_key") or bool(error)) and not has_report
+        recommend_raw = _normalize_ai_recommendation(report.get("recommend_needs_manual_fix"))
+        if recommend_raw == "yes":
+            recommend_label = "Recommend Needs Manual Fix"
+        elif recommend_raw == "no":
+            recommend_label = "No Manual Fix Needed"
+        else:
+            recommend_label = "Recommendation n/a"
+        try:
+            cycle_index = max(int(report.get("cycle_index") or _surveillance_cycle_index_for_stage(entry, stage)), 1)
+        except Exception:
+            cycle_index = 1
+        current_cycle_index = _surveillance_cycle_index_for_stage(entry, stage)
+        has_current_cycle_report = bool(has_report and cycle_index == current_cycle_index)
+        stage_history = []
+        for item in ai_history:
+            if (item.get("stage") or "") != stage:
+                continue
+            stage_history.append(
+                {
+                    "stage": stage,
+                    "cycle_index": max(int(item.get("cycle_index") or 1), 1),
+                    "generated_at_iso": (item.get("generated_at") or "").strip(),
+                    "generated_at_ph": format_ts_ph(item.get("generated_at")),
+                    "provider": (item.get("provider") or "").strip(),
+                    "model": (item.get("model") or "").strip(),
+                    "status": (item.get("status") or "").strip().lower(),
+                    "error": (item.get("error") or "").strip(),
+                    "text": (item.get("text") or "").strip(),
+                    "recommend_needs_manual_fix": _normalize_ai_recommendation(item.get("recommend_needs_manual_fix")),
+                    "recommend_label": (
+                        "Recommend Needs Manual Fix"
+                        if _normalize_ai_recommendation(item.get("recommend_needs_manual_fix")) == "yes"
+                        else "No Manual Fix Needed"
+                        if _normalize_ai_recommendation(item.get("recommend_needs_manual_fix")) == "no"
+                        else "Recommendation n/a"
+                    ),
+                    "recommendation_reason": (item.get("recommendation_reason") or "").strip(),
+                    "potential_problems": _normalize_ai_potential_problems(item.get("potential_problems")),
+                }
+            )
+        if not stage_history and (text or (report.get("generated_at") or "").strip()):
+            stage_history.append(
+                {
+                    "stage": stage,
+                    "cycle_index": cycle_index,
+                    "generated_at_iso": (report.get("generated_at") or "").strip(),
+                    "generated_at_ph": format_ts_ph(report.get("generated_at")),
+                    "provider": (report.get("provider") or "").strip(),
+                    "model": (report.get("model") or "").strip(),
+                    "status": status,
+                    "error": error,
+                    "text": text,
+                    "recommend_needs_manual_fix": recommend_raw,
+                    "recommend_label": recommend_label,
+                    "recommendation_reason": (report.get("recommendation_reason") or "").strip(),
+                    "potential_problems": _normalize_ai_potential_problems(report.get("potential_problems")),
+                }
+            )
+        stage_history = sorted(
+            stage_history,
+            key=lambda row: _parse_iso_z(row.get("generated_at_iso") or "") or datetime.min,
+            reverse=True,
+        )
+        payload[stage] = {
+            "stage": stage,
+            "stage_label": _SURV_AI_STAGE_LABELS.get(stage) or stage,
+            "status": status,
+            "status_label": _ai_report_status_badge(status),
+            "cycle_index": cycle_index,
+            "current_cycle_index": current_cycle_index,
+            "has_current_cycle_report": has_current_cycle_report,
+            "error": error,
+            "generated_at_iso": (report.get("generated_at") or "").strip(),
+            "generated_at_ph": format_ts_ph(report.get("generated_at")),
+            "provider": (report.get("provider") or "").strip(),
+            "model": (report.get("model") or "").strip(),
+            "text": text,
+            "recommend_needs_manual_fix": recommend_raw,
+            "recommend_label": recommend_label,
+            "recommendation_reason": (report.get("recommendation_reason") or "").strip(),
+            "potential_problems": _normalize_ai_potential_problems(report.get("potential_problems")),
+            "has_report": has_report,
+            "is_generating": is_generating,
+            "has_error": has_error,
+            "history": stage_history,
+        }
+    return JSONResponse({"ok": True, "pppoe": pppoe, "reports": payload})
+
+
+@app.get("/surveillance/history_detail", response_class=JSONResponse)
+async def surveillance_history_detail(id: int):
+    row = get_surveillance_session_by_id(id)
+    if not isinstance(row, dict):
+        return JSONResponse({"ok": False, "error": "Session not found."}, status_code=404)
+
+    pppoe = (row.get("pppoe") or "").strip()
+    started_iso = (row.get("started_at") or "").strip()
+    ended_iso = (row.get("ended_at") or "").strip()
+    started_dt = _parse_iso_z(started_iso)
+    ended_dt = _parse_iso_z(ended_iso) if ended_iso else datetime.utcnow().replace(microsecond=0)
+    if isinstance(started_dt, datetime) and isinstance(ended_dt, datetime) and ended_dt < started_dt:
+        ended_dt = started_dt
+
+    since_iso = started_iso
+    until_iso = ended_iso
+    if isinstance(started_dt, datetime):
+        since_iso = started_dt.replace(microsecond=0).isoformat() + "Z"
+    if isinstance(ended_dt, datetime):
+        until_iso = ended_dt.replace(microsecond=0).isoformat() + "Z"
+    if not since_iso:
+        since_iso = until_iso or utc_now_iso()
+    if not until_iso:
+        until_iso = since_iso
+
+    def _in_window(ts):
+        dt = _parse_iso_z(ts)
+        if not isinstance(dt, datetime):
+            return False
+        if isinstance(started_dt, datetime) and dt < started_dt:
+            return False
+        if isinstance(ended_dt, datetime) and dt > ended_dt:
+            return False
+        return True
+
+    action = (row.get("end_reason") or "").strip().lower()
+    action_label_map = {
+        "healed": "Auto Healed",
+        "false": "Marked False",
+        "fixed": "Fixed",
+        "recovered": "Fully Recovered",
+        "removed": "Removed",
+    }
+
+    try:
+        under_seconds = max(int(row.get("under_seconds") or 0), 0)
+    except Exception:
+        under_seconds = 0
+    try:
+        level2_seconds = max(int(row.get("level2_seconds") or 0), 0)
+    except Exception:
+        level2_seconds = 0
+    try:
+        observe_seconds = max(int(row.get("observe_seconds") or 0), 0)
+    except Exception:
+        observe_seconds = 0
+
+    total_seconds = under_seconds + level2_seconds + observe_seconds
+    if total_seconds <= 0 and isinstance(started_dt, datetime) and isinstance(ended_dt, datetime):
+        total_seconds = max(int((ended_dt - started_dt).total_seconds()), 0)
+
+    account_id = _accounts_ping_account_id_for_pppoe(pppoe)
+    ping_series = get_accounts_ping_series_range(account_id, since_iso, until_iso) if account_id else []
+    ping_samples = 0
+    ping_down_samples = 0
+    ping_loss_values = []
+    ping_avg_values = []
+    ping_loss_events = 0
+    ping_last_ts = ""
+    ping_recent = []
+    prev_full_down = False
+    for item in ping_series:
+        ts = (item.get("timestamp") or "").strip()
+        if not _in_window(ts):
+            continue
+        ping_samples += 1
+        ok = bool(item.get("ok"))
+        loss_val = item.get("loss")
+        avg_val = item.get("avg_ms")
+        if not ok:
+            ping_down_samples += 1
+        try:
+            if loss_val is not None:
+                ping_loss_values.append(float(loss_val))
+        except Exception:
+            pass
+        try:
+            if avg_val is not None:
+                ping_avg_values.append(float(avg_val))
+        except Exception:
+            pass
+        full_down = (not ok) or (
+            loss_val is not None and isinstance(loss_val, (int, float)) and float(loss_val) >= 100.0
+        )
+        if full_down and not prev_full_down:
+            ping_loss_events += 1
+        prev_full_down = full_down
+        ping_last_ts = ts or ping_last_ts
+        ping_recent.append(
+            {
+                "timestamp_iso": ts,
+                "timestamp_ph": format_ts_ph(ts),
+                "ok": ok,
+                "loss": loss_val,
+                "avg_ms": avg_val,
+                "ip": (item.get("ip") or "").strip(),
+                "mode": (item.get("mode") or "").strip(),
+            }
+        )
+    ping_recent = ping_recent[-20:][::-1]
+    ping_uptime_pct = (100.0 - (ping_down_samples / ping_samples * 100.0)) if ping_samples else None
+
+    optical_latest_map = get_latest_optical_by_pppoe([pppoe]) if pppoe else {}
+    optical_latest = optical_latest_map.get(pppoe) if isinstance(optical_latest_map, dict) else {}
+    optical_device_id = (optical_latest.get("device_id") or "").strip() if isinstance(optical_latest, dict) else ""
+    optical_rows = get_optical_results_for_device_since(optical_device_id, since_iso) if optical_device_id else []
+    optical_filtered = []
+    for item in optical_rows:
+        ts = (item.get("timestamp") or "").strip()
+        if not _in_window(ts):
+            continue
+        optical_filtered.append(item)
+    optical_sample_total = len(optical_filtered)
+    optical_latest_row = optical_filtered[-1] if optical_filtered else {}
+    optical_rx_values = []
+    for item in optical_filtered:
+        try:
+            val = item.get("rx")
+            if val is not None:
+                optical_rx_values.append(float(val))
+        except Exception:
+            pass
+
+    usage_rows = get_pppoe_usage_series_since("", pppoe, since_iso) if pppoe else []
+    usage_filtered = []
+    for item in usage_rows:
+        ts = (item.get("timestamp") or "").strip()
+        if not _in_window(ts):
+            continue
+        usage_filtered.append(item)
+    usage_sample_total = len(usage_filtered)
+    usage_rx_vals = []
+    usage_tx_vals = []
+    usage_total_vals = []
+    usage_last_ts = ""
+    usage_active_device_max = 0
+    for item in usage_filtered:
+        rx = float(item.get("rx_bps") or 0.0)
+        tx = float(item.get("tx_bps") or 0.0)
+        total = max(rx, 0.0) + max(tx, 0.0)
+        usage_rx_vals.append(rx)
+        usage_tx_vals.append(tx)
+        usage_total_vals.append(total)
+        usage_last_ts = (item.get("timestamp") or "").strip() or usage_last_ts
+        try:
+            usage_active_device_max = max(usage_active_device_max, int(item.get("host_count") or 0))
+        except Exception:
+            pass
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "session": {
+                "id": int(row.get("id") or 0),
+                "pppoe": pppoe,
+                "source": (row.get("source") or "").strip(),
+                "last_ip": (row.get("last_ip") or "").strip(),
+                "last_state": (row.get("last_state") or "").strip(),
+                "observed_count": int(row.get("observed_count") or 0),
+                "started_at_iso": started_iso,
+                "ended_at_iso": ended_iso,
+                "started_at_ph": format_ts_ph(started_iso),
+                "ended_at_ph": format_ts_ph(ended_iso),
+                "updated_at_iso": (row.get("updated_at") or "").strip(),
+                "updated_at_ph": format_ts_ph(row.get("updated_at")),
+                "end_reason": action,
+                "end_reason_label": action_label_map.get(action, "Removed"),
+                "end_note": (row.get("end_note") or "").strip(),
+                "under_seconds": under_seconds,
+                "level2_seconds": level2_seconds,
+                "observe_seconds": observe_seconds,
+                "under_for_text": _format_duration_short(under_seconds) or "0m",
+                "level2_for_text": _format_duration_short(level2_seconds) or "0m",
+                "observe_for_text": _format_duration_short(observe_seconds) or "0m",
+                "total_seconds": total_seconds,
+                "total_for_text": _format_duration_short(total_seconds) or "0m",
+            },
+            "accounts_ping": {
+                "samples": ping_samples,
+                "down_samples": ping_down_samples,
+                "loss_events": ping_loss_events,
+                "uptime_pct": ping_uptime_pct,
+                "avg_loss": (sum(ping_loss_values) / len(ping_loss_values)) if ping_loss_values else None,
+                "avg_ms": (sum(ping_avg_values) / len(ping_avg_values)) if ping_avg_values else None,
+                "worst_ms": max(ping_avg_values) if ping_avg_values else None,
+                "last_sample_at_iso": ping_last_ts,
+                "last_sample_at_ph": format_ts_ph(ping_last_ts),
+                "recent": ping_recent,
+            },
+            "optical": {
+                "device_id": optical_device_id,
+                "samples": optical_sample_total,
+                "latest_rx": optical_latest_row.get("rx") if optical_latest_row else None,
+                "latest_tx": optical_latest_row.get("tx") if optical_latest_row else None,
+                "worst_rx": min(optical_rx_values) if optical_rx_values else None,
+                "last_sample_at_iso": (optical_latest_row.get("timestamp") or "").strip() if optical_latest_row else "",
+                "last_sample_at_ph": format_ts_ph(optical_latest_row.get("timestamp")) if optical_latest_row else "n/a",
+            },
+            "usage": {
+                "samples": usage_sample_total,
+                "avg_rx_bps": (sum(usage_rx_vals) / len(usage_rx_vals)) if usage_rx_vals else None,
+                "avg_tx_bps": (sum(usage_tx_vals) / len(usage_tx_vals)) if usage_tx_vals else None,
+                "peak_total_bps": max(usage_total_vals) if usage_total_vals else None,
+                "active_device_max": usage_active_device_max,
+                "last_sample_at_iso": usage_last_ts,
+                "last_sample_at_ph": format_ts_ph(usage_last_ts),
+            },
+        }
+    )
+
+
+@app.post("/surveillance/observe_recovered", response_class=HTMLResponse)
+async def surveillance_observe_recovered(request: Request):
+    form = await request.form()
+    pppoe = (form.get("pppoe") or "").strip()
+    raw_pppoes = (form.get("pppoes") or "").strip()
+    tab = (form.get("tab") or "observe").strip().lower()
+    remarks = (form.get("remarks") or "").strip()
+    if tab not in ("under", "level2", "observe"):
+        tab = "observe"
+
+    def _redirect_with_msg(message: str):
+        params = {"tab": tab, "msg": message}
+        if pppoe:
+            params["focus"] = pppoe
+        return RedirectResponse(url=f"/surveillance?{urllib.parse.urlencode(params)}", status_code=303)
+
+    pppoes: list[str] = []
+    if pppoe:
+        pppoes.append(pppoe)
+    if raw_pppoes:
+        try:
+            parsed = json.loads(raw_pppoes)
+            if isinstance(parsed, list):
+                for item in parsed:
+                    if isinstance(item, str) and item.strip():
+                        pppoes.append(item.strip())
+        except Exception:
+            pppoes.extend([item.strip() for item in raw_pppoes.split(",") if item.strip()])
+    seen = set()
+    unique_pppoes: list[str] = []
+    for item in pppoes:
+        if item in seen:
+            continue
+        seen.add(item)
+        unique_pppoes.append(item)
+
+    if not unique_pppoes:
+        return _redirect_with_msg("Missing PPPoE account.")
+    if not remarks or len(remarks) < 3:
+        return _redirect_with_msg("Recovery remarks are required (min 3 characters).")
+    if len(remarks) > 500:
+        return _redirect_with_msg("Recovery remarks are too long (max 500 characters).")
+
+    settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
+    entry_map = _surveillance_entry_map(settings)
+    processed = 0
+    for target in unique_pppoes:
+        entry = entry_map.get(target) or {}
+        if not entry:
+            continue
+        under_seconds, level2_seconds, observe_seconds = _surveillance_stage_seconds(entry)
+        try:
+            end_surveillance_session(
+                target,
+                "recovered",
+                started_at=(entry.get("added_at") or "").strip(),
+                source=(entry.get("source") or "").strip(),
+                ip=(entry.get("ip") or "").strip(),
+                state=(entry.get("status") or "under"),
+                note=f"Marked as fully recovered: {remarks}",
+                under_seconds=under_seconds,
+                level2_seconds=level2_seconds,
+                observe_seconds=observe_seconds,
+            )
+        except Exception:
+            pass
+        entry_map.pop(target, None)
+        processed += 1
+    if processed <= 0:
+        return _redirect_with_msg("Selected accounts are no longer active in Post-Fix Observation.")
+    settings["entries"] = list(entry_map.values())
+    save_settings("surveillance", settings)
     return RedirectResponse(url=f"/surveillance?tab={urllib.parse.quote(tab)}", status_code=303)
 
 
@@ -6716,6 +9891,7 @@ async def surveillance_remove_many(request: Request):
         entry = entry_map.get(pppoe) or {}
         if not entry:
             continue
+        under_seconds, level2_seconds, observe_seconds = _surveillance_stage_seconds(entry)
         try:
             end_surveillance_session(
                 pppoe,
@@ -6724,6 +9900,9 @@ async def surveillance_remove_many(request: Request):
                 source=(entry.get("source") or "").strip(),
                 ip=(entry.get("ip") or "").strip(),
                 state=(entry.get("status") or "under"),
+                under_seconds=under_seconds,
+                level2_seconds=level2_seconds,
+                observe_seconds=observe_seconds,
             )
         except Exception:
             pass
@@ -6754,6 +9933,7 @@ async def surveillance_fixed(request: Request):
                 status_code=303,
             )
         now_iso = utc_now_iso()
+        under_seconds, level2_seconds, observe_seconds = _surveillance_stage_seconds(old)
         try:
             end_surveillance_session(
                 pppoe,
@@ -6763,14 +9943,27 @@ async def surveillance_fixed(request: Request):
                 ip=(old.get("ip") or "").strip(),
                 state=(old.get("status") or "level2"),
                 note=reason,
+                under_seconds=under_seconds,
+                level2_seconds=level2_seconds,
+                observe_seconds=observe_seconds,
             )
         except Exception:
             pass
 
+        _append_surveillance_stage_history(
+            entry_map[pppoe],
+            from_stage="level2",
+            to_stage="observe",
+            reason=reason,
+            action="mark_fixed",
+            at_iso=now_iso,
+        )
         entry_map[pppoe]["status"] = "under"
         entry_map[pppoe]["added_at"] = now_iso
+        entry_map[pppoe]["first_added_at"] = (entry_map[pppoe].get("first_added_at") or old.get("first_added_at") or old.get("added_at") or now_iso).strip() or now_iso
         entry_map[pppoe]["updated_at"] = now_iso
         entry_map[pppoe]["level2_at"] = ""
+        entry_map[pppoe]["level2_reason"] = ""
         entry_map[pppoe]["last_fixed_at"] = now_iso
         entry_map[pppoe]["last_fixed_reason"] = reason
         entry_map[pppoe]["last_fixed_mode"] = "manual"
@@ -6786,7 +9979,7 @@ async def surveillance_fixed(request: Request):
             pass
     settings["entries"] = list(entry_map.values())
     save_settings("surveillance", settings)
-    return RedirectResponse(url="/surveillance?tab=under", status_code=303)
+    return RedirectResponse(url="/surveillance?tab=observe", status_code=303)
 
 
 @app.post("/surveillance/fixed_many", response_class=HTMLResponse)
@@ -6836,6 +10029,7 @@ async def surveillance_fixed_many(request: Request):
         if pppoe not in entry_map:
             continue
         old = dict(entry_map.get(pppoe) or {})
+        under_seconds, level2_seconds, observe_seconds = _surveillance_stage_seconds(old)
         try:
             end_surveillance_session(
                 pppoe,
@@ -6845,13 +10039,26 @@ async def surveillance_fixed_many(request: Request):
                 ip=(old.get("ip") or "").strip(),
                 state=(old.get("status") or "level2"),
                 note=reason,
+                under_seconds=under_seconds,
+                level2_seconds=level2_seconds,
+                observe_seconds=observe_seconds,
             )
         except Exception:
             pass
+        _append_surveillance_stage_history(
+            entry_map[pppoe],
+            from_stage="level2",
+            to_stage="observe",
+            reason=reason,
+            action="mark_fixed",
+            at_iso=now_iso,
+        )
         entry_map[pppoe]["status"] = "under"
         entry_map[pppoe]["added_at"] = now_iso
+        entry_map[pppoe]["first_added_at"] = (entry_map[pppoe].get("first_added_at") or old.get("first_added_at") or old.get("added_at") or now_iso).strip() or now_iso
         entry_map[pppoe]["updated_at"] = now_iso
         entry_map[pppoe]["level2_at"] = ""
+        entry_map[pppoe]["level2_reason"] = ""
         entry_map[pppoe]["last_fixed_at"] = now_iso
         entry_map[pppoe]["last_fixed_reason"] = reason
         entry_map[pppoe]["last_fixed_mode"] = "manual"
@@ -6868,7 +10075,7 @@ async def surveillance_fixed_many(request: Request):
 
     settings["entries"] = list(entry_map.values())
     save_settings("surveillance", settings)
-    return RedirectResponse(url="/surveillance?tab=under", status_code=303)
+    return RedirectResponse(url="/surveillance?tab=observe", status_code=303)
 
 def render_wan_ping_response(request, pulse_settings, wan_settings, message, active_tab, wan_window_hours=24, wan_settings_tab="telegram"):
     if (active_tab or "").strip().lower() in ("add", "routers"):
@@ -7299,31 +10506,62 @@ async def legacy_pulsewatch_api_removed(legacy_path: str):
 
 
 @app.get("/system/resources")
-async def system_resources():
+async def system_resources(details: int = 0):
     mem = _memory_details_kb()
     mem_total_kb = int(mem.get("mem_total_kb") or 0)
     mem_avail_kb = int(mem.get("mem_available_kb") or 0)
     mem_free_kb = int(mem.get("mem_free_kb") or 0)
     mem_cached_kb = int(mem.get("cached_kb") or 0)
     mem_buffers_kb = int(mem.get("buffers_kb") or 0)
-    return JSONResponse(
-        {
-            "cpu_pct": round(_cpu_percent(), 1),
-            # ram_pct remains backward-compatible (pressure view, based on MemAvailable)
-            "ram_pct": round(_memory_percent(), 1),
-            # explicit fields:
-            "ram_pressure_pct": round(_memory_percent(), 1),
-            "ram_used_incl_cache_pct": round(_memory_used_including_cache_percent(), 1),
-            # raw figures for debugging/UI (KB from /proc/meminfo)
-            "ram_total_kb": mem_total_kb,
-            "ram_available_kb": mem_avail_kb,
-            "ram_free_kb": mem_free_kb,
-            "ram_cached_kb": mem_cached_kb,
-            "ram_buffers_kb": mem_buffers_kb,
-            "disk_pct": round(_disk_percent(), 1),
-            "uptime_seconds": _uptime_seconds(),
-        }
-    )
+    payload = {
+        "cpu_pct": round(_cpu_percent(), 1),
+        # ram_pct remains backward-compatible (pressure view, based on MemAvailable)
+        "ram_pct": round(_memory_percent(), 1),
+        # explicit fields:
+        "ram_pressure_pct": round(_memory_percent(), 1),
+        "ram_used_incl_cache_pct": round(_memory_used_including_cache_percent(), 1),
+        # raw figures for debugging/UI (KB from /proc/meminfo)
+        "ram_total_kb": mem_total_kb,
+        "ram_available_kb": mem_avail_kb,
+        "ram_free_kb": mem_free_kb,
+        "ram_cached_kb": mem_cached_kb,
+        "ram_buffers_kb": mem_buffers_kb,
+        "disk_pct": round(_disk_percent(), 1),
+        "uptime_seconds": _uptime_seconds(),
+    }
+    include_details = False
+    try:
+        include_details = int(details or 0) > 0
+    except Exception:
+        include_details = False
+    if include_details:
+        proc_root = _process_proc_root()
+        sampled = _sample_process_usage(limit=0, sample_seconds=0.25, proc_root=proc_root)
+        all_processes = list(sampled.get("rows") or [])
+        top_processes = all_processes[:12]
+        tracked_cpu_pct = float(sampled.get("total_cpu_pct") or 0.0)
+        tracked_count = int(sampled.get("process_count") or 0)
+        if not top_processes:
+            top_processes = _top_process_usage(limit=12)
+            tracked_cpu_pct = round(sum(float(item.get("cpu_pct") or 0.0) for item in top_processes), 1)
+            tracked_count = len(top_processes)
+            all_processes = list(top_processes)
+        payload["top_processes"] = top_processes
+        payload["feature_usage"] = _aggregate_feature_usage(all_processes, limit=8)
+        runtime_features = sample_feature_cpu_percent(cpu_count=max(int(os.cpu_count() or 1), 1))
+        payload["threej_feature_cpu"] = runtime_features
+        payload["threej_summary"] = _build_runtime_threej_summary(
+            runtime_features,
+            all_processes,
+            payload.get("cpu_pct") or 0.0,
+        )
+        payload["cpu_tracked_pct"] = round(max(0.0, min(100.0, tracked_cpu_pct)), 1)
+        payload["tracked_process_count"] = tracked_count
+        payload["cpu_scope"] = "Host processes" if proc_root == "/host_proc" else "Container processes"
+        payload["captured_at"] = utc_now_iso()
+    return JSONResponse(payload)
+
+
 @app.post("/settings/system/mikrotik/test", response_class=HTMLResponse)
 async def isp_mikrotik_test(request: Request):
     settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
@@ -7352,11 +10590,7 @@ async def isp_mikrotik_test(request: Request):
         finally:
             client.close()
     message = " | ".join(results)
-    interfaces = get_interface_options()
-    return templates.TemplateResponse(
-        "settings_system.html",
-        make_context(request, {"settings": settings, "message": message, "interfaces": interfaces}),
-    )
+    return render_system_settings_response(request, message, active_tab="routers", routers_tab="cores")
 
 
 @app.get("/settings", response_class=HTMLResponse)
@@ -7366,7 +10600,7 @@ async def settings_root():
 @app.get("/settings/system", response_class=HTMLResponse)
 async def system_settings(request: Request):
     active_tab = (request.query_params.get("tab") or "general").strip().lower()
-    if active_tab not in {"general", "routers", "backup", "danger"}:
+    if active_tab not in {"general", "routers", "ai", "backup", "danger"}:
         active_tab = "general"
     routers_tab = (request.query_params.get("routers_tab") or "cores").strip().lower()
     if routers_tab not in {"cores", "mikrotik-routers", "isps"}:
@@ -7375,6 +10609,15 @@ async def system_settings(request: Request):
 
 
 def render_system_settings_response(request: Request, message: str, active_tab: str = "general", routers_tab: str = "cores"):
+    system_settings = normalize_system_settings(get_settings("system", SYSTEM_DEFAULTS))
+    ai_settings = system_settings.get("ai") if isinstance(system_settings.get("ai"), dict) else {}
+    ai_model_data = _build_ai_model_options(ai_settings, active_tab)
+    ai_meta = {
+        "chatgpt_api_key_set": bool((ai_settings.get("chatgpt") or {}).get("api_key")),
+        "gemini_api_key_set": bool((ai_settings.get("gemini") or {}).get("api_key")),
+        "chatgpt_model_fetch_error": (ai_model_data.get("errors") or {}).get("chatgpt") or "",
+        "gemini_model_fetch_error": (ai_model_data.get("errors") or {}).get("gemini") or "",
+    }
     pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
     wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
     # Back-compat: Usage originally had its own MikroTik router list. If System Settings is empty,
@@ -7462,6 +10705,10 @@ def render_system_settings_response(request: Request, message: str, active_tab: 
                 "wan_autodetect_warnings": wan_autodetect_warnings,
                 "interfaces": interfaces,
                 "telegram_state": telegram_state,
+                "system_settings": system_settings,
+                "ai_settings": ai_settings,
+                "ai_model_options": (ai_model_data.get("options") or {}),
+                "ai_meta": ai_meta,
             },
         ),
     )
@@ -7581,6 +10828,180 @@ async def system_telegram_save(request: Request):
     save_settings("isp_ping", settings)
     message = "Telegram command settings saved."
     return render_system_settings_response(request, message, active_tab="general", routers_tab="cores")
+
+
+@app.post("/settings/system/ai", response_class=HTMLResponse)
+async def system_ai_save(request: Request):
+    form = await request.form()
+    system_settings = normalize_system_settings(get_settings("system", SYSTEM_DEFAULTS))
+    ai_cfg = system_settings.get("ai") if isinstance(system_settings.get("ai"), dict) else {}
+    chatgpt_cfg = ai_cfg.get("chatgpt") if isinstance(ai_cfg.get("chatgpt"), dict) else {}
+    gemini_cfg = ai_cfg.get("gemini") if isinstance(ai_cfg.get("gemini"), dict) else {}
+    report_cfg = ai_cfg.get("report") if isinstance(ai_cfg.get("report"), dict) else {}
+
+    provider = (form.get("ai_provider") or ai_cfg.get("provider") or "chatgpt").strip().lower()
+    if provider not in ("chatgpt", "gemini"):
+        provider = "chatgpt"
+
+    chatgpt_api_key = (form.get("ai_chatgpt_api_key") or "").strip()
+    if parse_bool(form, "ai_chatgpt_clear_api_key"):
+        chatgpt_api_key = ""
+    elif not chatgpt_api_key:
+        chatgpt_api_key = (chatgpt_cfg.get("api_key") or "").strip()
+
+    gemini_api_key = (form.get("ai_gemini_api_key") or "").strip()
+    if parse_bool(form, "ai_gemini_clear_api_key"):
+        gemini_api_key = ""
+    elif not gemini_api_key:
+        gemini_api_key = (gemini_cfg.get("api_key") or "").strip()
+
+    updated_ai = {
+        "enabled": parse_bool(form, "ai_enabled"),
+        "provider": provider,
+        "chatgpt": {
+            "api_key": chatgpt_api_key,
+            "model": _normalize_provider_model_id(
+                "chatgpt",
+                (form.get("ai_chatgpt_model") or chatgpt_cfg.get("model") or "gpt-4o-mini").strip() or "gpt-4o-mini",
+            ),
+            "timeout_seconds": parse_int(
+                form,
+                "ai_chatgpt_timeout_seconds",
+                int(chatgpt_cfg.get("timeout_seconds", 30) or 30),
+            ),
+            "max_tokens": parse_int(
+                form,
+                "ai_chatgpt_max_tokens",
+                int(chatgpt_cfg.get("max_tokens", 900) or 900),
+            ),
+        },
+        "gemini": {
+            "api_key": gemini_api_key,
+            "model": _normalize_provider_model_id(
+                "gemini",
+                (form.get("ai_gemini_model") or gemini_cfg.get("model") or "gemini-2.5-flash-preview-09-2025").strip()
+                or "gemini-2.5-flash-preview-09-2025",
+            ),
+            "timeout_seconds": parse_int(
+                form,
+                "ai_gemini_timeout_seconds",
+                int(gemini_cfg.get("timeout_seconds", 30) or 30),
+            ),
+            "max_tokens": parse_int(
+                form,
+                "ai_gemini_max_tokens",
+                int(gemini_cfg.get("max_tokens", 900) or 900),
+            ),
+        },
+        "report": {
+            "lookback_hours": parse_int(
+                form,
+                "ai_report_lookback_hours",
+                int(report_cfg.get("lookback_hours", 24) or 24),
+            ),
+            "max_samples": parse_int(
+                form,
+                "ai_report_max_samples",
+                int(report_cfg.get("max_samples", 60) or 60),
+            ),
+        },
+    }
+
+    system_settings["ai"] = updated_ai
+    normalized = normalize_system_settings(system_settings)
+    save_settings("system", normalized)
+    return render_system_settings_response(
+        request,
+        "AI Investigator settings saved.",
+        active_tab="ai",
+        routers_tab="cores",
+    )
+
+
+@app.post("/settings/system/ai/test/{provider}", response_class=HTMLResponse)
+async def system_ai_test(request: Request, provider: str):
+    provider = (provider or "").strip().lower()
+    if provider not in ("chatgpt", "gemini"):
+        return render_system_settings_response(
+            request,
+            "Invalid AI provider test request.",
+            active_tab="ai",
+            routers_tab="cores",
+        )
+
+    form = await request.form()
+    system_settings = normalize_system_settings(get_settings("system", SYSTEM_DEFAULTS))
+    ai_cfg = system_settings.get("ai") if isinstance(system_settings.get("ai"), dict) else {}
+    message = ""
+
+    if provider == "chatgpt":
+        saved_cfg = ai_cfg.get("chatgpt") if isinstance(ai_cfg.get("chatgpt"), dict) else {}
+        submitted_key = (form.get("ai_chatgpt_api_key") or "").strip()
+        if parse_bool(form, "ai_chatgpt_clear_api_key"):
+            submitted_key = ""
+        api_key = submitted_key or (saved_cfg.get("api_key") or "").strip()
+        model = _normalize_provider_model_id(
+            "chatgpt",
+            (form.get("ai_chatgpt_model") or saved_cfg.get("model") or "gpt-4o-mini").strip() or "gpt-4o-mini",
+        )
+        timeout_seconds = parse_int(form, "ai_chatgpt_timeout_seconds", int(saved_cfg.get("timeout_seconds", 30) or 30))
+        timeout_seconds = max(5, min(int(timeout_seconds or 30), 180))
+        if not api_key:
+            message = "ChatGPT test failed: no API key provided. Enter a key or save one first."
+        else:
+            model_ids, fetch_err = _fetch_chatgpt_model_ids(api_key, timeout_seconds=timeout_seconds)
+            if not model_ids:
+                message = f"ChatGPT test failed: {fetch_err or 'No models returned.'}"
+            else:
+                source = "entered key" if submitted_key else "saved key"
+                if model in model_ids:
+                    message = (
+                        f"ChatGPT test OK using {source}. Retrieved {len(model_ids)} models. "
+                        f"Selected model `{model}` is available."
+                    )
+                else:
+                    message = (
+                        f"ChatGPT key authenticated using {source}. Retrieved {len(model_ids)} models, "
+                        f"but selected model `{model}` was not listed for this key."
+                    )
+    else:
+        saved_cfg = ai_cfg.get("gemini") if isinstance(ai_cfg.get("gemini"), dict) else {}
+        submitted_key = (form.get("ai_gemini_api_key") or "").strip()
+        if parse_bool(form, "ai_gemini_clear_api_key"):
+            submitted_key = ""
+        api_key = submitted_key or (saved_cfg.get("api_key") or "").strip()
+        model = _normalize_provider_model_id(
+            "gemini",
+            (form.get("ai_gemini_model") or saved_cfg.get("model") or "gemini-2.5-flash-preview-09-2025").strip()
+            or "gemini-2.5-flash-preview-09-2025",
+        )
+        timeout_seconds = parse_int(form, "ai_gemini_timeout_seconds", int(saved_cfg.get("timeout_seconds", 30) or 30))
+        timeout_seconds = max(5, min(int(timeout_seconds or 30), 180))
+        if not api_key:
+            message = "Gemini test failed: no API key provided. Enter a key or save one first."
+        else:
+            model_ids, fetch_err = _fetch_gemini_model_ids(api_key, timeout_seconds=timeout_seconds)
+            if not model_ids:
+                message = f"Gemini test failed: {fetch_err or 'No models returned.'}"
+            else:
+                source = "entered key" if submitted_key else "saved key"
+                if model in model_ids:
+                    message = (
+                        f"Gemini test OK using {source}. Retrieved {len(model_ids)} models. "
+                        f"Selected model `{model}` is available."
+                    )
+                else:
+                    message = (
+                        f"Gemini key authenticated using {source}. Retrieved {len(model_ids)} models, "
+                        f"but selected model `{model}` was not listed for this key."
+                    )
+
+    return render_system_settings_response(
+        request,
+        message,
+        active_tab="ai",
+        routers_tab="cores",
+    )
 
 
 @app.post("/settings/system/mikrotik/add", response_class=HTMLResponse)

@@ -17,6 +17,9 @@
     <a href="#sys-routers" class="nav-link {% if active_tab == 'routers' %}active{% endif %}" data-bs-toggle="tab">Routers</a>
   </li>
   <li class="nav-item">
+    <a href="#sys-ai" class="nav-link {% if active_tab == 'ai' %}active{% endif %}" data-bs-toggle="tab">AI</a>
+  </li>
+  <li class="nav-item">
     <a href="#sys-backup" class="nav-link {% if active_tab == 'backup' %}active{% endif %}" data-bs-toggle="tab">Backup</a>
   </li>
   <li class="nav-item">
@@ -426,6 +429,186 @@
     </div>
   </div>
 
+  <div class="tab-pane {% if active_tab == 'ai' %}active{% endif %}" id="sys-ai">
+    <form method="post" action="/settings/system/ai">
+      <div class="card mb-4">
+        <div class="card-header">
+          <h3 class="card-title">AI Investigator</h3>
+        </div>
+        <div class="card-body">
+          <div class="alert alert-info">
+            Used by Under Surveillance for <span class="fw-semibold">Active Monitoring</span> accounts. Initial report is auto-generated when an account enters monitoring, and admins can regenerate reports anytime from the AI Reports tab.
+          </div>
+          <div class="row g-3">
+            <div class="col-md-4">
+              <label class="form-label">Enable AI Investigator <span class="info" data-tip="When enabled, the system auto-generates AI investigation reports for accounts added into Active Monitoring.">i</span></label>
+              <label class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" name="ai_enabled" {% if ai_settings.enabled %}checked{% endif %} />
+                <span class="form-check-label">Enabled</span>
+              </label>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Active Provider <span class="info" data-tip="Choose which API to use for report generation.">i</span></label>
+              <select class="form-select" name="ai_provider">
+                <option value="chatgpt" {% if ai_settings.provider == 'chatgpt' %}selected{% endif %}>ChatGPT</option>
+                <option value="gemini" {% if ai_settings.provider == 'gemini' %}selected{% endif %}>Google Gemini</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mb-4">
+        <div class="card-header">
+          <h3 class="card-title">ChatGPT Provider</h3>
+        </div>
+        <div class="card-body">
+          <div class="text-muted small mb-3">
+            Pricing guide uses provider public pricing reference (per 1M tokens). Always verify current pricing in provider billing.
+          </div>
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label">API Key</label>
+              <input class="form-control" type="password" name="ai_chatgpt_api_key" placeholder="{% if ai_meta.chatgpt_api_key_set %}Saved (leave blank to keep current){% else %}Enter API key{% endif %}" />
+              <label class="form-check mt-2">
+                <input class="form-check-input" type="checkbox" name="ai_chatgpt_clear_api_key" />
+                <span class="form-check-label">Clear saved key</span>
+              </label>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Model</label>
+              <select class="form-select ai-model-select" name="ai_chatgpt_model" data-ai-provider="chatgpt">
+                {% set selected_chatgpt = ai_settings.chatgpt.model %}
+                {% for item in ai_model_options.chatgpt %}
+                  <option
+                    value="{{ item.id }}"
+                    data-cost-text="{{ item.cost_text }}"
+                    data-free-tier-text="{{ item.free_tier_text }}"
+                    data-input-cost="{{ item.input_cost_text }}"
+                    data-output-cost="{{ item.output_cost_text }}"
+                    data-recommended-max-tokens="{{ item.recommended_max_tokens }}"
+                    data-max-tokens-hint="{{ item.max_tokens_hint }}"
+                    {% if selected_chatgpt == item.id %}selected{% endif %}
+                  >
+                    {{ item.label }}
+                  </option>
+                {% endfor %}
+              </select>
+              <div class="form-hint mt-1" data-ai-model-guide="chatgpt"></div>
+              {% if ai_meta.chatgpt_model_fetch_error %}
+                <div class="text-warning small mt-1">{{ ai_meta.chatgpt_model_fetch_error }}</div>
+              {% endif %}
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Timeout (seconds)</label>
+              <input class="form-control" type="number" min="5" max="180" name="ai_chatgpt_timeout_seconds" value="{{ ai_settings.chatgpt.timeout_seconds }}" />
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Max Tokens <span class="info" data-tip="How long the AI report can be. Higher value = longer report and higher cost. Start around 700–1200 for field reports.">i</span></label>
+              <input class="form-control" type="number" min="200" max="4000" name="ai_chatgpt_max_tokens" value="{{ ai_settings.chatgpt.max_tokens }}" />
+              <div class="form-hint mt-1" data-ai-tokens-guide="chatgpt"></div>
+            </div>
+            <div class="col-12 d-flex align-items-center gap-2">
+              <button type="submit" class="btn btn-outline-primary" formaction="/settings/system/ai/test/chatgpt" formmethod="post">
+                Test ChatGPT API Key
+              </button>
+              <span class="text-muted small">Tests the key from this form (or saved key if blank).</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mb-4">
+        <div class="card-header">
+          <h3 class="card-title">Gemini Provider</h3>
+        </div>
+        <div class="card-body">
+          <div class="text-muted small mb-3">
+            Pricing guide uses provider public pricing reference (per 1M tokens). Always verify current pricing in provider billing.
+          </div>
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label">API Key</label>
+              <input class="form-control" type="password" name="ai_gemini_api_key" placeholder="{% if ai_meta.gemini_api_key_set %}Saved (leave blank to keep current){% else %}Enter API key{% endif %}" />
+              <label class="form-check mt-2">
+                <input class="form-check-input" type="checkbox" name="ai_gemini_clear_api_key" />
+                <span class="form-check-label">Clear saved key</span>
+              </label>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Model</label>
+              <select class="form-select ai-model-select" name="ai_gemini_model" data-ai-provider="gemini">
+                {% set selected_gemini = ai_settings.gemini.model %}
+                {% for item in ai_model_options.gemini %}
+                  <option
+                    value="{{ item.id }}"
+                    data-cost-text="{{ item.cost_text }}"
+                    data-free-tier-text="{{ item.free_tier_text }}"
+                    data-input-cost="{{ item.input_cost_text }}"
+                    data-output-cost="{{ item.output_cost_text }}"
+                    data-recommended-max-tokens="{{ item.recommended_max_tokens }}"
+                    data-max-tokens-hint="{{ item.max_tokens_hint }}"
+                    {% if selected_gemini == item.id %}selected{% endif %}
+                  >
+                    {% if item.free_tier is sameas true %}
+                      {{ item.label }} · Free Tier
+                    {% elif item.free_tier is sameas false %}
+                      {{ item.label }} · Paid only
+                    {% else %}
+                      {{ item.label }}
+                    {% endif %}
+                  </option>
+                {% endfor %}
+              </select>
+              <div class="form-hint mt-1" data-ai-model-guide="gemini"></div>
+              {% if ai_meta.gemini_model_fetch_error %}
+                <div class="text-warning small mt-1">{{ ai_meta.gemini_model_fetch_error }}</div>
+              {% endif %}
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Timeout (seconds)</label>
+              <input class="form-control" type="number" min="5" max="180" name="ai_gemini_timeout_seconds" value="{{ ai_settings.gemini.timeout_seconds }}" />
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Max Tokens <span class="info" data-tip="How long the AI report can be. Higher value = longer report and higher cost. Start around 700–1200 for field reports.">i</span></label>
+              <input class="form-control" type="number" min="200" max="4000" name="ai_gemini_max_tokens" value="{{ ai_settings.gemini.max_tokens }}" />
+              <div class="form-hint mt-1" data-ai-tokens-guide="gemini"></div>
+            </div>
+            <div class="col-12 d-flex align-items-center gap-2">
+              <button type="submit" class="btn btn-outline-primary" formaction="/settings/system/ai/test/gemini" formmethod="post">
+                Test Gemini API Key
+              </button>
+              <span class="text-muted small">Tests the key from this form (or saved key if blank).</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mb-4">
+        <div class="card-header">
+          <h3 class="card-title">Report Inputs</h3>
+        </div>
+        <div class="card-body">
+          <div class="row g-3">
+            <div class="col-md-3">
+              <label class="form-label">Lookback Hours <span class="info" data-tip="How much historical data to include in AI evidence.">i</span></label>
+              <input class="form-control" type="number" min="1" max="168" name="ai_report_lookback_hours" value="{{ ai_settings.report.lookback_hours }}" />
+              <div class="form-hint mt-1">How far back the AI checks account history (for example: 24 = last 24 hours).</div>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Max Samples per Signal <span class="info" data-tip="Think of this as how many moments in time the AI can review for each section (Ping, Optical, Usage). Higher gives more detail, but is slower and costs more.">i</span></label>
+              <input class="form-control" type="number" min="10" max="300" name="ai_report_max_samples" value="{{ ai_settings.report.max_samples }}" />
+              <div class="form-hint mt-1">Simple guide: 40–80 is a good balance. Use higher only when you need deep investigation.</div>
+            </div>
+          </div>
+        </div>
+        <div class="card-footer d-flex justify-content-end">
+          <button type="submit" class="btn btn-primary">Save AI Settings</button>
+        </div>
+      </div>
+    </form>
+  </div>
+
   <div class="tab-pane {% if active_tab == 'backup' %}active{% endif %}" id="sys-backup">
     <div class="card mb-4">
       <div class="card-header">
@@ -537,6 +720,39 @@
   document.querySelectorAll(".wan-local-ip").forEach((input) => {
     toggleWanFields(input.dataset.row);
     input.addEventListener("input", () => toggleWanFields(input.dataset.row));
+  });
+
+  const updateAiGuide = (provider) => {
+    const select = document.querySelector(`.ai-model-select[data-ai-provider="${provider}"]`);
+    if (!select) return;
+    const selected = select.options[select.selectedIndex];
+    const modelGuide = document.querySelector(`[data-ai-model-guide="${provider}"]`);
+    const tokenGuide = document.querySelector(`[data-ai-tokens-guide="${provider}"]`);
+    const maxInput = document.querySelector(`input[name="ai_${provider}_max_tokens"]`);
+    if (!selected) return;
+
+    const costText = selected.dataset.costText || "Pricing n/a";
+    const freeTierText = selected.dataset.freeTierText || "Free Tier: Unknown";
+    const maxHint = selected.dataset.maxTokensHint || "";
+    const suggested = parseInt(selected.dataset.recommendedMaxTokens || "900", 10);
+    const suggestedText = Number.isFinite(suggested) ? String(suggested) : "900";
+
+    if (modelGuide) {
+      modelGuide.textContent = `${costText} · ${freeTierText}`;
+    }
+    if (tokenGuide) {
+      tokenGuide.textContent = `App range: 200–4000. Suggested: ${suggestedText}. ${maxHint}`.trim();
+    }
+    if (maxInput) {
+      maxInput.setAttribute("placeholder", suggestedText);
+    }
+  };
+
+  ["chatgpt", "gemini"].forEach((provider) => {
+    const select = document.querySelector(`.ai-model-select[data-ai-provider="${provider}"]`);
+    if (!select) return;
+    updateAiGuide(provider);
+    select.addEventListener("change", () => updateAiGuide(provider));
   });
 </script>
 {% endblock %}

@@ -136,7 +136,7 @@ SURVEILLANCE_DEFAULTS = {
         "timeout_seconds": 1,
         "burst_count": 1,
         "burst_timeout_seconds": 1,
-        "max_parallel": 64,
+        "max_parallel": 16,
     },
     "burst": {
         "enabled": True,
@@ -150,13 +150,16 @@ SURVEILLANCE_DEFAULTS = {
     },
     "stability": {
         "stable_window_minutes": 10,
+        # Fixed accounts stay in post-fix observation for this duration before auto-heal checks can clear them.
+        "fixed_observation_minutes": 10,
         "uptime_threshold_pct": 95.0,
         "latency_max_ms": 15.0,
-        "loss_max_pct": 100.0,
+        # Equivalent downtime budget from loss samples (minutes).
+        "loss_max_minutes": 10.0,
+        # Maximum allowed full-down loss events in the checker window.
+        "loss_event_max_count": 5,
         "optical_rx_min_dbm": -24.0,
         "require_optical": True,
-        "escalate_after_minutes": 10,
-        "level2_autofix_after_minutes": 30,
     },
 }
 
@@ -333,7 +336,7 @@ ACCOUNTS_PING_DEFAULTS = {
     },
     "general": {
         "base_interval_seconds": 30,
-        "max_parallel": 64,
+        "max_parallel": 16,
     },
     "ping": {
         "count": 3,

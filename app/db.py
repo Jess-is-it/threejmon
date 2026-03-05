@@ -10,6 +10,21 @@ DB_URL = (os.environ.get("THREEJ_DATABASE_URL") or os.environ.get("DATABASE_URL"
 
 _pg_pool = None
 _pg_pool_lock = threading.Lock()
+_retention_prune_lock = threading.Lock()
+_retention_prune_last = {}
+
+
+def _should_run_retention_prune(key, interval_seconds):
+    interval = max(int(interval_seconds or 0), 0)
+    if interval <= 0:
+        return True
+    now = time.monotonic()
+    with _retention_prune_lock:
+        last = float(_retention_prune_last.get(key) or 0.0)
+        if now - last < interval:
+            return False
+        _retention_prune_last[key] = now
+        return True
 
 
 def _use_postgres():
@@ -395,6 +410,9 @@ def init_db():
                     ended_at TEXT,
                     end_reason TEXT,
                     end_note TEXT,
+                    under_seconds INTEGER NOT NULL DEFAULT 0,
+                    level2_seconds INTEGER NOT NULL DEFAULT 0,
+                    observe_seconds INTEGER NOT NULL DEFAULT 0,
                     observed_count INTEGER NOT NULL DEFAULT 0,
                     last_state TEXT NOT NULL DEFAULT 'under',
                     last_ip TEXT,
@@ -641,6 +659,9 @@ def init_db():
                     ended_at TEXT,
                     end_reason TEXT,
                     end_note TEXT,
+                    under_seconds INTEGER NOT NULL DEFAULT 0,
+                    level2_seconds INTEGER NOT NULL DEFAULT 0,
+                    observe_seconds INTEGER NOT NULL DEFAULT 0,
                     observed_count INTEGER NOT NULL DEFAULT 0,
                     last_state TEXT NOT NULL DEFAULT 'under',
                     last_ip TEXT,
@@ -673,6 +694,18 @@ def init_db():
             ON wan_status_history (wan_id, timestamp)
             """
         )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_wan_status_history_ts
+            ON wan_status_history (timestamp)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_wan_target_ping_results_ts
+            ON wan_target_ping_results (timestamp)
+            """
+        )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_rto_results_ip_ts ON rto_results (ip, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_optical_results_device_ts ON optical_results (device_id, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_optical_results_ip_ts ON optical_results (ip, timestamp)")
@@ -700,6 +733,9 @@ def init_db():
         try:
             if _use_postgres():
                 conn.execute("ALTER TABLE surveillance_sessions ADD COLUMN IF NOT EXISTS end_note TEXT")
+                conn.execute("ALTER TABLE surveillance_sessions ADD COLUMN IF NOT EXISTS under_seconds INTEGER NOT NULL DEFAULT 0")
+                conn.execute("ALTER TABLE surveillance_sessions ADD COLUMN IF NOT EXISTS level2_seconds INTEGER NOT NULL DEFAULT 0")
+                conn.execute("ALTER TABLE surveillance_sessions ADD COLUMN IF NOT EXISTS observe_seconds INTEGER NOT NULL DEFAULT 0")
                 conn.execute("ALTER TABLE pppoe_usage_samples ADD COLUMN IF NOT EXISTS host_count INTEGER")
             else:
                 cols = []
@@ -710,6 +746,12 @@ def init_db():
                     cols = []
                 if "end_note" not in cols:
                     conn.execute("ALTER TABLE surveillance_sessions ADD COLUMN end_note TEXT")
+                if "under_seconds" not in cols:
+                    conn.execute("ALTER TABLE surveillance_sessions ADD COLUMN under_seconds INTEGER NOT NULL DEFAULT 0")
+                if "level2_seconds" not in cols:
+                    conn.execute("ALTER TABLE surveillance_sessions ADD COLUMN level2_seconds INTEGER NOT NULL DEFAULT 0")
+                if "observe_seconds" not in cols:
+                    conn.execute("ALTER TABLE surveillance_sessions ADD COLUMN observe_seconds INTEGER NOT NULL DEFAULT 0")
                 try:
                     info = conn.execute("PRAGMA table_info(pppoe_usage_samples)").fetchall()
                     cols = [row["name"] for row in info] if info else []
@@ -827,7 +869,9 @@ def _get_active_surveillance_session(pppoe):
     try:
         row = conn.execute(
             """
-            SELECT id, pppoe, source, started_at, ended_at, end_reason, observed_count, last_state, last_ip, updated_at
+            SELECT id, pppoe, source, started_at, ended_at, end_reason, end_note,
+                   under_seconds, level2_seconds, observe_seconds,
+                   observed_count, last_state, last_ip, updated_at
             FROM surveillance_sessions
             WHERE pppoe = ? AND ended_at IS NULL
             ORDER BY id DESC
@@ -882,9 +926,11 @@ def ensure_surveillance_session(pppoe, started_at=None, source="", ip="", state=
             conn.execute(
                 """
                 INSERT INTO surveillance_sessions (
-                    pppoe, source, started_at, ended_at, end_reason, observed_count, last_state, last_ip, updated_at
+                    pppoe, source, started_at, ended_at, end_reason, end_note,
+                    under_seconds, level2_seconds, observe_seconds,
+                    observed_count, last_state, last_ip, updated_at
                 )
-                VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?)
+                VALUES (?, ?, ?, NULL, NULL, NULL, 0, 0, 0, ?, ?, ?, ?)
                 """,
                 (
                     pppoe,
@@ -978,13 +1024,24 @@ def increment_surveillance_observed(pppoe, started_at=None, source="", ip=""):
     return _get_active_surveillance_session(pppoe)
 
 
-def end_surveillance_session(pppoe, end_reason, started_at=None, source="", ip="", state=None, note=""):
+def end_surveillance_session(
+    pppoe,
+    end_reason,
+    started_at=None,
+    source="",
+    ip="",
+    state=None,
+    note="",
+    under_seconds=None,
+    level2_seconds=None,
+    observe_seconds=None,
+):
     """
     Ends the active session, setting ended_at + end_reason.
     If no active session exists, it is created first (using started_at or now) then ended.
     """
     end_reason = (end_reason or "").strip().lower()
-    if end_reason not in ("healed", "removed", "fixed"):
+    if end_reason not in ("healed", "removed", "fixed", "false", "recovered"):
         end_reason = "removed"
     session = ensure_surveillance_session(pppoe, started_at=started_at, source=source, ip=ip, state="under")
     if not session:
@@ -996,6 +1053,21 @@ def end_surveillance_session(pppoe, end_reason, started_at=None, source="", ip="
     state = (state or session.get("last_state") or "under").strip().lower() or "under"
     if state not in ("under", "level2"):
         state = session.get("last_state") or "under"
+    try:
+        under_seconds = int(session.get("under_seconds") if under_seconds is None else under_seconds)
+    except Exception:
+        under_seconds = 0
+    try:
+        level2_seconds = int(session.get("level2_seconds") if level2_seconds is None else level2_seconds)
+    except Exception:
+        level2_seconds = 0
+    try:
+        observe_seconds = int(session.get("observe_seconds") if observe_seconds is None else observe_seconds)
+    except Exception:
+        observe_seconds = 0
+    under_seconds = max(0, under_seconds)
+    level2_seconds = max(0, level2_seconds)
+    observe_seconds = max(0, observe_seconds)
     conn = get_conn()
     try:
         with conn:
@@ -1008,6 +1080,9 @@ def end_surveillance_session(pppoe, end_reason, started_at=None, source="", ip="
                     last_ip = ?,
                     source = ?,
                     end_note = ?,
+                    under_seconds = ?,
+                    level2_seconds = ?,
+                    observe_seconds = ?,
                     updated_at = ?
                 WHERE id = ?
                 """,
@@ -1018,6 +1093,9 @@ def end_surveillance_session(pppoe, end_reason, started_at=None, source="", ip="
                     (ip or session.get("last_ip") or "").strip(),
                     (source or session.get("source") or "").strip(),
                     (note or "").strip(),
+                    under_seconds,
+                    level2_seconds,
+                    observe_seconds,
                     now_iso,
                     session_id,
                 ),
@@ -1061,7 +1139,9 @@ def list_surveillance_sessions(query="", page=1, limit=50):
             total = int(count_row["c"] or 0)
         rows = conn.execute(
             f"""
-            SELECT id, pppoe, source, started_at, ended_at, end_reason, observed_count, last_state, last_ip, updated_at
+            SELECT id, pppoe, source, started_at, ended_at, end_reason, end_note,
+                   under_seconds, level2_seconds, observe_seconds,
+                   observed_count, last_state, last_ip, updated_at
             FROM surveillance_sessions
             {where}
             ORDER BY id DESC
@@ -1075,9 +1155,9 @@ def list_surveillance_sessions(query="", page=1, limit=50):
         conn.close()
 
 
-def list_surveillance_history(query="", page=1, limit=50):
+def list_surveillance_history(query="", page=1, limit=50, end_reason=""):
     """
-    History is only sessions that have ended (removed/healed/fixed).
+    History is only sessions that have ended (removed/healed/fixed/false/recovered).
     """
     try:
         page = int(page or 1)
@@ -1094,11 +1174,19 @@ def list_surveillance_history(query="", page=1, limit=50):
     if limit > 500:
         limit = 500
     query = (query or "").strip().lower()
+    end_reason = (end_reason or "").strip().lower()
+    if end_reason in ("all", "any"):
+        end_reason = ""
+    if end_reason and end_reason not in ("healed", "removed", "fixed", "false", "recovered"):
+        end_reason = ""
     params = []
     where_parts = ["ended_at IS NOT NULL"]
     if query:
         where_parts.append("lower(pppoe) LIKE ?")
         params.append(f"%{query}%")
+    if end_reason:
+        where_parts.append("end_reason = ?")
+        params.append(end_reason)
     where = "WHERE " + " AND ".join(where_parts)
     offset = (page - 1) * limit
     conn = get_conn()
@@ -1113,7 +1201,9 @@ def list_surveillance_history(query="", page=1, limit=50):
             total = int(count_row["c"] or 0)
         rows = conn.execute(
             f"""
-            SELECT id, pppoe, source, started_at, ended_at, end_reason, end_note, observed_count, last_state, last_ip, updated_at
+            SELECT id, pppoe, source, started_at, ended_at, end_reason, end_note,
+                   under_seconds, level2_seconds, observe_seconds,
+                   observed_count, last_state, last_ip, updated_at
             FROM surveillance_sessions
             {where}
             ORDER BY id DESC
@@ -1125,6 +1215,96 @@ def list_surveillance_history(query="", page=1, limit=50):
         return {"rows": out, "total": total, "page": page, "limit": limit}
     finally:
         conn.close()
+
+
+def get_surveillance_session_by_id(session_id):
+    try:
+        session_id = int(session_id or 0)
+    except Exception:
+        session_id = 0
+    if session_id <= 0:
+        return None
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            """
+            SELECT id, pppoe, source, started_at, ended_at, end_reason, end_note,
+                   under_seconds, level2_seconds, observe_seconds,
+                   observed_count, last_state, last_ip, updated_at
+            FROM surveillance_sessions
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (session_id,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_surveillance_fixed_cycles_map(pppoes, limit_per_pppoe=0):
+    values = []
+    seen = set()
+    for raw in pppoes or []:
+        pppoe = (raw or "").strip()
+        if not pppoe:
+            continue
+        key = pppoe.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        values.append(pppoe)
+    if not values:
+        return {}
+
+    try:
+        limit_per_pppoe = int(limit_per_pppoe or 0)
+    except Exception:
+        limit_per_pppoe = 0
+    if limit_per_pppoe < 0:
+        limit_per_pppoe = 0
+
+    conn = get_conn()
+    try:
+        placeholders = ",".join(["?"] * len(values))
+        rows = conn.execute(
+            f"""
+            SELECT pppoe, started_at, ended_at, end_note
+            FROM surveillance_sessions
+            WHERE ended_at IS NOT NULL
+              AND end_reason = 'fixed'
+              AND pppoe IN ({placeholders})
+            ORDER BY pppoe ASC, ended_at DESC, id DESC
+            """,
+            tuple(values),
+        ).fetchall()
+        out = {}
+        for row in rows or []:
+            item = dict(row)
+            pppoe = (item.get("pppoe") or "").strip()
+            if not pppoe:
+                continue
+            bucket = out.setdefault(pppoe, [])
+            if limit_per_pppoe > 0 and len(bucket) >= limit_per_pppoe:
+                continue
+            bucket.append(item)
+        return out
+    finally:
+        conn.close()
+
+
+def get_latest_surveillance_fixed_cycle_map(pppoes):
+    cycles_map = get_surveillance_fixed_cycles_map(pppoes, limit_per_pppoe=1)
+    out = {}
+    for pppoe, rows in (cycles_map or {}).items():
+        if not rows:
+            continue
+        row = rows[0] or {}
+        out[pppoe] = {
+            "started_at": (row.get("started_at") or "").strip(),
+            "ended_at": (row.get("ended_at") or "").strip(),
+        }
+    return out
 
 
 def set_json(table, key, value):
@@ -1708,16 +1888,41 @@ def get_latest_accounts_ping_map(account_ids):
     conn = get_conn()
     try:
         if _use_postgres():
-            placeholders = ",".join("?" for _ in account_ids)
+            unique_account_ids = []
+            seen = set()
+            for account_id in account_ids:
+                account_id = (account_id or "").strip()
+                if not account_id or account_id in seen:
+                    continue
+                seen.add(account_id)
+                unique_account_ids.append(account_id)
+            if not unique_account_ids:
+                return {}
+
+            placeholders = ",".join("(?)" for _ in unique_account_ids)
             rows = conn.execute(
                 f"""
-                SELECT DISTINCT ON (account_id)
-                    account_id, timestamp, name, ip, loss, min_ms, avg_ms, max_ms, mode, ok
-                FROM accounts_ping_results
-                WHERE account_id IN ({placeholders})
-                ORDER BY account_id, timestamp DESC
+                SELECT
+                    a.account_id,
+                    r.timestamp,
+                    r.name,
+                    r.ip,
+                    r.loss,
+                    r.min_ms,
+                    r.avg_ms,
+                    r.max_ms,
+                    r.mode,
+                    r.ok
+                FROM (VALUES {placeholders}) AS a(account_id)
+                JOIN LATERAL (
+                    SELECT timestamp, name, ip, loss, min_ms, avg_ms, max_ms, mode, ok
+                    FROM accounts_ping_results
+                    WHERE account_id = a.account_id
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                ) AS r ON TRUE
                 """,
-                list(account_ids),
+                unique_account_ids,
             ).fetchall()
             return {row["account_id"]: dict(row) for row in rows}
 
@@ -1808,6 +2013,126 @@ def get_accounts_ping_window_stats(account_ids, since_iso):
             [since_iso] + list(account_ids),
         ).fetchall()
         return {row["account_id"]: dict(row) for row in rows}
+    finally:
+        conn.close()
+
+
+def get_accounts_ping_checker_stats_map(account_since_map, until_iso=None):
+    """
+    Returns checker stats per account_id for account-specific windows.
+
+    account_since_map: {account_id: since_iso}
+    until_iso: optional window end (exclusive). Defaults to utc now.
+    """
+    if not isinstance(account_since_map, dict) or not account_since_map:
+        return {}
+
+    pairs = []
+    seen = set()
+    for account_id, since_iso in (account_since_map or {}).items():
+        aid = (account_id or "").strip()
+        since = (since_iso or "").strip()
+        if not aid or not since or aid in seen:
+            continue
+        seen.add(aid)
+        pairs.append((aid, since))
+    if not pairs:
+        return {}
+
+    end_iso = (until_iso or "").strip()
+    if not end_iso:
+        end_iso = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+    conn = get_conn()
+    try:
+        values_clause = ",".join("(?, ?)" for _ in pairs)
+        params = []
+        for account_id, since_iso in pairs:
+            params.extend([account_id, since_iso])
+        params.append(end_iso)
+
+        rows = conn.execute(
+            f"""
+            WITH anchors(account_id, since_iso) AS (
+              VALUES {values_clause}
+            ),
+            filtered AS (
+              SELECT
+                r.account_id,
+                r.bucket_ts,
+                r.sample_count,
+                r.ok_count,
+                r.avg_sum,
+                r.avg_count,
+                r.loss_sum,
+                r.loss_count,
+                CASE
+                  WHEN r.loss_count > 0 AND (r.loss_sum / r.loss_count) >= 99.999 THEN 1
+                  ELSE 0
+                END AS is_down
+              FROM accounts_ping_rollups r
+              JOIN anchors a ON a.account_id = r.account_id
+              WHERE r.bucket_ts >= a.since_iso AND r.bucket_ts < ?
+            ),
+            w AS (
+              SELECT
+                account_id,
+                bucket_ts,
+                sample_count,
+                ok_count,
+                avg_sum,
+                avg_count,
+                loss_sum,
+                loss_count,
+                is_down,
+                LAG(is_down) OVER (PARTITION BY account_id ORDER BY bucket_ts) AS prev_down
+              FROM filtered
+            )
+            SELECT
+              account_id,
+              SUM(sample_count) AS total,
+              SUM(sample_count - ok_count) AS failures,
+              CASE
+                WHEN SUM(loss_count) > 0 THEN SUM(loss_sum) / SUM(loss_count)
+                ELSE NULL
+              END AS loss_avg,
+              CASE
+                WHEN SUM(avg_count) > 0 THEN SUM(avg_sum) / SUM(avg_count)
+                ELSE NULL
+              END AS avg_ms_avg,
+              SUM(
+                CASE
+                  WHEN loss_count > 0 THEN ((loss_sum / loss_count) / 100.0) * 60.0
+                  ELSE 0.0
+                END
+              ) AS downtime_seconds,
+              SUM(
+                CASE
+                  WHEN is_down = 1 AND COALESCE(prev_down, 0) = 0 THEN 1
+                  ELSE 0
+                END
+              ) AS loss_events
+            FROM w
+            GROUP BY account_id
+            """,
+            params,
+        ).fetchall()
+
+        out = {}
+        for row in rows or []:
+            d = dict(row) if not isinstance(row, dict) else row
+            aid = (d.get("account_id") or "").strip()
+            if not aid:
+                continue
+            out[aid] = {
+                "total": int(d.get("total") or 0),
+                "failures": int(d.get("failures") or 0),
+                "loss_avg": d.get("loss_avg"),
+                "avg_ms_avg": d.get("avg_ms_avg"),
+                "downtime_seconds": int(round(float(d.get("downtime_seconds") or 0.0))),
+                "loss_events": int(d.get("loss_events") or 0),
+            }
+        return out
     finally:
         conn.close()
 
@@ -1992,6 +2317,10 @@ def insert_wan_history_row(
 ):
     stamp = timestamp or utc_now_iso()
     cutoff = (datetime.utcnow() - timedelta(days=max(int(retention_days or 1), 1))).replace(microsecond=0).isoformat() + "Z"
+    try:
+        prune_interval_seconds = int(os.environ.get("THREEJ_WAN_HISTORY_PRUNE_INTERVAL_SECONDS", "300") or 300)
+    except Exception:
+        prune_interval_seconds = 300
     conn = get_conn()
     try:
         with conn:
@@ -2002,14 +2331,14 @@ def insert_wan_history_row(
                 """,
                 (stamp, wan_id, status, up_pct, target, core_id, label),
             )
-            conn.execute(
-                """
-                DELETE FROM wan_status_history
-                WHERE timestamp < ?
-                """
-                ,
-                (cutoff,),
-            )
+            if _should_run_retention_prune("wan_status_history", prune_interval_seconds):
+                conn.execute(
+                    """
+                    DELETE FROM wan_status_history
+                    WHERE timestamp < ?
+                    """,
+                    (cutoff,),
+                )
     finally:
         conn.close()
 
@@ -2028,6 +2357,10 @@ def insert_wan_target_ping_result(
 ):
     stamp = timestamp or utc_now_iso()
     cutoff = (datetime.utcnow() - timedelta(days=max(int(retention_days or 1), 1))).replace(microsecond=0).isoformat() + "Z"
+    try:
+        prune_interval_seconds = int(os.environ.get("THREEJ_WAN_TARGET_PRUNE_INTERVAL_SECONDS", "300") or 300)
+    except Exception:
+        prune_interval_seconds = 300
     conn = get_conn()
     try:
         with conn:
@@ -2050,13 +2383,14 @@ def insert_wan_target_ping_result(
                     rtt_ms,
                 ),
             )
-            conn.execute(
-                """
-                DELETE FROM wan_target_ping_results
-                WHERE timestamp < ?
-                """,
-                (cutoff,),
-            )
+            if _should_run_retention_prune("wan_target_ping_results", prune_interval_seconds):
+                conn.execute(
+                    """
+                    DELETE FROM wan_target_ping_results
+                    WHERE timestamp < ?
+                    """,
+                    (cutoff,),
+                )
     finally:
         conn.close()
 
@@ -2235,6 +2569,15 @@ def clear_wan_history():
                 conn.execute("DELETE FROM wan_target_ping_results")
             except Exception:
                 pass
+    finally:
+        conn.close()
+
+
+def clear_surveillance_history():
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM surveillance_sessions")
     finally:
         conn.close()
 

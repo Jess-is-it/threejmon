@@ -9,45 +9,358 @@
   <div class="alert alert-info">{{ message }}</div>
 {% endif %}
 
+{% set kpi = dashboard_kpis or {} %}
+{% set features = kpi.get('features', []) %}
+{% set surv = kpi.get('surveillance', {}) %}
+{% set wan = kpi.get('wan', {}) %}
+{% set usage = kpi.get('usage', {}) %}
+{% set acc = kpi.get('accounts_ping', {}) %}
+{% set optical = kpi.get('optical', {}) %}
+{% set offline = kpi.get('offline', {}) %}
+{% set attention = kpi.get('attention', {}) %}
+
+<style>
+  .dashboard-kpi-card{position:relative;overflow:hidden;border:1px solid rgba(128,128,128,.18);border-radius:14px}
+  .dashboard-kpi-card .card-body{padding:14px}
+  .dashboard-kpi-theme-azure{--kpi-accent:#4299e1;--kpi-accent-bg:rgba(66,153,225,.16)}
+  .dashboard-kpi-theme-blue{--kpi-accent:#206bc4;--kpi-accent-bg:rgba(32,107,196,.16)}
+  .dashboard-kpi-theme-indigo{--kpi-accent:#4263eb;--kpi-accent-bg:rgba(66,99,235,.16)}
+  .dashboard-kpi-theme-green{--kpi-accent:#2fb344;--kpi-accent-bg:rgba(47,179,68,.16)}
+  .dashboard-kpi-theme-orange{--kpi-accent:#f76707;--kpi-accent-bg:rgba(247,103,7,.16)}
+  .dashboard-kpi-theme-purple{--kpi-accent:#ae3ec9;--kpi-accent-bg:rgba(174,62,201,.16)}
+  .dashboard-kpi-theme-cyan{--kpi-accent:#0ca678;--kpi-accent-bg:rgba(12,166,120,.16)}
+  .dashboard-kpi-theme-red{--kpi-accent:#d63939;--kpi-accent-bg:rgba(214,57,57,.16)}
+  .dashboard-kpi-theme-yellow{--kpi-accent:#f59f00;--kpi-accent-bg:rgba(245,159,0,.16)}
+  .dashboard-kpi-theme-secondary{--kpi-accent:#6c7a91;--kpi-accent-bg:rgba(108,122,145,.16)}
+  .dashboard-kpi-icon{width:34px;height:34px;border-radius:10px;display:inline-flex;align-items:center;justify-content:center;background:var(--kpi-accent-bg,rgba(32,107,196,.16));color:var(--kpi-accent,#206bc4)}
+  .dashboard-kpi-main{font-size:1.55rem;line-height:1.1;font-weight:700;letter-spacing:-.02em}
+  .dashboard-kpi-sub{font-size:.78rem}
+  .dashboard-kpi-head{margin-bottom:.35rem}
+  .dashboard-kpi-right-value-card .card-body{position:relative;padding-right:170px}
+  .dashboard-kpi-right-value{position:absolute;right:12px;top:50%;transform:translateY(-50%);margin:0;white-space:nowrap;text-align:right}
+  .kpi-pills{display:flex;flex-wrap:wrap;gap:.35rem}
+  .dashboard-logo-badge{font-size:1rem;padding:.52rem .68rem;border-radius:.72rem;line-height:1}
+  .dashboard-attention-card .card-body{padding:1rem}
+</style>
+
+{% set attention_active_items = attention.get('items', []) | selectattr('active') | list %}
 <div class="row row-cards">
-  <div class="col-md-6 col-xl-3">
-    <div class="card">
-      <div class="card-body">
-        <div class="d-flex align-items-center">
-          <span class="avatar bg-blue-lt me-3"><i class="ti ti-sun"></i></span>
-          <div>
-            <div class="fw-semibold">Optical Monitor</div>
-            {% set status = job_status.get('optical') %}
-            <div class="text-muted">{{ 'attention' if status and status.last_error else 'ok' }}</div>
+  <div class="{{ 'col-12 col-xl-9' if attention_active_items else 'col-12' }}">
+    <div class="row row-cards">
+  {% set feature_meta = {
+    'WAN Ping': {'icon': 'ti ti-world', 'theme': 'azure'},
+    'Accounts Ping': {'icon': 'ti ti-wifi', 'theme': 'green'},
+    'Under Surveillance': {'icon': 'ti ti-eye', 'theme': 'red'},
+    'Usage': {'icon': 'ti ti-chart-bar', 'theme': 'indigo'},
+    'Offline': {'icon': 'ti ti-cloud-off', 'theme': 'secondary'},
+    'Optical Monitoring': {'icon': 'ti ti-sun', 'theme': 'yellow'}
+  } %}
+  {% for item in features %}
+    {% set label = item.get('label', '') %}
+    {% set meta = feature_meta.get(label, {'icon': 'ti ti-dashboard', 'theme': 'blue'}) %}
+    {% set theme = meta.get('theme', 'blue') %}
+    {% set state_label = item.get('state_label') %}
+    {% set badge_label = (wan.get('up', 0)|string ~ '/' ~ wan.get('configured', 0)|string) if label == 'WAN Ping' else state_label %}
+    {% set state_theme = 'green' if (state_label|string|lower) == 'ok' else theme %}
+    <div class="col-md-6 col-xl-4">
+      <div class="card dashboard-kpi-card dashboard-kpi-theme-{{ theme }}">
+        <div class="card-body">
+          <div class="d-flex justify-content-between align-items-start mb-2">
+            <div class="d-flex align-items-center gap-2">
+              <span class="dashboard-kpi-icon">
+                <i class="{{ meta.get('icon', 'ti ti-dashboard') }}"></i>
+              </span>
+              <div>
+                <div class="fw-semibold">{{ label }}</div>
+                <div class="text-muted dashboard-kpi-sub">{{ item.get('subtitle') }}</div>
+              </div>
+            </div>
+            <span class="badge bg-{{ state_theme }}-lt text-{{ state_theme }}">{{ badge_label }}</span>
           </div>
-        </div>
-        <div class="mt-3 text-muted small">
-          <div>Last run: {{ status.last_run_at_ph if status else 'never' }}</div>
-          <div>Last success: {{ status.last_success_at_ph if status else 'never' }}</div>
-          <div>Last error: {{ status.last_error if status and status.last_error else 'none' }}</div>
         </div>
       </div>
     </div>
+  {% endfor %}
+    </div>
   </div>
-  <div class="col-md-6 col-xl-3">
+  {% if attention_active_items %}
+    <div class="col-12 col-xl-3">
+      <div class="card dashboard-kpi-card card-sm dashboard-attention-card">
+        <div class="card-header py-3 px-3 d-flex align-items-center">
+          <h4 class="card-title mb-0 d-flex align-items-center">
+            <span class="badge bg-red-lt text-red me-2 dashboard-logo-badge"><i class="ti ti-alert-triangle"></i></span>
+            Needs Attention
+          </h4>
+          <span class="badge bg-red-lt text-red ms-auto">{{ attention_active_items|length }}</span>
+        </div>
+        <div class="card-body">
+          {% for item in attention_active_items %}
+            <div class="d-flex align-items-center justify-content-between py-2 {% if not loop.last %}border-bottom{% endif %}">
+              <div class="pe-2">
+                <div class="text-muted dashboard-kpi-sub">{{ item.get('label') }}</div>
+              </div>
+              <span class="badge bg-red-lt text-red">{{ item.get('value_label') }}</span>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  {% endif %}
+</div>
+
+<div class="row row-cards mt-1">
+  <div class="col-12">
     <div class="card">
+      <div class="card-header">
+        <h3 class="card-title"><i class="ti ti-activity me-2"></i>Live System Resource Usage</h3>
+        <div class="card-actions d-flex align-items-center gap-3">
+          <label class="form-check form-switch m-0">
+            <input class="form-check-input" type="checkbox" id="dashboard-system-mode-toggle" checked>
+            <span class="form-check-label small">System mode</span>
+          </label>
+          <div class="text-muted small" id="dashboard-resource-updated">Updating…</div>
+        </div>
+      </div>
       <div class="card-body">
-        <div class="d-flex align-items-center">
-          <span class="avatar bg-indigo-lt me-3"><i class="ti ti-wifi"></i></span>
-          <div>
-            <div class="fw-semibold">Accounts Ping</div>
-            {% set status = job_status.get('accounts_ping') %}
-            <div class="text-muted">{{ 'attention' if status and status.last_error else 'ok' }}</div>
+        <div class="row g-2 mb-3">
+          <div class="col-sm-6 col-lg-3">
+            <div class="border rounded p-2">
+              <div class="text-muted small">Total CPU</div>
+              <div class="fw-semibold" id="dashboard-cpu-total">0%</div>
+              <div class="text-muted small" id="dashboard-cpu-tracked-note">Table accounted: 0%</div>
+              <div class="text-muted small" id="dashboard-cpu-scope">Scope: n/a</div>
+            </div>
+          </div>
+          <div class="col-sm-6 col-lg-3">
+            <div class="border rounded p-2">
+              <div class="text-muted small">RAM Pressure</div>
+              <div class="fw-semibold" id="dashboard-ram-pressure">0%</div>
+            </div>
+          </div>
+          <div class="col-sm-6 col-lg-3">
+            <div class="border rounded p-2">
+              <div class="text-muted small">RAM Allocated</div>
+              <div class="fw-semibold" id="dashboard-ram-alloc">0%</div>
+            </div>
+          </div>
+          <div class="col-sm-6 col-lg-3">
+            <div class="border rounded p-2">
+              <div class="text-muted small" id="dashboard-top-cpu-label">Top Process CPU</div>
+              <div class="fw-semibold" id="dashboard-top-proc-cpu">n/a</div>
+            </div>
           </div>
         </div>
-        <div class="mt-3 text-muted small">
-          <div>Last run: {{ status.last_run_at_ph if status else 'never' }}</div>
-          <div>Last success: {{ status.last_success_at_ph if status else 'never' }}</div>
-          <div>Last error: {{ status.last_error if status and status.last_error else 'none' }}</div>
+
+        <div class="mb-3">
+          <div class="text-muted small mb-2">CPU/RAM usage by feature (aggregated from running processes)</div>
+          <div class="d-flex flex-wrap gap-2" id="dashboard-feature-usage">
+            <span class="badge bg-secondary-lt text-secondary">Loading…</span>
+          </div>
+        </div>
+
+        <div class="table-responsive">
+          <table class="table table-vcenter table-sm mb-0">
+            <thead id="dashboard-process-usage-head">
+              <tr>
+                <th>PID</th>
+                <th>Process</th>
+                <th>Feature</th>
+                <th class="text-end">CPU %</th>
+                <th class="text-end">RAM %</th>
+                <th class="text-end">RSS MB</th>
+              </tr>
+            </thead>
+            <tbody id="dashboard-process-usage-body">
+              <tr><td colspan="6" class="text-muted">Loading process usage…</td></tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
   </div>
 </div>
+
+<script>
+  (() => {
+    const updatedEl = document.getElementById("dashboard-resource-updated");
+    const cpuTotalEl = document.getElementById("dashboard-cpu-total");
+    const ramPressureEl = document.getElementById("dashboard-ram-pressure");
+    const ramAllocEl = document.getElementById("dashboard-ram-alloc");
+    const topProcCpuEl = document.getElementById("dashboard-top-proc-cpu");
+    const topCpuLabelEl = document.getElementById("dashboard-top-cpu-label");
+    const cpuTrackedNoteEl = document.getElementById("dashboard-cpu-tracked-note");
+    const cpuScopeEl = document.getElementById("dashboard-cpu-scope");
+    const featureUsageEl = document.getElementById("dashboard-feature-usage");
+    const systemModeToggleEl = document.getElementById("dashboard-system-mode-toggle");
+    const processHeadEl = document.getElementById("dashboard-process-usage-head");
+    const processBodyEl = document.getElementById("dashboard-process-usage-body");
+    if (!updatedEl || !featureUsageEl || !processBodyEl || !processHeadEl || !systemModeToggleEl) return;
+
+    const esc = (value) => String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+
+    const SYSTEM_MODE_KEY = "threej_dashboard_system_mode_enabled";
+    const readSystemMode = () => {
+      try {
+        const raw = localStorage.getItem(SYSTEM_MODE_KEY);
+        if (raw === null) return true;
+        return raw === "1";
+      } catch (_error) {
+        return true;
+      }
+    };
+    const saveSystemMode = (enabled) => {
+      try {
+        localStorage.setItem(SYSTEM_MODE_KEY, enabled ? "1" : "0");
+      } catch (_error) {
+      }
+    };
+    systemModeToggleEl.checked = readSystemMode();
+
+    const renderTableHead = (systemModeEnabled) => {
+      if (systemModeEnabled) {
+        processHeadEl.innerHTML = `
+          <tr>
+            <th>PID</th>
+            <th>Process</th>
+            <th>Feature</th>
+            <th class="text-end">CPU %</th>
+            <th class="text-end">RAM %</th>
+            <th class="text-end">RSS MB</th>
+          </tr>
+        `;
+        if (topCpuLabelEl) topCpuLabelEl.textContent = "Top Process CPU";
+      } else {
+        processHeadEl.innerHTML = `
+          <tr>
+            <th>Feature</th>
+            <th class="text-end">CPU %</th>
+            <th>Source</th>
+          </tr>
+        `;
+        if (topCpuLabelEl) topCpuLabelEl.textContent = "Top Group CPU";
+      }
+    };
+
+    const renderEmpty = (message, systemModeEnabled) => {
+      renderTableHead(systemModeEnabled);
+      const colspan = systemModeEnabled ? 6 : 3;
+      processBodyEl.innerHTML = `<tr><td colspan="${colspan}" class="text-muted">${esc(message)}</td></tr>`;
+      featureUsageEl.innerHTML = `<span class="badge bg-secondary-lt text-secondary">${esc(message)}</span>`;
+      if (topProcCpuEl) topProcCpuEl.textContent = "n/a";
+    };
+
+    const formatCpu = (value) => {
+      const n = Number(value ?? 0);
+      return `${n >= 0.1 ? n.toFixed(1) : n.toFixed(2)}%`;
+    };
+
+    const render = (data) => {
+      const systemModeEnabled = !!systemModeToggleEl.checked;
+      const hostCpu = Number(data.cpu_pct ?? 0);
+      const trackedCpu = Number(data.cpu_tracked_pct ?? hostCpu);
+      if (cpuTotalEl) cpuTotalEl.textContent = `${hostCpu.toFixed(1)}%`;
+      if (cpuTrackedNoteEl) cpuTrackedNoteEl.textContent = `Table accounted: ${trackedCpu.toFixed(1)}%`;
+      if (cpuScopeEl) cpuScopeEl.textContent = `Scope: ${String(data.cpu_scope || "n/a")}`;
+      if (ramPressureEl) ramPressureEl.textContent = `${Number(data.ram_pressure_pct ?? data.ram_pct ?? 0).toFixed(1)}%`;
+      if (ramAllocEl) ramAllocEl.textContent = `${Number(data.ram_used_incl_cache_pct ?? 0).toFixed(1)}%`;
+
+      const processes = Array.isArray(data.top_processes) ? data.top_processes : [];
+      const features = Array.isArray(data.feature_usage) ? data.feature_usage : [];
+      const summary = Array.isArray(data.threej_summary) ? data.threej_summary : [];
+      renderTableHead(systemModeEnabled);
+
+      if (systemModeEnabled) {
+        if (!processes.length) {
+          renderEmpty("No process usage data.", true);
+        } else {
+          processBodyEl.innerHTML = processes.map((item) => `
+            <tr>
+              <td>${esc(item.pid)}</td>
+              <td>${esc(item.name)}</td>
+              <td>${esc(item.feature)}</td>
+              <td class="text-end">${formatCpu(item.cpu_pct)}</td>
+              <td class="text-end">${Number(item.ram_pct ?? 0).toFixed(1)}%</td>
+              <td class="text-end">${Number(item.rss_mb ?? 0).toFixed(1)}</td>
+            </tr>
+          `).join("");
+          const topCpu = Number(processes[0]?.cpu_pct ?? 0);
+          if (topProcCpuEl) topProcCpuEl.textContent = `${topCpu.toFixed(1)}%`;
+        }
+        if (features.length) {
+          featureUsageEl.innerHTML = features.map((item) => `
+            <span class="badge bg-blue-lt text-blue" title="Processes: ${esc(item.process_count)}">
+              ${esc(item.feature)} · CPU ${Number(item.cpu_pct ?? 0).toFixed(1)}% · RAM ${Number(item.ram_pct ?? 0).toFixed(1)}%
+            </span>
+          `).join("");
+        } else {
+          featureUsageEl.innerHTML = `<span class="badge bg-secondary-lt text-secondary">No feature aggregation data.</span>`;
+        }
+      } else {
+        if (!summary.length) {
+          renderEmpty("No ThreeJ/System summary data.", false);
+        } else {
+          processBodyEl.innerHTML = summary.map((item) => `
+            <tr${item.kind === "system" ? ' class="table-secondary"' : ""}>
+              <td>${esc(item.name)}</td>
+              <td class="text-end">${formatCpu(item.cpu_pct)}</td>
+              <td>${esc(item.source || (item.kind === "system" ? "Host OS / other processes" : "ThreeJ runtime"))}</td>
+            </tr>
+          `).join("");
+          const topCpu = Number(summary[0]?.cpu_pct ?? 0);
+          if (topProcCpuEl) topProcCpuEl.textContent = `${topCpu.toFixed(1)}%`;
+        }
+        featureUsageEl.innerHTML = summary.length
+          ? summary.map((item) => `
+            <span class="badge ${item.kind === "system" ? "bg-secondary-lt text-secondary" : "bg-blue-lt text-blue"}" title="Processes: ${esc(item.process_count)}">
+              ${esc(item.name)} · CPU ${Number(item.cpu_pct ?? 0).toFixed(1)}% · RAM ${Number(item.ram_pct ?? 0).toFixed(1)}%
+            </span>
+          `).join("")
+          : `<span class="badge bg-secondary-lt text-secondary">No summary data.</span>`;
+      }
+
+      if (!features.length && systemModeEnabled) {
+        featureUsageEl.innerHTML = `<span class="badge bg-secondary-lt text-secondary">No feature aggregation data.</span>`;
+      }
+
+      const ts = data.captured_at ? new Date(data.captured_at) : null;
+      updatedEl.textContent = ts && !Number.isNaN(ts.getTime())
+        ? `Updated: ${ts.toLocaleTimeString()}`
+        : "Updated: now";
+    };
+
+    let lastData = null;
+    const updateLiveUsage = async () => {
+      try {
+        const res = await fetch("/system/resources?details=1", { headers: { "Accept": "application/json" }, cache: "no-store" });
+        if (!res.ok) {
+          renderEmpty(`Failed to load (${res.status}).`, !!systemModeToggleEl.checked);
+          return;
+        }
+        const data = await res.json();
+        lastData = data || {};
+        render(lastData);
+      } catch (_error) {
+        renderEmpty("Failed to load live resource data.", !!systemModeToggleEl.checked);
+      }
+    };
+
+    systemModeToggleEl.addEventListener("change", () => {
+      saveSystemMode(!!systemModeToggleEl.checked);
+      if (lastData) {
+        render(lastData);
+      } else {
+        renderEmpty("Loading process usage…", !!systemModeToggleEl.checked);
+      }
+    });
+
+    updateLiveUsage();
+    setInterval(updateLiveUsage, 5000);
+  })();
+</script>
 
 {% endblock %}
