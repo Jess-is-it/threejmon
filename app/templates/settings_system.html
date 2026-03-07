@@ -6,8 +6,12 @@
 {% endblock %}
 {% block content %}
 {% if message %}
-  <div class="alert alert-info">{{ message }}</div>
+  <div class="alert alert-info auto-dismiss-alert">{{ message }}</div>
 {% endif %}
+{% set can_view_system_branding = (not auth_enabled) or has_perm('system.general.branding.view') %}
+{% set can_edit_system_branding = (not auth_enabled) or has_perm('system.general.branding.edit') %}
+{% set can_view_system_telegram = (not auth_enabled) or has_perm('system.general.telegram.view') %}
+{% set can_edit_system_telegram = (not auth_enabled) or has_perm('system.general.telegram.edit') %}
 
 <ul class="nav nav-tabs mb-3" data-bs-toggle="tabs">
   <li class="nav-item">
@@ -16,32 +20,37 @@
   <li class="nav-item">
     <a href="#sys-routers" class="nav-link {% if active_tab == 'routers' %}active{% endif %}" data-bs-toggle="tab">Routers</a>
   </li>
-  <li class="nav-item">
-    <a href="#sys-ai" class="nav-link {% if active_tab == 'ai' %}active{% endif %}" data-bs-toggle="tab">AI</a>
-  </li>
+  {% if not auth_enabled or has_perm('MANAGE_AccessControl') %}
+    <li class="nav-item">
+      <a href="#sys-access" class="nav-link {% if active_tab == 'access' %}active{% endif %}" data-bs-toggle="tab">Access</a>
+    </li>
+  {% endif %}
   <li class="nav-item">
     <a href="#sys-backup" class="nav-link {% if active_tab == 'backup' %}active{% endif %}" data-bs-toggle="tab">Backup</a>
   </li>
-  <li class="nav-item">
-    <a href="#sys-danger" class="nav-link {% if active_tab == 'danger' %}active{% endif %}" data-bs-toggle="tab">Danger</a>
-  </li>
+  {% if can_run_danger_actions %}
+    <li class="nav-item">
+      <a href="#sys-danger" class="nav-link {% if active_tab == 'danger' %}active{% endif %}" data-bs-toggle="tab">Danger</a>
+    </li>
+  {% endif %}
 </ul>
 
 <div class="tab-content">
   <div class="tab-pane {% if active_tab == 'general' %}active{% endif %}" id="sys-general">
-    <div class="card mb-4">
-      <div class="card-header">
-        <h3 class="card-title">Branding</h3>
-      </div>
-      <div class="card-body">
-        <div class="row g-4">
+    {% if can_view_system_branding %}
+      <div class="card mb-4">
+        <div class="card-header">
+          <h3 class="card-title">Branding</h3>
+        </div>
+        <div class="card-body">
+          <div class="row g-4">
           <div class="col-12 col-lg-6">
             <form method="post" action="/settings/system/logo" enctype="multipart/form-data">
               <label class="form-label">Company Logo <span class="info" data-tip="Displayed in the left navigation header. Image files only (PNG/JPG/WebP/GIF).">i</span></label>
-              <input class="form-control" type="file" name="company_logo" accept="image/*" required />
+              <input class="form-control" type="file" name="company_logo" accept="image/*" required {% if not can_edit_system_branding %}disabled{% endif %} />
               <div class="text-muted small mt-1">Recommended: transparent PNG, height 32–40px.</div>
               <div class="mt-3 d-flex align-items-center gap-3 flex-wrap">
-                <button type="submit" class="btn btn-primary">Upload Company Logo</button>
+                <button type="submit" class="btn btn-primary" {% if not can_edit_system_branding %}disabled{% endif %}>Upload Company Logo</button>
                 {% if company_logo_url %}
                   <div class="border rounded p-2 d-inline-block bg-white">
                     <img src="{{ company_logo_url }}" alt="Company Logo" style="height: 40px; width: auto; display: block;" />
@@ -56,10 +65,10 @@
           <div class="col-12 col-lg-6">
             <form method="post" action="/settings/system/browser-logo" enctype="multipart/form-data">
               <label class="form-label">Browser Page Logo <span class="info" data-tip="Used as the browser tab icon (favicon). PNG/JPG/WebP/GIF/ICO supported.">i</span></label>
-              <input class="form-control" type="file" name="browser_logo" accept="image/*,.ico" required />
+              <input class="form-control" type="file" name="browser_logo" accept="image/*,.ico" required {% if not can_edit_system_branding %}disabled{% endif %} />
               <div class="text-muted small mt-1">Recommended: square icon (e.g. 64×64 or 128×128 PNG).</div>
               <div class="mt-3 d-flex align-items-center gap-3 flex-wrap">
-                <button type="submit" class="btn btn-primary">Upload Browser Logo</button>
+                <button type="submit" class="btn btn-primary" {% if not can_edit_system_branding %}disabled{% endif %}>Upload Browser Logo</button>
                 {% if browser_logo_url %}
                   <div class="border rounded p-2 d-inline-block bg-white">
                     <img src="{{ browser_logo_url }}" alt="Browser Logo" style="height: 32px; width: 32px; display: block;" />
@@ -70,16 +79,37 @@
               </div>
             </form>
           </div>
+
+          <div class="col-12">
+            <form method="post" action="/settings/system/branding">
+              <label class="form-label">System Display Name <span class="info" data-tip="Used in system emails (subjects and messages).">i</span></label>
+              <div class="row g-2">
+                <div class="col-12 col-lg-8">
+                  <input class="form-control" type="text" name="branding_app_name" maxlength="80" value="{{ (system_settings.branding.app_name if system_settings and system_settings.branding else 'ThreeJ Notifier') or 'ThreeJ Notifier' }}" required {% if not can_edit_system_branding %}readonly{% endif %} />
+                </div>
+                <div class="col-12 col-lg-4">
+                  <button type="submit" class="btn btn-primary w-100" {% if not can_edit_system_branding %}disabled{% endif %}>Save Display Name</button>
+                </div>
+              </div>
+              <div class="text-muted small mt-1">Example: this changes email titles like “Account created” and “Password reset”.</div>
+            </form>
+          </div>
         </div>
+        {% if not can_edit_system_branding %}
+          <div class="text-muted small mt-3">Branding is in read-only mode for your role.</div>
+        {% endif %}
       </div>
     </div>
+    {% endif %}
 
-    <div class="card mb-4">
-      <div class="card-header">
-        <h3 class="card-title">Telegram Commands</h3>
-      </div>
-      <div class="card-body">
-        <form method="post" action="/settings/system/telegram">
+    {% if can_view_system_telegram %}
+      <div class="card mb-4">
+        <div class="card-header">
+          <h3 class="card-title">Telegram Commands</h3>
+        </div>
+        <div class="card-body">
+          <form method="post" action="/settings/system/telegram">
+            {% if not can_edit_system_telegram %}<fieldset disabled>{% endif %}
           <div class="row g-3">
             <div class="col-md-6">
               <label class="form-label">Command Bot Token <span class="info" data-tip="Bot token used for command replies and interactions.">i</span></label>
@@ -102,17 +132,22 @@
           <div class="d-flex gap-2 mt-3">
             <button type="submit" class="btn btn-primary">Save Telegram Command Settings</button>
           </div>
-        </form>
-        {% if telegram_state %}
-          <div class="text-muted mt-3">Last poll: {{ telegram_state.last_poll_at or "n/a" }}</div>
-          <div class="text-muted">Last command: {{ telegram_state.last_command or "n/a" }} | From: {{ telegram_state.last_command_from or "n/a" }}</div>
-          <div class="text-muted">Last reply: {{ telegram_state.last_reply or "n/a" }}</div>
-          {% if telegram_state.last_error %}
-            <div class="alert alert-warning mt-2">Telegram command error: {{ telegram_state.last_error }}</div>
+            {% if not can_edit_system_telegram %}</fieldset>{% endif %}
+          </form>
+          {% if not can_edit_system_telegram %}
+            <div class="text-muted small mt-3">Telegram Commands is in read-only mode for your role.</div>
           {% endif %}
-        {% endif %}
+          {% if telegram_state %}
+            <div class="text-muted mt-3">Last poll: {{ telegram_state.last_poll_at or "n/a" }}</div>
+            <div class="text-muted">Last command: {{ telegram_state.last_command or "n/a" }} | From: {{ telegram_state.last_command_from or "n/a" }}</div>
+            <div class="text-muted">Last reply: {{ telegram_state.last_reply or "n/a" }}</div>
+            {% if telegram_state.last_error %}
+              <div class="alert alert-warning mt-2">Telegram command error: {{ telegram_state.last_error }}</div>
+            {% endif %}
+          {% endif %}
+        </div>
       </div>
-    </div>
+    {% endif %}
   </div>
 
   <div class="tab-pane {% if active_tab == 'routers' %}active{% endif %}" id="sys-routers">
@@ -429,184 +464,478 @@
     </div>
   </div>
 
-  <div class="tab-pane {% if active_tab == 'ai' %}active{% endif %}" id="sys-ai">
-    <form method="post" action="/settings/system/ai">
-      <div class="card mb-4">
-        <div class="card-header">
-          <h3 class="card-title">AI Investigator</h3>
-        </div>
-        <div class="card-body">
-          <div class="alert alert-info">
-            Used by Under Surveillance for <span class="fw-semibold">Active Monitoring</span> accounts. Initial report is auto-generated when an account enters monitoring, and admins can regenerate reports anytime from the AI Reports tab.
-          </div>
-          <div class="row g-3">
-            <div class="col-md-4">
-              <label class="form-label">Enable AI Investigator <span class="info" data-tip="When enabled, the system auto-generates AI investigation reports for accounts added into Active Monitoring.">i</span></label>
-              <label class="form-check form-switch">
-                <input class="form-check-input" type="checkbox" name="ai_enabled" {% if ai_settings.enabled %}checked{% endif %} />
-                <span class="form-check-label">Enabled</span>
-              </label>
-            </div>
-            <div class="col-md-4">
-              <label class="form-label">Active Provider <span class="info" data-tip="Choose which API to use for report generation.">i</span></label>
-              <select class="form-select" name="ai_provider">
-                <option value="chatgpt" {% if ai_settings.provider == 'chatgpt' %}selected{% endif %}>ChatGPT</option>
-                <option value="gemini" {% if ai_settings.provider == 'gemini' %}selected{% endif %}>Google Gemini</option>
-              </select>
-            </div>
-          </div>
-        </div>
-      </div>
+  <div class="tab-pane {% if active_tab == 'access' %}active{% endif %}" id="sys-access">
+    {% if not can_manage_auth %}
+      <div class="alert alert-warning">You do not have permission to manage access settings.</div>
+    {% else %}
+      <ul class="nav nav-tabs mb-3" data-bs-toggle="tabs">
+        <li class="nav-item"><a class="nav-link {% if access_tab == 'auth' %}active{% endif %}" href="#sys-access-auth" data-bs-toggle="tab">Auth Settings</a></li>
+        <li class="nav-item"><a class="nav-link {% if access_tab == 'permissions' %}active{% endif %}" href="#sys-access-permissions" data-bs-toggle="tab">Permissions</a></li>
+        <li class="nav-item"><a class="nav-link {% if access_tab == 'roles' %}active{% endif %}" href="#sys-access-roles" data-bs-toggle="tab">Roles</a></li>
+        <li class="nav-item"><a class="nav-link {% if access_tab == 'users' %}active{% endif %}" href="#sys-access-users" data-bs-toggle="tab">Users</a></li>
+      </ul>
 
-      <div class="card mb-4">
-        <div class="card-header">
-          <h3 class="card-title">ChatGPT Provider</h3>
-        </div>
-        <div class="card-body">
-          <div class="text-muted small mb-3">
-            Pricing guide uses provider public pricing reference (per 1M tokens). Always verify current pricing in provider billing.
-          </div>
-          <div class="row g-3">
-            <div class="col-md-6">
-              <label class="form-label">API Key</label>
-              <input class="form-control" type="password" name="ai_chatgpt_api_key" placeholder="{% if ai_meta.chatgpt_api_key_set %}Saved (leave blank to keep current){% else %}Enter API key{% endif %}" />
-              <label class="form-check mt-2">
-                <input class="form-check-input" type="checkbox" name="ai_chatgpt_clear_api_key" />
-                <span class="form-check-label">Clear saved key</span>
-              </label>
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Model</label>
-              <select class="form-select ai-model-select" name="ai_chatgpt_model" data-ai-provider="chatgpt">
-                {% set selected_chatgpt = ai_settings.chatgpt.model %}
-                {% for item in ai_model_options.chatgpt %}
-                  <option
-                    value="{{ item.id }}"
-                    data-cost-text="{{ item.cost_text }}"
-                    data-free-tier-text="{{ item.free_tier_text }}"
-                    data-input-cost="{{ item.input_cost_text }}"
-                    data-output-cost="{{ item.output_cost_text }}"
-                    data-recommended-max-tokens="{{ item.recommended_max_tokens }}"
-                    data-max-tokens-hint="{{ item.max_tokens_hint }}"
-                    {% if selected_chatgpt == item.id %}selected{% endif %}
-                  >
-                    {{ item.label }}
-                  </option>
-                {% endfor %}
-              </select>
-              <div class="form-hint mt-1" data-ai-model-guide="chatgpt"></div>
-              {% if ai_meta.chatgpt_model_fetch_error %}
-                <div class="text-warning small mt-1">{{ ai_meta.chatgpt_model_fetch_error }}</div>
-              {% endif %}
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Timeout (seconds)</label>
-              <input class="form-control" type="number" min="5" max="180" name="ai_chatgpt_timeout_seconds" value="{{ ai_settings.chatgpt.timeout_seconds }}" />
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Max Tokens <span class="info" data-tip="How long the AI report can be. Higher value = longer report and higher cost. Start around 700–1200 for field reports.">i</span></label>
-              <input class="form-control" type="number" min="200" max="4000" name="ai_chatgpt_max_tokens" value="{{ ai_settings.chatgpt.max_tokens }}" />
-              <div class="form-hint mt-1" data-ai-tokens-guide="chatgpt"></div>
-            </div>
-            <div class="col-12 d-flex align-items-center gap-2">
-              <button type="submit" class="btn btn-outline-primary" formaction="/settings/system/ai/test/chatgpt" formmethod="post">
-                Test ChatGPT API Key
-              </button>
-              <span class="text-muted small">Tests the key from this form (or saved key if blank).</span>
+      <div class="tab-content">
+        <div class="tab-pane {% if access_tab == 'auth' %}active{% endif %}" id="sys-access-auth">
+          <div class="card mb-4">
+            <div class="card-header"><h3 class="card-title">Authentication & Session</h3></div>
+            <div class="card-body">
+              <form method="post" action="/settings/system/auth/settings">
+                <div class="row g-3">
+                  <div class="col-md-3">
+                    <label class="form-label">Enable Authentication</label>
+                    <label class="form-check form-switch">
+                      <input class="form-check-input" type="checkbox" name="auth_enabled" {% if auth_settings.enabled %}checked{% endif %} />
+                      <span class="form-check-label">Require login for all pages</span>
+                    </label>
+                  </div>
+                  <div class="col-md-3">
+                    <label class="form-label">Session Timeout (hours)</label>
+                    <input class="form-control" type="number" min="1" max="72" name="auth_session_idle_hours" value="{{ auth_settings.session_idle_hours or 8 }}" />
+                    <div class="form-hint">Idle timeout per user session.</div>
+                  </div>
+                  <div class="col-md-3">
+                    <label class="form-label">Audit Retention (days)</label>
+                    <input class="form-control" type="number" min="30" max="3650" name="auth_audit_retention_days" value="{{ auth_settings.audit_retention_days or 180 }}" />
+                    <div class="form-hint">System keeps access logs for this period.</div>
+                  </div>
+                </div>
+                <hr />
+                <h4 class="mb-3">Forgot Password Email (SMTP)</h4>
+                <div class="row g-3">
+                  <div class="col-md-4"><label class="form-label">SMTP Host</label><input class="form-control" type="text" name="auth_smtp_host" value="{{ auth_settings.smtp.host }}" /></div>
+                  <div class="col-md-2"><label class="form-label">Port</label><input class="form-control" type="number" min="1" max="65535" name="auth_smtp_port" value="{{ auth_settings.smtp.port }}" /></div>
+                  <div class="col-md-3"><label class="form-label">Username</label><input class="form-control" type="text" name="auth_smtp_username" value="{{ auth_settings.smtp.username }}" /></div>
+                  <div class="col-md-3">
+                    <label class="form-label">Password</label>
+                    <input class="form-control" type="password" name="auth_smtp_password" placeholder="{% if auth_settings.smtp.password %}Saved (leave blank to keep){% else %}Enter password{% endif %}" />
+                    <label class="form-check mt-2"><input class="form-check-input" type="checkbox" name="auth_smtp_clear_password" /><span class="form-check-label">Clear saved password</span></label>
+                  </div>
+                  <div class="col-md-4"><label class="form-label">From Email</label><input class="form-control" type="email" name="auth_smtp_from_email" value="{{ auth_settings.smtp.from_email }}" /></div>
+                  <div class="col-md-4"><label class="form-label">From Name</label><input class="form-control" type="text" name="auth_smtp_from_name" value="{{ auth_settings.smtp.from_name }}" /></div>
+                  <div class="col-md-2"><label class="form-label">TLS</label><label class="form-check form-switch"><input class="form-check-input" type="checkbox" name="auth_smtp_use_tls" {% if auth_settings.smtp.use_tls %}checked{% endif %} /><span class="form-check-label">Enable STARTTLS</span></label></div>
+                  <div class="col-md-2"><label class="form-label">SSL</label><label class="form-check form-switch"><input class="form-check-input" type="checkbox" name="auth_smtp_use_ssl" {% if auth_settings.smtp.use_ssl %}checked{% endif %} /><span class="form-check-label">Enable SMTPS</span></label></div>
+                  <div class="col-md-6"><label class="form-label">Test Email Recipient</label><input class="form-control" type="email" name="auth_smtp_test_email" placeholder="Leave blank to use your account email" /></div>
+                </div>
+                <div class="mt-4 d-flex gap-2 flex-wrap">
+                  <button type="submit" class="btn btn-primary">Save Access Settings</button>
+                  <button type="submit" class="btn btn-outline-primary" formaction="/settings/system/auth/test-email" formmethod="post">Test SMTP Email</button>
+                </div>
+              </form>
             </div>
           </div>
         </div>
-      </div>
 
-      <div class="card mb-4">
-        <div class="card-header">
-          <h3 class="card-title">Gemini Provider</h3>
-        </div>
-        <div class="card-body">
-          <div class="text-muted small mb-3">
-            Pricing guide uses provider public pricing reference (per 1M tokens). Always verify current pricing in provider billing.
-          </div>
-          <div class="row g-3">
-            <div class="col-md-6">
-              <label class="form-label">API Key</label>
-              <input class="form-control" type="password" name="ai_gemini_api_key" placeholder="{% if ai_meta.gemini_api_key_set %}Saved (leave blank to keep current){% else %}Enter API key{% endif %}" />
-              <label class="form-check mt-2">
-                <input class="form-check-input" type="checkbox" name="ai_gemini_clear_api_key" />
-                <span class="form-check-label">Clear saved key</span>
-              </label>
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Model</label>
-              <select class="form-select ai-model-select" name="ai_gemini_model" data-ai-provider="gemini">
-                {% set selected_gemini = ai_settings.gemini.model %}
-                {% for item in ai_model_options.gemini %}
-                  <option
-                    value="{{ item.id }}"
-                    data-cost-text="{{ item.cost_text }}"
-                    data-free-tier-text="{{ item.free_tier_text }}"
-                    data-input-cost="{{ item.input_cost_text }}"
-                    data-output-cost="{{ item.output_cost_text }}"
-                    data-recommended-max-tokens="{{ item.recommended_max_tokens }}"
-                    data-max-tokens-hint="{{ item.max_tokens_hint }}"
-                    {% if selected_gemini == item.id %}selected{% endif %}
-                  >
-                    {% if item.free_tier is sameas true %}
-                      {{ item.label }} · Free Tier
-                    {% elif item.free_tier is sameas false %}
-                      {{ item.label }} · Paid only
-                    {% else %}
-                      {{ item.label }}
+        <div class="tab-pane {% if access_tab == 'permissions' %}active{% endif %}" id="sys-access-permissions">
+          <div class="card mb-4">
+            <div class="card-header"><h3 class="card-title">Permission Catalog</h3></div>
+            <div class="card-body">
+              <div class="alert alert-info mb-3">
+                Permissions are system-managed and pre-defined by ThreeJ Notifier.
+                Use the <span class="fw-semibold">Roles</span> tab to assign/unassign these permissions.
+              </div>
+              <div style="overflow-x:auto;">
+                <table class="table table-vcenter">
+                  <thead><tr><th style="width: 220px;">Feature</th><th style="width: 320px;">Code</th><th>Description</th></tr></thead>
+                  <tbody>
+                    {% for group in auth_permission_groups %}
+                      {% for perm in group.permissions %}
+                        <tr>
+                          <td>
+                            {% if loop.first %}
+                              <span class="badge bg-secondary-lt text-secondary">{{ group.label }}</span>
+                              <span class="text-muted small ms-1">({{ group.permissions|length }})</span>
+                            {% endif %}
+                          </td>
+                          <td><code>{{ perm.code }}</code></td>
+                          <td class="text-muted small">{{ perm.description or '' }}</td>
+                        </tr>
+                      {% endfor %}
+                    {% endfor %}
+                    {% if not auth_permission_groups %}
+                      <tr>
+                        <td colspan="3" class="text-muted">No system permissions loaded yet. Reload this page.</td>
+                      </tr>
                     {% endif %}
-                  </option>
-                {% endfor %}
-              </select>
-              <div class="form-hint mt-1" data-ai-model-guide="gemini"></div>
-              {% if ai_meta.gemini_model_fetch_error %}
-                <div class="text-warning small mt-1">{{ ai_meta.gemini_model_fetch_error }}</div>
-              {% endif %}
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Timeout (seconds)</label>
-              <input class="form-control" type="number" min="5" max="180" name="ai_gemini_timeout_seconds" value="{{ ai_settings.gemini.timeout_seconds }}" />
-            </div>
-            <div class="col-md-3">
-              <label class="form-label">Max Tokens <span class="info" data-tip="How long the AI report can be. Higher value = longer report and higher cost. Start around 700–1200 for field reports.">i</span></label>
-              <input class="form-control" type="number" min="200" max="4000" name="ai_gemini_max_tokens" value="{{ ai_settings.gemini.max_tokens }}" />
-              <div class="form-hint mt-1" data-ai-tokens-guide="gemini"></div>
-            </div>
-            <div class="col-12 d-flex align-items-center gap-2">
-              <button type="submit" class="btn btn-outline-primary" formaction="/settings/system/ai/test/gemini" formmethod="post">
-                Test Gemini API Key
-              </button>
-              <span class="text-muted small">Tests the key from this form (or saved key if blank).</span>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         </div>
-      </div>
 
-      <div class="card mb-4">
-        <div class="card-header">
-          <h3 class="card-title">Report Inputs</h3>
-        </div>
-        <div class="card-body">
-          <div class="row g-3">
-            <div class="col-md-3">
-              <label class="form-label">Lookback Hours <span class="info" data-tip="How much historical data to include in AI evidence.">i</span></label>
-              <input class="form-control" type="number" min="1" max="168" name="ai_report_lookback_hours" value="{{ ai_settings.report.lookback_hours }}" />
-              <div class="form-hint mt-1">How far back the AI checks account history (for example: 24 = last 24 hours).</div>
+        <div class="tab-pane {% if access_tab == 'roles' %}active{% endif %}" id="sys-access-roles">
+          <div class="card mb-4">
+            <div class="card-header d-flex align-items-center justify-content-between">
+              <h3 class="card-title mb-0">Roles</h3>
+              <button class="btn btn-primary btn-sm" type="button" data-bs-toggle="modal" data-bs-target="#role-add-modal">Add Role</button>
             </div>
-            <div class="col-md-3">
-              <label class="form-label">Max Samples per Signal <span class="info" data-tip="Think of this as how many moments in time the AI can review for each section (Ping, Optical, Usage). Higher gives more detail, but is slower and costs more.">i</span></label>
-              <input class="form-control" type="number" min="10" max="300" name="ai_report_max_samples" value="{{ ai_settings.report.max_samples }}" />
-              <div class="form-hint mt-1">Simple guide: 40–80 is a good balance. Use higher only when you need deep investigation.</div>
+            <div class="card-body">
+              <div class="alert alert-info">
+                Pre-created roles: <span class="fw-semibold">owner</span>, <span class="fw-semibold">admin</span>, and <span class="fw-semibold">viewer</span>.
+              </div>
+              <div style="overflow-x:auto;">
+                <table class="table table-vcenter">
+                  <thead>
+                    <tr>
+                      <th style="width: 200px;">Role</th>
+                      <th>Description</th>
+                      <th style="width: 360px;">Assigned Permissions</th>
+                      <th style="width: 200px;">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for role in auth_roles %}
+                      {% set is_owner_role = (role.name or '')|lower == 'owner' %}
+                      <tr>
+                        <td>
+                          <div class="fw-semibold">{{ role.name }}</div>
+                          {% if is_owner_role %}<span class="badge bg-yellow-lt text-yellow mt-1">Owner (Locked)</span>{% endif %}
+                          {% if role.is_builtin %}<span class="badge bg-secondary-lt text-secondary mt-1">Built-in</span>{% endif %}
+                        </td>
+                        <td class="text-muted small">{{ role.description or "—" }}</td>
+                        <td>
+                          {% if role.permission_count %}
+                            <button class="btn btn-outline-secondary btn-sm" type="button" data-bs-toggle="modal" data-bs-target="#role-permissions-modal-{{ role.id }}">
+                              <span class="d-inline-block text-truncate align-middle" style="max-width: 250px;">{{ role.permission_preview }}</span>
+                              <span class="badge bg-secondary-lt text-secondary ms-1">{{ role.permission_count }}</span>
+                            </button>
+                          {% else %}
+                            <span class="text-muted small">No permissions</span>
+                          {% endif %}
+                        </td>
+                        <td>
+                          <div class="d-flex gap-1 flex-wrap">
+                            <button class="btn btn-primary btn-sm" type="button" data-bs-toggle="modal" data-bs-target="#role-edit-modal-{{ role.id }}" {% if is_owner_role %}disabled title="Owner role is locked"{% endif %}>Edit</button>
+                            {% if not role.is_builtin %}
+                              <form method="post" action="/settings/system/auth/role/delete/{{ role.id }}" class="d-inline">
+                                <button type="submit" class="btn btn-outline-danger btn-sm">Delete</button>
+                              </form>
+                            {% endif %}
+                          </div>
+                        </td>
+                      </tr>
+                    {% endfor %}
+                    {% if not auth_roles %}
+                      <tr><td colspan="4" class="text-muted">No roles found.</td></tr>
+                    {% endif %}
+                  </tbody>
+                </table>
+              </div>
+              <div class="form-hint mt-2">Click the permissions cell to view full assigned permissions in a modal.</div>
+            </div>
+          </div>
+
+          <div class="modal modal-lg fade" id="role-add-modal" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-dialog-scrollable">
+              <div class="modal-content">
+                <form method="post" action="/settings/system/auth/role/add">
+                  <div class="modal-header">
+                    <h3 class="modal-title">Add Role</h3>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                  </div>
+                  <div class="modal-body">
+                    <div class="row g-3">
+                      <div class="col-md-4">
+                        <label class="form-label">Role Name</label>
+                        <input class="form-control" type="text" name="role_name" placeholder="e.g. noc_shift" required />
+                      </div>
+                      <div class="col-md-8">
+                        <label class="form-label">Description</label>
+                        <input class="form-control" type="text" name="role_description" placeholder="What this role is for" />
+                      </div>
+                    </div>
+                    <div class="form-hint mt-3">Click permissions to tag this role. View permissions are auto-selected when required by edit/action permissions.</div>
+                    <div class="d-flex flex-wrap gap-2 align-items-center mt-3" data-perm-controls>
+                      <input class="form-control form-control-sm" type="text" placeholder="Search permissions…" style="max-width: 300px;" data-perm-search />
+                      <select class="form-select form-select-sm" style="max-width: 180px;" data-perm-filter>
+                        <option value="all">All</option>
+                        <option value="checked">Checked</option>
+                        <option value="unchecked">Unchecked</option>
+                        <option value="required">Auto-required</option>
+                      </select>
+                      <button type="button" class="btn btn-sm btn-icon perm-tree-badge-btn" data-perm-toggle-all title="Expand all" aria-label="Expand all">
+                        <i class="ti ti-chevrons-down"></i>
+                      </button>
+                    </div>
+                    <div class="perm-tree mt-2" data-perm-tree>
+                      <ul class="perm-tree-list">
+                        {% for group in role_permission_groups %}
+                          <li class="perm-tree-node">
+                            <details class="perm-tree-details">
+                              <summary class="perm-tree-summary">
+                                <button type="button" class="btn btn-sm btn-icon perm-tree-badge-btn perm-tree-toggle" data-perm-toggle title="Expand/collapse feature" aria-label="Expand or collapse feature">
+                                  <i class="ti ti-chevron-right"></i>
+                                </button>
+                                <div class="form-check perm-tree-branch mb-0">
+                                  <input class="form-check-input" type="checkbox" id="role-add-branch-{{ group.key }}" data-perm-branch="{{ group.key }}" />
+                                  <label class="form-check-label fw-semibold" for="role-add-branch-{{ group.key }}">
+                                    {{ group.label }}
+                                    <span class="text-muted small">({{ group.permissions|length }})</span>
+                                  </label>
+                                </div>
+                              </summary>
+                              <ul class="perm-tree-children mt-2">
+                                {% for perm in group.permissions %}
+                                  <li class="perm-tree-leaf mb-1">
+                                    <div class="form-check">
+                                      <input class="form-check-input" type="checkbox" id="role-add-perm-{{ group.key }}-{{ loop.index0 }}" name="permission_codes" value="{{ perm.code }}" data-perm-leaf="{{ group.key }}" data-perm-code="{{ perm.code }}" data-perm-depends="{{ (perm.depends_on or [])|join(',') }}" data-perm-danger="{% if perm.is_destructive %}1{% else %}0{% endif %}" />
+                                      <label class="form-check-label" for="role-add-perm-{{ group.key }}-{{ loop.index0 }}" title="{{ perm.description or '' }}">
+                                        <span{% if perm.is_destructive %} class="text-red"{% endif %}>{{ perm.description or perm.label or perm.code }}</span>
+                                        {% if perm.depends_on_labels %}
+                                          <span class="text-muted small d-block">Requires: {{ perm.depends_on_labels|join(', ') }}</span>
+                                        {% endif %}
+                                      </label>
+                                    </div>
+                                  </li>
+                                {% endfor %}
+                              </ul>
+                            </details>
+                          </li>
+                        {% endfor %}
+                      </ul>
+                    </div>
+                    {% if not role_permission_groups %}
+                      <div class="alert alert-warning mt-3 mb-0">Permission catalog is empty. Reload and verify Access permissions.</div>
+                    {% endif %}
+                  </div>
+                  <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Add Role</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+
+          {% for role in auth_roles %}
+            {% set is_owner_role = (role.name or '')|lower == 'owner' %}
+            <div class="modal modal-lg fade" id="role-permissions-modal-{{ role.id }}" tabindex="-1" aria-hidden="true">
+              <div class="modal-dialog modal-dialog-scrollable">
+                <div class="modal-content">
+                  <div class="modal-header">
+                    <h3 class="modal-title">Assigned Permissions · {{ role.name }}</h3>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                  </div>
+                  <div class="modal-body">
+                    {% if role.permission_groups %}
+                      {% for group in role.permission_groups %}
+                        <div class="mb-3">
+                          <div class="fw-semibold small text-muted text-uppercase">{{ group.label }} ({{ group.codes|length }})</div>
+                          <div class="d-flex flex-wrap gap-1 mt-2">
+                            {% for code in group.codes %}
+                              <span class="badge bg-secondary-lt text-secondary">{{ code }}</span>
+                            {% endfor %}
+                          </div>
+                        </div>
+                      {% endfor %}
+                    {% else %}
+                      <div class="text-muted">No permissions assigned.</div>
+                    {% endif %}
+                  </div>
+                  <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="modal modal-lg fade" id="role-edit-modal-{{ role.id }}" tabindex="-1" aria-hidden="true">
+              <div class="modal-dialog modal-dialog-scrollable">
+                <div class="modal-content">
+                  <form method="post" action="/settings/system/auth/role/save/{{ role.id }}">
+                    <div class="modal-header">
+                      <h3 class="modal-title">Edit Role · {{ role.name }}</h3>
+                      <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                      <div class="row g-3">
+                        <div class="col-md-4">
+                          <label class="form-label">Role Name</label>
+                          <input class="form-control" type="text" name="role_name" value="{{ role.name }}" {% if role.is_builtin or is_owner_role %}readonly{% endif %} />
+                        </div>
+                        <div class="col-md-8">
+                          <label class="form-label">Description</label>
+                          <input class="form-control" type="text" name="role_description" value="{{ role.description or '' }}" {% if is_owner_role %}readonly{% endif %} />
+                        </div>
+                      </div>
+                      {% if is_owner_role %}
+                        <div class="alert alert-warning mt-3 mb-0">
+                          Owner role is locked. It always keeps full permissions and cannot be edited.
+                        </div>
+                      {% endif %}
+                      <div class="form-hint mt-3">Click permissions to assign/unassign this role. View permissions are auto-selected when required by edit/action permissions.</div>
+                      <div class="d-flex flex-wrap gap-2 align-items-center mt-3" data-perm-controls>
+                        <input class="form-control form-control-sm" type="text" placeholder="Search permissions…" style="max-width: 300px;" data-perm-search />
+                        <select class="form-select form-select-sm" style="max-width: 180px;" data-perm-filter>
+                          <option value="all">All</option>
+                          <option value="checked">Checked</option>
+                          <option value="unchecked">Unchecked</option>
+                          <option value="required">Auto-required</option>
+                        </select>
+                        <button type="button" class="btn btn-sm btn-icon perm-tree-badge-btn" data-perm-toggle-all title="Expand all" aria-label="Expand all">
+                          <i class="ti ti-chevrons-down"></i>
+                        </button>
+                      </div>
+                      <div class="perm-tree mt-2" data-perm-tree>
+                        <ul class="perm-tree-list">
+                          {% for group in role_permission_groups %}
+                            <li class="perm-tree-node">
+                              <details class="perm-tree-details">
+                                <summary class="perm-tree-summary">
+                                  <button type="button" class="btn btn-sm btn-icon perm-tree-badge-btn perm-tree-toggle" data-perm-toggle title="Expand/collapse feature" aria-label="Expand or collapse feature">
+                                    <i class="ti ti-chevron-right"></i>
+                                  </button>
+                                  <div class="form-check perm-tree-branch mb-0">
+                                    <input class="form-check-input" type="checkbox" id="role-edit-{{ role.id }}-branch-{{ group.key }}" data-perm-branch="{{ group.key }}" {% if is_owner_role %}disabled{% endif %} />
+                                    <label class="form-check-label fw-semibold" for="role-edit-{{ role.id }}-branch-{{ group.key }}">
+                                      {{ group.label }}
+                                      <span class="text-muted small">({{ group.permissions|length }})</span>
+                                    </label>
+                                  </div>
+                                </summary>
+                                <ul class="perm-tree-children mt-2">
+                                  {% for perm in group.permissions %}
+                                    <li class="perm-tree-leaf mb-1">
+                                      <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" id="role-edit-{{ role.id }}-perm-{{ group.key }}-{{ loop.index0 }}" name="permission_codes" value="{{ perm.code }}" data-perm-leaf="{{ group.key }}" data-perm-code="{{ perm.code }}" data-perm-depends="{{ (perm.depends_on or [])|join(',') }}" data-perm-danger="{% if perm.is_destructive %}1{% else %}0{% endif %}" {% if perm.code in role.permission_codes %}checked{% endif %} {% if is_owner_role %}disabled{% endif %} />
+                                        <label class="form-check-label" for="role-edit-{{ role.id }}-perm-{{ group.key }}-{{ loop.index0 }}" title="{{ perm.description or '' }}">
+                                          <span{% if perm.is_destructive %} class="text-red"{% endif %}>{{ perm.description or perm.label or perm.code }}</span>
+                                          {% if perm.depends_on_labels %}
+                                            <span class="text-muted small d-block">Requires: {{ perm.depends_on_labels|join(', ') }}</span>
+                                          {% endif %}
+                                        </label>
+                                      </div>
+                                    </li>
+                                  {% endfor %}
+                                </ul>
+                              </details>
+                            </li>
+                          {% endfor %}
+                        </ul>
+                      </div>
+                    </div>
+                    <div class="modal-footer">
+                      <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                      {% if not is_owner_role %}
+                        <button type="submit" class="btn btn-primary">Save Role</button>
+                      {% endif %}
+                    </div>
+                  </form>
+                </div>
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+
+        <div class="tab-pane {% if access_tab == 'users' %}active{% endif %}" id="sys-access-users">
+          <div class="card mb-4">
+            <div class="card-header d-flex align-items-center justify-content-between">
+              <h3 class="card-title mb-0">Users</h3>
+              <button class="btn btn-primary btn-sm" type="button" data-bs-toggle="modal" data-bs-target="#user-add-modal">Add User</button>
+            </div>
+            <div class="card-body">
+              <div style="overflow-x:auto;">
+                <table class="table table-vcenter">
+                  <thead><tr><th>Username</th><th>Email</th><th>Full Name</th><th>Role</th><th>Active</th><th>Last Login</th><th>Actions</th></tr></thead>
+                  <tbody>
+                    {% for user in auth_users %}
+                      {% set is_owner_user = (user.role_name or '')|lower == 'owner' %}
+                      <tr>
+                        <td>{{ user.username }}</td>
+                        <td><input class="form-control form-control-sm" type="email" name="email" form="user-form-{{ user.id }}" value="{{ user.email or '' }}" /></td>
+                        <td><input class="form-control form-control-sm" type="text" name="full_name" form="user-form-{{ user.id }}" value="{{ user.full_name or '' }}" /></td>
+                        <td><select class="form-select form-select-sm" name="role_id" form="user-form-{{ user.id }}" {% if is_owner_user %}disabled{% endif %}>{% for role in auth_roles %}<option value="{{ role.id }}" {% if role.id == user.role_id %}selected{% endif %}>{{ role.name }}</option>{% endfor %}</select>{% if is_owner_user %}<div class="small text-muted mt-1">Owner (locked)</div>{% endif %}</td>
+                        <td>
+                          <label class="form-check"><input class="form-check-input" type="checkbox" name="is_active" form="user-form-{{ user.id }}" {% if user.is_active %}checked{% endif %} {% if is_owner_user %}disabled{% endif %} /><span class="form-check-label small">Active</span></label>
+                          <label class="form-check mt-1"><input class="form-check-input" type="checkbox" name="must_change_password" form="user-form-{{ user.id }}" {% if user.must_change_password %}checked{% endif %} /><span class="form-check-label small">Force change</span></label>
+                        </td>
+                        <td class="text-muted small">{{ user.last_login_at or "n/a" }}</td>
+                        <td>
+                          <form id="user-form-{{ user.id }}" method="post" action="/settings/system/auth/user/save/{{ user.id }}"></form>
+                          <div class="d-flex gap-1 flex-wrap">
+                            <input class="form-control form-control-sm" style="max-width: 160px;" type="password" name="new_password" form="user-form-{{ user.id }}" placeholder="New password" />
+                            <button type="submit" class="btn btn-sm btn-primary" form="user-form-{{ user.id }}">Save</button>
+                            <button type="submit" class="btn btn-sm btn-outline-primary" form="user-form-{{ user.id }}" formaction="/settings/system/auth/user/reset/{{ user.id }}" formmethod="post">Email Reset</button>
+                            <button type="submit" class="btn btn-sm btn-outline-danger" form="user-form-{{ user.id }}" formaction="/settings/system/auth/user/delete/{{ user.id }}" formmethod="post" {% if is_owner_user %}disabled title="Owner account cannot be deleted"{% endif %}>Delete</button>
+                          </div>
+                        </td>
+                      </tr>
+                    {% endfor %}
+                    {% if not auth_users %}<tr><td colspan="7" class="text-muted">No users found.</td></tr>{% endif %}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="modal fade" id="user-add-modal" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-lg modal-dialog-scrollable">
+              <div class="modal-content">
+                <form method="post" action="/settings/system/auth/user/add">
+                  <div class="modal-header">
+                    <h3 class="modal-title">Add User</h3>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                  </div>
+                  <div class="modal-body">
+                    <div class="alert alert-info mb-3">
+                      <div class="d-flex align-items-start">
+                        <span class="me-2"><i class="ti ti-info-circle"></i></span>
+                        <div>New account credentials are emailed to the user’s email address.</div>
+                      </div>
+                    </div>
+                    <div class="row g-3">
+                      <div class="col-md-4">
+                        <label class="form-label">Username</label>
+                        <input class="form-control" type="text" name="username" required />
+                      </div>
+                      <div class="col-md-4">
+                        <label class="form-label">Email</label>
+                        <input class="form-control" type="email" name="email" required />
+                      </div>
+                      <div class="col-md-4">
+                        <label class="form-label">Full Name</label>
+                        <input class="form-control" type="text" name="full_name" />
+                      </div>
+                      <div class="col-md-6">
+                        <label class="form-label">Role</label>
+                        <select class="form-select" name="role_id" required>
+                          <option value="">Select role</option>
+                          {% for role in auth_roles %}
+                            <option value="{{ role.id }}">{{ role.name }}</option>
+                          {% endfor %}
+                        </select>
+                      </div>
+                      <div class="col-md-6">
+                        <label class="form-label">Password</label>
+                        <input class="form-control" type="password" name="password" required />
+                      </div>
+                      <div class="col-md-6">
+                        <label class="form-check mt-2">
+                          <input class="form-check-input" type="checkbox" name="is_active" checked />
+                          <span class="form-check-label">Active</span>
+                        </label>
+                      </div>
+                      <div class="col-md-6">
+                        <label class="form-check mt-2">
+                          <input class="form-check-input" type="checkbox" name="must_change_password" />
+                          <span class="form-check-label">Require password change on first login</span>
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save User</button>
+                  </div>
+                </form>
+              </div>
             </div>
           </div>
         </div>
-        <div class="card-footer d-flex justify-content-end">
-          <button type="submit" class="btn btn-primary">Save AI Settings</button>
-        </div>
+
       </div>
-    </form>
+    {% endif %}
   </div>
 
   <div class="tab-pane {% if active_tab == 'backup' %}active{% endif %}" id="sys-backup">
@@ -647,26 +976,333 @@
     </div>
   </div>
 
-  <div class="tab-pane {% if active_tab == 'danger' %}active{% endif %}" id="sys-danger">
-    <div class="card mb-4">
-      <div class="card-header">
-        <h3 class="card-title text-danger">Uninstall</h3>
-      </div>
-      <div class="card-body">
-        <div class="alert alert-warning">Warning: This will remove Docker, all containers/images/volumes, and delete the app files. This action is irreversible.</div>
-        <p class="text-muted">Type UNINSTALL to confirm.</p>
-        <form method="post" action="/settings/system/uninstall">
-          <input class="form-control" type="text" name="confirm_text" placeholder="Type UNINSTALL" />
-          <div class="mt-3">
-            <button type="submit" class="btn btn-danger">Uninstall Everything</button>
-          </div>
-        </form>
+  {% if can_run_danger_actions %}
+    <div class="tab-pane {% if active_tab == 'danger' %}active{% endif %}" id="sys-danger">
+      <div class="card mb-4">
+        <div class="card-header">
+          <h3 class="card-title text-danger">Uninstall</h3>
+        </div>
+        <div class="card-body">
+          <div class="alert alert-warning">Warning: This will remove Docker, all containers/images/volumes, and delete the app files. This action is irreversible.</div>
+          <p class="text-muted">Type UNINSTALL to confirm.</p>
+          <form method="post" action="/settings/system/uninstall">
+            <input class="form-control" type="text" name="confirm_text" placeholder="Type UNINSTALL" />
+            <div class="mt-3">
+              <button type="submit" class="btn btn-danger">Uninstall Everything</button>
+            </div>
+          </form>
+        </div>
       </div>
     </div>
-  </div>
+  {% endif %}
 </div>
 
+<style>
+  .perm-tree {
+    border: 1px solid var(--tblr-border-color, #d9dee3);
+    border-radius: 8px;
+    background: var(--tblr-bg-surface, #fff);
+    padding: 0.75rem;
+    max-height: 360px;
+    overflow: auto;
+  }
+  .perm-tree-list,
+  .perm-tree-children {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .perm-tree-node + .perm-tree-node {
+    margin-top: 0.75rem;
+  }
+  .perm-tree-details {
+    border: 1px solid var(--tblr-border-color, #d9dee3);
+    border-radius: 8px;
+    padding: 0.5rem 0.625rem;
+    background: var(--tblr-bg-surface-secondary, #f8f9fb);
+  }
+  .perm-tree-summary {
+    list-style: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+  }
+  .perm-tree-summary::-webkit-details-marker {
+    display: none;
+  }
+  .perm-tree-toggle i {
+    transition: transform 0.15s ease-in-out;
+  }
+  .perm-tree-details[open] .perm-tree-toggle i {
+    transform: rotate(90deg);
+  }
+  .perm-tree-summary .form-check-input {
+    margin-top: 0;
+  }
+  .perm-tree-badge-btn {
+    border-radius: 999px;
+    border: 1px solid var(--tblr-border-color, #d9dee3);
+    background: var(--tblr-bg-surface, #fff);
+    color: var(--tblr-muted, #6c7a91);
+    min-width: 1.75rem;
+    height: 1.75rem;
+    padding: 0;
+  }
+  .perm-tree-badge-btn:hover {
+    background: var(--tblr-bg-surface-secondary, #f8f9fb);
+    color: var(--tblr-body-color, #1f2d3d);
+  }
+  .perm-tree-children {
+    margin-left: 1.5rem;
+    padding-left: 1rem;
+    border-left: 1px dashed var(--tblr-border-color, #d9dee3);
+  }
+  .perm-tree-leaf.perm-required .form-check-label {
+    font-weight: 600;
+  }
+</style>
+
 <script>
+  const parsePermissionDependencies = (leafInput) => {
+    const raw = String(leafInput?.dataset?.permDepends || "").trim();
+    if (!raw) return [];
+    return raw.split(",").map((item) => item.trim()).filter(Boolean);
+  };
+
+  const syncPermissionBranchState = (treeEl, groupKey) => {
+    if (!treeEl || !groupKey) return;
+    const branch = treeEl.querySelector(`[data-perm-branch="${groupKey}"]`);
+    const leaves = Array.from(treeEl.querySelectorAll(`[data-perm-leaf="${groupKey}"]`));
+    if (!branch || !leaves.length) return;
+    const checkedCount = leaves.filter((leaf) => leaf.checked).length;
+    branch.checked = checkedCount === leaves.length;
+    branch.indeterminate = checkedCount > 0 && checkedCount < leaves.length;
+  };
+
+  const enforcePermissionDependencies = (treeEl) => {
+    if (!treeEl) return;
+    const leaves = Array.from(treeEl.querySelectorAll("[data-perm-leaf][data-perm-code]"));
+    const byCode = new Map();
+    leaves.forEach((leaf) => {
+      const code = String(leaf.dataset.permCode || "").trim();
+      if (!code) return;
+      byCode.set(code.toLowerCase(), leaf);
+    });
+
+    let changed = true;
+    let rounds = 0;
+    while (changed && rounds < 25) {
+      changed = false;
+      rounds += 1;
+      leaves.forEach((leaf) => {
+        if (!leaf.checked) return;
+        parsePermissionDependencies(leaf).forEach((depCode) => {
+          const depLeaf = byCode.get(depCode.toLowerCase());
+          if (!depLeaf || depLeaf.checked) return;
+          depLeaf.checked = true;
+          changed = true;
+        });
+      });
+    }
+
+    const requiredBy = new Map();
+    leaves.forEach((leaf) => {
+      if (!leaf.checked) return;
+      const sourceCode = String(leaf.dataset.permCode || "").trim();
+      parsePermissionDependencies(leaf).forEach((depCode) => {
+        const depKey = depCode.toLowerCase();
+        if (!requiredBy.has(depKey)) requiredBy.set(depKey, []);
+        requiredBy.get(depKey).push(sourceCode);
+      });
+    });
+
+    leaves.forEach((leaf) => {
+      const codeKey = String(leaf.dataset.permCode || "").trim().toLowerCase();
+      const requiredList = requiredBy.get(codeKey) || [];
+      leaf.dataset.requiredBy = requiredList.join(", ");
+      const leafRow = leaf.closest(".perm-tree-leaf");
+      if (leafRow) {
+        leafRow.classList.toggle("perm-required", requiredList.length > 0);
+      }
+    });
+  };
+
+  const applyPermissionTreeFilters = (treeEl) => {
+    if (!treeEl) return;
+    const controls = treeEl.previousElementSibling && treeEl.previousElementSibling.matches("[data-perm-controls]")
+      ? treeEl.previousElementSibling
+      : (treeEl.parentElement ? treeEl.parentElement.querySelector("[data-perm-controls]") : null);
+    const query = String(controls?.querySelector("[data-perm-search]")?.value || "").trim().toLowerCase();
+    const mode = String(controls?.querySelector("[data-perm-filter]")?.value || "all").trim().toLowerCase();
+
+    const visibleByGroup = new Map();
+    treeEl.querySelectorAll("[data-perm-leaf]").forEach((leaf) => {
+      const row = leaf.closest(".perm-tree-leaf");
+      if (!row) return;
+      const text = String(row.textContent || "").toLowerCase();
+      const matchesText = !query || text.includes(query);
+      let matchesMode = true;
+      if (mode === "checked") matchesMode = !!leaf.checked;
+      else if (mode === "unchecked") matchesMode = !leaf.checked;
+      else if (mode === "required") matchesMode = !!String(leaf.dataset.requiredBy || "").trim();
+      const visible = matchesText && matchesMode;
+      row.style.display = visible ? "" : "none";
+      const groupKey = String(leaf.dataset.permLeaf || "").trim();
+      if (visible && groupKey) visibleByGroup.set(groupKey, (visibleByGroup.get(groupKey) || 0) + 1);
+    });
+
+    treeEl.querySelectorAll(".perm-tree-node").forEach((node) => {
+      const branch = node.querySelector("[data-perm-branch]");
+      const details = node.querySelector(".perm-tree-details");
+      const groupKey = String(branch?.dataset?.permBranch || "").trim();
+      const visibleCount = visibleByGroup.get(groupKey) || 0;
+      const visible = visibleCount > 0;
+      node.style.display = visible ? "" : "none";
+      if (visible && details && query) details.open = true;
+    });
+  };
+
+  const updatePermissionToggleAllButton = (treeEl) => {
+    if (!treeEl) return;
+    const controls = treeEl.previousElementSibling && treeEl.previousElementSibling.matches("[data-perm-controls]")
+      ? treeEl.previousElementSibling
+      : (treeEl.parentElement ? treeEl.parentElement.querySelector("[data-perm-controls]") : null);
+    const toggleAllBtn = controls ? controls.querySelector("[data-perm-toggle-all]") : null;
+    if (!toggleAllBtn) return;
+    const detailsNodes = Array.from(treeEl.querySelectorAll(".perm-tree-details"));
+    if (!detailsNodes.length) return;
+    const hasCollapsed = detailsNodes.some((details) => !details.open);
+    const icon = toggleAllBtn.querySelector("i");
+    if (icon) icon.className = hasCollapsed ? "ti ti-chevrons-down" : "ti ti-chevrons-up";
+    const title = hasCollapsed ? "Expand all" : "Collapse all";
+    toggleAllBtn.title = title;
+    toggleAllBtn.setAttribute("aria-label", title);
+  };
+
+  const collectDangerousCheckedPermissionLabels = (treeEl) => {
+    if (!treeEl) return [];
+    const out = [];
+    treeEl.querySelectorAll('[data-perm-leaf][data-perm-danger="1"]:checked').forEach((leaf) => {
+      const labelEl = leaf.closest(".form-check")?.querySelector(".form-check-label > span");
+      const label = String(labelEl?.textContent || leaf.dataset.permCode || leaf.value || "").trim();
+      if (label) out.push(label);
+    });
+    return out;
+  };
+
+  const initPermissionTree = (treeEl) => {
+    if (!treeEl) return;
+    const controls = treeEl.previousElementSibling && treeEl.previousElementSibling.matches("[data-perm-controls]")
+      ? treeEl.previousElementSibling
+      : (treeEl.parentElement ? treeEl.parentElement.querySelector("[data-perm-controls]") : null);
+
+    treeEl.querySelectorAll("[data-perm-toggle]").forEach((toggleBtn) => {
+      toggleBtn.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const details = toggleBtn.closest(".perm-tree-details");
+        if (!details) return;
+        details.open = !details.open;
+        updatePermissionToggleAllButton(treeEl);
+      });
+    });
+    treeEl.querySelectorAll(".perm-tree-details").forEach((details) => {
+      details.addEventListener("toggle", () => updatePermissionToggleAllButton(treeEl));
+    });
+
+    treeEl.querySelectorAll(".perm-tree-summary .form-check-input, .perm-tree-summary .form-check-label").forEach((el) => {
+      el.addEventListener("click", (event) => {
+        event.stopPropagation();
+      });
+    });
+
+    treeEl.querySelectorAll("[data-perm-branch]").forEach((branch) => {
+      branch.addEventListener("change", () => {
+        const groupKey = branch.dataset.permBranch || "";
+        treeEl.querySelectorAll(`[data-perm-leaf="${groupKey}"]`).forEach((leaf) => {
+          leaf.checked = branch.checked;
+        });
+        enforcePermissionDependencies(treeEl);
+        syncPermissionBranchState(treeEl, groupKey);
+        treeEl.querySelectorAll("[data-perm-branch]").forEach((item) => {
+          syncPermissionBranchState(treeEl, item.dataset.permBranch || "");
+        });
+        applyPermissionTreeFilters(treeEl);
+      });
+    });
+
+    treeEl.querySelectorAll("[data-perm-leaf]").forEach((leaf) => {
+      leaf.addEventListener("change", () => {
+        if (!leaf.checked && String(leaf.dataset.requiredBy || "").trim()) {
+          leaf.checked = true;
+        }
+        enforcePermissionDependencies(treeEl);
+        syncPermissionBranchState(treeEl, leaf.dataset.permLeaf || "");
+        treeEl.querySelectorAll("[data-perm-branch]").forEach((item) => {
+          syncPermissionBranchState(treeEl, item.dataset.permBranch || "");
+        });
+        applyPermissionTreeFilters(treeEl);
+      });
+    });
+
+    if (controls) {
+      const searchInput = controls.querySelector("[data-perm-search]");
+      const filterSelect = controls.querySelector("[data-perm-filter]");
+      const toggleAllBtn = controls.querySelector("[data-perm-toggle-all]");
+      if (searchInput) {
+        searchInput.addEventListener("input", () => {
+          applyPermissionTreeFilters(treeEl);
+          updatePermissionToggleAllButton(treeEl);
+        });
+      }
+      if (filterSelect) {
+        filterSelect.addEventListener("change", () => {
+          applyPermissionTreeFilters(treeEl);
+          updatePermissionToggleAllButton(treeEl);
+        });
+      }
+      if (toggleAllBtn) {
+        toggleAllBtn.addEventListener("click", () => {
+          const detailsNodes = Array.from(treeEl.querySelectorAll(".perm-tree-details"));
+          const shouldExpand = detailsNodes.some((details) => !details.open);
+          detailsNodes.forEach((details) => {
+            details.open = shouldExpand;
+          });
+          updatePermissionToggleAllButton(treeEl);
+        });
+      }
+    }
+
+    const roleForm = treeEl.closest("form");
+    if (roleForm && roleForm.dataset.permDangerConfirmBound !== "1") {
+      roleForm.dataset.permDangerConfirmBound = "1";
+      roleForm.addEventListener("submit", (event) => {
+        enforcePermissionDependencies(treeEl);
+        const dangerousLabels = collectDangerousCheckedPermissionLabels(treeEl);
+        if (!dangerousLabels.length) return;
+        const preview = dangerousLabels.slice(0, 8).map((item) => `• ${item}`).join("\n");
+        const more = dangerousLabels.length > 8 ? `\n• +${dangerousLabels.length - 8} more` : "";
+        const message = `This role includes DELETE/FORMAT permissions:\n${preview}${more}\n\nContinue saving this role?`;
+        if (!window.confirm(message)) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+      });
+    }
+
+    enforcePermissionDependencies(treeEl);
+    treeEl.querySelectorAll("[data-perm-branch]").forEach((branch) => {
+      syncPermissionBranchState(treeEl, branch.dataset.permBranch || "");
+    });
+    applyPermissionTreeFilters(treeEl);
+    updatePermissionToggleAllButton(treeEl);
+  };
+
+  document.querySelectorAll("[data-perm-tree]").forEach((treeEl) => {
+    initPermissionTree(treeEl);
+  });
+
   const toggleWanFields = (rowId) => {
     const mode = document.querySelector(`.wan-mode[data-row="${rowId}"]`);
     const localInput = document.querySelector(`.wan-local-ip[data-row="${rowId}"]`);
@@ -722,37 +1358,5 @@
     input.addEventListener("input", () => toggleWanFields(input.dataset.row));
   });
 
-  const updateAiGuide = (provider) => {
-    const select = document.querySelector(`.ai-model-select[data-ai-provider="${provider}"]`);
-    if (!select) return;
-    const selected = select.options[select.selectedIndex];
-    const modelGuide = document.querySelector(`[data-ai-model-guide="${provider}"]`);
-    const tokenGuide = document.querySelector(`[data-ai-tokens-guide="${provider}"]`);
-    const maxInput = document.querySelector(`input[name="ai_${provider}_max_tokens"]`);
-    if (!selected) return;
-
-    const costText = selected.dataset.costText || "Pricing n/a";
-    const freeTierText = selected.dataset.freeTierText || "Free Tier: Unknown";
-    const maxHint = selected.dataset.maxTokensHint || "";
-    const suggested = parseInt(selected.dataset.recommendedMaxTokens || "900", 10);
-    const suggestedText = Number.isFinite(suggested) ? String(suggested) : "900";
-
-    if (modelGuide) {
-      modelGuide.textContent = `${costText} · ${freeTierText}`;
-    }
-    if (tokenGuide) {
-      tokenGuide.textContent = `App range: 200–4000. Suggested: ${suggestedText}. ${maxHint}`.trim();
-    }
-    if (maxInput) {
-      maxInput.setAttribute("placeholder", suggestedText);
-    }
-  };
-
-  ["chatgpt", "gemini"].forEach((provider) => {
-    const select = document.querySelector(`.ai-model-select[data-ai-provider="${provider}"]`);
-    if (!select) return;
-    updateAiGuide(provider);
-    select.addEventListener("change", () => updateAiGuide(provider));
-  });
 </script>
 {% endblock %}

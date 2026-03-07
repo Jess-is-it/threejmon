@@ -6,69 +6,7 @@
 {% endblock %}
 {% block content %}
 {% macro ai_status_button(panel) %}
-  {% set issue_count = (panel.generating.count if panel and panel.generating else 0) + (panel.error.count if panel and panel.error else 0) %}
-  <div class="dropdown">
-    <button
-      type="button"
-      class="btn btn-sm btn-outline-secondary d-inline-flex align-items-center"
-      title="AI report status summary"
-      aria-label="AI report status summary"
-      data-bs-toggle="dropdown"
-      data-bs-auto-close="outside"
-      aria-expanded="false">
-      <i class="ti ti-brain me-1"></i>AI Report
-      <span class="badge bg-azure-lt text-azure ms-1">{{ issue_count }}</span>
-    </button>
-    <div class="dropdown-menu dropdown-menu-end p-0" style="min-width: 430px;">
-      <div class="card border-0 shadow-none m-0">
-        <div class="card-header py-2 px-3">
-          <div class="fw-semibold">AI Report Status</div>
-          <div class="text-muted small">Generating + errors: {{ issue_count }}</div>
-        </div>
-        <div class="card-body p-0" style="max-height: 360px; overflow: auto;">
-          <table class="table table-sm table-vcenter mb-0">
-            <thead>
-              <tr>
-                <th class="w-1 ps-3">Status</th>
-                <th class="w-1">Count</th>
-                <th class="pe-3">Accounts</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for key in ["generating", "error", "ready", "missing"] %}
-                {% set item = panel[key] if panel and panel[key] else {"label":"", "count":0, "accounts":[]} %}
-                <tr>
-                  <td class="ps-3">
-                    {% if key == "generating" %}
-                      <span class="badge bg-blue-lt text-blue">{{ item.label }}</span>
-                    {% elif key == "error" %}
-                      <span class="badge bg-red-lt text-red">{{ item.label }}</span>
-                    {% elif key == "ready" %}
-                      <span class="badge bg-green-lt text-green">{{ item.label }}</span>
-                    {% else %}
-                      <span class="badge bg-secondary-lt text-secondary">{{ item.label }}</span>
-                    {% endif %}
-                  </td>
-                  <td>{{ item.count }}</td>
-                  <td class="pe-3">
-                    {% if item.accounts %}
-                      <div class="d-flex flex-wrap gap-1">
-                        {% for pppoe in item.accounts %}
-                          <span class="badge bg-gray-100 text-secondary">{{ pppoe }}</span>
-                        {% endfor %}
-                      </div>
-                    {% else %}
-                      <span class="text-muted small">—</span>
-                    {% endif %}
-                  </td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  </div>
+  {# AI removed from Under Surveillance UI #}
 {% endmacro %}
 
 {% macro pppoe_label(pppoe_value, max_chars=25) %}
@@ -84,7 +22,7 @@
 <div class="card">
   <div class="card-body">
     {% if message %}
-      <div class="alert alert-warning">
+      <div class="alert alert-warning auto-dismiss-alert">
         <div class="d-flex align-items-start">
           <span class="me-2"><i class="ti ti-alert-triangle"></i></span>
           <div>{{ message }}</div>
@@ -103,6 +41,9 @@
 	      </li>
 	      <li class="nav-item">
 	        <a href="#surv-history" class="nav-link {% if active_tab == 'history' %}active{% endif %}" data-bs-toggle="tab">History</a>
+	      </li>
+	      <li class="nav-item">
+	        <a href="#surv-logs" class="nav-link {% if active_tab == 'logs' %}active{% endif %}" data-bs-toggle="tab">Logs Tracking</a>
 	      </li>
 	      <li class="nav-item">
 	        <a href="#surv-settings" class="nav-link {% if active_tab == 'settings' %}active{% endif %}" data-bs-toggle="tab">Settings</a>
@@ -155,12 +96,12 @@
                           </th>
 				                  <th class="surv-col-pppoe" data-surv-sort="text">PPPoE <span class="surv-sort-indicator"></span></th>
 				                  <th class="surv-col-ip" data-surv-sort="text">IPv4 <span class="surv-sort-indicator"></span></th>
-			                  <th class="surv-col-ping" data-surv-sort="text">Ping <span class="surv-sort-indicator"></span></th>
-			                  <th class="surv-col-loss" data-surv-sort="number">Loss <span class="surv-sort-indicator"></span></th>
-		                  <th class="surv-col-latency" data-surv-sort="number">Latency <span class="surv-sort-indicator"></span></th>
+			                  <th class="surv-col-ping" data-surv-sort="text">Current State <span class="surv-sort-indicator"></span></th>
+			                  <th class="surv-col-loss" data-surv-sort="text">Primary Problem <span class="surv-sort-indicator"></span></th>
+		                  <th class="surv-col-latency" data-surv-sort="duration">Impact <span class="surv-sort-indicator"></span></th>
 		                  <th class="surv-col-addedby" data-surv-sort="text">Added By <span class="surv-sort-indicator"></span></th>
 		                  <th class="surv-col-activefor" data-surv-sort="duration">Active For <span class="surv-sort-indicator"></span></th>
-		                  <th class="surv-col-downfor" data-surv-sort="duration">Down For <span class="surv-sort-indicator"></span></th>
+		                  <th class="surv-col-downfor" data-surv-sort="number">Urgency <span class="surv-sort-indicator"></span></th>
 		                  <th class="surv-col-lastping" data-surv-sort="datetime">Last Ping <span class="surv-sort-indicator"></span></th>
 		                  <th class="surv-col-opticalrx" data-surv-sort="number">Optical RX <span class="surv-sort-indicator"></span></th>
 		                  <th class="surv-col-opticallast" data-surv-sort="datetime">Optical Last <span class="surv-sort-indicator"></span></th>
@@ -174,6 +115,7 @@
 		                    data-pppoe="{{ row.pppoe }}"
 		                    data-ip="{{ row.ip or '' }}"
 		                    data-added-mode="{{ row.added_mode or '' }}"
+                              data-added-by-label="{{ row.added_by_display or row.added_by or '' }}"
 		                    data-ok="{{ 1 if row.ok else 0 }}"
 		                    data-loss="{{ row.loss if row.loss is not none else '' }}"
 		                    data-avg-ms="{{ row.avg_ms if row.avg_ms is not none else '' }}"
@@ -229,28 +171,36 @@
 				                    </td>
 		                    <td class="surv-col-ip">{{ row.ip or 'n/a' }}</td>
 		                    <td class="surv-col-ping">
-		                      {% if row.ok %}
-		                        <span class="badge bg-green-lt">Up</span>
-		                      {% else %}
-		                        <span class="badge bg-red-lt">Down</span>
-		                      {% endif %}
+                          <span class="badge bg-{{ row.current_state_badge or 'secondary' }}-lt text-{{ row.current_state_badge or 'secondary' }}">
+                            {{ row.current_state_label or 'n/a' }}
+                          </span>
 		                    </td>
-		                    <td class="surv-col-loss">{{ row.loss is not none and ("%.1f"|format(row.loss) ~ "%") or "n/a" }}</td>
-		                    <td class="surv-col-latency">{{ row.avg_ms is not none and ("%.1f"|format(row.avg_ms) ~ "ms") or "n/a" }}</td>
+		                    <td class="surv-col-loss">
+                          <span class="badge bg-{{ row.primary_problem_badge or 'secondary' }}-lt text-{{ row.primary_problem_badge or 'secondary' }}">
+                            {{ row.primary_problem_label or 'n/a' }}
+                          </span>
+                        </td>
+		                    <td class="surv-col-latency text-muted small"
+                            data-surv-sort-value="{{ row.impact_sort_seconds or 0 }}"
+                            title="{{ row.impact_tooltip or row.impact_label or 'n/a' }}">{{ row.impact_label or 'n/a' }}</td>
 		                    <td class="surv-col-addedby">
 			                      {% if row.added_mode == 'auto' %}
 			                        <span class="badge bg-azure-lt text-azure"
 			                              title="Auto added by system{% if row.auto_source %} ({{ row.auto_source }}){% endif %}{% if row.auto_reason %}: {{ row.auto_reason }}{% endif %}">
 			                          <i class="ti ti-bolt me-1"></i>Auto
 			                        </span>
-			                      {% else %}
-			                        <span class="badge bg-secondary-lt text-secondary" title="Added manually by user">
-			                          <i class="ti ti-user me-1"></i>Manual
-		                        </span>
-		                      {% endif %}
+				                      {% else %}
+                                {% set added_by_label = row.added_by_display or row.added_by or 'Manual' %}
+				                        <span class="badge bg-secondary-lt text-secondary" title="Added manually by {{ added_by_label }}">
+				                          <i class="ti ti-user me-1"></i>{{ added_by_label }}
+			                        </span>
+			                      {% endif %}
 		                    </td>
 		                    <td class="surv-col-activefor"><span class="surv-live-duration text-muted small">—</span></td>
-		                    <td class="surv-col-downfor">{{ row.down_for or "—" }}</td>
+			                    <td class="surv-col-downfor" data-surv-sort-value="{{ row.urgency_sort_rank or 4 }}">
+                        <span class="d-none">{{ row.urgency_sort_rank or 4 }}</span>
+                        <span class="badge bg-{{ row.urgency_badge or 'secondary' }}-lt text-{{ row.urgency_badge or 'secondary' }}">{{ row.urgency_label or 'Normal' }}</span>
+                      </td>
 		                    <td class="surv-col-lastping">{{ row.last_check or "n/a" }}</td>
 		                    <td class="surv-col-opticalrx">{{ row.optical_rx is not none and ("%.2f"|format(row.optical_rx) ~ " dBm") or "n/a" }}</td>
 	                    <td class="surv-col-opticallast">{{ row.optical_last or "n/a" }}</td>
@@ -306,12 +256,15 @@
                                 data-text="{{ row.ai_report_text or '' }}">
                           <i class="ti ti-brain"></i>
                         </button>
-				                      <form method="post" action="/surveillance/mark_false" class="d-inline">
-				                        <input type="hidden" name="pppoe" value="{{ row.pppoe }}" />
-				                        <button type="submit" class="badge bg-orange-lt text-orange header-icon-badge border-0" data-surv-row-false="under" title="Mark as False" aria-label="Mark as False">
-				                          <i class="ti ti-circle-x"></i>
-		                        </button>
-		                      </form>
+				                      <button type="button"
+                                  class="badge bg-orange-lt text-orange header-icon-badge border-0"
+                                  data-surv-row-false="under"
+                                  data-surv-row-false-open="under"
+                                  data-pppoe="{{ row.pppoe }}"
+                                  title="Mark as False"
+                                  aria-label="Mark as False">
+                                <i class="ti ti-circle-x"></i>
+                              </button>
                         </div>
 	                    </td>
 	                  </tr>
@@ -379,6 +332,7 @@
                               data-stage-history="{{ row.stage_history|tojson|forceescape }}"
                               data-prev-cycles="{{ row.prefixed_cycles|tojson|forceescape }}"
 			                          data-added-mode="{{ row.added_mode or '' }}"
+                              data-added-by-label="{{ row.added_by_display or row.added_by or '' }}"
 			                          data-added-at="{{ row.added_at_iso }}">
 			                          <td class="surv-col-pppoe">
                                   <div class="fw-semibold">{{ pppoe_label(row.pppoe) }}</div>
@@ -391,10 +345,11 @@
 	                      {% endfor %}
 	                    </tbody>
 	                  </table>
-	                </div>
-              </div>
-            </div>
-          </div>
+				              </div>
+				            </div>
+				          </div>
+
+			            </div>
 
           <div class="col-12 col-lg-9">
             <div class="card"
@@ -426,11 +381,10 @@
 	                    </div>
                     <div class="small text-blue mt-1 d-none" data-surv-field="checker_anchor_note"></div>
                   </div>
-		                  <div class="d-flex align-items-center gap-2">
+			                  <div class="d-flex align-items-center gap-2 flex-wrap justify-content-end surv-split-actions">
 			                    <div class="dropdown">
 			                      <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" data-surv-window-btn="under">Filter</button>
 			                      <div class="dropdown-menu dropdown-menu-end">
-			                        <button class="dropdown-item" type="button" data-surv-window="pre7d">Pre-Surveillance Baseline (7d)</button>
 			                        <button class="dropdown-item" type="button" data-surv-window="1">Last 1h</button>
 		                        <button class="dropdown-item" type="button" data-surv-window="6">Last 6h</button>
 		                        <button class="dropdown-item" type="button" data-surv-window="12">Last 12h</button>
@@ -438,6 +392,17 @@
 			                        <button class="dropdown-item" type="button" data-surv-window="168">Last 7d</button>
 			                      </div>
 		                    </div>
+                    <button type="button"
+                            class="btn btn-sm btn-outline-secondary"
+                            title="Inspect Recent Account Activity for 7 Days"
+                            aria-label="Inspect Recent Account Activity for 7 Days"
+                            data-bs-toggle="modal"
+                            data-bs-target="#surv-inspect-modal"
+                            data-tab="under"
+                            data-surv-action-pppoe
+                            disabled>
+                      <i class="ti ti-activity me-1"></i>Inspect Activity
+                    </button>
                     <button type="button"
                             class="btn btn-sm btn-outline-danger surv-move-level2-btn"
                             title="Move to Needs Manual Fix"
@@ -584,10 +549,11 @@
                               <div data-surv-prev-timeline-wrap="under">
                                 <div class="d-flex flex-column gap-2" data-surv-prev-timeline="under"></div>
                                 <div class="mt-2" data-surv-prev-timeline-total="under"></div>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
+				              </div>
+				            </div>
+				          </div>
+
+			            </div>
                         <div class="card mt-3">
                           <div class="card-header py-2 bg-light">
                             <div class="fw-semibold">
@@ -719,9 +685,9 @@
 	                  <th class="surv-col-observationdue" data-surv-sort="datetime">Observation Due <span class="surv-sort-indicator"></span></th>
 	                  <th class="surv-col-observationfor" data-surv-sort="duration">Observation For <span class="surv-sort-indicator"></span></th>
 	                  <th class="surv-col-remaining" data-surv-sort="duration">Remaining <span class="surv-sort-indicator"></span></th>
-	                  <th class="surv-col-ping" data-surv-sort="text">Ping <span class="surv-sort-indicator"></span></th>
-	                  <th class="surv-col-loss" data-surv-sort="number">Loss <span class="surv-sort-indicator"></span></th>
-	                  <th class="surv-col-latency" data-surv-sort="number">Latency <span class="surv-sort-indicator"></span></th>
+		                  <th class="surv-col-ping" data-surv-sort="text">Current State <span class="surv-sort-indicator"></span></th>
+		                  <th class="surv-col-loss" data-surv-sort="text">Primary Problem <span class="surv-sort-indicator"></span></th>
+		                  <th class="surv-col-latency" data-surv-sort="duration">Impact <span class="surv-sort-indicator"></span></th>
 	                  <th class="surv-col-lastping" data-surv-sort="datetime">Last Ping <span class="surv-sort-indicator"></span></th>
 	                  <th class="surv-col-opticalrx" data-surv-sort="number">Optical RX <span class="surv-sort-indicator"></span></th>
 	                  <th class="text-end surv-col-actions">Actions</th>
@@ -772,6 +738,7 @@
 	                      data-first-surveillance="{{ row.first_added_at_iso or row.added_at_iso }}"
 	                      data-duration-start="{{ row.last_fixed_at_iso or row.added_at_iso }}"
 			                    data-added-mode="{{ row.added_mode or '' }}"
+                              data-added-by-label="{{ row.added_by_display or row.added_by or '' }}"
 			                    data-added-at="{{ row.last_fixed_at_iso or row.added_at_iso }}">
                         <td class="d-none surv-col-select" data-surv-select-col="observe">
                           <label class="form-check m-0">
@@ -803,15 +770,19 @@
                         <span class="text-muted">Done</span>
                       {% endif %}
                     </td>
-                    <td class="surv-col-ping">
-                      {% if row.ok %}
-                        <span class="badge bg-green-lt">Up</span>
-                      {% else %}
-                        <span class="badge bg-red-lt">Down</span>
-                      {% endif %}
-                    </td>
-                    <td class="surv-col-loss">{{ row.loss is not none and ("%.1f"|format(row.loss) ~ "%") or "n/a" }}</td>
-                    <td class="surv-col-latency">{{ row.avg_ms is not none and ("%.1f"|format(row.avg_ms) ~ "ms") or "n/a" }}</td>
+	                    <td class="surv-col-ping">
+                        <span class="badge bg-{{ row.current_state_badge or 'secondary' }}-lt text-{{ row.current_state_badge or 'secondary' }}">
+                          {{ row.current_state_label or 'n/a' }}
+                        </span>
+	                    </td>
+	                    <td class="surv-col-loss">
+                        <span class="badge bg-{{ row.primary_problem_badge or 'secondary' }}-lt text-{{ row.primary_problem_badge or 'secondary' }}">
+                          {{ row.primary_problem_label or 'n/a' }}
+                        </span>
+                      </td>
+	                      <td class="surv-col-latency text-muted small"
+                        data-surv-sort-value="{{ row.impact_sort_seconds or 0 }}"
+                        title="{{ row.impact_tooltip or row.impact_label or 'n/a' }}">{{ row.impact_label or 'n/a' }}</td>
                     <td class="surv-col-lastping">{{ row.last_check or "n/a" }}</td>
                     <td class="surv-col-opticalrx">{{ row.optical_rx is not none and ("%.2f"|format(row.optical_rx) ~ " dBm") or "n/a" }}</td>
                     <td class="text-end surv-actions-cell surv-col-actions">
@@ -906,6 +877,7 @@
                                 data-stage-start="{{ row.last_fixed_at_iso or row.added_at_iso }}"
                                 data-first-surveillance="{{ row.first_added_at_iso or row.added_at_iso }}"
                               data-added-mode="{{ row.added_mode or '' }}"
+                              data-added-by-label="{{ row.added_by_display or row.added_by or '' }}"
 		                            data-added-at="{{ row.last_fixed_at_iso or row.added_at_iso }}">
                             <td class="surv-col-pppoe">
                               {% set observe_cycle = row.fixed_cycle_count or 0 %}
@@ -964,21 +936,31 @@
 	                      </div>
                         <div class="small text-blue mt-1 d-none" data-surv-field="checker_anchor_note"></div>
                     </div>
-                    <div class="d-flex align-items-center gap-2">
+                    <div class="d-flex align-items-center gap-2 flex-wrap justify-content-end surv-split-actions">
 	                      <div class="dropdown">
-	                        <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" data-surv-window-btn="observe">Filter</button>
-	                        <div class="dropdown-menu dropdown-menu-end">
-                          <button class="dropdown-item" type="button" data-surv-window="pre7d">Pre-Surveillance Baseline (7d)</button>
-	                          <button class="dropdown-item" type="button" data-surv-window="1">Last 1h</button>
-	                          <button class="dropdown-item" type="button" data-surv-window="6">Last 6h</button>
-	                          <button class="dropdown-item" type="button" data-surv-window="12">Last 12h</button>
-	                          <button class="dropdown-item" type="button" data-surv-window="24">Last 24h</button>
-	                          <button class="dropdown-item" type="button" data-surv-window="168">Last 7d</button>
-                        </div>
-                      </div>
+		                      <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" data-surv-window-btn="observe">Filter</button>
+		                        <div class="dropdown-menu dropdown-menu-end">
+		                          <button class="dropdown-item" type="button" data-surv-window="1">Last 1h</button>
+		                          <button class="dropdown-item" type="button" data-surv-window="6">Last 6h</button>
+		                          <button class="dropdown-item" type="button" data-surv-window="12">Last 12h</button>
+		                          <button class="dropdown-item" type="button" data-surv-window="24">Last 24h</button>
+		                          <button class="dropdown-item" type="button" data-surv-window="168">Last 7d</button>
+	                        </div>
+	                      </div>
                       <button type="button"
-                              class="btn btn-sm btn-outline-primary surv-ai-view-selected"
-                              title="View AI Report"
+                              class="btn btn-sm btn-outline-secondary"
+                              title="Inspect Recent Account Activity for 7 Days"
+                              aria-label="Inspect Recent Account Activity for 7 Days"
+                              data-bs-toggle="modal"
+                              data-bs-target="#surv-inspect-modal"
+                              data-tab="observe"
+                              data-surv-action-pppoe
+                              disabled>
+                        <i class="ti ti-activity me-1"></i>Inspect Activity
+                      </button>
+	                      <button type="button"
+	                              class="btn btn-sm btn-outline-primary surv-ai-view-selected"
+	                              title="View AI Report"
                               aria-label="View AI Report"
                               data-bs-toggle="modal"
                               data-bs-target="#surv-ai-modal"
@@ -1289,12 +1271,12 @@
 		                  </th>
 		                  <th class="surv-col-pppoe" data-surv-sort="text">PPPoE <span class="surv-sort-indicator"></span></th>
 		                  <th class="surv-col-ip" data-surv-sort="text">IPv4 <span class="surv-sort-indicator"></span></th>
-			                  <th class="surv-col-ping" data-surv-sort="text">Ping <span class="surv-sort-indicator"></span></th>
-		                  <th class="surv-col-loss" data-surv-sort="number">Loss <span class="surv-sort-indicator"></span></th>
-		                  <th class="surv-col-latency" data-surv-sort="number">Latency <span class="surv-sort-indicator"></span></th>
+			                  <th class="surv-col-ping" data-surv-sort="text">Current State <span class="surv-sort-indicator"></span></th>
+		                  <th class="surv-col-loss" data-surv-sort="text">Primary Problem <span class="surv-sort-indicator"></span></th>
+		                  <th class="surv-col-latency" data-surv-sort="duration">Impact <span class="surv-sort-indicator"></span></th>
 		                  <th class="surv-col-addedby" data-surv-sort="text">Added By <span class="surv-sort-indicator"></span></th>
 		                  <th class="surv-col-needsfixfor" data-surv-sort="duration">Needs Fix For <span class="surv-sort-indicator"></span></th>
-		                  <th class="surv-col-downfor" data-surv-sort="duration">Down For <span class="surv-sort-indicator"></span></th>
+		                  <th class="surv-col-downfor" data-surv-sort="number">Urgency <span class="surv-sort-indicator"></span></th>
 		                  <th class="surv-col-lastping" data-surv-sort="datetime">Last Ping <span class="surv-sort-indicator"></span></th>
 		                  <th class="surv-col-opticalrx" data-surv-sort="number">Optical RX <span class="surv-sort-indicator"></span></th>
 		                  <th class="surv-col-opticallast" data-surv-sort="datetime">Optical Last <span class="surv-sort-indicator"></span></th>
@@ -1309,6 +1291,7 @@
 		                    data-pppoe="{{ row.pppoe }}"
 		                    data-ip="{{ row.ip or '' }}"
 		                    data-added-mode="{{ row.added_mode or '' }}"
+                              data-added-by-label="{{ row.added_by_display or row.added_by or '' }}"
 		                    data-ok="{{ 1 if row.ok else 0 }}"
 		                    data-loss="{{ row.loss if row.loss is not none else '' }}"
 		                    data-avg-ms="{{ row.avg_ms if row.avg_ms is not none else '' }}"
@@ -1366,29 +1349,37 @@
                               </div>
 				                    </td>
 		                    <td class="surv-col-ip">{{ row.ip or 'n/a' }}</td>
-		                    <td class="surv-col-ping">
-		                      {% if row.ok %}
-		                        <span class="badge bg-yellow-lt">Monitor</span>
-		                      {% else %}
-		                        <span class="badge bg-red-lt">Down</span>
-		                      {% endif %}
-		                    </td>
-		                    <td class="surv-col-loss">{{ row.loss is not none and ("%.1f"|format(row.loss) ~ "%") or "n/a" }}</td>
-		                    <td class="surv-col-latency">{{ row.avg_ms is not none and ("%.1f"|format(row.avg_ms) ~ "ms") or "n/a" }}</td>
+			                    <td class="surv-col-ping">
+                              <span class="badge bg-{{ row.current_state_badge or 'secondary' }}-lt text-{{ row.current_state_badge or 'secondary' }}">
+                                {{ row.current_state_label or 'n/a' }}
+                              </span>
+			                    </td>
+			                    <td class="surv-col-loss">
+                              <span class="badge bg-{{ row.primary_problem_badge or 'secondary' }}-lt text-{{ row.primary_problem_badge or 'secondary' }}">
+                                {{ row.primary_problem_label or 'n/a' }}
+                              </span>
+                            </td>
+		                      <td class="surv-col-latency text-muted small"
+                            data-surv-sort-value="{{ row.impact_sort_seconds or 0 }}"
+                            title="{{ row.impact_tooltip or row.impact_label or 'n/a' }}">{{ row.impact_label or 'n/a' }}</td>
 		                    <td class="surv-col-addedby">
 			                      {% if row.added_mode == 'auto' %}
 			                        <span class="badge bg-azure-lt text-azure"
 			                              title="Auto added by system{% if row.auto_source %} ({{ row.auto_source }}){% endif %}{% if row.auto_reason %}: {{ row.auto_reason }}{% endif %}">
 			                          <i class="ti ti-bolt me-1"></i>Auto
 			                        </span>
-			                      {% else %}
-			                        <span class="badge bg-secondary-lt text-secondary" title="Added manually by user">
-			                          <i class="ti ti-user me-1"></i>Manual
-		                        </span>
-		                      {% endif %}
+				                      {% else %}
+                                {% set added_by_label = row.added_by_display or row.added_by or 'Manual' %}
+				                        <span class="badge bg-secondary-lt text-secondary" title="Added manually by {{ added_by_label }}">
+				                          <i class="ti ti-user me-1"></i>{{ added_by_label }}
+			                        </span>
+			                      {% endif %}
 		                    </td>
 		                    <td class="surv-col-needsfixfor"><span class="surv-live-duration text-muted small">—</span></td>
-		                    <td class="surv-col-downfor">{{ row.down_for or "—" }}</td>
+			                    <td class="surv-col-downfor" data-surv-sort-value="{{ row.urgency_sort_rank or 4 }}">
+                            <span class="d-none">{{ row.urgency_sort_rank or 4 }}</span>
+                            <span class="badge bg-{{ row.urgency_badge or 'secondary' }}-lt text-{{ row.urgency_badge or 'secondary' }}">{{ row.urgency_label or 'Normal' }}</span>
+                          </td>
 		                    <td class="surv-col-lastping">{{ row.last_check or "n/a" }}</td>
 	                    <td class="surv-col-opticalrx">{{ row.optical_rx is not none and ("%.2f"|format(row.optical_rx) ~ " dBm") or "n/a" }}</td>
 	                    <td class="surv-col-opticallast">{{ row.optical_last or "n/a" }}</td>
@@ -1487,6 +1478,7 @@
 	                          data-stage-history="{{ row.stage_history|tojson|forceescape }}"
 	                          data-prev-cycles="{{ row.prefixed_cycles|tojson|forceescape }}"
 	                          data-added-mode="{{ row.added_mode or '' }}"
+                              data-added-by-label="{{ row.added_by_display or row.added_by or '' }}"
 	                          data-added-at="{{ row.level2_at_iso or row.added_at_iso }}">
 			                          <td class="surv-col-pppoe">
                                   {% set level2_cycle = (row.fixed_cycle_count or 0) + 1 %}
@@ -1545,18 +1537,28 @@
                     </div>
                     <div class="small text-blue mt-1 d-none" data-surv-field="checker_anchor_note"></div>
                   </div>
-		                  <div class="d-flex align-items-center gap-2">
-			                    <div class="dropdown">
-			                      <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" data-surv-window-btn="level2">Filter</button>
-			                      <div class="dropdown-menu dropdown-menu-end">
-                                  <button class="dropdown-item" type="button" data-surv-window="pre7d">Pre-Surveillance Baseline (7d)</button>
-			                        <button class="dropdown-item" type="button" data-surv-window="1">Last 1h</button>
-		                        <button class="dropdown-item" type="button" data-surv-window="6">Last 6h</button>
-		                        <button class="dropdown-item" type="button" data-surv-window="12">Last 12h</button>
-		                        <button class="dropdown-item" type="button" data-surv-window="24">Last 24h</button>
-			                        <button class="dropdown-item" type="button" data-surv-window="168">Last 7d</button>
-		                      </div>
-		                    </div>
+		                  <div class="d-flex align-items-center gap-2 flex-wrap justify-content-end surv-split-actions">
+				                    <div class="dropdown">
+				                      <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" data-surv-window-btn="level2">Filter</button>
+				                      <div class="dropdown-menu dropdown-menu-end">
+				                        <button class="dropdown-item" type="button" data-surv-window="1">Last 1h</button>
+			                        <button class="dropdown-item" type="button" data-surv-window="6">Last 6h</button>
+			                        <button class="dropdown-item" type="button" data-surv-window="12">Last 12h</button>
+			                        <button class="dropdown-item" type="button" data-surv-window="24">Last 24h</button>
+				                        <button class="dropdown-item" type="button" data-surv-window="168">Last 7d</button>
+			                      </div>
+			                    </div>
+                        <button type="button"
+                                class="btn btn-sm btn-outline-secondary"
+                                title="Inspect Recent Account Activity for 7 Days"
+                                aria-label="Inspect Recent Account Activity for 7 Days"
+                                data-bs-toggle="modal"
+                                data-bs-target="#surv-inspect-modal"
+                                data-tab="level2"
+                                data-surv-action-pppoe
+                                disabled>
+                          <i class="ti ti-activity me-1"></i>Inspect Activity
+                        </button>
                         <button type="button"
                                 class="btn btn-sm btn-outline-primary surv-ai-view-selected"
                                 title="View AI Report"
@@ -1922,6 +1924,72 @@
 	        {% endif %}
 	      </div>
 
+	      <div class="tab-pane {% if active_tab == 'logs' %}active{% endif %}" id="surv-logs">
+	        <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
+	          <div>
+	            <h4 class="mb-1">Logs Tracking</h4>
+	            <div class="text-muted small">User actions in Under Surveillance workflow (manual add, moves, fixes, remarks).</div>
+	            <div class="mt-2">
+	              <span class="badge bg-indigo-lt text-indigo">Total: {{ (surveillance_logs_pagination.total if surveillance_logs_pagination else (surveillance_logs_rows|length)) }}</span>
+	            </div>
+	          </div>
+	          <div class="d-flex align-items-center gap-2">
+	            <div class="input-icon">
+	              <input class="form-control form-control-sm" id="surv-logs-search" type="text" placeholder="Search user/action/account/remarks" autocomplete="off" value="{{ surveillance_logs_query or '' }}" />
+	              <span class="input-icon-addon"><i class="ti ti-search"></i></span>
+	            </div>
+	            <a class="btn btn-outline-secondary btn-sm" href="/surveillance?tab=logs{% if surveillance_logs_query %}&logs_q={{ surveillance_logs_query|urlencode }}{% endif %}#surv-logs">Refresh</a>
+	          </div>
+	        </div>
+
+	        <div class="table-responsive surv-table-wrap" style="max-height: 70vh; overflow: auto;">
+	          <table class="table table-sm table-vcenter table-hover">
+	            <thead>
+	              <tr>
+	                <th style="min-width: 150px;">Time (PHT)</th>
+	                <th style="min-width: 120px;">User</th>
+	                <th style="min-width: 170px;">Action</th>
+	                <th style="min-width: 160px;">Account / Resource</th>
+	                <th>Details</th>
+	                <th style="min-width: 120px;">IP</th>
+	              </tr>
+	            </thead>
+	            <tbody>
+	              {% for row in surveillance_logs_rows %}
+	                <tr>
+	                  <td class="text-muted small">{{ row.timestamp_ph }}</td>
+	                  <td>{{ row.username }}</td>
+	                  <td><span class="badge bg-blue-lt text-blue">{{ row.action }}</span></td>
+	                  <td class="text-muted small">{{ row.resource or "n/a" }}</td>
+	                  <td class="text-muted small">{{ row.details or "—" }}</td>
+	                  <td class="text-muted small">{{ row.ip_address or "—" }}</td>
+	                </tr>
+	              {% else %}
+	                <tr>
+	                  <td colspan="6" class="text-muted p-3">No surveillance logs yet.</td>
+	                </tr>
+	              {% endfor %}
+	            </tbody>
+	          </table>
+	        </div>
+
+	        {% if surveillance_logs_pagination and surveillance_logs_pagination.pages > 1 %}
+	          <div class="d-flex align-items-center justify-content-between mt-3">
+	            <div class="text-muted small">
+	              Page {{ surveillance_logs_pagination.page }} of {{ surveillance_logs_pagination.pages }} · {{ surveillance_logs_pagination.total }} total
+	            </div>
+	            <div class="btn-group">
+	              {% set prev_logs_page = surveillance_logs_pagination.page - 1 %}
+	              {% set next_logs_page = surveillance_logs_pagination.page + 1 %}
+	              <a class="btn btn-sm btn-outline-secondary {% if surveillance_logs_pagination.page <= 1 %}disabled{% endif %}"
+	                 href="/surveillance?tab=logs&logs_page={{ prev_logs_page }}{% if surveillance_logs_query %}&logs_q={{ surveillance_logs_query|urlencode }}{% endif %}#surv-logs">Prev</a>
+	              <a class="btn btn-sm btn-outline-secondary {% if surveillance_logs_pagination.page >= surveillance_logs_pagination.pages %}disabled{% endif %}"
+	                 href="/surveillance?tab=logs&logs_page={{ next_logs_page }}{% if surveillance_logs_query %}&logs_q={{ surveillance_logs_query|urlencode }}{% endif %}#surv-logs">Next</a>
+	            </div>
+	          </div>
+	        {% endif %}
+	      </div>
+
         <div class="modal modal-blur fade" id="surv-history-modal" tabindex="-1" role="dialog" aria-hidden="true">
           <div class="modal-dialog modal-xl modal-dialog-scrollable" role="document">
             <div class="modal-content">
@@ -2070,6 +2138,37 @@
 			        </div>
 			      </div>
 
+            <div class="modal modal-blur fade" id="surv-false-modal" tabindex="-1" role="dialog" aria-hidden="true">
+              <div class="modal-dialog modal-md modal-dialog-centered" role="document">
+                <div class="modal-content">
+                  <form method="post" action="/surveillance/mark_false" id="surv-false-form">
+                    <div class="modal-header">
+                      <h5 class="modal-title"><i class="ti ti-circle-x me-1 text-orange"></i>Mark as False</h5>
+                      <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                      <input type="hidden" name="pppoe" value="" id="surv-false-pppoe" />
+                      <input type="hidden" name="pppoes" value="" id="surv-false-pppoes" />
+                      <input type="hidden" name="tab" value="under" id="surv-false-tab" />
+                      <div class="mb-2">
+                        <div class="text-muted small">Account</div>
+                        <div class="fw-semibold" id="surv-false-pppoe-label">—</div>
+                      </div>
+                      <div>
+                        <label class="form-label">Remarks (required)</label>
+                        <textarea class="form-control" name="remarks" id="surv-false-remarks" rows="3" minlength="3" maxlength="500" placeholder="Example: Added by mistake, account is stable, no recent issue in checks..." required></textarea>
+                        <div class="text-muted small mt-1">Required (3-500 chars). Saved in history and logs.</div>
+                      </div>
+                    </div>
+                    <div class="modal-footer">
+                      <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                      <button type="submit" class="btn btn-warning">Confirm Mark as False</button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            </div>
+
 			      <div class="modal modal-blur fade" id="surv-fixed-modal" tabindex="-1" role="dialog" aria-hidden="true">
 			        <div class="modal-dialog modal-md modal-dialog-centered" role="document">
 					          <div class="modal-content">
@@ -2192,6 +2291,40 @@
 			        </div>
 			      </div>
 
+            <div class="modal modal-blur fade" id="surv-inspect-modal" tabindex="-1" role="dialog" aria-hidden="true">
+              <div class="modal-dialog modal-xl modal-dialog-scrollable" role="document">
+                <div class="modal-content">
+                  <div class="modal-header">
+                    <h5 class="modal-title" id="surv-inspect-title"><i class="ti ti-activity me-1 text-indigo"></i>Inspect Activity</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                  </div>
+                  <div class="modal-body">
+                    <div id="surv-inspect-loading" class="text-muted">Loading pre-surveillance baseline…</div>
+                    <div id="surv-inspect-error" class="alert alert-danger d-none mb-3"></div>
+                    <div id="surv-inspect-body" class="d-none">
+                      <div class="text-muted small mb-2">Pre-Surveillance Baseline (7d): behavior before this account entered surveillance.</div>
+                      <div class="row g-2 mb-3" id="surv-inspect-kpis">
+                        <div class="col-6 col-lg-3"><div class="border rounded p-2"><div class="text-muted small">Samples</div><div class="fw-semibold" id="surv-inspect-kpi-samples">0</div></div></div>
+                        <div class="col-6 col-lg-3"><div class="border rounded p-2"><div class="text-muted small">Down Samples</div><div class="fw-semibold" id="surv-inspect-kpi-down">0</div></div></div>
+                        <div class="col-6 col-lg-3"><div class="border rounded p-2"><div class="text-muted small">Loss Events</div><div class="fw-semibold" id="surv-inspect-kpi-loss-events">0</div></div></div>
+                        <div class="col-6 col-lg-3"><div class="border rounded p-2"><div class="text-muted small">Uptime</div><div class="fw-semibold" id="surv-inspect-kpi-uptime">n/a</div></div></div>
+                        <div class="col-6 col-lg-3"><div class="border rounded p-2"><div class="text-muted small">Average Latency</div><div class="fw-semibold" id="surv-inspect-kpi-avg-latency">n/a</div></div></div>
+                        <div class="col-6 col-lg-3"><div class="border rounded p-2"><div class="text-muted small">Highest Latency</div><div class="fw-semibold" id="surv-inspect-kpi-max-latency">n/a</div></div></div>
+                        <div class="col-6 col-lg-3"><div class="border rounded p-2"><div class="text-muted small">Average Loss</div><div class="fw-semibold" id="surv-inspect-kpi-avg-loss">n/a</div></div></div>
+                        <div class="col-6 col-lg-3"><div class="border rounded p-2"><div class="text-muted small">Peak Loss</div><div class="fw-semibold" id="surv-inspect-kpi-max-loss">n/a</div></div></div>
+                        <div class="col-6 col-lg-3"><div class="border rounded p-2"><div class="text-muted small">Total Loss Time</div><div class="fw-semibold" id="surv-inspect-kpi-loss-time">n/a</div></div></div>
+                        <div class="col-6 col-lg-3"><div class="border rounded p-2"><div class="text-muted small">Full-Down Time</div><div class="fw-semibold" id="surv-inspect-kpi-loss100">n/a</div></div></div>
+                        <div class="col-6 col-lg-3"><div class="border rounded p-2"><div class="text-muted small">Longest Down Streak</div><div class="fw-semibold" id="surv-inspect-kpi-longest-down">n/a</div></div></div>
+                        <div class="col-6 col-lg-3"><div class="border rounded p-2"><div class="text-muted small">Last Sample</div><div class="fw-semibold" id="surv-inspect-kpi-last">n/a</div></div></div>
+                      </div>
+                      <div id="surv-inspect-chart" class="rto-spark-modal-chart" style="min-height: 380px;"></div>
+                      <div class="text-muted small mt-2" id="surv-inspect-range"></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
 			      <div class="modal modal-blur fade" id="surv-ai-modal" tabindex="-1" role="dialog" aria-hidden="true">
 			        <div class="modal-dialog modal-xl modal-dialog-centered" role="document">
 			          <div class="modal-content">
@@ -2227,9 +2360,11 @@
 		            <li class="nav-item">
 		              <a href="#surv-settings-autoadd" class="nav-link" data-bs-toggle="tab">Auto Add</a>
 		            </li>
-		            <li class="nav-item">
-		              <a href="#surv-settings-danger" class="nav-link" data-bs-toggle="tab">Danger</a>
-		            </li>
+		            {% if not auth_enabled or has_perm('RUN_DangerActions') %}
+		              <li class="nav-item">
+		                <a href="#surv-settings-danger" class="nav-link" data-bs-toggle="tab">Danger</a>
+		              </li>
+		            {% endif %}
 		          </ul>
 
 	          <div class="tab-content pt-3">
@@ -2390,12 +2525,103 @@
 	                      <label class="form-label">Optical RX Min (dBm) <span class="info" data-tip="Minimum acceptable RX reading (e.g., -24). Higher (less negative) is better.">i</span></label>
 	                      <input class="form-control" type="number" step="0.1" name="optical_rx_min_dbm" value="{{ settings.stability.optical_rx_min_dbm }}" />
 			                </div>
-			              </div>
+				              </div>
+				            </div>
+				          </div>
 			            </div>
-			          </div>
-		            </div>
-			
-		            <div class="tab-pane" id="surv-settings-autoadd">
+
+              <div class="card mt-3">
+                <div class="card-body">
+                  <h4 class="mb-3">Urgency Scoring</h4>
+                  <div class="text-muted small mb-3">
+                    Controls how the <strong>Urgency</strong> badge is computed in Active Monitoring / Needs Manual Fix.
+                  </div>
+                  <div class="row g-3">
+                    <div class="col-md-3">
+                      <label class="form-label">No Data Points <span class="info" data-tip="Added when account has no recent ping samples.">i</span></label>
+                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_no_data_points" value="{{ settings.stability.urgency_no_data_points if settings.stability.urgency_no_data_points is defined else 25 }}" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Current Down Points <span class="info" data-tip="Base points when account is currently down.">i</span></label>
+                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_current_down_points" value="{{ settings.stability.urgency_current_down_points if settings.stability.urgency_current_down_points is defined else 50 }}" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Down Duration Cap <span class="info" data-tip="Extra points from current down duration are capped to this value.">i</span></label>
+                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_down_minutes_cap_points" value="{{ settings.stability.urgency_down_minutes_cap_points if settings.stability.urgency_down_minutes_cap_points is defined else 30 }}" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Manual Fix Stage Points <span class="info" data-tip="Extra points when account is in Needs Manual Fix.">i</span></label>
+                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_manual_fix_stage_points" value="{{ settings.stability.urgency_manual_fix_stage_points if settings.stability.urgency_manual_fix_stage_points is defined else 10 }}" />
+                    </div>
+
+                    <div class="col-md-3">
+                      <label class="form-label">Loss Budget Breach Points <span class="info" data-tip="Points when total loss time exceeds Total Loss Max (minutes).">i</span></label>
+                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_loss_budget_breach_points" value="{{ settings.stability.urgency_loss_budget_breach_points if settings.stability.urgency_loss_budget_breach_points is defined else 20 }}" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Loss Time Scale Cap <span class="info" data-tip="Cap for scaled points from total loss time (minutes).">i</span></label>
+                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_loss_minutes_scale_cap_points" value="{{ settings.stability.urgency_loss_minutes_scale_cap_points if settings.stability.urgency_loss_minutes_scale_cap_points is defined else 12 }}" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Loss Events Breach Points <span class="info" data-tip="Points when loss events exceed Loss Events Max.">i</span></label>
+                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_loss_events_breach_points" value="{{ settings.stability.urgency_loss_events_breach_points if settings.stability.urgency_loss_events_breach_points is defined else 15 }}" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Loss Events Scale Cap <span class="info" data-tip="Cap for scaled points from loss event count.">i</span></label>
+                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_loss_events_scale_cap_points" value="{{ settings.stability.urgency_loss_events_scale_cap_points if settings.stability.urgency_loss_events_scale_cap_points is defined else 10 }}" />
+                    </div>
+
+                    <div class="col-md-3">
+                      <label class="form-label">High Latency Points <span class="info" data-tip="Points when latency is above Latency Max.">i</span></label>
+                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_high_latency_points" value="{{ settings.stability.urgency_high_latency_points if settings.stability.urgency_high_latency_points is defined else 6 }}" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Very High Latency Points <span class="info" data-tip="Points when latency is above multiplier × Latency Max.">i</span></label>
+                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_very_high_latency_points" value="{{ settings.stability.urgency_very_high_latency_points if settings.stability.urgency_very_high_latency_points is defined else 12 }}" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Very High Latency Multiplier <span class="info" data-tip="Multiplier against Latency Max for very high latency points (example: 2 = 2x Latency Max).">i</span></label>
+                      <input class="form-control" type="number" step="0.1" min="1.1" name="urgency_very_high_latency_multiplier" value="{{ settings.stability.urgency_very_high_latency_multiplier if settings.stability.urgency_very_high_latency_multiplier is defined else 2.0 }}" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Optical Issue Points <span class="info" data-tip="Points when optical RX is below Optical RX Min.">i</span></label>
+                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_optical_issue_points" value="{{ settings.stability.urgency_optical_issue_points if settings.stability.urgency_optical_issue_points is defined else 12 }}" />
+                    </div>
+
+                    <div class="col-md-3">
+                      <label class="form-label">Packet Loss Warn % <span class="info" data-tip="Packet loss threshold for warn-level points.">i</span></label>
+                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_packet_loss_warn_pct" value="{{ settings.stability.urgency_packet_loss_warn_pct if settings.stability.urgency_packet_loss_warn_pct is defined else 5.0 }}" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Packet Loss Critical % <span class="info" data-tip="Packet loss threshold for severe points. Must be >= warn %.">i</span></label>
+                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_packet_loss_critical_pct" value="{{ settings.stability.urgency_packet_loss_critical_pct if settings.stability.urgency_packet_loss_critical_pct is defined else 20.0 }}" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Packet Loss Warn Points <span class="info" data-tip="Points added at Packet Loss Warn %.">i</span></label>
+                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_packet_loss_points" value="{{ settings.stability.urgency_packet_loss_points if settings.stability.urgency_packet_loss_points is defined else 5 }}" />
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label">Packet Loss Critical Points <span class="info" data-tip="Points added at Packet Loss Critical %.">i</span></label>
+                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_severe_packet_loss_points" value="{{ settings.stability.urgency_severe_packet_loss_points if settings.stability.urgency_severe_packet_loss_points is defined else 10 }}" />
+                    </div>
+
+                    <div class="col-md-4">
+                      <label class="form-label">Critical Threshold <span class="info" data-tip="Urgency score at or above this becomes Critical.">i</span></label>
+                      <input class="form-control" type="number" min="0" max="100" name="urgency_critical_threshold" value="{{ settings.stability.urgency_critical_threshold if settings.stability.urgency_critical_threshold is defined else 70 }}" />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">High Threshold <span class="info" data-tip="Urgency score at or above this becomes High.">i</span></label>
+                      <input class="form-control" type="number" min="0" max="100" name="urgency_high_threshold" value="{{ settings.stability.urgency_high_threshold if settings.stability.urgency_high_threshold is defined else 45 }}" />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Watch Threshold <span class="info" data-tip="Urgency score at or above this becomes Watch.">i</span></label>
+                      <input class="form-control" type="number" min="0" max="100" name="urgency_watch_threshold" value="{{ settings.stability.urgency_watch_threshold if settings.stability.urgency_watch_threshold is defined else 25 }}" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+				
+			            <div class="tab-pane" id="surv-settings-autoadd">
 		              <div class="card">
 		                <div class="card-body">
 			                  <h4 class="mb-3">Auto Add Accounts to Surveillance</h4>
@@ -2439,23 +2665,25 @@
 			              </div>
 			            </div>
 
-			            <div class="tab-pane" id="surv-settings-danger">
-			              <div class="card mb-3 border-danger">
-			                <div class="card-body">
-		                  <h4 class="text-danger mb-3">Format Under Surveillance Data</h4>
-		                  <div class="alert alert-warning">
-		                    Formatting clears Active Monitoring, Needs Manual Fix, Post-Fix Observation, and Surveillance History data. Settings will be preserved.
+		            {% if not auth_enabled or has_perm('RUN_DangerActions') %}
+		              <div class="tab-pane" id="surv-settings-danger">
+		                <div class="card mb-3 border-danger">
+		                  <div class="card-body">
+		                    <h4 class="text-danger mb-3">Format Under Surveillance Data</h4>
+		                    <div class="alert alert-warning">
+		                      Formatting clears Active Monitoring, Needs Manual Fix, Post-Fix Observation, and Surveillance History data. Settings will be preserved.
+		                    </div>
+		                    <div class="d-flex align-items-center gap-3">
+		                      <label class="form-check">
+		                        <input class="form-check-input" type="checkbox" name="confirm_format" form="surv-format-form" />
+		                        <span class="form-check-label">Confirm format</span>
+		                      </label>
+		                      <button type="submit" class="btn btn-danger" form="surv-format-form">Format Under Surveillance Data</button>
+		                    </div>
 		                  </div>
-		                  <div class="d-flex align-items-center gap-3">
-		                    <label class="form-check">
-		                      <input class="form-check-input" type="checkbox" name="confirm_format" form="surv-format-form" />
-		                      <span class="form-check-label">Confirm format</span>
-		                    </label>
-		                    <button type="submit" class="btn btn-danger" form="surv-format-form">Format Under Surveillance Data</button>
-			              </div>
-			            </div>
-			          </div>
-	            </div>
+		                </div>
+		              </div>
+		            {% endif %}
 	          </div>
 
 		          <div class="mt-4 d-flex justify-content-end {% if active_tab != 'settings' %}d-none{% endif %}" data-surv-settings-save-bar>
@@ -2469,10 +2697,55 @@
 </div>
 
 <script>
-	  document.addEventListener("DOMContentLoaded", () => {
-		    const settingsSaveBar = document.querySelector('[data-surv-settings-save-bar]');
-		    const isSettingsDangerTabActive = () => {
-		      const active = document.querySelector('#surv-settings a[data-bs-toggle="tab"].active');
+		  document.addEventListener("DOMContentLoaded", () => {
+			    const underPaneRoot = document.getElementById("surv-under");
+			    const tabContentRoot = underPaneRoot && underPaneRoot.parentElement
+			      ? underPaneRoot.parentElement
+			      : document.querySelector(".tab-content.pt-4");
+			    if (tabContentRoot) {
+			      const orderedPaneIds = ["surv-under", "surv-level2", "surv-observe", "surv-history", "surv-logs", "surv-settings"];
+			      orderedPaneIds.forEach((paneId) => {
+			        const paneEl = document.getElementById(paneId);
+			        if (!paneEl) return;
+			        tabContentRoot.appendChild(paneEl);
+			      });
+			    }
+			    const detachedModalIds = [
+			      "surv-history-modal",
+			      "surv-level2-modal",
+            "surv-false-modal",
+			      "surv-fixed-modal",
+			      "surv-recovered-modal",
+			      "surv-optical-modal",
+			      "surv-inspect-modal",
+			      "surv-ai-modal",
+			    ];
+			    detachedModalIds.forEach((modalId) => {
+			      const modalEl = document.getElementById(modalId);
+			      if (!modalEl) return;
+			      if (modalEl.parentElement !== document.body) {
+			        document.body.appendChild(modalEl);
+			      }
+			    });
+			    const removeSurveillanceAiUi = () => {
+			      document.querySelectorAll(".surv-ai-view-btn, .surv-ai-view-selected, [data-surv-inline-generate-open], [data-bs-target=\"#surv-ai-modal\"]").forEach((el) => {
+			        el.remove();
+			      });
+			      document.querySelectorAll(".surv-col-aireport").forEach((el) => {
+			        el.remove();
+			      });
+			      document.querySelectorAll("[data-surv-field=\"ai_report_text\"]").forEach((el) => {
+			        const card = el.closest(".card");
+			        if (card) card.remove();
+			      });
+			      const aiModal = document.getElementById("surv-ai-modal");
+			      if (aiModal) aiModal.remove();
+			    };
+			    removeSurveillanceAiUi();
+
+			    const settingsSaveBar = document.querySelector('[data-surv-settings-save-bar]');
+			    const isSettingsDangerTabActive = () => {
+			      const active = document.querySelector('#surv-settings a[data-bs-toggle="tab"].active');
 		      return !!active && (active.getAttribute("href") || "") === "#surv-settings-danger";
 		    };
 			    const setSettingsSaveBar = (tab) => {
@@ -2489,13 +2762,13 @@
 			    } catch (e) {
 			      // ignore
 			    }
-			    const tabs = document.querySelectorAll('#surv-under, #surv-observe, #surv-level2, #surv-history, #surv-settings');
+			    const tabs = document.querySelectorAll('#surv-under, #surv-observe, #surv-level2, #surv-history, #surv-logs, #surv-settings');
 			    const links = document.querySelectorAll('a[data-bs-toggle="tab"]');
 			    links.forEach((link) => {
 			      link.addEventListener("shown.bs.tab", (event) => {
 			        const href = event.target.getAttribute("href") || "";
-			        if (!["#surv-under", "#surv-observe", "#surv-level2", "#surv-history", "#surv-settings"].includes(href)) return;
-			        const tab = href === "#surv-observe" ? "observe" : href === "#surv-level2" ? "level2" : href === "#surv-history" ? "history" : href === "#surv-settings" ? "settings" : "under";
+			        if (!["#surv-under", "#surv-observe", "#surv-level2", "#surv-history", "#surv-logs", "#surv-settings"].includes(href)) return;
+			        const tab = href === "#surv-observe" ? "observe" : href === "#surv-level2" ? "level2" : href === "#surv-history" ? "history" : href === "#surv-logs" ? "logs" : href === "#surv-settings" ? "settings" : "under";
 			        setSettingsSaveBar(tab);
 			        if (tab === "observe") collapseObservePreFixTimeline();
 			        const url = new URL(window.location.href);
@@ -2503,7 +2776,12 @@
 		        if (tab !== "history") {
 		          url.searchParams.delete("q");
 	          url.searchParams.delete("page");
+            url.searchParams.delete("action");
 	        }
+            if (tab !== "logs") {
+              url.searchParams.delete("logs_q");
+              url.searchParams.delete("logs_page");
+            }
 	        history.replaceState(null, "", url.toString());
 	      });
 	    });
@@ -2575,6 +2853,52 @@
 		            if (level2ModalReason) level2ModalReason.value = "";
 		          });
 		        }
+
+        const falseModalEl = document.getElementById("surv-false-modal");
+        const falseModalPppoe = document.getElementById("surv-false-pppoe");
+        const falseModalPppoes = document.getElementById("surv-false-pppoes");
+        const falseModalTab = document.getElementById("surv-false-tab");
+        const falseModalPppoeLabel = document.getElementById("surv-false-pppoe-label");
+        const falseModalRemarks = document.getElementById("surv-false-remarks");
+        const falseModal = falseModalEl && window.bootstrap?.Modal ? new window.bootstrap.Modal(falseModalEl) : null;
+        const openFalseModal = ({ pppoe = "", pppoes = [], tab = "under" } = {}) => {
+          if (!falseModal) return;
+          const list = Array.isArray(pppoes) ? pppoes.filter((v) => String(v || "").trim()).map((v) => String(v).trim()) : [];
+          const normalizedTab = ["under", "level2", "observe"].includes((tab || "").trim().toLowerCase()) ? (tab || "").trim().toLowerCase() : "under";
+          if (falseModalPppoe) falseModalPppoe.value = pppoe && list.length <= 1 ? String(pppoe).trim() : "";
+          if (falseModalPppoes) falseModalPppoes.value = list.length > 1 ? JSON.stringify(list) : "";
+          if (falseModalTab) falseModalTab.value = normalizedTab;
+          if (falseModalPppoeLabel) {
+            falseModalPppoeLabel.textContent = list.length > 1 ? `${list.length} account(s) selected` : (pppoe || "—");
+          }
+          if (falseModalRemarks) falseModalRemarks.value = "";
+          falseModal.show();
+        };
+        if (falseModalEl) {
+          document.addEventListener("click", (event) => {
+            const btn = event.target && event.target.closest ? event.target.closest("[data-surv-row-false-open]") : null;
+            if (!btn) return;
+            if (btn.disabled) {
+              event.preventDefault();
+              return;
+            }
+            event.preventDefault();
+            const pppoeValue = (btn.getAttribute("data-pppoe") || "").trim();
+            if (!pppoeValue) return;
+            const tabValue = (btn.getAttribute("data-surv-row-false-open") || "under").trim().toLowerCase();
+            openFalseModal({ pppoe: pppoeValue, pppoes: [pppoeValue], tab: tabValue });
+          });
+          falseModalEl.addEventListener("shown.bs.modal", () => {
+            if (falseModalRemarks) falseModalRemarks.focus();
+          });
+          falseModalEl.addEventListener("hidden.bs.modal", () => {
+            if (falseModalPppoe) falseModalPppoe.value = "";
+            if (falseModalPppoes) falseModalPppoes.value = "";
+            if (falseModalTab) falseModalTab.value = "under";
+            if (falseModalPppoeLabel) falseModalPppoeLabel.textContent = "—";
+            if (falseModalRemarks) falseModalRemarks.value = "";
+          });
+        }
 
 		        const fixedModalEl = document.getElementById("surv-fixed-modal");
 		        const fixedModalForm = document.getElementById("surv-fixed-form");
@@ -2941,6 +3265,36 @@
 	        }
 		      });
 		    }
+
+        const logsSearch = document.getElementById("surv-logs-search");
+        if (logsSearch) {
+          let lastLogsValue = (logsSearch.value || "").trim();
+          let logsTimer = null;
+          const submitLogsSearch = () => {
+            const q = (logsSearch.value || "").trim();
+            if (q === lastLogsValue) return;
+            lastLogsValue = q;
+            if (q && q.length < 2) return;
+            const url = new URL(window.location.href);
+            url.searchParams.set("tab", "logs");
+            url.searchParams.set("logs_page", "1");
+            if (q) url.searchParams.set("logs_q", q);
+            else url.searchParams.delete("logs_q");
+            url.hash = "#surv-logs";
+            window.location.href = url.toString();
+          };
+          logsSearch.addEventListener("input", () => {
+            if (logsTimer) clearTimeout(logsTimer);
+            logsTimer = setTimeout(submitLogsSearch, 350);
+          });
+          logsSearch.addEventListener("keydown", (event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              if (logsTimer) clearTimeout(logsTimer);
+              submitLogsSearch();
+            }
+          });
+        }
 
         const historyModalEl = document.getElementById("surv-history-modal");
         if (historyModalEl) {
@@ -3425,64 +3779,73 @@
             renderStageAccordion();
           };
 
-          aiModalEl.addEventListener("show.bs.modal", (event) => {
-            const trigger = event.relatedTarget;
-            if (!trigger) return;
-            const pppoe = (trigger.getAttribute("data-pppoe") || "").trim();
-            const tab = (trigger.getAttribute("data-tab") || "under").trim().toLowerCase();
-            const statusRaw = (trigger.getAttribute("data-status") || "").trim().toLowerCase();
-            const statusLabel = (trigger.getAttribute("data-status-label") || "n/a").trim();
-            const generated = (trigger.getAttribute("data-generated") || "n/a").trim();
-            const provider = (trigger.getAttribute("data-provider") || "").trim();
-            const model = (trigger.getAttribute("data-model") || "").trim();
-            const recommendLabel = (trigger.getAttribute("data-recommend-label") || "Recommendation n/a").trim();
-            const recommendReason = (trigger.getAttribute("data-recommend-reason") || "").trim();
-            const problems = (trigger.getAttribute("data-problems") || "").trim();
-            const error = (trigger.getAttribute("data-error") || "").trim();
-            const text = (trigger.getAttribute("data-text") || "").trim();
-            modalPppoe = pppoe || "";
-            modalContextStage = (tab === "level2" || tab === "observe" || tab === "under") ? tab : "under";
-            modalSelectedStage = (tab === "level2" || tab === "observe" || tab === "under") ? tab : "under";
-            modalOpenStages = new Set([modalSelectedStage]);
-            modalReports = {
-              [modalSelectedStage]: {
-                stage: modalSelectedStage,
-                stage_label: stageLabels[modalSelectedStage] || modalSelectedStage,
-                status: statusRaw,
-                status_label: statusLabel || "n/a",
-                cycle_index: 1,
-                current_cycle_index: 1,
-                generated_at_ph: generated || "n/a",
-                provider: provider || "",
-                model: model || "",
-                text: text || "",
-                error: error || "",
-                recommend_label: recommendLabel || "Recommendation n/a",
-                recommendation_reason: recommendReason || "",
-                potential_problems: problems ? problems.split(",").map((item) => item.trim()).filter(Boolean) : [],
-                has_report: !!text,
-                has_current_cycle_report: !!text,
-                is_generating: statusRaw === "queued" || statusRaw === "running",
-                has_error: !!error && !text,
-                history: [],
-              },
-            };
-            renderAiStage(modalSelectedStage);
+	          aiModalEl.addEventListener("show.bs.modal", (event) => {
+	            try {
+	              const trigger = event.relatedTarget;
+	              if (!trigger) return;
+	              const pppoe = (trigger.getAttribute("data-pppoe") || "").trim();
+	              const tab = (trigger.getAttribute("data-tab") || "under").trim().toLowerCase();
+	              const statusRaw = (trigger.getAttribute("data-status") || "").trim().toLowerCase();
+	              const statusLabel = (trigger.getAttribute("data-status-label") || "n/a").trim();
+	              const generated = (trigger.getAttribute("data-generated") || "n/a").trim();
+	              const provider = (trigger.getAttribute("data-provider") || "").trim();
+	              const model = (trigger.getAttribute("data-model") || "").trim();
+	              const recommendLabel = (trigger.getAttribute("data-recommend-label") || "Recommendation n/a").trim();
+	              const recommendReason = (trigger.getAttribute("data-recommend-reason") || "").trim();
+	              const problems = (trigger.getAttribute("data-problems") || "").trim();
+	              const error = (trigger.getAttribute("data-error") || "").trim();
+	              const text = (trigger.getAttribute("data-text") || "").trim();
+	              modalPppoe = pppoe || "";
+	              modalContextStage = (tab === "level2" || tab === "observe" || tab === "under") ? tab : "under";
+	              modalSelectedStage = (tab === "level2" || tab === "observe" || tab === "under") ? tab : "under";
+	              modalOpenStages = new Set([modalSelectedStage]);
+	              modalReports = {
+	                [modalSelectedStage]: {
+	                  stage: modalSelectedStage,
+	                  stage_label: stageLabels[modalSelectedStage] || modalSelectedStage,
+	                  status: statusRaw,
+	                  status_label: statusLabel || "n/a",
+	                  cycle_index: 1,
+	                  current_cycle_index: 1,
+	                  generated_at_ph: generated || "n/a",
+	                  provider: provider || "",
+	                  model: model || "",
+	                  text: text || "",
+	                  error: error || "",
+	                  recommend_label: recommendLabel || "Recommendation n/a",
+	                  recommendation_reason: recommendReason || "",
+	                  potential_problems: problems ? problems.split(",").map((item) => item.trim()).filter(Boolean) : [],
+	                  has_report: !!text,
+	                  has_current_cycle_report: !!text,
+	                  is_generating: statusRaw === "queued" || statusRaw === "running",
+	                  has_error: !!error && !text,
+	                  history: [],
+	                },
+	              };
+	              renderAiStage(modalSelectedStage);
 
-            if (!pppoe) return;
-            const fetchToken = ++modalFetchToken;
-            fetch(`/surveillance/ai_reports?pppoe=${encodeURIComponent(pppoe)}`)
-              .then((response) => response.ok ? response.json() : Promise.reject(new Error("Failed to load AI reports")))
-              .then((payload) => {
-                if (fetchToken !== modalFetchToken) return;
-                if (!payload || payload.ok !== true || typeof payload.reports !== "object") return;
-                modalReports = payload.reports || {};
-                renderAiStage(modalSelectedStage);
-              })
-              .catch(() => {
-                // Keep fallback trigger data when API fetch fails.
-              });
-          });
+	              if (!pppoe) return;
+	              const fetchToken = ++modalFetchToken;
+	              fetch(`/surveillance/ai_reports?pppoe=${encodeURIComponent(pppoe)}`)
+	                .then((response) => response.ok ? response.json() : Promise.reject(new Error("Failed to load AI reports")))
+	                .then((payload) => {
+	                  if (fetchToken !== modalFetchToken) return;
+	                  if (!payload || payload.ok !== true || typeof payload.reports !== "object") return;
+	                  modalReports = payload.reports || {};
+	                  renderAiStage(modalSelectedStage);
+	                })
+	                .catch(() => {
+	                  // Keep fallback trigger data when API fetch fails.
+	                });
+	            } catch (err) {
+	              modalPppoe = "";
+	              modalContextStage = "under";
+	              modalSelectedStage = "under";
+	              modalOpenStages = new Set(["under"]);
+	              modalReports = {};
+	              renderAiStage("under");
+	            }
+	          });
         }
 		    const formatDuration = (seconds) => {
       const total = Math.max(Math.floor(seconds), 0);
@@ -3546,22 +3909,24 @@
       return Number.isFinite(numOnly) ? numOnly : 0;
     };
 
-    const sortableCellValue = (tr, cellIndex, type) => {
-      const cell = tr.children[cellIndex];
-      const text = cell ? (cell.textContent || "").trim() : "";
-      if (type === "number") {
-        const n = parseFloat(text.replace(/[^\d.-]/g, ""));
-        return Number.isFinite(n) ? n : -Infinity;
-      }
-      if (type === "duration") {
-        return parseDurationValue(text);
-      }
-      if (type === "datetime") {
-        const ts = Date.parse(text);
-        return Number.isFinite(ts) ? ts : -Infinity;
-      }
-      return text.toLowerCase();
-    };
+	    const sortableCellValue = (tr, cellIndex, type) => {
+	      const cell = tr.children[cellIndex];
+	      const text = cell ? (cell.textContent || "").trim() : "";
+        const sortValue = cell ? (cell.getAttribute("data-surv-sort-value") || "").trim() : "";
+        const source = sortValue || text;
+	      if (type === "number") {
+	        const n = parseFloat(source.replace(/[^\d.-]/g, ""));
+	        return Number.isFinite(n) ? n : -Infinity;
+	      }
+	      if (type === "duration") {
+	        return parseDurationValue(source);
+	      }
+	      if (type === "datetime") {
+	        const ts = Date.parse(source);
+	        return Number.isFinite(ts) ? ts : -Infinity;
+	      }
+	      return source.toLowerCase();
+	    };
 
     const initTableSort = (key) => {
       const table = document.querySelector(`[data-surv-list-full="${key}"]`);
@@ -3847,7 +4212,7 @@
 	      }
 	    };
 
-    const SURV_WINDOW_KEYS = ["pre7d", "1", "6", "12", "24", "168"];
+	    const SURV_WINDOW_KEYS = ["pre7d", "1", "6", "12", "24", "168"];
 
     const normalizeWindowKey = (value) => {
       const raw = String(value === null || value === undefined ? "" : value).trim().toLowerCase();
@@ -3858,74 +4223,69 @@
       return "1";
     };
 
-    const getStoredWindowKey = () => {
-      const storedKey = (localStorage.getItem("surveillance_detail_window_key") || "").trim().toLowerCase();
-      if (storedKey) return normalizeWindowKey(storedKey);
-      const legacyHours = parseInt(localStorage.getItem("surveillance_detail_window_hours") || "", 10);
-      if (Number.isFinite(legacyHours) && SURV_WINDOW_KEYS.includes(String(legacyHours))) return String(legacyHours);
-      return "";
-    };
+	    const getStoredWindowKey = () => {
+	      const storedKey = (localStorage.getItem("surveillance_detail_window_key") || "").trim().toLowerCase();
+	      if (storedKey) {
+	        const normalized = normalizeWindowKey(storedKey);
+	        return normalized === "pre7d" ? "1" : normalized;
+	      }
+	      const legacyHours = parseInt(localStorage.getItem("surveillance_detail_window_hours") || "", 10);
+	      if (Number.isFinite(legacyHours) && SURV_WINDOW_KEYS.includes(String(legacyHours))) return String(legacyHours);
+	      return "";
+	    };
 
-    const setStoredWindowKey = (windowKey) => {
-      const normalized = normalizeWindowKey(windowKey);
-      localStorage.setItem("surveillance_detail_window_key", normalized);
-      if (normalized !== "pre7d") {
-        localStorage.setItem("surveillance_detail_window_hours", normalized);
-      }
-    };
+	    const setStoredWindowKey = (windowKey) => {
+	      const normalized = normalizeWindowKey(windowKey);
+	      const valueToStore = normalized === "pre7d" ? "1" : normalized;
+	      localStorage.setItem("surveillance_detail_window_key", valueToStore);
+	      localStorage.setItem("surveillance_detail_window_hours", valueToStore);
+	    };
 
-    const getDefaultWindowKey = (panel) => {
-      const stored = getStoredWindowKey();
-      if (stored) return stored;
-      if (!panel) return "1";
-      const stageStartIso = (panel.getAttribute("data-selected-stage-start") || "").trim();
-      const stageStartTs = stageStartIso ? Date.parse(stageStartIso) : NaN;
-      if (Number.isFinite(stageStartTs)) {
-        const elapsedHours = Math.max(0, (Date.now() - stageStartTs) / 3600000.0);
-        if (elapsedHours < 1.0) return "pre7d";
-      }
-      return "1";
-    };
+	    const getDefaultWindowKey = (panel) => {
+	      const stored = getStoredWindowKey();
+	      if (stored) return stored;
+	      return "1";
+	    };
 
-    const getAllowedWindowKeys = (anchorIso) => {
-      const out = ["pre7d", "1"];
-      const anchorTs = anchorIso ? Date.parse(anchorIso) : NaN;
-      if (!Number.isFinite(anchorTs)) {
-        return [...SURV_WINDOW_KEYS];
-      }
-      const elapsedHours = Math.max(0, (Date.now() - anchorTs) / 3600000.0);
-      [6, 12, 24, 168].forEach((hours) => {
-        if (elapsedHours >= hours) out.push(String(hours));
+	    const getAllowedWindowKeys = (anchorIso) => {
+	      const out = ["1"];
+	      const anchorTs = anchorIso ? Date.parse(anchorIso) : NaN;
+	      if (!Number.isFinite(anchorTs)) {
+	        return ["1", "6", "12", "24", "168"];
+	      }
+	      const elapsedHours = Math.max(0, (Date.now() - anchorTs) / 3600000.0);
+	      [6, 12, 24, 168].forEach((hours) => {
+	        if (elapsedHours >= hours) out.push(String(hours));
       });
       return out;
     };
 
-    const clampWindowKey = (windowKey, anchorIso) => {
-      const requested = normalizeWindowKey(windowKey);
-      const allowed = getAllowedWindowKeys(anchorIso);
-      if (!allowed.length) return "1";
-      if (allowed.includes(requested)) return requested;
-      const numericAllowed = allowed.filter((k) => k !== "pre7d");
-      if (numericAllowed.length) return numericAllowed[numericAllowed.length - 1];
-      return allowed[allowed.length - 1];
-    };
+	    const clampWindowKey = (windowKey, anchorIso) => {
+	      const requested = normalizeWindowKey(windowKey);
+	      const allowed = getAllowedWindowKeys(anchorIso);
+	      if (!allowed.length) return "1";
+	      if (allowed.includes(requested)) return requested;
+	      const numericAllowed = allowed.filter((k) => /^\d+$/.test(String(k)));
+	      if (numericAllowed.length) return numericAllowed[numericAllowed.length - 1];
+	      return allowed[allowed.length - 1];
+	    };
 
     const applyWindowAvailability = (panel, requestedWindowKey) => {
       const requested = normalizeWindowKey(requestedWindowKey);
       if (!panel) return requested;
       const anchorIso = (panel.getAttribute("data-selected-stage-start") || panel.getAttribute("data-selected-checker-since") || "").trim();
       const allowed = getAllowedWindowKeys(anchorIso);
-      panel.querySelectorAll("[data-surv-window]").forEach((btn) => {
-        const key = normalizeWindowKey(btn.getAttribute("data-surv-window") || "");
-        const enabled = allowed.includes(key);
-        btn.disabled = !enabled;
-        btn.classList.toggle("disabled", !enabled);
-        if (enabled || key === "pre7d") {
-          btn.removeAttribute("title");
-        } else {
-          btn.setAttribute("title", `Available after ${key}h from this stage start`);
-        }
-      });
+	      panel.querySelectorAll("[data-surv-window]").forEach((btn) => {
+	        const key = normalizeWindowKey(btn.getAttribute("data-surv-window") || "");
+	        const enabled = allowed.includes(key);
+	        btn.disabled = !enabled;
+	        btn.classList.toggle("disabled", !enabled);
+	        if (enabled) {
+	          btn.removeAttribute("title");
+	        } else {
+	          btn.setAttribute("title", `Available after ${key}h from this stage start`);
+	        }
+	      });
       return clampWindowKey(requested, anchorIso);
     };
 
@@ -3986,11 +4346,219 @@
 		      el.textContent = `Showing: ${formatTsPHT(s)} – ${formatTsPHT(u)} (PHT)`;
 		    };
 
-		    const setTimelineOverride = (key, windowBtn, active) => {
-		      if (windowBtn) {
-		        windowBtn.disabled = !!active;
-		        windowBtn.classList.toggle("disabled", !!active);
-		      }
+        const inspectModalEl = document.getElementById("surv-inspect-modal");
+        const inspectModalTitleEl = document.getElementById("surv-inspect-title");
+        const inspectModalLoadingEl = document.getElementById("surv-inspect-loading");
+        const inspectModalErrorEl = document.getElementById("surv-inspect-error");
+        const inspectModalBodyEl = document.getElementById("surv-inspect-body");
+        const inspectModalChartEl = document.getElementById("surv-inspect-chart");
+        const inspectModalRangeEl = document.getElementById("surv-inspect-range");
+        const inspectState = { chart: null, token: 0 };
+
+        const inspectSetKpi = (id, value) => {
+          const el = document.getElementById(id);
+          if (el) el.textContent = value;
+        };
+
+        const inspectFormatPercent = (value, digits = 1) => {
+          const num = Number(value);
+          return Number.isFinite(num) ? `${num.toFixed(digits)}%` : "n/a";
+        };
+
+        const inspectFormatMs = (value) => {
+          const num = Number(value);
+          return Number.isFinite(num) ? `${num.toFixed(1)}ms` : "n/a";
+        };
+
+        const inspectFormatIsoPht = (value) => {
+          const ts = value ? Date.parse(String(value)) : NaN;
+          return Number.isFinite(ts) ? formatTsPHT(ts) : "n/a";
+        };
+
+        const inspectResetModal = ({ keepLoading = true } = {}) => {
+          inspectState.token += 1;
+          if (inspectState.chart) {
+            try { inspectState.chart.destroy(); } catch (e) {}
+            inspectState.chart = null;
+          }
+          if (inspectModalChartEl) inspectModalChartEl.innerHTML = "<div class='text-muted'>No data available.</div>";
+          if (inspectModalRangeEl) inspectModalRangeEl.textContent = "";
+          inspectSetKpi("surv-inspect-kpi-samples", "0");
+          inspectSetKpi("surv-inspect-kpi-down", "0");
+          inspectSetKpi("surv-inspect-kpi-loss-events", "0");
+          inspectSetKpi("surv-inspect-kpi-uptime", "n/a");
+          inspectSetKpi("surv-inspect-kpi-avg-latency", "n/a");
+          inspectSetKpi("surv-inspect-kpi-max-latency", "n/a");
+          inspectSetKpi("surv-inspect-kpi-avg-loss", "n/a");
+          inspectSetKpi("surv-inspect-kpi-max-loss", "n/a");
+          inspectSetKpi("surv-inspect-kpi-loss-time", "n/a");
+          inspectSetKpi("surv-inspect-kpi-loss100", "n/a");
+          inspectSetKpi("surv-inspect-kpi-longest-down", "n/a");
+          inspectSetKpi("surv-inspect-kpi-last", "n/a");
+          if (inspectModalLoadingEl) inspectModalLoadingEl.classList.toggle("d-none", !keepLoading);
+          if (inspectModalBodyEl) inspectModalBodyEl.classList.add("d-none");
+          if (inspectModalErrorEl) {
+            inspectModalErrorEl.classList.add("d-none");
+            inspectModalErrorEl.textContent = "";
+          }
+        };
+
+        const inspectRenderChart = async (series) => {
+          if (!inspectModalChartEl) return;
+          if (inspectState.chart) {
+            try { inspectState.chart.destroy(); } catch (e) {}
+            inspectState.chart = null;
+          }
+          const points = (Array.isArray(series) ? series : [])
+            .map((row) => {
+              const ts = row && row.ts ? Date.parse(String(row.ts)) : NaN;
+              if (!Number.isFinite(ts)) return null;
+              const loss = row.loss === null || row.loss === undefined ? null : Number(row.loss);
+              const avgMs = row.avg_ms === null || row.avg_ms === undefined ? null : Number(row.avg_ms);
+              return {
+                x: ts,
+                loss: Number.isFinite(loss) ? loss : null,
+                avg_ms: Number.isFinite(avgMs) ? avgMs : null,
+              };
+            })
+            .filter(Boolean);
+          if (!points.length) {
+            inspectModalChartEl.innerHTML = "<div class='text-muted'>No baseline data available in the last 7 days before surveillance.</div>";
+            return;
+          }
+          if (!window.ApexCharts) {
+            inspectModalChartEl.innerHTML = "<div class='text-muted'>Chart library unavailable.</div>";
+            return;
+          }
+          const latency = points.map((p) => ({ x: p.x, y: p.avg_ms }));
+          const loss = points.map((p) => ({ x: p.x, y: p.loss }));
+          inspectModalChartEl.innerHTML = "";
+          inspectState.chart = new window.ApexCharts(inspectModalChartEl, {
+            chart: {
+              type: "line",
+              height: 380,
+              toolbar: {
+                show: true,
+                tools: {
+                  download: false,
+                  selection: true,
+                  zoom: true,
+                  zoomin: true,
+                  zoomout: true,
+                  pan: true,
+                  reset: true,
+                },
+              },
+              zoom: { enabled: true, type: "x", autoScaleYaxis: true },
+            },
+            stroke: { width: 2 },
+            markers: { size: 0 },
+            series: [
+              { name: "Latency (ms)", data: latency },
+              { name: "Loss (%)", data: loss },
+            ],
+            colors: ["#206bc4", "#d63939"],
+            xaxis: { type: "datetime" },
+            yaxis: [
+              {
+                title: { text: "ms" },
+                tickAmount: 4,
+                labels: { formatter: (v) => { const n = Number(v); return Number.isFinite(n) ? n.toFixed(1) : ""; } },
+              },
+              {
+                opposite: true,
+                min: 0,
+                max: 100,
+                tickAmount: 5,
+                title: { text: "%" },
+                labels: { formatter: (v) => { const n = Number(v); return Number.isFinite(n) ? n.toFixed(0) : ""; } },
+              },
+            ],
+            tooltip: {
+              shared: true,
+              intersect: false,
+              x: { formatter: (value) => formatTsPHT(value) },
+            },
+            grid: { strokeDashArray: 4 },
+            legend: { position: "top" },
+          });
+          await inspectState.chart.render();
+        };
+
+        const inspectLoadData = async (pppoe, stageKey) => {
+          if (!pppoe) return;
+          const token = ++inspectState.token;
+          if (inspectModalLoadingEl) inspectModalLoadingEl.classList.remove("d-none");
+          if (inspectModalBodyEl) inspectModalBodyEl.classList.add("d-none");
+          if (inspectModalErrorEl) {
+            inspectModalErrorEl.classList.add("d-none");
+            inspectModalErrorEl.textContent = "";
+          }
+          try {
+            const params = new URLSearchParams({ pppoe: pppoe, stage: stageKey || "under" });
+            const res = await fetch(`/surveillance/inspect_activity?${params.toString()}`, { headers: { "Accept": "application/json" }, cache: "no-store" });
+            if (!res.ok) throw new Error("Failed to inspect account activity.");
+            const payload = await res.json();
+            if (token !== inspectState.token) return;
+            if (!payload || !Array.isArray(payload.series)) throw new Error("Invalid inspect payload.");
+            const stats = (payload && typeof payload.stats === "object" && payload.stats) ? payload.stats : {};
+            inspectSetKpi("surv-inspect-kpi-samples", `${parseInt(stats.samples || "0", 10) || 0}`);
+            inspectSetKpi("surv-inspect-kpi-down", `${parseInt(stats.down_samples || "0", 10) || 0}`);
+            inspectSetKpi("surv-inspect-kpi-loss-events", `${parseInt(stats.loss_events || "0", 10) || 0}`);
+            inspectSetKpi("surv-inspect-kpi-uptime", inspectFormatPercent(stats.uptime_pct));
+            inspectSetKpi("surv-inspect-kpi-avg-latency", inspectFormatMs(stats.avg_latency_ms));
+            inspectSetKpi("surv-inspect-kpi-max-latency", inspectFormatMs(stats.max_latency_ms));
+            inspectSetKpi("surv-inspect-kpi-avg-loss", inspectFormatPercent(stats.avg_loss_pct));
+            inspectSetKpi("surv-inspect-kpi-max-loss", inspectFormatPercent(stats.max_loss_pct));
+            inspectSetKpi("surv-inspect-kpi-loss-time", formatDuration(Number(stats.downtime_seconds) || 0));
+            inspectSetKpi("surv-inspect-kpi-loss100", formatDuration(Number(stats.loss100_seconds) || 0));
+            inspectSetKpi("surv-inspect-kpi-longest-down", formatDuration(Number(stats.longest_down_streak_seconds) || 0));
+            inspectSetKpi("surv-inspect-kpi-last", inspectFormatIsoPht(stats.last_sample_ts));
+            if (inspectModalRangeEl) {
+              const sinceLabel = inspectFormatIsoPht(payload.since);
+              const untilLabel = inspectFormatIsoPht(payload.until);
+              inspectModalRangeEl.textContent = `Showing: ${sinceLabel} – ${untilLabel} (PHT)`;
+            }
+            await inspectRenderChart(payload.series || []);
+            if (inspectModalLoadingEl) inspectModalLoadingEl.classList.add("d-none");
+            if (inspectModalBodyEl) inspectModalBodyEl.classList.remove("d-none");
+          } catch (err) {
+            if (token !== inspectState.token) return;
+            if (inspectModalLoadingEl) inspectModalLoadingEl.classList.add("d-none");
+            if (inspectModalBodyEl) inspectModalBodyEl.classList.add("d-none");
+            if (inspectModalErrorEl) {
+              inspectModalErrorEl.textContent = String((err && err.message) || "Failed to inspect account activity.");
+              inspectModalErrorEl.classList.remove("d-none");
+            }
+          }
+        };
+
+        if (inspectModalEl) {
+          inspectModalEl.addEventListener("show.bs.modal", (event) => {
+            const trigger = event.relatedTarget;
+            const pppoe = (trigger && trigger.getAttribute ? (trigger.getAttribute("data-pppoe") || "") : "").trim();
+            const stageKeyRaw = (trigger && trigger.getAttribute ? (trigger.getAttribute("data-tab") || "under") : "under").trim().toLowerCase();
+            const stageKey = stageKeyRaw === "level2" || stageKeyRaw === "observe" ? stageKeyRaw : "under";
+            if (!pppoe) {
+              event.preventDefault();
+              return;
+            }
+            const stageLabel = SURV_STAGE_LABELS[stageKey] || "Active Monitoring";
+            if (inspectModalTitleEl) inspectModalTitleEl.innerHTML = `<i class="ti ti-activity me-1 text-indigo"></i>Inspect Activity · ${escapeHtmlMini(pppoe)} <span class="text-muted fs-6">(${escapeHtmlMini(stageLabel)})</span>`;
+            inspectResetModal({ keepLoading: true });
+            inspectLoadData(pppoe, stageKey);
+          });
+          inspectModalEl.addEventListener("hidden.bs.modal", () => {
+            if (inspectModalTitleEl) inspectModalTitleEl.innerHTML = '<i class="ti ti-activity me-1 text-indigo"></i>Inspect Activity';
+            inspectResetModal({ keepLoading: false });
+          });
+        }
+
+			    const setTimelineOverride = (key, windowBtn, active) => {
+			      if (windowBtn) {
+			        windowBtn.disabled = !!active;
+			        windowBtn.classList.toggle("disabled", !!active);
+			      }
 		    };
 
 	    const setOpticalTime = (panel, opticalLastIso, opticalLastDisplay) => {
@@ -4722,6 +5290,7 @@
 	            const prevCycles = parseJsonAttr(rowEl.getAttribute("data-prev-cycles"), []);
 	            const stageHistory = parseJsonAttr(rowEl.getAttribute("data-stage-history"), []);
 		        const addedMode = (rowEl.getAttribute("data-added-mode") || "").trim().toLowerCase();
+            const addedByLabel = (rowEl.getAttribute("data-added-by-label") || "").trim();
 		        const addedAtIso = rowEl.getAttribute("data-added-at") || "";
             const stageStartIso = rowEl.getAttribute("data-stage-start") || checkerSinceIso || "";
             const firstSurveillanceIso = rowEl.getAttribute("data-first-surveillance") || addedAtIso || checkerSinceIso || "";
@@ -4740,7 +5309,7 @@
 	            let aiRecommendLabel = "Recommendation n/a";
 	            if (aiRecommendRaw === "yes") aiRecommendLabel = "Recommend Needs Manual Fix";
 	            else if (aiRecommendRaw === "no") aiRecommendLabel = "No Manual Fix Needed";
-            const addedModeLabel = addedMode === "auto" ? "Auto" : addedMode === "manual" ? "Manual" : "—";
+            const addedModeLabel = addedMode === "auto" ? "Auto" : (addedByLabel || "Manual");
 
 		        panel.setAttribute("data-selected-added-at", addedAtIso);
 		        panel.setAttribute("data-selected-pppoe", pppoe);
@@ -5332,22 +5901,10 @@
               if (bulkFalseBtn) {
                 bulkFalseBtn.addEventListener("click", () => {
                   if (selectedRows.size === 0) return;
-                  const form = document.createElement("form");
-                  form.method = "post";
-                  form.action = "/surveillance/mark_false";
-                  form.className = "d-none";
-                  const pppoesField = document.createElement("input");
-                  pppoesField.type = "hidden";
-                  pppoesField.name = "pppoes";
-                  pppoesField.value = JSON.stringify(Array.from(selectedRows.values()));
-                  const tabField = document.createElement("input");
-                  tabField.type = "hidden";
-                  tabField.name = "tab";
-                  tabField.value = key || "under";
-                  form.appendChild(pppoesField);
-                  form.appendChild(tabField);
-                  document.body.appendChild(form);
-                  form.submit();
+                  openFalseModal({
+                    pppoes: Array.from(selectedRows.values()),
+                    tab: key || "under",
+                  });
                 });
               }
 

@@ -190,6 +190,80 @@ aside.navbar .navbar-brand-logo {
   display: block;
 }
 
+@media (min-width: 992px) {
+  aside.navbar .container-fluid {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  aside.navbar #sidebar-menu {
+    flex: 1 1 auto;
+    align-items: stretch;
+  }
+  aside.navbar #sidebar-menu .navbar-nav {
+    flex: 1 1 auto;
+  }
+}
+
+.sidebar-user {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  margin-top: 1rem;
+  padding-top: 1rem;
+  padding-bottom: 1rem;
+}
+
+.sidebar-user-trigger {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  color: rgba(255, 255, 255, 0.95);
+  text-decoration: none;
+  border-radius: 10px;
+  padding: 0.45rem 0.55rem;
+  transition: background-color .15s ease;
+}
+
+.sidebar-user-trigger:hover,
+.sidebar-user-trigger:focus {
+  color: rgba(255, 255, 255, 0.95);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.sidebar-user-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+}
+
+.sidebar-user-name,
+.sidebar-user-role {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar-user-name {
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.sidebar-user-role {
+  font-size: 0.73rem;
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.sidebar-user-chevron {
+  margin-left: auto;
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 0.85rem;
+}
+
+.sidebar-user-menu {
+  min-width: 220px;
+}
+
 .rto-spark-modal-wrap {
   width: 100%;
 }
@@ -441,6 +515,43 @@ select:not(.form-select) {
 
 .surv-actions .btn {
   white-space: nowrap;
+}
+
+.surv-ai-view-btn,
+.surv-ai-view-selected,
+[data-surv-inline-generate-open],
+[data-bs-target="#surv-ai-modal"],
+.surv-col-aireport,
+#surv-ai-modal {
+  display: none !important;
+}
+
+.surv-split-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.surv-split-actions > * {
+  flex: 0 0 auto;
+}
+
+[data-surv-pane][data-surv-view="split"] {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+[data-surv-pane][data-surv-view="split"] .row > [class*="col-"] {
+  min-width: 0;
+}
+
+[data-surv-pane][data-surv-view="split"] [data-surv-detail] {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .surv-table-wrap {

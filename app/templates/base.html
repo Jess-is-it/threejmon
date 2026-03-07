@@ -27,63 +27,119 @@
 	            {% endif %}
 	          </a>
 	        </h1>
-	        <div class="collapse navbar-collapse" id="sidebar-menu">
+	        <div class="collapse navbar-collapse d-lg-flex flex-lg-column" id="sidebar-menu">
           <ul class="navbar-nav pt-lg-3">
-		            <li class="nav-item">
-		              <a class="nav-link" href="/">
-		                <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-dashboard"></i></span>
-		                <span class="nav-link-title">Dashboard</span>
-		              </a>
-		            </li>
-		            <li class="nav-item">
-		              <a class="nav-link" href="/surveillance">
-		                <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-eye"></i></span>
-		                <span class="nav-link-title">Under Surveillance</span>
-		              </a>
-		            </li>
-		            <li class="nav-item">
-		              <a class="nav-link" href="/profile-review">
-		                <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-user-search"></i></span>
-		                <span class="nav-link-title">Profile Review</span>
-		              </a>
-		            </li>
-	            <li class="nav-item">
-	              <a class="nav-link" href="/settings/optical">
-	                <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-sun"></i></span>
-	                <span class="nav-link-title">Optical</span>
-	              </a>
-	            </li>
-	            <li class="nav-item">
-	              <a class="nav-link" href="/settings/accounts-ping">
-	                <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-wifi"></i></span>
-	                <span class="nav-link-title">Accounts Ping</span>
-	              </a>
-	            </li>
-	              <li class="nav-item">
-	                <a class="nav-link" href="/settings/usage">
-	                  <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-chart-bar"></i></span>
-	                  <span class="nav-link-title">Usage</span>
-	                </a>
-	              </li>
-                <li class="nav-item">
-                  <a class="nav-link" href="/settings/offline">
-                    <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-cloud-off"></i></span>
-                    <span class="nav-link-title">Offline</span>
-                  </a>
-                </li>
-            <li class="nav-item">
-              <a class="nav-link" href="/settings/wan">
-                <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-world"></i></span>
-                <span class="nav-link-title">WAN Ping</span>
-              </a>
-            </li>
-            <li class="nav-item">
-              <a class="nav-link" href="/settings/system">
-                <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-settings"></i></span>
-                <span class="nav-link-title">System Settings</span>
-              </a>
-            </li>
+            {% if not auth_enabled or has_perm('dashboard.view') %}
+              <li class="nav-item">
+                <a class="nav-link" href="/">
+                  <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-dashboard"></i></span>
+                  <span class="nav-link-title">Dashboard</span>
+                </a>
+              </li>
+            {% endif %}
+            {% if not auth_enabled or has_perm('surveillance.view') %}
+              <li class="nav-item">
+                <a class="nav-link" href="/surveillance">
+                  <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-eye"></i></span>
+                  <span class="nav-link-title">Under Surveillance</span>
+                </a>
+              </li>
+            {% endif %}
+            {% if not auth_enabled or has_perm('profile_review.view') %}
+              <li class="nav-item">
+                <a class="nav-link" href="/profile-review">
+                  <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-user-search"></i></span>
+                  <span class="nav-link-title">Profile Review</span>
+                </a>
+              </li>
+            {% endif %}
+            {% if not auth_enabled or has_perm('optical.view') %}
+              <li class="nav-item">
+                <a class="nav-link" href="/settings/optical">
+                  <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-sun"></i></span>
+                  <span class="nav-link-title">Optical</span>
+                </a>
+              </li>
+            {% endif %}
+            {% if not auth_enabled or has_perm('accounts_ping.view') %}
+              <li class="nav-item">
+                <a class="nav-link" href="/settings/accounts-ping">
+                  <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-wifi"></i></span>
+                  <span class="nav-link-title">Accounts Ping</span>
+                </a>
+              </li>
+            {% endif %}
+            {% if not auth_enabled or has_perm('usage.view') %}
+              <li class="nav-item">
+                <a class="nav-link" href="/settings/usage">
+                  <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-chart-bar"></i></span>
+                  <span class="nav-link-title">Usage</span>
+                </a>
+              </li>
+            {% endif %}
+            {% if not auth_enabled or has_perm('offline.view') %}
+              <li class="nav-item">
+                <a class="nav-link" href="/settings/offline">
+                  <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-cloud-off"></i></span>
+                  <span class="nav-link-title">Offline</span>
+                </a>
+              </li>
+            {% endif %}
+            {% if not auth_enabled or has_perm('wan.view') %}
+              <li class="nav-item">
+                <a class="nav-link" href="/settings/wan">
+                  <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-world"></i></span>
+                  <span class="nav-link-title">WAN Ping</span>
+                </a>
+              </li>
+            {% endif %}
+            {% if not auth_enabled or has_perm('system.view') %}
+              <li class="nav-item">
+                <a class="nav-link" href="/settings/system">
+                  <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-settings"></i></span>
+                  <span class="nav-link-title">System Settings</span>
+                </a>
+              </li>
+            {% endif %}
+            {% if not auth_enabled or can_view_logs_page %}
+              <li class="nav-item">
+                <a class="nav-link" href="/logs">
+                  <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-list-details"></i></span>
+                  <span class="nav-link-title">Logs</span>
+                </a>
+              </li>
+            {% endif %}
           </ul>
+          {% if current_user %}
+            <div class="sidebar-user mt-auto">
+              <div class="dropdown">
+                <a class="sidebar-user-trigger" href="#" data-bs-toggle="dropdown" aria-expanded="false">
+                  <span class="avatar avatar-sm bg-blue-lt text-blue">
+                    <i class="ti ti-user"></i>
+                  </span>
+                  <span class="sidebar-user-text">
+                    <span class="sidebar-user-name">{{ current_user.full_name or current_user.username }}</span>
+                    <span class="sidebar-user-role">{{ current_user.role_name or "user" }}</span>
+                  </span>
+                  <span class="sidebar-user-chevron"><i class="ti ti-chevron-up"></i></span>
+                </a>
+                <div class="dropdown-menu dropdown-menu-end dropdown-menu-arrow sidebar-user-menu">
+                  <a class="dropdown-item" href="/account/profile">
+                    <i class="ti ti-id me-2"></i>View Profile
+                  </a>
+                  <a class="dropdown-item" href="/account/change-password">
+                    <i class="ti ti-key me-2"></i>Change Password
+                  </a>
+                  <div class="dropdown-divider"></div>
+                  <form method="post" action="/logout" class="m-0">
+                    <button type="submit" class="dropdown-item text-danger">
+                      <i class="ti ti-logout me-2"></i>Logout
+                    </button>
+                  </form>
+                </div>
+              </div>
+            </div>
+          {% endif %}
         </div>
       </div>
     </aside>
@@ -194,6 +250,66 @@
 	    updateResources();
 	    setInterval(updateResources, 15000);
 	  </script>
+  <script>
+    (() => {
+      const AUTO_DISMISS_MS = 8000;
+      const seenAlerts = new WeakSet();
+
+      const closeAlert = (alertEl) => {
+        if (!alertEl || !alertEl.isConnected || alertEl.dataset.autoDismissClosed === "1") return;
+        alertEl.dataset.autoDismissClosed = "1";
+        try {
+          if (window.bootstrap?.Alert) {
+            const alertInstance = window.bootstrap.Alert.getOrCreateInstance(alertEl);
+            if (alertInstance && typeof alertInstance.close === "function") {
+              alertInstance.close();
+              return;
+            }
+          }
+        } catch (err) {
+          // fallback below
+        }
+        alertEl.style.transition = "opacity .35s ease, transform .35s ease";
+        alertEl.style.opacity = "0";
+        alertEl.style.transform = "translateY(-4px)";
+        window.setTimeout(() => {
+          if (!alertEl || !alertEl.isConnected) return;
+          alertEl.classList.add("d-none");
+        }, 360);
+      };
+
+      const scheduleAlert = (alertEl) => {
+        if (!(alertEl instanceof Element)) return;
+        if (!alertEl.classList.contains("alert") || !alertEl.classList.contains("auto-dismiss-alert")) return;
+        if (alertEl.dataset.autoDismissScheduled === "1" || seenAlerts.has(alertEl)) return;
+        seenAlerts.add(alertEl);
+        alertEl.dataset.autoDismissScheduled = "1";
+        window.setTimeout(() => closeAlert(alertEl), AUTO_DISMISS_MS);
+      };
+
+      const scanAlerts = (root) => {
+        if (!(root instanceof Element || root instanceof Document)) return;
+        if (root instanceof Element && root.matches(".alert.auto-dismiss-alert")) {
+          scheduleAlert(root);
+        }
+        root.querySelectorAll?.(".alert.auto-dismiss-alert").forEach((alertEl) => {
+          scheduleAlert(alertEl);
+        });
+      };
+
+      document.addEventListener("DOMContentLoaded", () => {
+        scanAlerts(document);
+        const observer = new MutationObserver((mutations) => {
+          mutations.forEach((mutation) => {
+            mutation.addedNodes.forEach((node) => scanAlerts(node));
+          });
+        });
+        if (document.body) {
+          observer.observe(document.body, { childList: true, subtree: true });
+        }
+      });
+    })();
+  </script>
 	  <script>
 	    const postForm = async (url, fields) => {
 	      const body = new URLSearchParams();

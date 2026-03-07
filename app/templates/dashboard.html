@@ -6,7 +6,7 @@
 {% endblock %}
 {% block content %}
 {% if message %}
-  <div class="alert alert-info">{{ message }}</div>
+  <div class="alert alert-info auto-dismiss-alert">{{ message }}</div>
 {% endif %}
 
 {% set kpi = dashboard_kpis or {} %}
@@ -18,6 +18,7 @@
 {% set optical = kpi.get('optical', {}) %}
 {% set offline = kpi.get('offline', {}) %}
 {% set attention = kpi.get('attention', {}) %}
+{% set latest_logs = dashboard_latest_logs or [] %}
 
 <style>
   .dashboard-kpi-card{position:relative;overflow:hidden;border:1px solid rgba(128,128,128,.18);border-radius:14px}
@@ -45,7 +46,7 @@
 
 {% set attention_active_items = attention.get('items', []) | selectattr('active') | list %}
 <div class="row row-cards">
-  <div class="{{ 'col-12 col-xl-9' if attention_active_items else 'col-12' }}">
+  <div class="col-12 col-xxl-9">
     <div class="row row-cards">
   {% set feature_meta = {
     'WAN Ping': {'icon': 'ti ti-world', 'theme': 'azure'},
@@ -55,8 +56,18 @@
     'Offline': {'icon': 'ti ti-cloud-off', 'theme': 'secondary'},
     'Optical Monitoring': {'icon': 'ti ti-sun', 'theme': 'yellow'}
   } %}
+  {% set kpi_perm_map = {
+    'WAN Ping': 'dashboard.kpi.wan.view',
+    'Accounts Ping': 'dashboard.kpi.accounts_ping.view',
+    'Under Surveillance': 'dashboard.kpi.under_surveillance.view',
+    'Usage': 'dashboard.kpi.usage.view',
+    'Offline': 'dashboard.kpi.offline.view',
+    'Optical Monitoring': 'dashboard.kpi.optical.view'
+  } %}
   {% for item in features %}
     {% set label = item.get('label', '') %}
+    {% set required_perm = kpi_perm_map.get(label, 'dashboard.view') %}
+    {% if has_perm(required_perm) %}
     {% set meta = feature_meta.get(label, {'icon': 'ti ti-dashboard', 'theme': 'blue'}) %}
     {% set theme = meta.get('theme', 'blue') %}
     {% set state_label = item.get('state_label') %}
@@ -80,12 +91,86 @@
         </div>
       </div>
     </div>
+    {% endif %}
   {% endfor %}
     </div>
+    <div class="row row-cards mt-2">
+      {% if has_perm('dashboard.resources.view') %}
+      <div class="col-12">
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title"><i class="ti ti-activity me-2"></i>Live System Resource Usage</h3>
+            <div class="card-actions d-flex align-items-center gap-3">
+              <label class="form-check form-switch m-0">
+                <input class="form-check-input" type="checkbox" id="dashboard-system-mode-toggle" checked>
+                <span class="form-check-label small">System mode</span>
+              </label>
+              <div class="text-muted small" id="dashboard-resource-updated">Updating…</div>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="row g-2 mb-3">
+              <div class="col-sm-6 col-lg-3">
+                <div class="border rounded p-2">
+                  <div class="text-muted small">Total CPU</div>
+                  <div class="fw-semibold" id="dashboard-cpu-total">0%</div>
+                  <div class="text-muted small" id="dashboard-cpu-tracked-note">Table accounted: 0%</div>
+                  <div class="text-muted small" id="dashboard-cpu-scope">Scope: n/a</div>
+                </div>
+              </div>
+              <div class="col-sm-6 col-lg-3">
+                <div class="border rounded p-2">
+                  <div class="text-muted small">RAM Pressure</div>
+                  <div class="fw-semibold" id="dashboard-ram-pressure">0%</div>
+                </div>
+              </div>
+              <div class="col-sm-6 col-lg-3">
+                <div class="border rounded p-2">
+                  <div class="text-muted small">RAM Allocated</div>
+                  <div class="fw-semibold" id="dashboard-ram-alloc">0%</div>
+                </div>
+              </div>
+              <div class="col-sm-6 col-lg-3">
+                <div class="border rounded p-2">
+                  <div class="text-muted small" id="dashboard-top-cpu-label">Top Process CPU</div>
+                  <div class="fw-semibold" id="dashboard-top-proc-cpu">n/a</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="mb-3">
+              <div class="text-muted small mb-2">CPU/RAM usage by feature (aggregated from running processes)</div>
+              <div class="d-flex flex-wrap gap-2" id="dashboard-feature-usage">
+                <span class="badge bg-secondary-lt text-secondary">Loading…</span>
+              </div>
+            </div>
+
+            <div class="table-responsive">
+              <table class="table table-vcenter table-sm mb-0">
+                <thead id="dashboard-process-usage-head">
+                  <tr>
+                    <th>PID</th>
+                    <th>Process</th>
+                    <th>Feature</th>
+                    <th class="text-end">CPU %</th>
+                    <th class="text-end">RAM %</th>
+                    <th class="text-end">RSS MB</th>
+                  </tr>
+                </thead>
+                <tbody id="dashboard-process-usage-body">
+                  <tr><td colspan="6" class="text-muted">Loading process usage…</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+      {% endif %}
+    </div>
   </div>
-  {% if attention_active_items %}
-    <div class="col-12 col-xl-3">
-      <div class="card dashboard-kpi-card card-sm dashboard-attention-card">
+  <div class="col-12 col-xxl-3">
+    {% if attention_active_items and has_perm('dashboard.needs_attention.view') %}
+      <div class="card dashboard-kpi-card card-sm dashboard-attention-card mb-2">
         <div class="card-header py-3 px-3 d-flex align-items-center">
           <h4 class="card-title mb-0 d-flex align-items-center">
             <span class="badge bg-red-lt text-red me-2 dashboard-logo-badge"><i class="ti ti-alert-triangle"></i></span>
@@ -104,85 +189,42 @@
           {% endfor %}
         </div>
       </div>
-    </div>
-  {% endif %}
-</div>
-
-<div class="row row-cards mt-1">
-  <div class="col-12">
-    <div class="card">
-      <div class="card-header">
-        <h3 class="card-title"><i class="ti ti-activity me-2"></i>Live System Resource Usage</h3>
-        <div class="card-actions d-flex align-items-center gap-3">
-          <label class="form-check form-switch m-0">
-            <input class="form-check-input" type="checkbox" id="dashboard-system-mode-toggle" checked>
-            <span class="form-check-label small">System mode</span>
-          </label>
-          <div class="text-muted small" id="dashboard-resource-updated">Updating…</div>
-        </div>
+    {% endif %}
+    {% if has_perm('dashboard.logs.view') %}
+    <div class="card dashboard-kpi-card card-sm dashboard-attention-card h-100">
+      <div class="card-header py-3 px-3 d-flex align-items-center">
+        <h4 class="card-title mb-0 d-flex align-items-center">
+          <span class="badge bg-blue-lt text-blue me-2 dashboard-logo-badge"><i class="ti ti-history"></i></span>
+          Latest Logs
+        </h4>
+        <div class="ms-auto text-muted small" id="dashboard-logs-updated">Updating…</div>
       </div>
       <div class="card-body">
-        <div class="row g-2 mb-3">
-          <div class="col-sm-6 col-lg-3">
+        <div id="dashboard-latest-logs-body" class="d-flex flex-column gap-2" style="max-height: 620px; overflow: auto;">
+          {% for row in latest_logs %}
+            {% set message_text = row.message or row.details or row.resource or '—' %}
             <div class="border rounded p-2">
-              <div class="text-muted small">Total CPU</div>
-              <div class="fw-semibold" id="dashboard-cpu-total">0%</div>
-              <div class="text-muted small" id="dashboard-cpu-tracked-note">Table accounted: 0%</div>
-              <div class="text-muted small" id="dashboard-cpu-scope">Scope: n/a</div>
+              <div class="d-flex align-items-center justify-content-between gap-2 mb-1">
+                <span class="badge bg-blue-lt text-blue">{{ row.category or 'Log' }}</span>
+                <span class="text-muted small">{{ row.timestamp_ph }}</span>
+              </div>
+              <div class="small" title="{{ message_text }}">{{ message_text }}</div>
             </div>
-          </div>
-          <div class="col-sm-6 col-lg-3">
-            <div class="border rounded p-2">
-              <div class="text-muted small">RAM Pressure</div>
-              <div class="fw-semibold" id="dashboard-ram-pressure">0%</div>
-            </div>
-          </div>
-          <div class="col-sm-6 col-lg-3">
-            <div class="border rounded p-2">
-              <div class="text-muted small">RAM Allocated</div>
-              <div class="fw-semibold" id="dashboard-ram-alloc">0%</div>
-            </div>
-          </div>
-          <div class="col-sm-6 col-lg-3">
-            <div class="border rounded p-2">
-              <div class="text-muted small" id="dashboard-top-cpu-label">Top Process CPU</div>
-              <div class="fw-semibold" id="dashboard-top-proc-cpu">n/a</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="mb-3">
-          <div class="text-muted small mb-2">CPU/RAM usage by feature (aggregated from running processes)</div>
-          <div class="d-flex flex-wrap gap-2" id="dashboard-feature-usage">
-            <span class="badge bg-secondary-lt text-secondary">Loading…</span>
-          </div>
-        </div>
-
-        <div class="table-responsive">
-          <table class="table table-vcenter table-sm mb-0">
-            <thead id="dashboard-process-usage-head">
-              <tr>
-                <th>PID</th>
-                <th>Process</th>
-                <th>Feature</th>
-                <th class="text-end">CPU %</th>
-                <th class="text-end">RAM %</th>
-                <th class="text-end">RSS MB</th>
-              </tr>
-            </thead>
-            <tbody id="dashboard-process-usage-body">
-              <tr><td colspan="6" class="text-muted">Loading process usage…</td></tr>
-            </tbody>
-          </table>
+          {% else %}
+            <div class="text-muted small">No logs yet.</div>
+          {% endfor %}
         </div>
       </div>
     </div>
+    {% endif %}
   </div>
 </div>
 
 <script>
   (() => {
     const updatedEl = document.getElementById("dashboard-resource-updated");
+    const logsUpdatedEl = document.getElementById("dashboard-logs-updated");
+    const logsBodyEl = document.getElementById("dashboard-latest-logs-body");
     const cpuTotalEl = document.getElementById("dashboard-cpu-total");
     const ramPressureEl = document.getElementById("dashboard-ram-pressure");
     const ramAllocEl = document.getElementById("dashboard-ram-alloc");
@@ -194,7 +236,9 @@
     const systemModeToggleEl = document.getElementById("dashboard-system-mode-toggle");
     const processHeadEl = document.getElementById("dashboard-process-usage-head");
     const processBodyEl = document.getElementById("dashboard-process-usage-body");
-    if (!updatedEl || !featureUsageEl || !processBodyEl || !processHeadEl || !systemModeToggleEl) return;
+    const hasResourcesPanel = !!(updatedEl && featureUsageEl && processBodyEl && processHeadEl && systemModeToggleEl);
+    const hasLogsPanel = !!(logsBodyEl && logsUpdatedEl);
+    if (!hasResourcesPanel && !hasLogsPanel) return;
 
     const esc = (value) => String(value ?? "")
       .replace(/&/g, "&amp;")
@@ -219,9 +263,12 @@
       } catch (_error) {
       }
     };
-    systemModeToggleEl.checked = readSystemMode();
+    if (hasResourcesPanel) {
+      systemModeToggleEl.checked = readSystemMode();
+    }
 
     const renderTableHead = (systemModeEnabled) => {
+      if (!hasResourcesPanel) return;
       if (systemModeEnabled) {
         processHeadEl.innerHTML = `
           <tr>
@@ -247,6 +294,7 @@
     };
 
     const renderEmpty = (message, systemModeEnabled) => {
+      if (!hasResourcesPanel) return;
       renderTableHead(systemModeEnabled);
       const colspan = systemModeEnabled ? 6 : 3;
       processBodyEl.innerHTML = `<tr><td colspan="${colspan}" class="text-muted">${esc(message)}</td></tr>`;
@@ -260,6 +308,7 @@
     };
 
     const render = (data) => {
+      if (!hasResourcesPanel) return;
       const systemModeEnabled = !!systemModeToggleEl.checked;
       const hostCpu = Number(data.cpu_pct ?? 0);
       const trackedCpu = Number(data.cpu_tracked_pct ?? hostCpu);
@@ -328,13 +377,42 @@
       }
 
       const ts = data.captured_at ? new Date(data.captured_at) : null;
-      updatedEl.textContent = ts && !Number.isNaN(ts.getTime())
-        ? `Updated: ${ts.toLocaleTimeString()}`
-        : "Updated: now";
+      if (updatedEl) {
+        updatedEl.textContent = ts && !Number.isNaN(ts.getTime())
+          ? `Updated: ${ts.toLocaleTimeString()}`
+          : "Updated: now";
+      }
     };
 
     let lastData = null;
+    const renderLogs = (rows, capturedAt) => {
+      if (!logsBodyEl) return;
+      const list = Array.isArray(rows) ? rows : [];
+      if (!list.length) {
+        logsBodyEl.innerHTML = `<div class="text-muted small">No logs yet.</div>`;
+      } else {
+        logsBodyEl.innerHTML = list.map((row) => {
+          const message = String((row && (row.message || row.details || row.resource)) || "—");
+          return `
+            <div class="border rounded p-2">
+              <div class="d-flex align-items-center justify-content-between gap-2 mb-1">
+                <span class="badge bg-blue-lt text-blue">${esc(row?.category || "Log")}</span>
+                <span class="text-muted small">${esc(row?.timestamp_ph || row?.timestamp || "n/a")}</span>
+              </div>
+              <div class="small" title="${esc(message)}">${esc(message)}</div>
+            </div>
+          `;
+        }).join("");
+      }
+      if (logsUpdatedEl) {
+        const ts = capturedAt ? new Date(capturedAt) : null;
+        logsUpdatedEl.textContent = ts && !Number.isNaN(ts.getTime())
+          ? `Updated: ${ts.toLocaleTimeString()}`
+          : "Updated: now";
+      }
+    };
     const updateLiveUsage = async () => {
+      if (!hasResourcesPanel) return;
       try {
         const res = await fetch("/system/resources?details=1", { headers: { "Accept": "application/json" }, cache: "no-store" });
         if (!res.ok) {
@@ -349,17 +427,33 @@
       }
     };
 
-    systemModeToggleEl.addEventListener("change", () => {
-      saveSystemMode(!!systemModeToggleEl.checked);
-      if (lastData) {
-        render(lastData);
-      } else {
-        renderEmpty("Loading process usage…", !!systemModeToggleEl.checked);
+    const updateLatestLogs = async () => {
+      if (!hasLogsPanel) return;
+      try {
+        const res = await fetch("/dashboard/latest-logs?limit=20", { headers: { "Accept": "application/json" }, cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json();
+        renderLogs(data?.rows || [], data?.captured_at || "");
+      } catch (_error) {
       }
-    });
+    };
 
-    updateLiveUsage();
-    setInterval(updateLiveUsage, 5000);
+    if (hasResourcesPanel) {
+      systemModeToggleEl.addEventListener("change", () => {
+        saveSystemMode(!!systemModeToggleEl.checked);
+        if (lastData) {
+          render(lastData);
+        } else {
+          renderEmpty("Loading process usage…", !!systemModeToggleEl.checked);
+        }
+      });
+      updateLiveUsage();
+      setInterval(updateLiveUsage, 5000);
+    }
+    if (hasLogsPanel) {
+      updateLatestLogs();
+      setInterval(updateLatestLogs, 5000);
+    }
   })();
 </script>
 

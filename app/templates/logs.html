@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block title %}Logs{% endblock %}
+{% block header_title %}Logs{% endblock %}
+{% block header_badge %}
+  <span class="badge bg-blue-lt text-blue header-icon-badge"><i class="ti ti-list-details"></i></span>
+{% endblock %}
+{% block content %}
+<style>
+  .logs-table th, .logs-table td { padding: .72rem .9rem !important; vertical-align: top; }
+  .logs-table .logs-activity-cell { line-height: 1.35; }
+</style>
+<div class="row row-cards">
+  <div class="col-12">
+    <form method="get" action="/logs" class="card">
+      <div class="card-header">
+        <h3 class="card-title"><i class="ti ti-filter me-2"></i>Filters</h3>
+      </div>
+      <div class="card-body">
+        <div class="row g-2">
+          <div class="col-md-4">
+            <label class="form-label">Search</label>
+            <input type="text" class="form-control" name="q" value="{{ logs_query or '' }}" placeholder="Search user, account, message, details..." />
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">Window</label>
+            <select class="form-select" name="window">
+              <option value="all" {% if (logs_window or 'all') == 'all' %}selected{% endif %}>All Time</option>
+              <option value="24h" {% if logs_window == '24h' %}selected{% endif %}>Last 24 Hours</option>
+              <option value="7d" {% if logs_window == '7d' %}selected{% endif %}>Last 7 Days</option>
+              <option value="30d" {% if logs_window == '30d' %}selected{% endif %}>Last 30 Days</option>
+            </select>
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">Category</label>
+            <select class="form-select" name="category">
+              <option value="all" {% if (logs_category or 'all') == 'all' %}selected{% endif %}>All</option>
+              {% for category_name in logs_category_options or [] %}
+                <option value="{{ category_name }}" {% if logs_category == category_name %}selected{% endif %}>{{ category_name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">User</label>
+            <select class="form-select" name="user">
+              <option value="">All Users</option>
+              {% for user in logs_users %}
+                <option value="{{ user }}" {% if logs_user == user %}selected{% endif %}>{{ user }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">Action Code</label>
+            <select class="form-select" name="action">
+              <option value="">All Actions</option>
+              {% for action_code in logs_actions %}
+                <option value="{{ action_code }}" {% if logs_action == action_code %}selected{% endif %}>{{ action_code }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="card-footer d-flex gap-2">
+        <button type="submit" class="btn btn-primary">
+          <i class="ti ti-search me-1"></i>Apply
+        </button>
+        <a href="/logs" class="btn btn-outline-secondary">Reset</a>
+      </div>
+    </form>
+  </div>
+
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header">
+        <h3 class="card-title"><i class="ti ti-history me-2"></i>Activity Logs</h3>
+        <div class="card-actions">
+          <span class="badge bg-indigo-lt text-indigo">Total: {{ logs_total or 0 }}</span>
+        </div>
+      </div>
+      <div class="card-body p-0">
+        <div class="table-responsive" style="max-height: 72vh; overflow: auto;">
+          <table class="table table-vcenter table-hover mb-0 logs-table">
+            <thead>
+              <tr>
+                <th style="min-width: 150px;">Time (PHT)</th>
+                <th style="min-width: 320px;">Activity</th>
+                <th style="min-width: 120px;">User</th>
+                <th style="min-width: 120px;">Category</th>
+                <th style="min-width: 180px;">Action Code</th>
+                <th style="min-width: 180px;">Resource</th>
+                <th style="min-width: 140px;">IP</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in logs_rows %}
+                <tr>
+                  <td class="text-muted">{{ row.timestamp_ph }}</td>
+                  <td class="logs-activity-cell">
+                    <div>{{ row.message or 'No activity message.' }}</div>
+                    {% if row.details %}
+                      <div class="text-muted text-truncate" style="max-width: 520px;" title="{{ row.details }}">{{ row.details }}</div>
+                    {% endif %}
+                  </td>
+                  <td>{{ row.username or 'system' }}</td>
+                  <td><span class="badge bg-blue-lt text-blue">{{ row.category or 'System' }}</span></td>
+                  <td class="text-muted">{{ row.action or 'n/a' }}</td>
+                  <td class="text-muted">{{ row.resource or 'n/a' }}</td>
+                  <td class="text-muted">{{ row.ip_address or 'n/a' }}</td>
+                </tr>
+              {% else %}
+                <tr>
+                  <td colspan="7" class="text-muted p-3">No logs found for the selected filters.</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% if logs_pages and logs_pages > 1 %}
+        <div class="card-footer d-flex align-items-center justify-content-between">
+          <div class="text-muted small">Page {{ logs_page }} of {{ logs_pages }}</div>
+          <div class="btn-group">
+            {% set prev_page = logs_page - 1 %}
+            {% set next_page = logs_page + 1 %}
+            <a class="btn btn-sm btn-outline-secondary {% if logs_page <= 1 %}disabled{% endif %}" href="/logs?page={{ prev_page }}{% if logs_base_query %}&{{ logs_base_query }}{% endif %}">Prev</a>
+            <a class="btn btn-sm btn-outline-secondary {% if logs_page >= logs_pages %}disabled{% endif %}" href="/logs?page={{ next_page }}{% if logs_base_query %}&{{ logs_base_query }}{% endif %}">Next</a>
+          </div>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

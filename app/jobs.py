@@ -28,7 +28,7 @@ from .db import (
     ensure_surveillance_session,
     touch_surveillance_session,
     end_surveillance_session,
-    has_surveillance_session,
+    insert_auth_audit_log,
 )
 from .db import delete_accounts_ping_raw_older_than, delete_accounts_ping_rollups_older_than, insert_accounts_ping_result
 from .notifiers import optical as optical_notifier
@@ -54,6 +54,21 @@ from .feature_usage import add_feature_cpu, register_feature
 def _safe_update_job_status(job_name, **fields):
     try:
         update_job_status(job_name, **fields)
+    except Exception:
+        pass
+
+
+def _safe_insert_system_audit(action, resource="", details=""):
+    try:
+        insert_auth_audit_log(
+            timestamp=utc_now_iso(),
+            user_id=None,
+            username="system",
+            action=(action or "").strip()[:120],
+            resource=(resource or "").strip()[:255],
+            details=(details or "").strip()[:2000],
+            ip_address="",
+        )
     except Exception:
         pass
 
@@ -604,20 +619,10 @@ class JobsManager:
                                 if max_add < 0:
                                     max_add = 0
 
-                                seen_map = (
-                                    state.get("surveillance_autoadd_seen")
-                                    if isinstance(state.get("surveillance_autoadd_seen"), dict)
-                                    else {}
-                                )
-                                if len(seen_map) > 50000:
-                                    seen_map = {}
-
                                 candidates = []
                                 for target in targets:
                                     pppoe = (target.get("pppoe") or "").strip()
                                     if not pppoe or pppoe in surv_map:
-                                        continue
-                                    if pppoe in seen_map:
                                         continue
                                     candidates.append(target)
 
@@ -633,16 +638,6 @@ class JobsManager:
                                         break
                                     pppoe = (target.get("pppoe") or "").strip()
                                     if not pppoe or pppoe in surv_map:
-                                        continue
-                                    if pppoe in seen_map:
-                                        continue
-
-                                    # PPPoE can only ever be auto-added once. If it exists in history, skip permanently.
-                                    try:
-                                        if has_surveillance_session(pppoe):
-                                            seen_map[pppoe] = 1
-                                            continue
-                                    except Exception:
                                         continue
 
                                     down_events = int(down_events_map.get(target["id"]) or 0)
@@ -666,6 +661,7 @@ class JobsManager:
                                         "last_fixed_reason": "",
                                         "last_fixed_mode": "",
                                         "added_mode": "auto",
+                                        "added_by": "system",
                                         "auto_source": "accounts_ping",
                                         "auto_reason": reason,
                                         "stage_history": [
@@ -723,7 +719,6 @@ class JobsManager:
                                         "ai_report_pending_stage": "",
                                     }
                                     surv_map[pppoe] = entry
-                                    seen_map[pppoe] = 1
                                     entries_changed = True
                                     added += 1
                                     try:
@@ -736,8 +731,19 @@ class JobsManager:
                                         )
                                     except Exception:
                                         pass
+                                    _safe_insert_system_audit(
+                                        action="surveillance.add_auto",
+                                        resource=pppoe,
+                                        details=(
+                                            f"source=accounts_ping;"
+                                            f"down_events={down_events};"
+                                            f"window_days={window_days:g};"
+                                            f"ip={(ip or 'n/a')[:80]};"
+                                            f"reason={reason}"
+                                        ),
+                                    )
 
-                                state["surveillance_autoadd_seen"] = seen_map
+                                state.pop("surveillance_autoadd_seen", None)
                                 state["surveillance_autoadd_last_scan_at"] = now_iso
 
                         stab_cfg = surv_cfg.get("stability", {}) or {}

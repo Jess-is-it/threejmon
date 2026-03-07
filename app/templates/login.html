@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% if mode == 'setup' %}Setup Owner{% elif mode == 'forgot' %}Forgot Password{% else %}Sign In{% endif %} · ThreeJ Notifier</title>
+  {% if browser_logo_url %}
+    <link rel="icon" type="{{ browser_logo_type }}" href="{{ browser_logo_url }}" />
+  {% endif %}
+  <link rel="stylesheet" href="/static/tabler/css/tabler.min.css" />
+  <link rel="stylesheet" href="/static/tabler/css/tabler-icons.min.css" />
+  <link rel="stylesheet" href="/static/style.css?v=tabler7" />
+</head>
+<body class="d-flex flex-column bg-light">
+  <div class="page page-center">
+    <div class="container container-tight py-4">
+      <div class="text-center mb-4">
+        {% if company_logo_url %}
+          <img src="{{ company_logo_url }}" alt="Company Logo" style="max-height:56px; width:auto;" />
+        {% else %}
+          <h1 class="h2">ThreeJ Notifier</h1>
+        {% endif %}
+      </div>
+
+      {% if message %}
+        <div class="alert alert-info auto-dismiss-alert">{{ message }}</div>
+      {% endif %}
+
+      {% if mode == 'setup' %}
+        <form class="card card-md" method="post" action="/setup-owner">
+          <div class="card-body">
+            <h2 class="card-title text-center mb-3">Initial Owner Setup</h2>
+            <p class="text-muted text-center">Create the first owner account (full access).</p>
+            <div class="mb-3">
+              <label class="form-label">Username</label>
+              <input class="form-control" type="text" name="username" value="{{ username or '' }}" required />
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Full Name</label>
+              <input class="form-control" type="text" name="full_name" />
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Email</label>
+              <input class="form-control" type="email" name="email" />
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Password</label>
+              <input class="form-control" type="password" name="password" required />
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Confirm Password</label>
+              <input class="form-control" type="password" name="confirm_password" required />
+            </div>
+            <div class="form-footer">
+              <button type="submit" class="btn btn-primary w-100">Create Owner</button>
+            </div>
+          </div>
+        </form>
+      {% elif mode == 'forgot' %}
+        <form class="card card-md" method="post" action="/forgot-password">
+          <div class="card-body">
+            <h2 class="card-title text-center mb-3">Forgot Password</h2>
+            <p class="text-muted text-center">Enter your username or email to receive a temporary password.</p>
+            <div class="mb-3">
+              <label class="form-label">Username or Email</label>
+              <input class="form-control" type="text" name="identity" required />
+            </div>
+            <div class="form-footer">
+              <button type="submit" class="btn btn-primary w-100">Send Reset Email</button>
+            </div>
+          </div>
+        </form>
+        <div class="text-center text-muted mt-3">
+          <a href="/login">Back to login</a>
+        </div>
+      {% else %}
+        <form class="card card-md" method="post" action="/login">
+          <div class="card-body">
+            <h2 class="card-title text-center mb-3">Sign In</h2>
+            <input type="hidden" name="next" value="{{ next_url or '/' }}" />
+            <div class="mb-3">
+              <label class="form-label">Username or Email</label>
+              <input class="form-control" type="text" name="username" value="{{ username or '' }}" required autofocus />
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Password</label>
+              <input class="form-control" type="password" name="password" required />
+            </div>
+            <div class="form-footer">
+              <button type="submit" class="btn btn-primary w-100">Sign In</button>
+            </div>
+          </div>
+        </form>
+        <div class="text-center text-muted mt-3">
+          <a href="/forgot-password">Forgot password?</a>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      const alertEl = document.querySelector(".alert.auto-dismiss-alert");
+      if (!alertEl) return;
+      window.setTimeout(() => {
+        if (!alertEl || !alertEl.isConnected) return;
+        alertEl.style.transition = "opacity .35s ease, transform .35s ease";
+        alertEl.style.opacity = "0";
+        alertEl.style.transform = "translateY(-4px)";
+        window.setTimeout(() => {
+          if (!alertEl || !alertEl.isConnected) return;
+          alertEl.classList.add("d-none");
+        }, 360);
+      }, 8000);
+    });
+  </script>
+</body>
+</html>

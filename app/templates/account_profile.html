@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}My Profile{% endblock %}
+{% block header_title %}My Profile{% endblock %}
+{% block header_badge %}
+  <span class="badge bg-blue-lt text-blue header-icon-badge"><i class="ti ti-id"></i></span>
+{% endblock %}
+{% block content %}
+  <div class="row justify-content-center">
+    <div class="col-12 col-md-8 col-lg-6">
+      <div class="card">
+        <div class="card-body">
+          <div class="d-flex align-items-center gap-3 mb-3">
+            <span class="avatar avatar-md bg-blue-lt text-blue">
+              <i class="ti ti-user"></i>
+            </span>
+            <div>
+              <div class="h3 mb-0">{{ profile_user.full_name or profile_user.username }}</div>
+              <div class="text-muted">{{ profile_user.role_name or "user" }}</div>
+            </div>
+          </div>
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label">Username</label>
+              <input class="form-control" type="text" value="{{ profile_user.username }}" readonly />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Email</label>
+              <input class="form-control" type="text" value="{{ profile_user.email or 'n/a' }}" readonly />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Last Login</label>
+              <input class="form-control" type="text" value="{{ profile_user.last_login_at or 'n/a' }}" readonly />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Created</label>
+              <input class="form-control" type="text" value="{{ profile_user.created_at or 'n/a' }}" readonly />
+            </div>
+          </div>
+        </div>
+        <div class="card-footer d-flex justify-content-end gap-2">
+          <a class="btn btn-outline-primary" href="/account/change-password">Change Password</a>
+          <form method="post" action="/logout" class="m-0">
+            <button type="submit" class="btn btn-outline-danger">Logout</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}

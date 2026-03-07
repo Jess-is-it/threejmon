@@ -6,7 +6,7 @@
 {% endblock %}
 {% block content %}
 {% if message %}
-  <div class="alert alert-info">{{ message }}</div>
+  <div class="alert alert-info auto-dismiss-alert">{{ message }}</div>
 {% endif %}
 
 <div class="card">
@@ -345,7 +345,9 @@
             <li class="nav-item"><a href="#accounts-ping-source" class="nav-link {% if settings_tab == 'source' %}active{% endif %}" data-bs-toggle="tab">Source</a></li>
             <li class="nav-item"><a href="#accounts-ping-classification" class="nav-link {% if settings_tab == 'classification' %}active{% endif %}" data-bs-toggle="tab">Classification</a></li>
             <li class="nav-item"><a href="#accounts-ping-storage" class="nav-link {% if settings_tab == 'storage' %}active{% endif %}" data-bs-toggle="tab">Storage</a></li>
-            <li class="nav-item"><a href="#accounts-ping-danger" class="nav-link {% if settings_tab == 'danger' %}active{% endif %}" data-bs-toggle="tab">Danger</a></li>
+            {% if can_run_danger_actions %}
+              <li class="nav-item"><a href="#accounts-ping-danger" class="nav-link {% if settings_tab == 'danger' %}active{% endif %}" data-bs-toggle="tab">Danger</a></li>
+            {% endif %}
           </ul>
 
           <div class="tab-content pt-3">
@@ -548,26 +550,28 @@
               </div>
             </div>
 
-            <div class="tab-pane {% if settings_tab == 'danger' %}active{% endif %}" id="accounts-ping-danger">
-              <div class="card mb-3">
-                <div class="card-body">
-                  <h4 class="mb-2">Format Accounts Ping Database</h4>
-                  <div class="alert alert-warning">
-                    <div class="d-flex align-items-center">
-                      <span class="me-2"><i class="ti ti-alert-triangle"></i></span>
-                      <div>Formatting removes stored Accounts Ping history so the next run starts fresh.</div>
+            {% if can_run_danger_actions %}
+              <div class="tab-pane {% if settings_tab == 'danger' %}active{% endif %}" id="accounts-ping-danger">
+                <div class="card mb-3">
+                  <div class="card-body">
+                    <h4 class="mb-2">Format Accounts Ping Database</h4>
+                    <div class="alert alert-warning">
+                      <div class="d-flex align-items-center">
+                        <span class="me-2"><i class="ti ti-alert-triangle"></i></span>
+                        <div>Formatting removes stored Accounts Ping history so the next run starts fresh.</div>
+                      </div>
                     </div>
-                  </div>
-                  <label class="form-check">
-                    <input class="form-check-input" type="checkbox" name="confirm_format" form="accounts-ping-format-form" />
-                    <span class="form-check-label">I understand this will erase Accounts Ping history data. <span class="info" data-tip="Required to enable the Format button.">i</span></span>
-                  </label>
-                  <div class="mt-3">
-                    <button type="submit" class="btn btn-danger" form="accounts-ping-format-form">Format Accounts Ping Database</button>
+                    <label class="form-check">
+                      <input class="form-check-input" type="checkbox" name="confirm_format" form="accounts-ping-format-form" />
+                      <span class="form-check-label">I understand this will erase Accounts Ping history data. <span class="info" data-tip="Required to enable the Format button.">i</span></span>
+                    </label>
+                    <div class="mt-3">
+                      <button type="submit" class="btn btn-danger" form="accounts-ping-format-form">Format Accounts Ping Database</button>
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
+            {% endif %}
           </div>
 
           <div class="d-flex justify-content-end gap-2">

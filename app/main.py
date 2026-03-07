@@ -6,9 +6,14 @@ import asyncio
 import json
 import os
 import base64
+import hashlib
+import hmac
 import re
 import shlex
 import shutil
+import smtplib
+import secrets
+import ssl
 import time
 import subprocess
 import threading
@@ -17,6 +22,7 @@ import urllib.request
 import ipaddress
 from datetime import datetime, timezone, timedelta, time as dt_time
 from zoneinfo import ZoneInfo
+from email.message import EmailMessage
 
 import imghdr
 
@@ -26,15 +32,30 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .db import (
+    count_auth_users,
     clear_accounts_ping_data,
     clear_pppoe_usage_samples,
     clear_surveillance_history,
     clear_wan_history,
+    create_auth_permission,
+    create_auth_role,
+    create_auth_session,
+    create_auth_user,
+    delete_auth_audit_logs_older_than,
+    delete_auth_user,
     delete_wan_target_ping_results_for_targets,
+    delete_auth_role,
     end_surveillance_session,
     ensure_surveillance_session,
     fetch_wan_history_map,
     fetch_wan_target_ping_series_map,
+    get_auth_role_by_id,
+    get_auth_role_by_name,
+    get_auth_session,
+    get_auth_user_by_email,
+    get_auth_user_by_id,
+    get_auth_user_by_username,
+    get_auth_user_permission_codes,
     get_accounts_ping_latest_ip_since,
     get_accounts_ping_rollups_range,
     get_accounts_ping_rollups_since,
@@ -61,9 +82,22 @@ from .db import (
     get_pppoe_usage_series_since,
     get_recent_optical_readings,
     init_db,
+    insert_auth_audit_log,
+    list_auth_audit_logs,
+    list_auth_permissions,
+    list_auth_roles,
+    list_auth_users,
     list_surveillance_history,
+    revoke_auth_session,
+    revoke_auth_sessions_for_user,
     search_optical_customers,
+    set_auth_role_permissions,
+    set_auth_user_password,
     touch_surveillance_session,
+    touch_auth_session,
+    touch_auth_user_login,
+    update_auth_user,
+    update_auth_role,
     insert_wan_target_ping_result,
     utc_now_iso,
 )
@@ -95,6 +129,7 @@ DATA_DIR = Path("/data")
 
 SYSTEM_DEFAULTS = {
     "branding": {
+        "app_name": "ThreeJ Notifier",
         "company_logo": {
             "path": "",
             "content_type": "",
@@ -126,6 +161,21 @@ SYSTEM_DEFAULTS = {
             "max_samples": 60,
         },
     },
+    "auth": {
+        "enabled": True,
+        "session_idle_hours": 8,
+        "audit_retention_days": 180,
+        "smtp": {
+            "host": "",
+            "port": 587,
+            "username": "",
+            "password": "",
+            "from_email": "",
+            "from_name": "ThreeJ Notifier",
+            "use_tls": True,
+            "use_ssl": False,
+        },
+    },
 }
 
 app = FastAPI()
@@ -134,6 +184,9 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 jobs_manager = JobsManager()
 _cpu_sample = {"total": None, "idle": None, "at": 0.0, "pct": 0.0}
+_dashboard_kpis_cache_lock = threading.Lock()
+_dashboard_kpis_cache = {"at": 0.0, "data": None}
+_DASHBOARD_KPI_CACHE_SECONDS = 20
 _surv_ai_lock = threading.Lock()
 _surv_ai_running = set()
 _SURV_AI_MAX_PARALLEL = 1
@@ -279,6 +332,1246 @@ AI_MODEL_PRICING = {
     ],
 }
 
+AUTH_COOKIE_NAME = "threej_auth_session"
+AUTH_COOKIE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
+AUTH_PASSWORD_MIN_LENGTH = 8
+_AUTH_TOUCH_INTERVAL_SECONDS = 60
+_auth_audit_prune_lock = threading.Lock()
+_auth_audit_prune_last = 0.0
+
+AUTH_PERMISSION_ALIASES = {
+    "VIEW_Dashboard": "dashboard.view",
+    "VIEW_ProfileReview": "profile_review.view",
+    "VIEW_UnderSurveillance": "surveillance.view",
+    "EDIT_UnderSurveillance": "surveillance.edit",
+    "ADD_AccessMonitoring_UnderSurveillance": "surveillance.edit",
+    "MARKFALSE_AccessMonitoring_UnderSurveillance": "surveillance.edit",
+    "MOVE_AccessMonitoring_ToNeedsManualFix": "surveillance.edit",
+    "FIX_NeedsManualFix_Account": "surveillance.edit",
+    "RECOVER_PostFixObservation_Account": "surveillance.edit",
+    "VIEW_Optical": "optical.view",
+    "EDIT_Optical": "optical.edit",
+    "VIEW_AccountsPing": "accounts_ping.view",
+    "EDIT_AccountsPing": "accounts_ping.edit",
+    "VIEW_Usage": "usage.view",
+    "EDIT_Usage": "usage.edit",
+    "VIEW_Offline": "offline.view",
+    "EDIT_Offline": "offline.edit",
+    "VIEW_WanPing": "wan.view",
+    "EDIT_WanPing": "wan.edit",
+    "VIEW_SystemSettings": "system.view",
+    "EDIT_SystemSettings": "system.edit",
+    "RUN_TestTools": "tools.test",
+    "MANAGE_BackupImportExport": "settings.import_export",
+    "RUN_DangerActions": "settings.danger",
+    "MANAGE_AccessControl": "auth.manage",
+}
+AUTH_PERMISSION_ALIASES_REVERSE = {legacy: modern for modern, legacy in AUTH_PERMISSION_ALIASES.items()}
+AUTH_PERMISSION_ALIASES_LOWER = {str(k or "").strip().lower(): str(v or "").strip() for k, v in AUTH_PERMISSION_ALIASES.items()}
+AUTH_PERMISSION_ALIASES_REVERSE_LOWER = {
+    str(k or "").strip().lower(): str(v or "").strip() for k, v in AUTH_PERMISSION_ALIASES_REVERSE.items()
+}
+AUTH_PERMISSION_FEATURE_ORDER = [
+    "dashboard",
+    "under_surveillance",
+    "profile_review",
+    "optical",
+    "accounts_ping",
+    "usage",
+    "offline",
+    "wan_ping",
+    "system_settings",
+    "logs",
+    "other",
+]
+AUTH_PERMISSION_FEATURE_LABELS = {
+    "dashboard": "Dashboard",
+    "under_surveillance": "Under Surveillance",
+    "profile_review": "Profile Review",
+    "optical": "Optical Monitoring",
+    "accounts_ping": "Accounts Ping",
+    "usage": "Usage",
+    "offline": "Offline",
+    "wan_ping": "WAN Ping",
+    "system_settings": "System Settings",
+    "logs": "Logs",
+    "other": "Other",
+}
+AUTH_PERMISSION_DEPENDENCIES = {
+    "dashboard.kpi.wan.view": ["dashboard.view"],
+    "dashboard.kpi.accounts_ping.view": ["dashboard.view"],
+    "dashboard.kpi.under_surveillance.view": ["dashboard.view"],
+    "dashboard.kpi.usage.view": ["dashboard.view"],
+    "dashboard.kpi.offline.view": ["dashboard.view"],
+    "dashboard.kpi.optical.view": ["dashboard.view"],
+    "dashboard.needs_attention.view": ["dashboard.view"],
+    "dashboard.resources.view": ["dashboard.view"],
+    "dashboard.logs.view": ["dashboard.view"],
+    "EDIT_UnderSurveillance": ["VIEW_UnderSurveillance"],
+    "ADD_AccessMonitoring_UnderSurveillance": ["VIEW_UnderSurveillance", "EDIT_UnderSurveillance"],
+    "MARKFALSE_AccessMonitoring_UnderSurveillance": ["VIEW_UnderSurveillance", "EDIT_UnderSurveillance"],
+    "MOVE_AccessMonitoring_ToNeedsManualFix": ["VIEW_UnderSurveillance", "EDIT_UnderSurveillance"],
+    "FIX_NeedsManualFix_Account": ["VIEW_UnderSurveillance", "EDIT_UnderSurveillance"],
+    "RECOVER_PostFixObservation_Account": ["VIEW_UnderSurveillance", "EDIT_UnderSurveillance"],
+    "EDIT_Optical": ["VIEW_Optical"],
+    "EDIT_AccountsPing": ["VIEW_AccountsPing"],
+    "EDIT_Usage": ["VIEW_Usage"],
+    "EDIT_Offline": ["VIEW_Offline"],
+    "EDIT_WanPing": ["VIEW_WanPing"],
+    "EDIT_SystemSettings": ["VIEW_SystemSettings"],
+    "system.general.branding.view": ["system.view"],
+    "system.general.branding.edit": ["system.view", "system.edit", "system.general.branding.view"],
+    "system.general.telegram.view": ["system.view"],
+    "system.general.telegram.edit": ["system.view", "system.edit", "system.general.telegram.view"],
+    "surveillance.settings.danger.run": ["surveillance.view", "surveillance.edit", "settings.danger"],
+    "optical.settings.danger.run": ["optical.view", "optical.edit", "settings.danger"],
+    "accounts_ping.settings.danger.run": ["accounts_ping.view", "accounts_ping.edit", "settings.danger"],
+    "usage.settings.danger.run": ["usage.view", "usage.edit", "settings.danger"],
+    "offline.settings.danger.run": ["offline.view", "offline.edit", "settings.danger"],
+    "wan.settings.danger.run": ["wan.view", "wan.edit", "settings.danger"],
+    "system.danger.uninstall.run": ["system.view", "system.edit", "settings.danger"],
+    "optical.action.test_source.run": ["optical.view", "optical.edit", "tools.test"],
+    "offline.action.radius_test.run": ["offline.view", "offline.edit", "tools.test"],
+    "wan.action.test_router.run": ["wan.view", "wan.edit", "tools.test"],
+    "system.access.auth.view": ["system.view", "auth.manage"],
+    "system.access.auth.edit": ["system.view", "system.edit", "auth.manage", "system.access.auth.view"],
+    "system.access.permissions.view": ["system.view", "auth.manage"],
+    "system.access.roles.view": ["system.view", "auth.manage"],
+    "system.access.roles.edit": ["system.view", "system.edit", "auth.manage", "system.access.roles.view"],
+    "system.access.users.view": ["system.view", "auth.manage"],
+    "system.access.users.edit": ["system.view", "system.edit", "auth.manage", "system.access.users.view"],
+    "logs.timeline.view": ["dashboard.view"],
+    "logs.search.view": ["logs.timeline.view"],
+    "logs.filter.view": ["logs.timeline.view"],
+    "logs.category.surveillance.view": ["logs.timeline.view"],
+    "logs.category.access.view": ["logs.timeline.view"],
+    "logs.category.user_action.view": ["logs.timeline.view"],
+    "logs.category.settings.view": ["logs.timeline.view"],
+    "logs.category.system.view": ["logs.timeline.view"],
+    "RUN_TestTools": ["VIEW_SystemSettings"],
+    "MANAGE_BackupImportExport": ["VIEW_SystemSettings"],
+    "RUN_DangerActions": ["VIEW_SystemSettings", "EDIT_SystemSettings"],
+    "MANAGE_AccessControl": ["VIEW_SystemSettings"],
+    "surveillance.edit": ["surveillance.view"],
+    "optical.edit": ["optical.view"],
+    "accounts_ping.edit": ["accounts_ping.view"],
+    "usage.edit": ["usage.view"],
+    "offline.edit": ["offline.view"],
+    "wan.edit": ["wan.view"],
+    "system.edit": ["system.view"],
+    "tools.test": ["system.view"],
+    "settings.import_export": ["system.view"],
+    "settings.danger": ["system.view", "system.edit"],
+    "auth.manage": ["system.view"],
+}
+AUTH_PERMISSION_DEPENDENCIES_LOWER = {
+    str(k or "").strip().lower(): [
+        str(dep or "").strip() for dep in (v or []) if str(dep or "").strip()
+    ]
+    for k, v in AUTH_PERMISSION_DEPENDENCIES.items()
+}
+AUTH_PERMISSION_DEPRECATED_CODES = {
+    "logs.view",
+    "system.access.audit.view",
+    "system.access.audit.retention.edit",
+}
+AUTH_PERMISSION_DEPRECATED_CODES_LOWER = {
+    str(code or "").strip().lower()
+    for code in AUTH_PERMISSION_DEPRECATED_CODES
+    if str(code or "").strip()
+}
+AUTH_ROLE_EDITOR_HIDDEN_CODES = {
+    "dashboard.view",
+    "view_dashboard",
+    "logs.view",
+    "system.access.audit.view",
+    "system.access.audit.retention.edit",
+}
+AUTH_AUTODEP_ROOT_VIEW_FEATURES = {
+    "dashboard",
+    "profile_review",
+    "surveillance",
+    "optical",
+    "accounts_ping",
+    "usage",
+    "offline",
+    "wan",
+    "system",
+    "logs",
+}
+AUTH_AUTODEP_ROOT_EDIT_FEATURES = {
+    "surveillance",
+    "optical",
+    "accounts_ping",
+    "usage",
+    "offline",
+    "wan",
+    "system",
+}
+AUTH_AUTODEP_ACTIONS = {
+    "edit",
+    "add",
+    "create",
+    "update",
+    "delete",
+    "remove",
+    "format",
+    "run",
+    "manage",
+    "test",
+    "move",
+    "fix",
+    "recover",
+    "mark",
+    "toggle",
+    "save",
+    "upload",
+    "download",
+    "sync",
+}
+
+
+def _auth_permission_feature_key(code: str) -> str:
+    normalized = (code or "").strip()
+    lowered = normalized.lower()
+    if not lowered:
+        return "other"
+
+    if lowered.startswith("dashboard.") or lowered.startswith("view_dashboard"):
+        return "dashboard"
+    if lowered.startswith("logs."):
+        return "logs"
+    if lowered.startswith("profile_review.") or lowered.startswith("view_profilereview"):
+        return "profile_review"
+    if (
+        lowered.startswith("surveillance.")
+        or "undersurveillance" in lowered
+        or "accessmonitoring" in lowered
+        or "needsmanualfix" in lowered
+        or "postfixobservation" in lowered
+    ):
+        return "under_surveillance"
+    if lowered.startswith("optical.") or "optical" in lowered:
+        return "optical"
+    if lowered.startswith("accounts_ping.") or "accountsping" in lowered or "accounts_ping" in lowered:
+        return "accounts_ping"
+    if lowered.startswith("usage.") or lowered.startswith("view_usage") or lowered.startswith("edit_usage"):
+        return "usage"
+    if lowered.startswith("offline.") or lowered.startswith("view_offline") or lowered.startswith("edit_offline"):
+        return "offline"
+    if lowered.startswith("wan.") or "wanping" in lowered or lowered.startswith("view_wan") or lowered.startswith("edit_wan"):
+        return "wan_ping"
+    if (
+        lowered.startswith("system.")
+        or "systemsettings" in lowered
+        or lowered == "auth.manage"
+        or lowered.startswith("auth.")
+        or lowered == "tools.test"
+        or lowered == "settings.import_export"
+        or lowered == "settings.danger"
+        or "accesscontrol" in lowered
+        or "backupimportexport" in lowered
+        or "dangeractions" in lowered
+        or "testtools" in lowered
+    ):
+        return "system_settings"
+
+    return "other"
+
+
+def _auth_permission_feature_label(feature_key: str) -> str:
+    key = (feature_key or "").strip().lower()
+    return AUTH_PERMISSION_FEATURE_LABELS.get(key, "Other")
+
+
+def _auth_is_destructive_permission(code: str, label: str = "", description: str = "") -> bool:
+    haystack = " ".join(
+        [
+            str(code or "").strip().lower(),
+            str(label or "").strip().lower(),
+            str(description or "").strip().lower(),
+        ]
+    )
+    if not haystack:
+        return False
+    keywords = (
+        "format",
+        "delete",
+        "remove",
+        "danger",
+        "uninstall",
+        "reset",
+        "wipe",
+        "truncate",
+    )
+    return any(keyword in haystack for keyword in keywords)
+
+
+def _auth_infer_modern_dependencies(code: str):
+    normalized = (code or "").strip()
+    if not normalized or "." not in normalized:
+        return []
+
+    parts = [part.strip() for part in normalized.split(".") if str(part or "").strip()]
+    if len(parts) < 2:
+        return []
+
+    root = str(parts[0] or "").strip().lower()
+    if root not in AUTH_AUTODEP_ROOT_VIEW_FEATURES:
+        return []
+
+    root_view = f"{parts[0]}.view"
+    action = str(parts[-1] or "").strip().lower()
+    out = []
+    seen = set()
+
+    def _add(dep_code: str):
+        value = (dep_code or "").strip()
+        key = value.lower()
+        if not value or key in seen:
+            return
+        seen.add(key)
+        out.append(value)
+
+    if action == "view":
+        if len(parts) > 2:
+            _add(root_view)
+        return out
+
+    _add(root_view)
+    if root in AUTH_AUTODEP_ROOT_EDIT_FEATURES:
+        _add(f"{parts[0]}.edit")
+
+    return out
+
+
+def _auth_permission_dependencies_for(code: str):
+    normalized = (code or "").strip()
+    lowered = normalized.lower()
+    if not normalized:
+        return []
+
+    candidates = [normalized]
+    alias = AUTH_PERMISSION_ALIASES.get(normalized) or AUTH_PERMISSION_ALIASES_LOWER.get(lowered)
+    if alias and str(alias or "").strip():
+        candidates.append(str(alias or "").strip())
+    legacy = AUTH_PERMISSION_ALIASES_REVERSE.get(normalized) or AUTH_PERMISSION_ALIASES_REVERSE_LOWER.get(lowered)
+    if legacy and str(legacy or "").strip():
+        candidates.append(str(legacy or "").strip())
+
+    out = []
+    seen = set()
+    for candidate in candidates:
+        value = (candidate or "").strip()
+        if not value:
+            continue
+        direct = AUTH_PERMISSION_DEPENDENCIES.get(value)
+        if direct is None:
+            direct = AUTH_PERMISSION_DEPENDENCIES_LOWER.get(value.lower(), [])
+        deps = []
+        deps.extend(direct or [])
+        deps.extend(_auth_infer_modern_dependencies(value))
+        for dep in deps:
+            dep_code = (dep or "").strip()
+            dep_key = dep_code.lower()
+            if not dep_code or dep_key in seen:
+                continue
+            seen.add(dep_key)
+            out.append(dep_code)
+    return out
+
+
+def _auth_expand_permission_dependencies(permission_codes):
+    selected = []
+    seen = set()
+    for code in permission_codes or []:
+        value = (code or "").strip()
+        key = value.lower()
+        if not value or key in seen:
+            continue
+        seen.add(key)
+        selected.append(value)
+
+    auto_added = []
+    idx = 0
+    while idx < len(selected):
+        current = selected[idx]
+        idx += 1
+        for dep in _auth_permission_dependencies_for(current):
+            dep_code = (dep or "").strip()
+            dep_key = dep_code.lower()
+            if not dep_code or dep_key in seen:
+                continue
+            seen.add(dep_key)
+            selected.append(dep_code)
+            auto_added.append(dep_code)
+
+    selected_sorted = sorted(selected, key=lambda item: str(item).lower())
+    auto_sorted = sorted({item for item in auto_added if item}, key=lambda item: str(item).lower())
+    return selected_sorted, auto_sorted
+
+
+def _auth_annotate_permissions_with_dependencies(permission_rows):
+    rows = [dict(item or {}) for item in (permission_rows or [])]
+    by_code_lower = {}
+    for item in rows:
+        code = str(item.get("code") or "").strip()
+        if code:
+            by_code_lower[code.lower()] = item
+
+    for item in rows:
+        code = str(item.get("code") or "").strip()
+        deps = _auth_permission_dependencies_for(code)
+        item["is_destructive"] = _auth_is_destructive_permission(
+            code,
+            str(item.get("label") or ""),
+            str(item.get("description") or ""),
+        )
+        dep_codes = []
+        dep_labels = []
+        seen_dep = set()
+        for dep in deps:
+            dep_code = (dep or "").strip()
+            dep_key = dep_code.lower()
+            if not dep_code or dep_key in seen_dep:
+                continue
+            match = by_code_lower.get(dep_key)
+            resolved_code = str((match or {}).get("code") or dep_code).strip()
+            resolved_key = resolved_code.lower()
+            if not resolved_code or resolved_key in seen_dep:
+                continue
+            seen_dep.add(resolved_key)
+            dep_codes.append(resolved_code)
+            dep_label = str((match or {}).get("description") or (match or {}).get("label") or resolved_code).strip()
+            dep_labels.append(dep_label)
+        item["depends_on"] = dep_codes
+        item["depends_on_labels"] = dep_labels
+    return rows
+
+
+def _build_auth_permission_groups(permission_rows):
+    grouped = {}
+    for row in permission_rows or []:
+        item = dict(row or {})
+        code = (item.get("code") or "").strip()
+        key = _auth_permission_feature_key(code)
+        if key not in grouped:
+            grouped[key] = {
+                "key": key,
+                "label": _auth_permission_feature_label(key),
+                "permissions": [],
+            }
+        grouped[key]["permissions"].append(item)
+    for group in grouped.values():
+        group["permissions"] = sorted(
+            group.get("permissions") or [],
+            key=lambda entry: str(entry.get("code") or "").lower(),
+        )
+    out = []
+    for key in AUTH_PERMISSION_FEATURE_ORDER:
+        group = grouped.get(key)
+        if group and (group.get("permissions") or []):
+            out.append(group)
+    for key, group in sorted(grouped.items(), key=lambda item: item[0]):
+        if key in AUTH_PERMISSION_FEATURE_ORDER:
+            continue
+        if group and (group.get("permissions") or []):
+            out.append(group)
+    return out
+
+
+def _build_role_permission_groups(permission_codes):
+    grouped = {}
+    for raw_code in permission_codes or []:
+        code = (raw_code or "").strip()
+        if not code:
+            continue
+        key = _auth_permission_feature_key(code)
+        if key not in grouped:
+            grouped[key] = {
+                "key": key,
+                "label": _auth_permission_feature_label(key),
+                "codes": [],
+            }
+        grouped[key]["codes"].append(code)
+    for group in grouped.values():
+        group["codes"] = sorted(group.get("codes") or [], key=lambda entry: str(entry).lower())
+    out = []
+    for key in AUTH_PERMISSION_FEATURE_ORDER:
+        group = grouped.get(key)
+        if group and (group.get("codes") or []):
+            out.append(group)
+    for key, group in sorted(grouped.items(), key=lambda item: item[0]):
+        if key in AUTH_PERMISSION_FEATURE_ORDER:
+            continue
+        if group and (group.get("codes") or []):
+            out.append(group)
+    return out
+
+
+def _build_role_editor_permission_groups(permission_groups):
+    hidden = {str(code or "").strip().lower() for code in AUTH_ROLE_EDITOR_HIDDEN_CODES if str(code or "").strip()}
+    out = []
+    for group in permission_groups or []:
+        permissions = []
+        for item in (group.get("permissions") or []):
+            code = str((item or {}).get("code") or "").strip()
+            if not code:
+                continue
+            if code.lower() in hidden:
+                continue
+            permissions.append(dict(item or {}))
+        if not permissions:
+            continue
+        out.append(
+            {
+                "key": group.get("key"),
+                "label": group.get("label"),
+                "permissions": permissions,
+            }
+        )
+    return out
+
+
+def _auth_encode_bytes(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
+
+
+def _auth_decode_bytes(text: str) -> bytes:
+    text = (text or "").strip()
+    if not text:
+        return b""
+    padding = "=" * (-len(text) % 4)
+    return base64.urlsafe_b64decode(text + padding)
+
+
+def _auth_hash_password(password: str, salt_text: str = ""):
+    raw_password = str(password or "")
+    if not raw_password:
+        raise ValueError("Password is required.")
+    salt = _auth_decode_bytes(salt_text) if salt_text else secrets.token_bytes(16)
+    if not salt:
+        salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", raw_password.encode("utf-8"), salt, 260000, dklen=32)
+    return _auth_encode_bytes(digest), _auth_encode_bytes(salt)
+
+
+def _auth_verify_password(password: str, stored_hash: str, salt_text: str) -> bool:
+    expected = (stored_hash or "").strip()
+    salt_text = (salt_text or "").strip()
+    if not expected or not salt_text:
+        return False
+    try:
+        candidate_hash, _ = _auth_hash_password(password or "", salt_text)
+    except Exception:
+        return False
+    return hmac.compare_digest(candidate_hash, expected)
+
+
+def _auth_hash_session_token(token: str) -> str:
+    return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
+
+
+def _auth_generate_temporary_password(length: int = 14) -> str:
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789@#_-"
+    return "".join(secrets.choice(alphabet) for _ in range(max(int(length or 14), 10)))
+
+
+def _auth_now_utc():
+    return datetime.utcnow().replace(microsecond=0)
+
+
+def _auth_now_iso():
+    return _auth_now_utc().isoformat() + "Z"
+
+
+def _auth_parse_iso(value: str):
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+def _auth_client_ip(request: Request) -> str:
+    forwarded = (request.headers.get("x-forwarded-for") or "").strip()
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return (request.client.host if request.client else "") or ""
+
+
+def _auth_wants_json(request: Request) -> bool:
+    accept = (request.headers.get("accept") or "").lower()
+    if "application/json" in accept:
+        return True
+    if (request.headers.get("x-requested-with") or "").lower() == "xmlhttprequest":
+        return True
+    content_type = (request.headers.get("content-type") or "").lower()
+    if "application/json" in content_type:
+        return True
+    return False
+
+
+def _auth_is_public_path(path: str) -> bool:
+    path = (path or "").strip()
+    if not path:
+        return True
+    if path.startswith("/static/"):
+        return True
+    if path in ("/favicon.ico", "/company-logo", "/browser-logo", "/login", "/forgot-password", "/setup-owner", "/setup-admin"):
+        return True
+    return False
+
+
+LOG_CATEGORY_PERMISSION_MAP = {
+    "Surveillance": "logs.category.surveillance.view",
+    "Access": "logs.category.access.view",
+    "User Action": "logs.category.user_action.view",
+    "Settings": "logs.category.settings.view",
+    "System": "logs.category.system.view",
+}
+
+
+def _auth_allowed_log_categories(permission_codes) -> list[str]:
+    perm_codes = permission_codes or []
+    allowed = [
+        category
+        for category, perm_code in LOG_CATEGORY_PERMISSION_MAP.items()
+        if _auth_check_permission(perm_codes, perm_code)
+    ]
+    if allowed:
+        return allowed
+    if _auth_check_permission(perm_codes, "logs.timeline.view"):
+        return list(LOG_CATEGORY_PERMISSION_MAP.keys())
+    return []
+
+
+def _auth_can_view_logs_page(permission_codes) -> bool:
+    return bool(_auth_allowed_log_categories(permission_codes))
+
+
+def _audit_rows_for_categories(
+    limit: int = 20,
+    allowed_categories=None,
+    surveillance_only: bool = False,
+):
+    try:
+        limit_value = int(limit or 20)
+    except Exception:
+        limit_value = 20
+    limit_value = max(1, min(limit_value, 200))
+
+    all_categories = {str(item or "").strip() for item in LOG_CATEGORY_PERMISSION_MAP.keys() if str(item or "").strip()}
+    allowed_set = {str(item or "").strip() for item in (allowed_categories or []) if str(item or "").strip()}
+
+    if not allowed_set:
+        return []
+    if allowed_set >= all_categories:
+        return _audit_log_rows(limit=limit_value, surveillance_only=surveillance_only)
+
+    scan_limit = max(200, limit_value * 20)
+    max_scan_limit = 5000
+    filtered = []
+    while True:
+        rows = _audit_log_rows(limit=scan_limit, surveillance_only=surveillance_only)
+        filtered = [row for row in rows if str(row.get("category") or "").strip() in allowed_set]
+        if len(filtered) >= limit_value:
+            break
+        if scan_limit >= max_scan_limit:
+            break
+        if len(rows) < scan_limit:
+            break
+        scan_limit = min(scan_limit * 2, max_scan_limit)
+
+    return filtered[:limit_value]
+
+
+def _auth_permission_for_route(path: str, method: str):
+    path = (path or "").strip().lower()
+    method = (method or "GET").strip().upper()
+    if path == "/dashboard/latest-logs":
+        return "dashboard.logs.view"
+    if path == "/":
+        return "VIEW_Dashboard"
+    if path.startswith("/logs"):
+        return "logs.timeline.view"
+    if path.startswith("/dashboard/"):
+        return "VIEW_Dashboard"
+    if path.startswith("/system/resources"):
+        return "dashboard.resources.view"
+    if path.startswith("/profile-review"):
+        return "VIEW_ProfileReview"
+
+    if path.startswith("/surveillance"):
+        if method == "GET":
+            return "VIEW_UnderSurveillance"
+        if path.endswith("/format"):
+            return "RUN_DangerActions"
+        if path.endswith("/add"):
+            return "ADD_AccessMonitoring_UnderSurveillance"
+        if path.endswith("/mark_false"):
+            return "MARKFALSE_AccessMonitoring_UnderSurveillance"
+        if path.endswith("/move_level2"):
+            return "MOVE_AccessMonitoring_ToNeedsManualFix"
+        if path.endswith("/fixed") or path.endswith("/fixed_many"):
+            return "FIX_NeedsManualFix_Account"
+        if path.endswith("/observe_recovered"):
+            return "RECOVER_PostFixObservation_Account"
+        return "EDIT_UnderSurveillance"
+
+    if path.startswith("/settings/optical") or path.startswith("/optical"):
+        if method == "GET":
+            return "VIEW_Optical"
+        if path.endswith("/format"):
+            return "RUN_DangerActions"
+        if "/test" in path or path.endswith("/run"):
+            return "RUN_TestTools"
+        return "EDIT_Optical"
+
+    if path.startswith("/settings/accounts-ping") or path.startswith("/accounts-ping"):
+        if method == "GET":
+            return "VIEW_AccountsPing"
+        if path.endswith("/format"):
+            return "RUN_DangerActions"
+        if "/test" in path:
+            return "RUN_TestTools"
+        return "EDIT_AccountsPing"
+
+    if path.startswith("/settings/usage") or path.startswith("/usage"):
+        if method == "GET":
+            return "VIEW_Usage"
+        if path.endswith("/format"):
+            return "RUN_DangerActions"
+        if "/test" in path:
+            return "RUN_TestTools"
+        return "EDIT_Usage"
+
+    if path.startswith("/settings/offline") or path.startswith("/offline"):
+        if method == "GET":
+            return "VIEW_Offline"
+        if "/test" in path:
+            return "RUN_TestTools"
+        return "EDIT_Offline"
+
+    if path.startswith("/settings/wan") or path.startswith("/wan"):
+        if method == "GET":
+            return "VIEW_WanPing"
+        if path.endswith("/format") or path.endswith("/database"):
+            return "RUN_DangerActions"
+        if "/test" in path:
+            return "RUN_TestTools"
+        return "EDIT_WanPing"
+
+    if path in ("/settings/export", "/settings/db/export"):
+        return "MANAGE_BackupImportExport"
+    if path in ("/settings/import", "/settings/db/import"):
+        return "MANAGE_BackupImportExport"
+
+    if path.startswith("/settings/system/auth"):
+        return "MANAGE_AccessControl"
+
+    if path.startswith("/settings/system/logo") or path.startswith("/settings/system/browser-logo") or path.startswith("/settings/system/branding"):
+        return "system.general.branding.edit"
+
+    if path.startswith("/settings/system/telegram"):
+        return "system.general.telegram.edit"
+
+    if path.startswith("/settings/system"):
+        if method == "GET":
+            return "VIEW_SystemSettings"
+        if path.endswith("/uninstall"):
+            return "RUN_DangerActions"
+        if "/test" in path:
+            return "RUN_TestTools"
+        return "EDIT_SystemSettings"
+
+    if path.startswith("/settings"):
+        if method == "GET":
+            return "VIEW_SystemSettings"
+        return "EDIT_SystemSettings"
+    return None
+
+
+def _auth_check_permission(permission_codes, code: str) -> bool:
+    if not code:
+        return True
+    required = (code or "").strip()
+    if not required:
+        return True
+    perms = {str(item or "").strip().lower() for item in (permission_codes or []) if str(item or "").strip()}
+    if not perms:
+        return False
+
+    required_lower = required.lower()
+    candidates = {required_lower}
+
+    alias = AUTH_PERMISSION_ALIASES.get(required) or AUTH_PERMISSION_ALIASES_LOWER.get(required_lower)
+    if alias:
+        candidates.add(str(alias or "").strip().lower())
+
+    legacy = AUTH_PERMISSION_ALIASES_REVERSE.get(required) or AUTH_PERMISSION_ALIASES_REVERSE_LOWER.get(required_lower)
+    if legacy:
+        candidates.add(str(legacy or "").strip().lower())
+
+    return any(item in perms for item in candidates)
+
+
+def _auth_can_run_danger_actions(request: Request) -> bool:
+    if not bool(getattr(request.state, "auth_enabled", True)):
+        return True
+    permission_codes = getattr(request.state, "auth_permission_codes", []) or []
+    return _auth_check_permission(permission_codes, "RUN_DangerActions")
+
+
+def _auth_unauthorized_response(request: Request):
+    if request.method != "GET" or _auth_wants_json(request):
+        return JSONResponse({"ok": False, "error": "Authentication required."}, status_code=401)
+    next_path = request.url.path or "/"
+    if request.url.query:
+        next_path = f"{next_path}?{request.url.query}"
+    return RedirectResponse(url=f"/login?next={urllib.parse.quote(next_path, safe='/?:=&')}", status_code=303)
+
+
+def _auth_forbidden_response(request: Request, required_code: str):
+    if request.method != "GET" or _auth_wants_json(request):
+        return JSONResponse(
+            {"ok": False, "error": "Permission denied.", "required_permission": required_code},
+            status_code=403,
+        )
+    return HTMLResponse(
+        content=(
+            "<html><head><title>Permission denied</title></head>"
+            "<body style='font-family: sans-serif; padding: 24px;'>"
+            f"<h2>Permission denied</h2><p>You do not have permission: <code>{required_code}</code></p>"
+            "<p><a href='/'>Go to dashboard</a></p></body></html>"
+        ),
+        status_code=403,
+    )
+
+
+def _system_app_name(system_settings) -> str:
+    branding = (system_settings.get("branding") or {}) if isinstance(system_settings, dict) else {}
+    app_name = (branding.get("app_name") or "").strip()
+    if not app_name:
+        app_name = "ThreeJ Notifier"
+    if len(app_name) > 80:
+        app_name = app_name[:80].strip()
+    return app_name or "ThreeJ Notifier"
+
+
+def _auth_send_email(system_settings, to_email: str, subject: str, body_text: str):
+    auth_cfg = (system_settings.get("auth") or {}) if isinstance(system_settings, dict) else {}
+    smtp_cfg = (auth_cfg.get("smtp") or {}) if isinstance(auth_cfg.get("smtp"), dict) else {}
+    host = (smtp_cfg.get("host") or "").strip()
+    port = int(smtp_cfg.get("port") or 0)
+    username = (smtp_cfg.get("username") or "").strip()
+    password = (smtp_cfg.get("password") or "").strip()
+    from_email = (smtp_cfg.get("from_email") or "").strip()
+    app_name = _system_app_name(system_settings)
+    from_name_raw = (smtp_cfg.get("from_name") or "").strip()
+    if not from_name_raw or from_name_raw == "ThreeJ Notifier":
+        from_name = app_name
+    else:
+        from_name = from_name_raw
+    use_tls = bool(smtp_cfg.get("use_tls", True))
+    use_ssl = bool(smtp_cfg.get("use_ssl", False))
+
+    if not host or port <= 0:
+        raise ValueError("SMTP host and port are required.")
+    if not from_email:
+        raise ValueError("SMTP from email is required.")
+    to_email = (to_email or "").strip()
+    if not to_email:
+        raise ValueError("Recipient email is required.")
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = f"{from_name} <{from_email}>"
+    msg["To"] = to_email
+    msg.set_content(body_text or "")
+
+    context = ssl.create_default_context()
+    if use_ssl:
+        with smtplib.SMTP_SSL(host=host, port=port, timeout=30, context=context) as server:
+            if username:
+                server.login(username, password)
+            server.send_message(msg)
+        return
+
+    with smtplib.SMTP(host=host, port=port, timeout=30) as server:
+        server.ehlo()
+        if use_tls:
+            server.starttls(context=context)
+            server.ehlo()
+        if username:
+            server.login(username, password)
+        server.send_message(msg)
+
+
+def _auth_log_event(request: Request, action: str, resource: str = "", details: str = ""):
+    user = getattr(request.state, "current_user", None)
+    user_id = 0
+    username = ""
+    if isinstance(user, dict):
+        try:
+            user_id = int(user.get("id") or 0)
+        except Exception:
+            user_id = 0
+        username = (user.get("username") or "").strip()
+    try:
+        insert_auth_audit_log(
+            timestamp=_auth_now_iso(),
+            user_id=user_id,
+            username=username,
+            action=(action or "").strip(),
+            resource=(resource or "").strip(),
+            details=(details or "").strip()[:500],
+            ip_address=_auth_client_ip(request),
+        )
+    except Exception:
+        pass
+
+
+def _auth_actor_name(request: Request, default: str = "system") -> str:
+    user = getattr(request.state, "current_user", None)
+    if isinstance(user, dict):
+        name = (
+            (user.get("username") or "").strip()
+            or (user.get("full_name") or "").strip()
+            or (user.get("email") or "").strip()
+        )
+        if name:
+            return name
+    return (default or "system").strip() or "system"
+
+
+def _audit_details_map(details: str):
+    out = {}
+    for chunk in str(details or "").split(";"):
+        part = chunk.strip()
+        if not part or "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        key = key.strip().lower()
+        value = value.strip()
+        if key and key not in out:
+            out[key] = value
+    return out
+
+
+def _audit_action_category(action: str, resource: str = ""):
+    action_l = (action or "").strip().lower()
+    resource_l = (resource or "").strip().lower()
+    if action_l.startswith("surveillance.") or resource_l.startswith("/surveillance"):
+        return "Surveillance"
+    if action_l.startswith("auth.") or resource_l.startswith("/settings/system/auth"):
+        return "Access"
+    if action_l.startswith("http."):
+        return "User Action"
+    if resource_l.startswith("/settings/"):
+        return "Settings"
+    return "System"
+
+
+def _audit_human_message(username: str, action: str, resource: str, details: str):
+    user = (username or "").strip() or "system"
+    action_l = (action or "").strip().lower()
+    resource = (resource or "").strip()
+    details = (details or "").strip()
+    details_map = _audit_details_map(details)
+
+    if action_l == "auth.login":
+        return f"User {user} successfully logged in."
+    if action_l == "auth.logout":
+        return f"User {user} logged out."
+    if action_l == "auth.user_added":
+        return f"User {user} created account {(resource or 'new user')}."
+    if action_l == "auth.user_updated":
+        return f"User {user} updated user settings for {(resource or 'a user')}."
+    if action_l == "auth.user_deleted":
+        return f"User {user} deleted account {(resource or 'a user')}."
+    if action_l == "auth.user_reset_password":
+        return f"User {user} requested password reset email for {(resource or 'a user')}."
+    if action_l == "auth.role_added":
+        return f"User {user} created role {(resource or 'new role')}."
+    if action_l == "auth.role_updated":
+        return f"User {user} updated role permissions for {(resource or 'a role')}."
+    if action_l == "auth.role_deleted":
+        return f"User {user} deleted role {(resource or 'a role')}."
+
+    if action_l == "surveillance.add_manual":
+        return f"User {user} added {(resource or 'an account')} to Active Monitoring."
+    if action_l == "surveillance.add_auto":
+        source = (details_map.get("source") or "").replace("_", " ").strip() or "accounts ping"
+        reason = details_map.get("reason") or ""
+        if reason:
+            return f"System auto-added {(resource or 'an account')} to Active Monitoring from {source}. Reason: {reason}"
+        return f"System auto-added {(resource or 'an account')} to Active Monitoring from {source}."
+    if action_l == "surveillance.move_to_manual_fix":
+        reason = details_map.get("reason") or ""
+        if reason:
+            return f"User {user} moved {(resource or 'an account')} to Needs Manual Fix. Reason: {reason}"
+        return f"User {user} moved {(resource or 'an account')} to Needs Manual Fix."
+    if action_l == "surveillance.mark_fixed":
+        reason = details_map.get("reason") or ""
+        if reason:
+            return f"User {user} marked {(resource or 'an account')} as fixed. Note: {reason}"
+        return f"User {user} marked {(resource or 'an account')} as fixed."
+    if action_l == "surveillance.mark_fixed_bulk":
+        count = details_map.get("count") or ""
+        reason = details_map.get("reason") or ""
+        if count and reason:
+            return f"User {user} marked {count} accounts as fixed. Note: {reason}"
+        if count:
+            return f"User {user} marked {count} accounts as fixed."
+        return f"User {user} marked multiple accounts as fixed."
+    if action_l == "surveillance.mark_fully_recovered":
+        count = details_map.get("count") or ""
+        remarks = details_map.get("remarks") or ""
+        if count and remarks:
+            return f"User {user} marked {count} accounts as fully recovered. Remarks: {remarks}"
+        if count:
+            return f"User {user} marked {count} accounts as fully recovered."
+        return f"User {user} marked accounts as fully recovered."
+    if action_l == "surveillance.mark_false":
+        count = details_map.get("count") or ""
+        if count:
+            return f"User {user} marked {count} accounts as false alarm."
+        return f"User {user} marked {(resource or 'an account')} as false alarm."
+    if action_l == "surveillance.undo_add":
+        return f"User {user} removed {(resource or 'an account')} during undo window."
+    if action_l == "surveillance.remove":
+        return f"User {user} removed {(resource or 'an account')} from surveillance."
+    if action_l == "surveillance.remove_bulk":
+        count = details_map.get("count") or ""
+        if count:
+            return f"User {user} removed {count} accounts from surveillance."
+        return f"User {user} removed multiple accounts from surveillance."
+    if action_l == "surveillance.settings_saved":
+        return f"User {user} updated Under Surveillance settings."
+    if action_l == "surveillance.formatted":
+        return f"User {user} formatted Under Surveillance data."
+    if action_l == "surveillance.ai_generate":
+        stage = details_map.get("stage") or ""
+        if stage:
+            return f"User {user} requested AI report generation for {(resource or 'an account')} ({stage})."
+        return f"User {user} requested AI report generation for {(resource or 'an account')}."
+
+    if action_l.startswith("http."):
+        method = action_l.split(".", 1)[1].upper()
+        if resource.startswith("/surveillance/add"):
+            return f"User {user} submitted an add-to-surveillance request."
+        if resource.startswith("/surveillance/move_level2"):
+            return f"User {user} submitted move to Needs Manual Fix."
+        if resource.startswith("/surveillance/fixed"):
+            return f"User {user} submitted account fixed action."
+        if resource.startswith("/surveillance/observe_recovered"):
+            return f"User {user} submitted mark as fully recovered."
+        if resource.startswith("/settings/"):
+            return f"User {user} saved changes in settings."
+        if resource:
+            return f"User {user} performed {method} on {resource}."
+        return f"User {user} performed {method} action."
+
+    if resource:
+        return f"User {user} performed {action or 'action'} on {resource}."
+    return f"User {user} performed {action or 'an action'}."
+
+
+def _audit_log_rows(limit: int = 120, surveillance_only: bool = False):
+    try:
+        rows = list_auth_audit_logs(limit=max(int(limit or 120), 1))
+    except Exception:
+        rows = []
+    out = []
+    for row in rows:
+        action = (row.get("action") or "").strip()
+        resource = (row.get("resource") or "").strip()
+        details = (row.get("details") or "").strip()
+        username = (row.get("username") or "").strip() or "system"
+        category = _audit_action_category(action, resource)
+        if action.startswith("http."):
+            continue
+        if surveillance_only:
+            if not action.startswith("surveillance."):
+                continue
+        out.append(
+            {
+                "id": int(row.get("id") or 0),
+                "timestamp": (row.get("timestamp") or "").strip(),
+                "timestamp_ph": format_ts_ph(row.get("timestamp")),
+                "username": username,
+                "action": action or "n/a",
+                "category": category,
+                "resource": resource,
+                "details": details,
+                "message": _audit_human_message(username, action, resource, details),
+                "ip_address": (row.get("ip_address") or "").strip(),
+            }
+        )
+    return out
+
+
+def _auth_prune_audit_logs_if_due(system_settings):
+    auth_cfg = (system_settings.get("auth") or {}) if isinstance(system_settings, dict) else {}
+    try:
+        retention_days = int(auth_cfg.get("audit_retention_days") or 180)
+    except Exception:
+        retention_days = 180
+    retention_days = max(1, min(retention_days, 3650))
+    now = time.monotonic()
+    global _auth_audit_prune_last
+    with _auth_audit_prune_lock:
+        if now - _auth_audit_prune_last < 3600:
+            return
+        _auth_audit_prune_last = now
+    cutoff = (_auth_now_utc() - timedelta(days=retention_days)).isoformat() + "Z"
+    try:
+        delete_auth_audit_logs_older_than(cutoff)
+    except Exception:
+        pass
+
+
+def _auth_build_user_context(session_row, permission_codes):
+    permission_codes = sorted(
+        {
+            (code or "").strip()
+            for code in (permission_codes or [])
+            if (code or "").strip()
+            and (code or "").strip().lower() not in AUTH_PERMISSION_DEPRECATED_CODES_LOWER
+        }
+    )
+    return {
+        "id": int(session_row.get("user_id") or 0),
+        "session_id": int(session_row.get("session_id") or 0),
+        "username": (session_row.get("username") or "").strip(),
+        "email": (session_row.get("email") or "").strip(),
+        "full_name": (session_row.get("full_name") or "").strip(),
+        "role_id": int(session_row.get("role_id") or 0),
+        "role_name": (session_row.get("role_name") or "").strip(),
+        "must_change_password": bool(session_row.get("must_change_password")),
+        "is_active": bool(session_row.get("is_active")),
+        "last_seen_at": (session_row.get("last_seen_at") or "").strip(),
+        "permission_codes": permission_codes,
+    }
+
+
+def _auth_login_redirect_target(next_value: str):
+    next_value = (next_value or "").strip()
+    if not next_value:
+        return "/"
+    if next_value.startswith("http://") or next_value.startswith("https://"):
+        return "/"
+    if not next_value.startswith("/"):
+        return "/"
+    return next_value
+
+
+@app.middleware("http")
+async def auth_guard_middleware(request: Request, call_next):
+    path = (request.url.path or "/").strip() or "/"
+    request.state.current_user = None
+    request.state.auth_enabled = True
+    request.state.auth_permission_codes = []
+
+    if request.method.upper() == "OPTIONS":
+        return await call_next(request)
+
+    try:
+        system_settings = normalize_system_settings(get_settings("system", SYSTEM_DEFAULTS))
+    except Exception:
+        system_settings = normalize_system_settings({})
+    auth_cfg = (system_settings.get("auth") or {}) if isinstance(system_settings, dict) else {}
+    auth_enabled = bool(auth_cfg.get("enabled", True))
+    request.state.auth_enabled = auth_enabled
+    _auth_prune_audit_logs_if_due(system_settings)
+
+    if not auth_enabled:
+        return await call_next(request)
+
+    if _auth_is_public_path(path):
+        if path in ("/setup-admin", "/setup-owner") and count_auth_users() > 0:
+            return RedirectResponse(url="/login", status_code=303)
+        return await call_next(request)
+
+    cookie_token = (request.cookies.get(AUTH_COOKIE_NAME) or "").strip()
+    clear_cookie = False
+    user_ctx = None
+    if cookie_token:
+        token_hash = _auth_hash_session_token(cookie_token)
+        session_row = get_auth_session(token_hash)
+        if session_row and bool(session_row.get("is_active")):
+            now_dt = _auth_now_utc().replace(tzinfo=timezone.utc)
+            last_seen_dt = _auth_parse_iso(session_row.get("last_seen_at"))
+            expires_dt = _auth_parse_iso(session_row.get("expires_at"))
+            try:
+                idle_hours = int(auth_cfg.get("session_idle_hours") or 8)
+            except Exception:
+                idle_hours = 8
+            idle_hours = max(1, min(idle_hours, 72))
+            expired = False
+            if expires_dt and now_dt >= expires_dt:
+                expired = True
+            if last_seen_dt and (now_dt - last_seen_dt) > timedelta(hours=idle_hours):
+                expired = True
+            if expired:
+                revoke_auth_session(token_hash)
+                clear_cookie = True
+            else:
+                permission_codes = get_auth_user_permission_codes(session_row.get("user_id"))
+                user_ctx = _auth_build_user_context(session_row, permission_codes)
+                request.state.current_user = user_ctx
+                request.state.auth_permission_codes = list(user_ctx.get("permission_codes") or [])
+                if not last_seen_dt or (now_dt - last_seen_dt).total_seconds() >= _AUTH_TOUCH_INTERVAL_SECONDS:
+                    try:
+                        touch_auth_session(
+                            user_ctx.get("session_id"),
+                            at_iso=_auth_now_iso(),
+                            ip_address=_auth_client_ip(request),
+                            user_agent=(request.headers.get("user-agent") or "")[:255],
+                        )
+                    except Exception:
+                        pass
+        else:
+            clear_cookie = bool(cookie_token)
+
+    if not user_ctx:
+        response = _auth_unauthorized_response(request)
+        if clear_cookie:
+            response.delete_cookie(AUTH_COOKIE_NAME, path="/")
+        return response
+
+    force_change_paths = {"/account/change-password", "/logout"}
+    if user_ctx.get("must_change_password") and path not in force_change_paths:
+        if request.method != "GET" or _auth_wants_json(request):
+            response = JSONResponse({"ok": False, "error": "Password change required."}, status_code=403)
+        else:
+            response = RedirectResponse(url="/account/change-password", status_code=303)
+        if clear_cookie:
+            response.delete_cookie(AUTH_COOKIE_NAME, path="/")
+        return response
+
+    required_permission = _auth_permission_for_route(path, request.method)
+    if required_permission and not _auth_check_permission(user_ctx.get("permission_codes"), required_permission):
+        response = _auth_forbidden_response(request, required_permission)
+        if clear_cookie:
+            response.delete_cookie(AUTH_COOKIE_NAME, path="/")
+        return response
+
+    response = await call_next(request)
+    if clear_cookie:
+        response.delete_cookie(AUTH_COOKIE_NAME, path="/")
+    return response
+
 
 def _runtime_feature_from_path(path: str):
     value = (path or "").strip().lower()
@@ -315,7 +1608,16 @@ async def runtime_feature_cpu_middleware(request: Request, call_next):
 @app.on_event("startup")
 async def startup_event():
     init_db()
+    try:
+        _auth_ensure_owner_user_assignment()
+    except Exception:
+        pass
     jobs_manager.start()
+    try:
+        job_status = {item["job_name"]: dict(item) for item in get_job_status()}
+        _get_dashboard_kpis_cached(job_status, force=True)
+    except Exception:
+        pass
 
 
 @app.on_event("shutdown")
@@ -325,6 +1627,19 @@ async def shutdown_event():
 
 def make_context(request, extra=None):
     ctx = {"request": request}
+    current_user = getattr(request.state, "current_user", None)
+    if isinstance(current_user, dict):
+        perms = sorted({(p or "").strip() for p in (current_user.get("permission_codes") or []) if (p or "").strip()})
+        current_user = {**current_user, "permission_codes": perms}
+    else:
+        current_user = None
+        perms = []
+    perm_set = set(perms)
+    ctx["current_user"] = current_user
+    ctx["auth_enabled"] = bool(getattr(request.state, "auth_enabled", True))
+    ctx["auth_permission_codes"] = perms
+    ctx["has_perm"] = lambda code: _auth_check_permission(perm_set, (code or "").strip())
+    ctx["can_view_logs_page"] = _auth_can_view_logs_page(perm_set)
     try:
         system_settings = get_settings("system", SYSTEM_DEFAULTS)
         branding = system_settings.get("branding") or {}
@@ -369,6 +1684,406 @@ def make_context(request, extra=None):
     if extra:
         ctx.update(extra)
     return ctx
+
+
+def _render_login_page(request: Request, message: str = "", next_url: str = "/", username: str = "", mode: str = "login"):
+    return templates.TemplateResponse(
+        "login.html",
+        make_context(
+            request,
+            {
+                "message": (message or "").strip(),
+                "next_url": _auth_login_redirect_target(next_url),
+                "username": (username or "").strip(),
+                "mode": (mode or "login").strip().lower(),
+                "auth_user_count": count_auth_users(),
+            },
+        ),
+    )
+
+
+def _get_owner_role_id():
+    owner_role = get_auth_role_by_name("owner")
+    if not owner_role:
+        owner_role = get_auth_role_by_name("admin")
+    if not owner_role:
+        raise ValueError("Owner role is not available.")
+    return int(owner_role.get("id") or 0)
+
+
+def _auth_ensure_owner_user_assignment():
+    if count_auth_users() <= 0:
+        return
+    owner_role = get_auth_role_by_name("owner")
+    if not owner_role:
+        return
+    try:
+        owner_role_id = int(owner_role.get("id") or 0)
+    except Exception:
+        owner_role_id = 0
+    if owner_role_id <= 0:
+        return
+    users = list_auth_users() or []
+    for user in users:
+        if str(user.get("role_name") or "").strip().lower() == "owner":
+            return
+    valid_users = [user for user in users if int(user.get("id") or 0) > 0]
+    if not valid_users:
+        return
+    first_user = min(valid_users, key=lambda item: int(item.get("id") or 0))
+    try:
+        update_auth_user(
+            user_id=int(first_user.get("id") or 0),
+            email=(first_user.get("email") or "").strip(),
+            full_name=(first_user.get("full_name") or "").strip(),
+            role_id=owner_role_id,
+            is_active=bool(first_user.get("is_active")),
+        )
+    except Exception:
+        return
+
+
+@app.get("/setup-owner", response_class=HTMLResponse)
+@app.get("/setup-admin", response_class=HTMLResponse)
+async def setup_owner_page(request: Request):
+    if count_auth_users() > 0:
+        return RedirectResponse(url="/login", status_code=303)
+    return _render_login_page(request, mode="setup")
+
+
+@app.post("/setup-owner", response_class=HTMLResponse)
+@app.post("/setup-admin", response_class=HTMLResponse)
+async def setup_owner_submit(request: Request):
+    if count_auth_users() > 0:
+        return RedirectResponse(url="/login", status_code=303)
+    form = await request.form()
+    username = (form.get("username") or "").strip()
+    full_name = (form.get("full_name") or "").strip()
+    email = (form.get("email") or "").strip().lower()
+    password = (form.get("password") or "").strip()
+    confirm = (form.get("confirm_password") or "").strip()
+
+    if not username:
+        return _render_login_page(request, "Username is required.", mode="setup", username=username)
+    if len(password) < AUTH_PASSWORD_MIN_LENGTH:
+        return _render_login_page(
+            request,
+            f"Password must be at least {AUTH_PASSWORD_MIN_LENGTH} characters.",
+            mode="setup",
+            username=username,
+        )
+    if password != confirm:
+        return _render_login_page(request, "Password confirmation does not match.", mode="setup", username=username)
+    try:
+        owner_role_id = _get_owner_role_id()
+        password_hash, password_salt = _auth_hash_password(password)
+        create_auth_user(
+            username=username,
+            email=email,
+            full_name=full_name,
+            role_id=owner_role_id,
+            password_hash=password_hash,
+            password_salt=password_salt,
+            must_change_password=False,
+            is_active=True,
+        )
+    except Exception as exc:
+        return _render_login_page(request, f"Failed to create owner user: {exc}", mode="setup", username=username)
+    return _render_login_page(request, "Owner account created. You can now sign in.", mode="login", username=username)
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request, next: str = "/"):
+    if count_auth_users() <= 0:
+        return RedirectResponse(url="/setup-owner", status_code=303)
+    current_user = getattr(request.state, "current_user", None)
+    if isinstance(current_user, dict) and current_user.get("id"):
+        return RedirectResponse(url=_auth_login_redirect_target(next), status_code=303)
+    return _render_login_page(request, next_url=next, mode="login")
+
+
+@app.post("/login", response_class=HTMLResponse)
+async def login_submit(request: Request):
+    if count_auth_users() <= 0:
+        return RedirectResponse(url="/setup-owner", status_code=303)
+    form = await request.form()
+    username = (form.get("username") or "").strip()
+    password = (form.get("password") or "").strip()
+    next_url = _auth_login_redirect_target((form.get("next") or "/").strip() or "/")
+
+    if not username or not password:
+        return _render_login_page(request, "Username and password are required.", next_url=next_url, username=username)
+
+    user = None
+    if "@" in username:
+        user = get_auth_user_by_email(username)
+    if not user:
+        user = get_auth_user_by_username(username)
+    if not user:
+        return _render_login_page(request, "Invalid username or password.", next_url=next_url, username=username)
+    if not bool(user.get("is_active")):
+        return _render_login_page(request, "Account is disabled. Contact administrator.", next_url=next_url, username=username)
+    if not _auth_verify_password(password, user.get("password_hash"), user.get("password_salt")):
+        return _render_login_page(request, "Invalid username or password.", next_url=next_url, username=username)
+
+    token = secrets.token_urlsafe(48)
+    token_hash = _auth_hash_session_token(token)
+    now_iso = _auth_now_iso()
+    expires_iso = (_auth_now_utc() + timedelta(days=30)).isoformat() + "Z"
+    try:
+        create_auth_session(
+            token_hash=token_hash,
+            user_id=user.get("id"),
+            created_at=now_iso,
+            expires_at=expires_iso,
+            ip_address=_auth_client_ip(request),
+            user_agent=(request.headers.get("user-agent") or "")[:255],
+        )
+        touch_auth_user_login(user.get("id"), at_iso=now_iso)
+        insert_auth_audit_log(
+            timestamp=now_iso,
+            user_id=int(user.get("id") or 0),
+            username=(user.get("username") or "").strip(),
+            action="auth.login",
+            resource="/login",
+            details="login successful",
+            ip_address=_auth_client_ip(request),
+        )
+    except Exception:
+        return _render_login_page(request, "Login failed due to a server error.", next_url=next_url, username=username)
+
+    if bool(user.get("must_change_password")):
+        target = "/account/change-password"
+    else:
+        target = next_url or "/"
+    response = RedirectResponse(url=target, status_code=303)
+    response.set_cookie(
+        AUTH_COOKIE_NAME,
+        token,
+        max_age=AUTH_COOKIE_MAX_AGE_SECONDS,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        path="/",
+    )
+    return response
+
+
+@app.api_route("/logout", methods=["GET", "POST"], response_class=HTMLResponse)
+async def logout_submit(request: Request):
+    token = (request.cookies.get(AUTH_COOKIE_NAME) or "").strip()
+    if token:
+        token_hash = _auth_hash_session_token(token)
+        session_row = get_auth_session(token_hash)
+        try:
+            revoke_auth_session(token_hash)
+        except Exception:
+            pass
+        if session_row:
+            try:
+                insert_auth_audit_log(
+                    timestamp=_auth_now_iso(),
+                    user_id=int(session_row.get("user_id") or 0),
+                    username=(session_row.get("username") or "").strip(),
+                    action="auth.logout",
+                    resource="/logout",
+                    details="logout",
+                    ip_address=_auth_client_ip(request),
+                )
+            except Exception:
+                pass
+    response = RedirectResponse(url="/login", status_code=303)
+    response.delete_cookie(AUTH_COOKIE_NAME, path="/")
+    return response
+
+
+@app.get("/forgot-password", response_class=HTMLResponse)
+async def forgot_password_page(request: Request):
+    return _render_login_page(request, mode="forgot")
+
+
+@app.post("/forgot-password", response_class=HTMLResponse)
+async def forgot_password_submit(request: Request):
+    form = await request.form()
+    identity = (form.get("identity") or "").strip()
+    if not identity:
+        return _render_login_page(request, "Enter username or email.", mode="forgot")
+
+    user = None
+    if "@" in identity:
+        user = get_auth_user_by_email(identity)
+    if not user:
+        user = get_auth_user_by_username(identity)
+
+    if not user or not bool(user.get("is_active")):
+        return _render_login_page(
+            request,
+            "If the account exists, a reset email was sent.",
+            mode="forgot",
+        )
+
+    email = (user.get("email") or "").strip()
+    if not email:
+        return _render_login_page(
+            request,
+            "This account has no email address configured. Contact administrator.",
+            mode="forgot",
+        )
+
+    temp_password = _auth_generate_temporary_password()
+    temp_hash, temp_salt = _auth_hash_password(temp_password)
+    try:
+        set_auth_user_password(user.get("id"), temp_hash, temp_salt, must_change_password=True)
+        revoke_auth_sessions_for_user(user.get("id"))
+        system_settings = normalize_system_settings(get_settings("system", SYSTEM_DEFAULTS))
+        app_name = _system_app_name(system_settings)
+        _auth_send_email(
+            system_settings,
+            to_email=email,
+            subject=f"{app_name} password reset",
+            body_text=(
+                f"Your {app_name} password was reset.\n\n"
+                f"Username: {(user.get('username') or '').strip()}\n"
+                f"Temporary password: {temp_password}\n\n"
+                "Sign in and change your password immediately."
+            ),
+        )
+        insert_auth_audit_log(
+            timestamp=_auth_now_iso(),
+            user_id=int(user.get("id") or 0),
+            username=(user.get("username") or "").strip(),
+            action="auth.password_reset_email_sent",
+            resource="/forgot-password",
+            details="temporary password issued",
+            ip_address=_auth_client_ip(request),
+        )
+    except Exception as exc:
+        return _render_login_page(
+            request,
+            f"Password reset failed: {exc}",
+            mode="forgot",
+        )
+
+    return _render_login_page(
+        request,
+        "Reset email sent. Check your inbox for the temporary password.",
+        mode="login",
+        username=(user.get("username") or "").strip(),
+    )
+
+
+@app.get("/account/change-password", response_class=HTMLResponse)
+async def account_change_password_page(request: Request):
+    current_user = getattr(request.state, "current_user", None)
+    if not isinstance(current_user, dict) or not current_user.get("id"):
+        return RedirectResponse(url="/login", status_code=303)
+    return templates.TemplateResponse(
+        "change_password.html",
+        make_context(
+            request,
+            {
+                "message": "",
+            },
+        ),
+    )
+
+
+@app.get("/account/profile", response_class=HTMLResponse)
+async def account_profile_page(request: Request):
+    current_user = getattr(request.state, "current_user", None)
+    if not isinstance(current_user, dict) or not current_user.get("id"):
+        return RedirectResponse(url="/login", status_code=303)
+    user = get_auth_user_by_id(current_user.get("id")) or {}
+    profile_user = {
+        "username": (user.get("username") or current_user.get("username") or "").strip(),
+        "full_name": (user.get("full_name") or current_user.get("full_name") or "").strip(),
+        "email": (user.get("email") or current_user.get("email") or "").strip(),
+        "role_name": (user.get("role_name") or current_user.get("role_name") or "").strip(),
+        "last_login_at": (user.get("last_login_at") or "").strip(),
+        "created_at": (user.get("created_at") or "").strip(),
+    }
+    return templates.TemplateResponse(
+        "account_profile.html",
+        make_context(
+            request,
+            {
+                "profile_user": profile_user,
+            },
+        ),
+    )
+
+
+@app.post("/account/change-password", response_class=HTMLResponse)
+async def account_change_password_submit(request: Request):
+    current_user = getattr(request.state, "current_user", None)
+    if not isinstance(current_user, dict) or not current_user.get("id"):
+        return RedirectResponse(url="/login", status_code=303)
+    form = await request.form()
+    current_password = (form.get("current_password") or "").strip()
+    new_password = (form.get("new_password") or "").strip()
+    confirm_password = (form.get("confirm_password") or "").strip()
+
+    user = get_auth_user_by_id(current_user.get("id"))
+    if not user:
+        response = RedirectResponse(url="/login", status_code=303)
+        response.delete_cookie(AUTH_COOKIE_NAME, path="/")
+        return response
+    if not _auth_verify_password(current_password, user.get("password_hash"), user.get("password_salt")):
+        return templates.TemplateResponse(
+            "change_password.html",
+            make_context(request, {"message": "Current password is incorrect."}),
+        )
+    if len(new_password) < AUTH_PASSWORD_MIN_LENGTH:
+        return templates.TemplateResponse(
+            "change_password.html",
+            make_context(request, {"message": f"New password must be at least {AUTH_PASSWORD_MIN_LENGTH} characters."}),
+        )
+    if new_password != confirm_password:
+        return templates.TemplateResponse(
+            "change_password.html",
+            make_context(request, {"message": "Password confirmation does not match."}),
+        )
+
+    password_hash, password_salt = _auth_hash_password(new_password)
+    now_iso = _auth_now_iso()
+    try:
+        set_auth_user_password(user.get("id"), password_hash, password_salt, must_change_password=False)
+        revoke_auth_sessions_for_user(user.get("id"))
+        token = secrets.token_urlsafe(48)
+        create_auth_session(
+            token_hash=_auth_hash_session_token(token),
+            user_id=user.get("id"),
+            created_at=now_iso,
+            expires_at=(_auth_now_utc() + timedelta(days=30)).isoformat() + "Z",
+            ip_address=_auth_client_ip(request),
+            user_agent=(request.headers.get("user-agent") or "")[:255],
+        )
+        insert_auth_audit_log(
+            timestamp=now_iso,
+            user_id=int(user.get("id") or 0),
+            username=(user.get("username") or "").strip(),
+            action="auth.password_changed",
+            resource="/account/change-password",
+            details="password updated by user",
+            ip_address=_auth_client_ip(request),
+        )
+    except Exception as exc:
+        return templates.TemplateResponse(
+            "change_password.html",
+            make_context(request, {"message": f"Password update failed: {exc}"}),
+        )
+
+    response = RedirectResponse(url="/", status_code=303)
+    response.set_cookie(
+        AUTH_COOKIE_NAME,
+        token,
+        max_age=AUTH_COOKIE_MAX_AGE_SECONDS,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        path="/",
+    )
+    return response
 
 
 @app.get("/company-logo")
@@ -2063,21 +3778,31 @@ def _cpu_percent():
     if last_at > 0 and (now - last_at) < 1.0:
         return float(_cpu_sample.get("pct") or 0.0)
     proc_root = _process_proc_root()
-    first = _read_cpu_times(proc_root=proc_root)
-    if not first:
+    current = _read_cpu_times(proc_root=proc_root)
+    if not current:
         return float(_cpu_sample.get("pct") or 0.0)
-    time.sleep(0.20)
-    second = _read_cpu_times(proc_root=proc_root)
-    if not second:
+    prev_total = _cpu_sample.get("total")
+    prev_idle = _cpu_sample.get("idle")
+    try:
+        prev_total = int(prev_total) if prev_total is not None else None
+        prev_idle = int(prev_idle) if prev_idle is not None else None
+    except Exception:
+        prev_total = None
+        prev_idle = None
+    total_now = int(current[0])
+    idle_now = int(current[1])
+    if prev_total is None or prev_idle is None:
+        _cpu_sample["total"] = total_now
+        _cpu_sample["idle"] = idle_now
+        _cpu_sample["at"] = now
         return float(_cpu_sample.get("pct") or 0.0)
-    total_delta = int(second[0]) - int(first[0])
-    idle_delta = int(second[1]) - int(first[1])
-    if total_delta <= 0:
-        pct = float(_cpu_sample.get("pct") or 0.0)
-    else:
+    total_delta = total_now - prev_total
+    idle_delta = idle_now - prev_idle
+    pct = float(_cpu_sample.get("pct") or 0.0)
+    if total_delta > 0:
         pct = max(0.0, min(100.0, 100.0 * (total_delta - idle_delta) / total_delta))
-    _cpu_sample["total"] = int(second[0])
-    _cpu_sample["idle"] = int(second[1])
+    _cpu_sample["total"] = total_now
+    _cpu_sample["idle"] = idle_now
     _cpu_sample["pct"] = pct
     _cpu_sample["at"] = now
     return pct
@@ -2943,6 +4668,7 @@ def _build_dashboard_kpis(job_status):
         acc_cfg = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
         acc_state = get_state("accounts_ping_state", {})
         accounts = acc_state.get("accounts") if isinstance(acc_state.get("accounts"), dict) else {}
+        devices_total = len(acc_state.get("devices") or [])
         down = issue = up = burst = 0
         for item in accounts.values():
             if not isinstance(item, dict):
@@ -2956,30 +4682,14 @@ def _build_dashboard_kpis(job_status):
                 up += 1
             if item.get("burst_until"):
                 burst += 1
-        dashboard_status = None
-        try:
-            dashboard_status = build_accounts_ping_status(
-                acc_cfg,
-                window_hours=24,
-                limit=1,
-                issues_page=1,
-                stable_page=1,
-            )
-        except Exception:
-            dashboard_status = None
-        total_accounts = len(accounts)
-        issue_total = issue
-        stable_total = up
-        pending_total = 0
-        if isinstance(dashboard_status, dict):
-            total_accounts = int(dashboard_status.get("total") or total_accounts)
-            issue_total = int(dashboard_status.get("issue_total") or 0)
-            stable_total = int(dashboard_status.get("stable_total") or 0)
-            pending_total = int(dashboard_status.get("pending_total") or 0)
-            down = int(dashboard_status.get("down_total") or 0)
+        issue_total = int(down + issue)
+        stable_total = int(up)
+        total_accounts = max(int(devices_total), int(len(accounts)))
+        known_total = int(down + issue + up)
+        pending_total = max(total_accounts - known_total, 0)
         out["accounts_ping"] = {
             "accounts": total_accounts,
-            "devices": len(acc_state.get("devices") or []),
+            "devices": devices_total,
             "up": stable_total,
             "down": down,
             "issue": issue_total,
@@ -3011,7 +4721,7 @@ def _build_dashboard_kpis(job_status):
         issue_tx = float(classification.get("issue_tx_dbm", -2.0) or -2.0)
         tx_real_min = float(classification.get("tx_realistic_min_dbm", -10.0) or -10.0)
         tx_real_max = float(classification.get("tx_realistic_max_dbm", 10.0) or 10.0)
-        since_iso = (now - timedelta(days=7)).replace(microsecond=0).isoformat() + "Z"
+        since_iso = (now - timedelta(hours=48)).replace(microsecond=0).isoformat() + "Z"
         latest = get_optical_latest_results_since(since_iso)
         issue_rx_count = 0
         issue_tx_count = 0
@@ -3188,6 +4898,21 @@ def _build_dashboard_kpis(job_status):
     return out
 
 
+def _get_dashboard_kpis_cached(job_status, force=False):
+    now_mono = time.monotonic()
+    if not force:
+        with _dashboard_kpis_cache_lock:
+            cached = _dashboard_kpis_cache.get("data")
+            cached_at = float(_dashboard_kpis_cache.get("at") or 0.0)
+            if cached is not None and (now_mono - cached_at) < float(_DASHBOARD_KPI_CACHE_SECONDS):
+                return copy.deepcopy(cached)
+    fresh = _build_dashboard_kpis(job_status)
+    with _dashboard_kpis_cache_lock:
+        _dashboard_kpis_cache["data"] = copy.deepcopy(fresh)
+        _dashboard_kpis_cache["at"] = now_mono
+    return fresh
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     job_status = {item["job_name"]: dict(item) for item in get_job_status()}
@@ -3195,10 +4920,175 @@ async def dashboard(request: Request):
         status["last_run_at_ph"] = format_ts_ph(status.get("last_run_at"))
         status["last_success_at_ph"] = format_ts_ph(status.get("last_success_at"))
         status["last_error_at_ph"] = format_ts_ph(status.get("last_error_at"))
-    dashboard_kpis = _build_dashboard_kpis(job_status)
+    dashboard_kpis = _get_dashboard_kpis_cached(job_status)
+    dashboard_latest_logs = _audit_log_rows(limit=20, surveillance_only=False)
+    if bool(getattr(request.state, "auth_enabled", True)):
+        allowed_categories = _auth_allowed_log_categories(getattr(request.state, "auth_permission_codes", []) or [])
+        dashboard_latest_logs = _audit_rows_for_categories(
+            limit=20,
+            allowed_categories=allowed_categories,
+            surveillance_only=False,
+        )
     return templates.TemplateResponse(
         "dashboard.html",
-        make_context(request, {"job_status": job_status, "dashboard_kpis": dashboard_kpis}),
+        make_context(
+            request,
+            {
+                "job_status": job_status,
+                "dashboard_kpis": dashboard_kpis,
+                "dashboard_latest_logs": dashboard_latest_logs,
+            },
+        ),
+    )
+
+
+@app.get("/dashboard/latest-logs", response_class=JSONResponse)
+async def dashboard_latest_logs(request: Request, limit: int = 20):
+    try:
+        limit_value = int(limit or 20)
+    except Exception:
+        limit_value = 20
+    limit_value = max(1, min(limit_value, 100))
+    rows = _audit_log_rows(limit=limit_value, surveillance_only=False)
+    if bool(getattr(request.state, "auth_enabled", True)):
+        allowed_categories = _auth_allowed_log_categories(getattr(request.state, "auth_permission_codes", []) or [])
+        rows = _audit_rows_for_categories(
+            limit=limit_value,
+            allowed_categories=allowed_categories,
+            surveillance_only=False,
+        )
+    return JSONResponse({"rows": rows, "captured_at": utc_now_iso()})
+
+
+@app.get("/logs", response_class=HTMLResponse)
+async def logs_page(request: Request):
+    query = (request.query_params.get("q") or "").strip()
+    category = (request.query_params.get("category") or "all").strip()
+    action_filter = (request.query_params.get("action") or "").strip()
+    user_filter = (request.query_params.get("user") or "").strip()
+    window = (request.query_params.get("window") or "all").strip().lower()
+    page = _parse_table_page(request.query_params.get("page"), default=1)
+
+    all_categories = list(LOG_CATEGORY_PERMISSION_MAP.keys())
+    if bool(getattr(request.state, "auth_enabled", True)):
+        allowed_categories = _auth_allowed_log_categories(getattr(request.state, "auth_permission_codes", []) or [])
+    else:
+        allowed_categories = list(all_categories)
+    if not allowed_categories:
+        return _auth_forbidden_response(request, "logs.timeline.view")
+
+    allowed_category_set = {str(item or "").strip() for item in allowed_categories if str(item or "").strip()}
+    valid_category_values = {"all", *allowed_category_set}
+    if category not in valid_category_values:
+        category = "all"
+    if window not in {"all", "24h", "7d", "30d"}:
+        window = "all"
+
+    all_rows = _audit_log_rows(limit=20000, surveillance_only=False)
+    visible_rows = [row for row in all_rows if str(row.get("category") or "").strip() in allowed_category_set]
+    users = sorted(
+        {
+            (row.get("username") or "").strip()
+            for row in visible_rows
+            if (row.get("username") or "").strip()
+        },
+        key=lambda value: value.lower(),
+    )
+    actions = sorted(
+        {
+            (row.get("action") or "").strip()
+            for row in visible_rows
+            if (row.get("action") or "").strip()
+        },
+        key=lambda value: value.lower(),
+    )
+
+    now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
+    cutoff = None
+    if window == "24h":
+        cutoff = now_utc - timedelta(hours=24)
+    elif window == "7d":
+        cutoff = now_utc - timedelta(days=7)
+    elif window == "30d":
+        cutoff = now_utc - timedelta(days=30)
+
+    filtered_rows = []
+    query_l = query.lower()
+    for row in visible_rows:
+        if category != "all" and (row.get("category") or "") != category:
+            continue
+        if action_filter and (row.get("action") or "") != action_filter:
+            continue
+        if user_filter and (row.get("username") or "") != user_filter:
+            continue
+        if cutoff is not None:
+            ts_raw = (row.get("timestamp") or "").strip()
+            ts_dt = None
+            try:
+                raw = ts_raw[:-1] + "+00:00" if ts_raw.endswith("Z") else ts_raw
+                ts_dt = datetime.fromisoformat(raw)
+                if ts_dt.tzinfo is None:
+                    ts_dt = ts_dt.replace(tzinfo=timezone.utc)
+                else:
+                    ts_dt = ts_dt.astimezone(timezone.utc)
+            except Exception:
+                ts_dt = None
+            if ts_dt is None or ts_dt < cutoff:
+                continue
+        if query_l:
+            blob = " ".join(
+                [
+                    str(row.get("username") or ""),
+                    str(row.get("action") or ""),
+                    str(row.get("category") or ""),
+                    str(row.get("resource") or ""),
+                    str(row.get("details") or ""),
+                    str(row.get("message") or ""),
+                    str(row.get("ip_address") or ""),
+                ]
+            ).lower()
+            if query_l not in blob:
+                continue
+        filtered_rows.append(row)
+
+    page_limit = 100
+    total = len(filtered_rows)
+    pages = max((total + page_limit - 1) // page_limit, 1)
+    page = max(1, min(page, pages))
+    start_idx = (page - 1) * page_limit
+    end_idx = start_idx + page_limit
+    rows_page = filtered_rows[start_idx:end_idx]
+
+    base_params = {
+        "q": query,
+        "category": category if category != "all" else "",
+        "action": action_filter,
+        "user": user_filter,
+        "window": window if window != "all" else "",
+    }
+    base_params = {key: value for key, value in base_params.items() if value}
+    logs_base_query = urllib.parse.urlencode(base_params)
+
+    return templates.TemplateResponse(
+        "logs.html",
+        make_context(
+            request,
+            {
+                "logs_rows": rows_page,
+                "logs_total": total,
+                "logs_page": page,
+                "logs_pages": pages,
+                "logs_query": query,
+                "logs_category": category,
+                "logs_action": action_filter,
+                "logs_user": user_filter,
+                "logs_window": window,
+                "logs_category_options": allowed_categories,
+                "logs_users": users,
+                "logs_actions": actions,
+                "logs_base_query": logs_base_query,
+            },
+        ),
     )
 
 
@@ -4908,6 +6798,8 @@ async def usage_settings(request: Request):
     settings_tab = (request.query_params.get("settings_tab") or "general").strip().lower()
     if settings_tab not in ("general", "routers", "data", "detection", "storage", "danger"):
         settings_tab = "general"
+    if settings_tab == "danger" and not _auth_can_run_danger_actions(request):
+        settings_tab = "general"
     job_status = {item["job_name"]: dict(item) for item in get_job_status()}
     usage_job = job_status.get("usage", {})
     usage_job = {
@@ -4947,7 +6839,11 @@ async def usage_settings(request: Request):
 @app.post("/settings/usage", response_class=HTMLResponse)
 async def usage_settings_save(request: Request):
     form = await request.form()
-    settings_tab = (form.get("settings_tab") or "general").strip() or "general"
+    settings_tab = (form.get("settings_tab") or "general").strip().lower() or "general"
+    if settings_tab not in ("general", "routers", "data", "detection", "storage", "danger"):
+        settings_tab = "general"
+    if settings_tab == "danger" and not _auth_can_run_danger_actions(request):
+        settings_tab = "general"
     settings = get_settings("usage", USAGE_DEFAULTS)
 
     settings["mikrotik"] = settings.get("mikrotik") if isinstance(settings.get("mikrotik"), dict) else {}
@@ -6605,6 +8501,12 @@ def render_accounts_ping_response(
     stable_dir="",
     query="",
 ):
+    can_run_danger_actions = _auth_can_run_danger_actions(request)
+    settings_tab = (settings_tab or "general").strip().lower()
+    if settings_tab not in ("general", "source", "classification", "storage", "danger"):
+        settings_tab = "general"
+    if settings_tab == "danger" and not can_run_danger_actions:
+        settings_tab = "general"
     settings, tuning = _accounts_ping_tuning_context(settings)
     status_map = {item["job_name"]: dict(item) for item in get_job_status()}
     job_status = status_map.get("accounts_ping", {})
@@ -6651,6 +8553,7 @@ def render_accounts_ping_response(
                 "accounts_ping_job": job_status,
                 "accounts_ping_window_options": WAN_STATUS_WINDOW_OPTIONS,
                 "accounts_ping_tuning": tuning,
+                "can_run_danger_actions": can_run_danger_actions,
             },
         ),
     )
@@ -6799,6 +8702,9 @@ def normalize_system_settings(raw):
     if isinstance(raw, dict):
         branding = raw.get("branding")
         if isinstance(branding, dict):
+            app_name = (branding.get("app_name") or "").strip()
+            if app_name:
+                cfg["branding"]["app_name"] = app_name
             cfg["branding"]["company_logo"].update(branding.get("company_logo") or {})
             cfg["branding"]["browser_logo"].update(branding.get("browser_logo") or {})
         ai = raw.get("ai")
@@ -6814,6 +8720,23 @@ def normalize_system_settings(raw):
                 cfg["ai"]["gemini"].update(ai.get("gemini") or {})
             if isinstance(ai.get("report"), dict):
                 cfg["ai"]["report"].update(ai.get("report") or {})
+        auth = raw.get("auth")
+        if isinstance(auth, dict):
+            cfg["auth"]["enabled"] = bool(auth.get("enabled", cfg["auth"]["enabled"]))
+            if "session_idle_hours" in auth:
+                cfg["auth"]["session_idle_hours"] = auth.get("session_idle_hours")
+            if "audit_retention_days" in auth:
+                cfg["auth"]["audit_retention_days"] = auth.get("audit_retention_days")
+            smtp = auth.get("smtp")
+            if isinstance(smtp, dict):
+                cfg["auth"]["smtp"].update(smtp)
+
+    branding_cfg = cfg.get("branding") if isinstance(cfg.get("branding"), dict) else {}
+    app_name = (branding_cfg.get("app_name") or "ThreeJ Notifier").strip() or "ThreeJ Notifier"
+    if len(app_name) > 80:
+        app_name = app_name[:80].strip()
+    branding_cfg["app_name"] = app_name or "ThreeJ Notifier"
+    cfg["branding"] = branding_cfg
 
     for provider in ("chatgpt", "gemini"):
         block = cfg["ai"].get(provider) if isinstance(cfg["ai"].get(provider), dict) else {}
@@ -6849,6 +8772,35 @@ def normalize_system_settings(raw):
     cfg["ai"]["enabled"] = bool(cfg["ai"].get("enabled"))
     provider = (cfg["ai"].get("provider") or "chatgpt").strip().lower()
     cfg["ai"]["provider"] = provider if provider in ("chatgpt", "gemini") else "chatgpt"
+
+    auth_cfg = cfg.get("auth") if isinstance(cfg.get("auth"), dict) else {}
+    auth_cfg["enabled"] = bool(auth_cfg.get("enabled", True))
+    try:
+        session_idle_hours = int(auth_cfg.get("session_idle_hours") or 8)
+    except Exception:
+        session_idle_hours = 8
+    try:
+        audit_retention_days = int(auth_cfg.get("audit_retention_days") or 180)
+    except Exception:
+        audit_retention_days = 180
+    auth_cfg["session_idle_hours"] = max(1, min(session_idle_hours, 72))
+    auth_cfg["audit_retention_days"] = max(30, min(audit_retention_days, 3650))
+
+    smtp = auth_cfg.get("smtp") if isinstance(auth_cfg.get("smtp"), dict) else {}
+    smtp["host"] = (smtp.get("host") or "").strip()
+    try:
+        smtp_port = int(smtp.get("port") or 587)
+    except Exception:
+        smtp_port = 587
+    smtp["port"] = max(1, min(smtp_port, 65535))
+    smtp["username"] = (smtp.get("username") or "").strip()
+    smtp["password"] = (smtp.get("password") or "").strip()
+    smtp["from_email"] = (smtp.get("from_email") or "").strip()
+    smtp["from_name"] = (smtp.get("from_name") or app_name or "ThreeJ Notifier").strip() or (app_name or "ThreeJ Notifier")
+    smtp["use_ssl"] = bool(smtp.get("use_ssl"))
+    smtp["use_tls"] = False if smtp["use_ssl"] else bool(smtp.get("use_tls", True))
+    auth_cfg["smtp"] = smtp
+    cfg["auth"] = auth_cfg
     return cfg
 
 
@@ -7719,6 +9671,73 @@ def normalize_surveillance_settings(raw):
     if loss_event_max_count < 0:
         loss_event_max_count = 0
     cfg["stability"]["loss_event_max_count"] = loss_event_max_count
+    urgency_point_defaults = {
+        "urgency_no_data_points": 25.0,
+        "urgency_current_down_points": 50.0,
+        "urgency_down_minutes_cap_points": 30.0,
+        "urgency_loss_budget_breach_points": 20.0,
+        "urgency_loss_minutes_scale_cap_points": 12.0,
+        "urgency_loss_events_breach_points": 15.0,
+        "urgency_loss_events_scale_cap_points": 10.0,
+        "urgency_high_latency_points": 6.0,
+        "urgency_very_high_latency_points": 12.0,
+        "urgency_packet_loss_points": 5.0,
+        "urgency_severe_packet_loss_points": 10.0,
+        "urgency_optical_issue_points": 12.0,
+        "urgency_manual_fix_stage_points": 10.0,
+    }
+    for key, default_value in urgency_point_defaults.items():
+        try:
+            point_value = float(cfg["stability"].get(key, default_value) or default_value)
+        except Exception:
+            point_value = default_value
+        if point_value < 0:
+            point_value = 0.0
+        cfg["stability"][key] = point_value
+    try:
+        latency_mult = float(cfg["stability"].get("urgency_very_high_latency_multiplier", 2.0) or 2.0)
+    except Exception:
+        latency_mult = 2.0
+    if latency_mult < 1.1:
+        latency_mult = 1.1
+    cfg["stability"]["urgency_very_high_latency_multiplier"] = latency_mult
+
+    try:
+        loss_warn_pct = float(cfg["stability"].get("urgency_packet_loss_warn_pct", 5.0) or 5.0)
+    except Exception:
+        loss_warn_pct = 5.0
+    try:
+        loss_critical_pct = float(cfg["stability"].get("urgency_packet_loss_critical_pct", 20.0) or 20.0)
+    except Exception:
+        loss_critical_pct = 20.0
+    if loss_warn_pct < 0:
+        loss_warn_pct = 0.0
+    if loss_critical_pct < loss_warn_pct:
+        loss_critical_pct = loss_warn_pct
+    cfg["stability"]["urgency_packet_loss_warn_pct"] = loss_warn_pct
+    cfg["stability"]["urgency_packet_loss_critical_pct"] = loss_critical_pct
+
+    def _threshold_value(raw_key, default_value):
+        try:
+            threshold = int(float(cfg["stability"].get(raw_key, default_value) or default_value))
+        except Exception:
+            threshold = default_value
+        if threshold < 0:
+            threshold = 0
+        if threshold > 100:
+            threshold = 100
+        return threshold
+
+    critical_threshold = _threshold_value("urgency_critical_threshold", 70)
+    high_threshold = _threshold_value("urgency_high_threshold", 45)
+    watch_threshold = _threshold_value("urgency_watch_threshold", 25)
+    if high_threshold > critical_threshold:
+        high_threshold = critical_threshold
+    if watch_threshold > high_threshold:
+        watch_threshold = high_threshold
+    cfg["stability"]["urgency_critical_threshold"] = critical_threshold
+    cfg["stability"]["urgency_high_threshold"] = high_threshold
+    cfg["stability"]["urgency_watch_threshold"] = watch_threshold
     cfg["stability"].pop("loss_max_pct", None)
     cfg["stability"].pop("level2_autofix_after_minutes", None)
     cfg["stability"].pop("escalate_after_minutes", None)
@@ -7788,6 +9807,7 @@ def normalize_surveillance_settings(raw):
                 "last_fixed_reason": (entry.get("last_fixed_reason") or "").strip(),
                 "last_fixed_mode": (entry.get("last_fixed_mode") or "").strip(),
                 "added_mode": (entry.get("added_mode") or "").strip().lower() or "manual",
+                "added_by": (entry.get("added_by") or "").strip()[:64],
                 "auto_source": (entry.get("auto_source") or "").strip(),
                 "auto_reason": (entry.get("auto_reason") or "").strip(),
                 "stage_history": _normalize_surveillance_stage_history(entry.get("stage_history")),
@@ -7844,7 +9864,7 @@ def _normalize_surveillance_stage_history(raw_items):
     return out
 
 
-def _append_surveillance_stage_history(entry, from_stage, to_stage, reason="", action="", at_iso=""):
+def _append_surveillance_stage_history(entry, from_stage, to_stage, reason="", action="", at_iso="", actor="admin"):
     if not isinstance(entry, dict):
         return
     history = _normalize_surveillance_stage_history(entry.get("stage_history"))
@@ -7855,10 +9875,33 @@ def _append_surveillance_stage_history(entry, from_stage, to_stage, reason="", a
             "to": (to_stage or "").strip().lower(),
             "reason": (reason or "").strip()[:500],
             "action": (action or "").strip().lower()[:64],
-            "actor": "admin",
+            "actor": (actor or "admin").strip().lower()[:32] or "admin",
         }
     )
     entry["stage_history"] = _normalize_surveillance_stage_history(history)
+
+
+def _surveillance_added_by_user(entry):
+    if not isinstance(entry, dict):
+        return ""
+    direct = (entry.get("added_by") or "").strip()
+    if direct and direct.lower() not in ("system", "auto"):
+        return direct[:64]
+    history = _normalize_surveillance_stage_history(entry.get("stage_history"))
+    for item in history:
+        action = (item.get("action") or "").strip().lower()
+        to_stage = (item.get("to") or "").strip().lower()
+        actor = (item.get("actor") or "").strip()
+        if not actor or actor.lower() in ("system", "auto"):
+            continue
+        if action == "add_manual" or (to_stage == "under" and action in ("", "add")):
+            return actor[:64]
+    for item in history:
+        to_stage = (item.get("to") or "").strip().lower()
+        actor = (item.get("actor") or "").strip()
+        if to_stage == "under" and actor and actor.lower() not in ("system", "auto"):
+            return actor[:64]
+    return ""
 
 
 def _surveillance_stage_seconds(entry, ended_at=None):
@@ -7960,7 +10003,7 @@ async def surveillance_page(request: Request):
 
     active_tab = (request.query_params.get("tab") or "").strip().lower()
     focus = (request.query_params.get("focus") or "").strip()
-    if active_tab not in ("under", "observe", "level2", "history", "settings"):
+    if active_tab not in ("under", "observe", "level2", "history", "logs", "settings"):
         active_tab = ""
     if focus and focus in entry_map and not active_tab:
         active_tab = "level2" if (entry_map.get(focus, {}).get("status") == "level2") else "under"
@@ -7978,6 +10021,79 @@ async def surveillance_page(request: Request):
         1,
     )
     fixed_observation_days = fixed_observation_minutes / 1440.0
+    try:
+        latency_max_ms = float(stab_cfg.get("latency_max_ms", 15.0) or 15.0)
+    except Exception:
+        latency_max_ms = 15.0
+    if latency_max_ms <= 0:
+        latency_max_ms = 15.0
+    try:
+        loss_max_minutes = float(stab_cfg.get("loss_max_minutes", 10.0) or 10.0)
+    except Exception:
+        loss_max_minutes = 10.0
+    if loss_max_minutes < 0:
+        loss_max_minutes = 0.0
+    loss_budget_seconds = int(loss_max_minutes * 60)
+    try:
+        loss_event_max_count = int(stab_cfg.get("loss_event_max_count", 5) or 5)
+    except Exception:
+        loss_event_max_count = 5
+    if loss_event_max_count < 1:
+        loss_event_max_count = 1
+    try:
+        optical_rx_min_dbm = float(stab_cfg.get("optical_rx_min_dbm", -24.0) or -24.0)
+    except Exception:
+        optical_rx_min_dbm = -24.0
+    require_optical = bool(stab_cfg.get("require_optical", True))
+
+    def _urgency_point(name, default_value):
+        try:
+            value = float(stab_cfg.get(name, default_value) or default_value)
+        except Exception:
+            value = default_value
+        if value < 0:
+            value = 0.0
+        return value
+
+    urgency_no_data_points = _urgency_point("urgency_no_data_points", 25.0)
+    urgency_current_down_points = _urgency_point("urgency_current_down_points", 50.0)
+    urgency_down_minutes_cap_points = _urgency_point("urgency_down_minutes_cap_points", 30.0)
+    urgency_loss_budget_breach_points = _urgency_point("urgency_loss_budget_breach_points", 20.0)
+    urgency_loss_minutes_scale_cap_points = _urgency_point("urgency_loss_minutes_scale_cap_points", 12.0)
+    urgency_loss_events_breach_points = _urgency_point("urgency_loss_events_breach_points", 15.0)
+    urgency_loss_events_scale_cap_points = _urgency_point("urgency_loss_events_scale_cap_points", 10.0)
+    urgency_high_latency_points = _urgency_point("urgency_high_latency_points", 6.0)
+    urgency_very_high_latency_points = _urgency_point("urgency_very_high_latency_points", 12.0)
+    urgency_very_high_latency_multiplier = _urgency_point("urgency_very_high_latency_multiplier", 2.0)
+    if urgency_very_high_latency_multiplier < 1.1:
+        urgency_very_high_latency_multiplier = 1.1
+    urgency_packet_loss_points = _urgency_point("urgency_packet_loss_points", 5.0)
+    urgency_severe_packet_loss_points = _urgency_point("urgency_severe_packet_loss_points", 10.0)
+    urgency_packet_loss_warn_pct = _urgency_point("urgency_packet_loss_warn_pct", 5.0)
+    urgency_packet_loss_critical_pct = _urgency_point("urgency_packet_loss_critical_pct", 20.0)
+    if urgency_packet_loss_critical_pct < urgency_packet_loss_warn_pct:
+        urgency_packet_loss_critical_pct = urgency_packet_loss_warn_pct
+    urgency_optical_issue_points = _urgency_point("urgency_optical_issue_points", 12.0)
+    urgency_manual_fix_stage_points = _urgency_point("urgency_manual_fix_stage_points", 10.0)
+
+    def _urgency_threshold(name, default_value):
+        try:
+            value = int(float(stab_cfg.get(name, default_value) or default_value))
+        except Exception:
+            value = default_value
+        if value < 0:
+            value = 0
+        if value > 100:
+            value = 100
+        return value
+
+    urgency_critical_threshold = _urgency_threshold("urgency_critical_threshold", 70)
+    urgency_high_threshold = _urgency_threshold("urgency_high_threshold", 45)
+    urgency_watch_threshold = _urgency_threshold("urgency_watch_threshold", 25)
+    if urgency_high_threshold > urgency_critical_threshold:
+        urgency_high_threshold = urgency_critical_threshold
+    if urgency_watch_threshold > urgency_high_threshold:
+        urgency_watch_threshold = urgency_high_threshold
     now = datetime.utcnow().replace(microsecond=0)
     now_iso = now.isoformat() + "Z"
 
@@ -8041,9 +10157,42 @@ async def surveillance_page(request: Request):
         uptime_pct = (100.0 - (failures / total) * 100.0) if total else 0.0
         checker_downtime_seconds = int(stats.get("downtime_seconds") or 0)
         checker_loss_events = int(stats.get("loss_events") or 0)
+        latest_loss = latest.get("loss")
+        latest_avg_ms = latest.get("avg_ms")
+        try:
+            latest_loss_val = float(latest_loss) if latest_loss is not None else None
+        except Exception:
+            latest_loss_val = None
+        try:
+            latest_avg_ms_val = float(latest_avg_ms) if latest_avg_ms is not None else None
+        except Exception:
+            latest_avg_ms_val = None
+        try:
+            stable_loss_avg_val = float(stats.get("loss_avg")) if stats.get("loss_avg") is not None else None
+        except Exception:
+            stable_loss_avg_val = None
+        added_mode = (entry.get("added_mode") or "manual").strip().lower()
+        added_by = _surveillance_added_by_user(entry)
+        added_by_display = "Auto" if added_mode == "auto" else (added_by or "Manual")
+        has_latest_sample = bool((latest.get("timestamp") or "").strip())
+        current_is_down = bool(has_latest_sample and not bool(latest.get("ok")))
+        no_ping_data = (not has_latest_sample) and total <= 0
 
         down_since_dt = _parse_iso_z(st.get("down_since"))
         down_for = _format_duration_short((now - down_since_dt).total_seconds()) if down_since_dt else ""
+        down_seconds_now = max(int((now - down_since_dt).total_seconds()), 0) if down_since_dt else 0
+        if current_is_down and not down_for and down_seconds_now > 0:
+            down_for = _format_duration_short(down_seconds_now)
+        optical_rx_value = opt.get("rx")
+        try:
+            optical_rx_val = float(optical_rx_value) if optical_rx_value is not None else None
+        except Exception:
+            optical_rx_val = None
+        optical_issue_now = bool(
+            require_optical
+            and optical_rx_val is not None
+            and optical_rx_val <= optical_rx_min_dbm
+        )
         fixed_at_iso = (entry.get("last_fixed_at") or "").strip()
         fixed_at_dt = _parse_iso_z(fixed_at_iso)
         fixed_cycles = fixed_cycles_map.get(pppoe) or []
@@ -8123,13 +10272,133 @@ async def surveillance_page(request: Request):
                 "has_error": ai_has_error,
             }
 
+        if no_ping_data:
+            current_state_label = "No Data"
+            current_state_badge = "secondary"
+        elif current_is_down:
+            current_state_label = "Down"
+            current_state_badge = "red"
+        elif checker_loss_events > 0 or checker_downtime_seconds > 0:
+            current_state_label = "Intermittent"
+            current_state_badge = "yellow"
+        elif latest_avg_ms_val is not None and latest_avg_ms_val >= latency_max_ms:
+            current_state_label = "Slow"
+            current_state_badge = "orange"
+        else:
+            current_state_label = "Stable"
+            current_state_badge = "green"
+
+        primary_problem_label = "No active issue"
+        primary_problem_badge = "green"
+        if no_ping_data:
+            primary_problem_label = "No ping samples"
+            primary_problem_badge = "secondary"
+        elif current_is_down:
+            primary_problem_label = "No response"
+            primary_problem_badge = "red"
+        elif optical_issue_now:
+            primary_problem_label = "Optical RX issue"
+            primary_problem_badge = "orange"
+        elif checker_loss_events >= loss_event_max_count or (
+            loss_budget_seconds > 0 and checker_downtime_seconds >= loss_budget_seconds
+        ):
+            primary_problem_label = "Frequent loss events"
+            primary_problem_badge = "red"
+        elif (latest_loss_val is not None and latest_loss_val >= urgency_packet_loss_warn_pct) or (
+            stable_loss_avg_val is not None and stable_loss_avg_val >= urgency_packet_loss_warn_pct
+        ):
+            primary_problem_label = "Packet loss"
+            primary_problem_badge = "orange"
+        elif latest_avg_ms_val is not None and latest_avg_ms_val >= latency_max_ms:
+            primary_problem_label = "High latency"
+            primary_problem_badge = "yellow"
+
+        impact_sort_seconds = max(checker_downtime_seconds, 0)
+        checker_since_ph = format_ts_ph(checker_since_iso)
+        checker_window_hint = checker_since_ph or checker_since_iso or "checker window start"
+        if no_ping_data:
+            impact_label = "No baseline"
+            impact_tooltip = (
+                f"No ping samples yet since {checker_window_hint}. "
+                "Impact is computed from estimated loss time and down-event count in this checker window."
+            )
+        elif current_is_down and down_for:
+            impact_label = f"Down {down_for} · {checker_loss_events} down events"
+            impact_sort_seconds = max(impact_sort_seconds, down_seconds_now)
+            impact_tooltip = (
+                f"Currently down for {down_for}. "
+                f"Down events = {checker_loss_events} separate down incidents since {checker_window_hint}."
+            )
+        else:
+            loss_time_text = _format_duration_short(checker_downtime_seconds) if checker_downtime_seconds > 0 else "0m"
+            if latest_avg_ms_val is not None and checker_downtime_seconds <= 0 and checker_loss_events <= 0:
+                impact_label = f"{latest_avg_ms_val:.1f}ms now · 0 down events"
+                impact_tooltip = (
+                    f"Current latency is {latest_avg_ms_val:.1f}ms with no down incidents "
+                    f"since {checker_window_hint}."
+                )
+            else:
+                impact_label = f"Loss {loss_time_text} · {checker_loss_events} down events"
+                impact_tooltip = (
+                    f"Estimated accumulated loss time is {loss_time_text}. "
+                    f"Down events = {checker_loss_events} separate down incidents since {checker_window_hint}."
+                )
+
+        urgency_score = 0.0
+        if no_ping_data:
+            urgency_score += urgency_no_data_points
+        if current_is_down:
+            urgency_score += urgency_current_down_points
+            urgency_score += min(float(down_seconds_now) / 60.0, urgency_down_minutes_cap_points)
+        if loss_budget_seconds > 0 and checker_downtime_seconds >= loss_budget_seconds:
+            urgency_score += urgency_loss_budget_breach_points
+        elif checker_downtime_seconds > 0:
+            urgency_score += min(float(checker_downtime_seconds) / 60.0, urgency_loss_minutes_scale_cap_points)
+        if checker_loss_events >= loss_event_max_count:
+            urgency_score += urgency_loss_events_breach_points
+        elif checker_loss_events > 0:
+            urgency_score += min(float(checker_loss_events) * 2.0, urgency_loss_events_scale_cap_points)
+        if latest_avg_ms_val is not None:
+            if latest_avg_ms_val >= (latency_max_ms * urgency_very_high_latency_multiplier):
+                urgency_score += urgency_very_high_latency_points
+            elif latest_avg_ms_val >= latency_max_ms:
+                urgency_score += urgency_high_latency_points
+        if latest_loss_val is not None:
+            if latest_loss_val >= urgency_packet_loss_critical_pct:
+                urgency_score += urgency_severe_packet_loss_points
+            elif latest_loss_val >= urgency_packet_loss_warn_pct:
+                urgency_score += urgency_packet_loss_points
+        if optical_issue_now:
+            urgency_score += urgency_optical_issue_points
+        if (entry.get("status") or "").strip().lower() == "level2":
+            urgency_score += urgency_manual_fix_stage_points
+        urgency_score = max(0, min(int(round(urgency_score)), 100))
+        if urgency_score >= urgency_critical_threshold:
+            urgency_label = "Critical"
+            urgency_badge = "red"
+            urgency_sort_rank = 1
+        elif urgency_score >= urgency_high_threshold:
+            urgency_label = "High"
+            urgency_badge = "orange"
+            urgency_sort_rank = 2
+        elif urgency_score >= urgency_watch_threshold:
+            urgency_label = "Watch"
+            urgency_badge = "yellow"
+            urgency_sort_rank = 3
+        else:
+            urgency_label = "Normal"
+            urgency_badge = "secondary"
+            urgency_sort_rank = 4
+
         return {
             "pppoe": pppoe,
             "name": entry.get("name") or pppoe,
             "optical_device_id": (opt.get("device_id") or "").strip(),
             "ip": entry.get("ip") or latest.get("ip") or opt.get("ip") or "",
             "status": entry.get("status") or "under",
-            "added_mode": (entry.get("added_mode") or "manual").strip().lower(),
+            "added_mode": added_mode,
+            "added_by": added_by,
+            "added_by_display": added_by_display,
             "auto_source": (entry.get("auto_source") or "").strip(),
             "auto_reason": (entry.get("auto_reason") or "").strip(),
             "added_at": format_ts_ph(entry.get("added_at")),
@@ -8151,8 +10420,19 @@ async def surveillance_page(request: Request):
             "stable_avg_ms_avg": stats.get("avg_ms_avg"),
             "stable_downtime_seconds": checker_downtime_seconds,
             "stable_loss_events": checker_loss_events,
+            "current_state_label": current_state_label,
+            "current_state_badge": current_state_badge,
+            "primary_problem_label": primary_problem_label,
+            "primary_problem_badge": primary_problem_badge,
+            "impact_label": impact_label,
+            "impact_tooltip": impact_tooltip,
+            "impact_sort_seconds": impact_sort_seconds,
+            "urgency_label": urgency_label,
+            "urgency_badge": urgency_badge,
+            "urgency_score": urgency_score,
+            "urgency_sort_rank": urgency_sort_rank,
             "checker_since_iso": checker_since_iso,
-            "checker_since_ph": format_ts_ph(checker_since_iso),
+            "checker_since_ph": checker_since_ph,
             "checker_since_source": checker_since_source,
             "checker_elapsed_seconds": max(int((now - checker_since_dt).total_seconds()), 0),
             "down_for": down_for,
@@ -8297,6 +10577,33 @@ async def surveillance_page(request: Request):
     if not isinstance(ai_model_options, dict):
         ai_model_options = {}
 
+    surveillance_logs_query = (request.query_params.get("logs_q") or "").strip()
+    surveillance_logs_page = _parse_table_page(request.query_params.get("logs_page"), default=1)
+    surveillance_logs_limit = 80
+    surveillance_logs_rows = []
+    surveillance_logs_pagination = {"page": 1, "pages": 1, "total": 0}
+    logs_rows = _audit_log_rows(limit=20000, surveillance_only=True)
+    if surveillance_logs_query:
+        query_text = surveillance_logs_query.lower()
+        logs_rows = [
+            row
+            for row in logs_rows
+            if query_text in (row.get("username") or "").lower()
+            or query_text in (row.get("action") or "").lower()
+            or query_text in (row.get("resource") or "").lower()
+            or query_text in (row.get("details") or "").lower()
+            or query_text in (row.get("ip_address") or "").lower()
+        ]
+    total_logs = len(logs_rows)
+    page_logs = max(surveillance_logs_page, 1)
+    pages_logs = max((total_logs + surveillance_logs_limit - 1) // surveillance_logs_limit, 1)
+    if page_logs > pages_logs:
+        page_logs = pages_logs
+    start_idx = (page_logs - 1) * surveillance_logs_limit
+    end_idx = start_idx + surveillance_logs_limit
+    surveillance_logs_rows = logs_rows[start_idx:end_idx]
+    surveillance_logs_pagination = {"page": page_logs, "pages": pages_logs, "total": total_logs}
+
     return templates.TemplateResponse(
         "surveillance.html",
         make_context(
@@ -8325,6 +10632,9 @@ async def surveillance_page(request: Request):
                 "surv_optical_tx_realistic_min_dbm": float(optical_class.get("tx_realistic_min_dbm", -10.0) or -10.0),
                 "surv_optical_tx_realistic_max_dbm": float(optical_class.get("tx_realistic_max_dbm", 10.0) or 10.0),
                 "surveillance_ai_model_options": ai_model_options,
+                "surveillance_logs_rows": surveillance_logs_rows,
+                "surveillance_logs_query": surveillance_logs_query,
+                "surveillance_logs_pagination": surveillance_logs_pagination,
             },
         ),
     )
@@ -8431,6 +10741,147 @@ async def surveillance_series(pppoe: str, window: str = "24", stage: str = "unde
             "anchor_since": anchor_iso,
             "anchor_source": anchor_source,
             "series": series,
+        }
+    )
+
+
+@app.get("/surveillance/inspect_activity", response_class=JSONResponse)
+async def surveillance_inspect_activity(pppoe: str, stage: str = "under"):
+    pppoe = (pppoe or "").strip()
+    if not pppoe:
+        return JSONResponse({"ok": False, "error": "Missing PPPoE account."}, status_code=400)
+    stage = _normalize_surveillance_stage(stage)
+    now_dt = datetime.utcnow().replace(microsecond=0)
+
+    raw = get_settings("surveillance", SURVEILLANCE_DEFAULTS)
+    settings = normalize_surveillance_settings(raw)
+    entry_map = _surveillance_entry_map(settings)
+    entry = entry_map.get(pppoe) or {}
+    anchors = _surveillance_entry_anchors(entry, stage=stage, now_utc=now_dt)
+
+    until_dt = min(anchors["first_added_dt"], now_dt).replace(microsecond=0)
+    since_dt = (until_dt - timedelta(hours=168)).replace(microsecond=0)
+    if until_dt < since_dt:
+        since_dt = until_dt
+
+    since_iso = since_dt.isoformat() + "Z"
+    until_iso = until_dt.isoformat() + "Z"
+    account_id = _accounts_ping_account_id_for_pppoe(pppoe)
+    rows = get_accounts_ping_series_range(account_id, since_iso, until_iso)
+
+    def _merge_rows(rows_in):
+        merged = []
+        cur = None
+        cur_ts = None
+        for row in rows_in or []:
+            ts = (row.get("timestamp") or "").strip()
+            if not ts:
+                continue
+            ok = bool(row.get("ok"))
+            loss = row.get("loss")
+            avg_ms = row.get("avg_ms")
+            mode = row.get("mode")
+            if cur is None or ts != cur_ts:
+                if cur is not None:
+                    merged.append(cur)
+                cur_ts = ts
+                cur = {"ts": ts, "ok": ok, "loss": loss, "avg_ms": avg_ms, "mode": mode}
+                continue
+            cur["ok"] = bool(cur.get("ok")) or ok
+            for k, v in (("loss", loss), ("avg_ms", avg_ms)):
+                a = cur.get(k)
+                b = v
+                try:
+                    av = float(a) if a is not None else None
+                except Exception:
+                    av = None
+                try:
+                    bv = float(b) if b is not None else None
+                except Exception:
+                    bv = None
+                if av is None:
+                    cur[k] = b
+                elif bv is None:
+                    pass
+                else:
+                    cur[k] = b if bv > av else a
+        if cur is not None:
+            merged.append(cur)
+        return merged
+
+    merged_series = _merge_rows(rows)
+    stats_payload = _surv_raw_points_and_stats(
+        [
+            {
+                "timestamp": item.get("ts"),
+                "ok": item.get("ok"),
+                "loss": item.get("loss"),
+                "avg_ms": item.get("avg_ms"),
+            }
+            for item in merged_series
+        ]
+    )
+    stats = dict((stats_payload or {}).get("stats") or {})
+
+    def _to_float(value):
+        try:
+            return float(value)
+        except Exception:
+            return None
+
+    down_samples = 0
+    parsed_points = []
+    for item in merged_series:
+        ts_raw = (item.get("ts") or "").strip()
+        if not ts_raw:
+            continue
+        dt = _parse_iso_z(ts_raw)
+        if not isinstance(dt, datetime):
+            continue
+        loss_v = _to_float(item.get("loss"))
+        is_down = bool(loss_v is not None and loss_v >= 99.999) or (not bool(item.get("ok")))
+        if is_down:
+            down_samples += 1
+        parsed_points.append({"dt": dt, "is_down": is_down})
+
+    parsed_points.sort(key=lambda row: row["dt"])
+    bucket_seconds = int(stats.get("bucket_seconds") or 60)
+    if bucket_seconds <= 0:
+        bucket_seconds = 60
+    longest_down_streak = 0.0
+    current_down_streak = 0.0
+    for idx, point in enumerate(parsed_points):
+        if idx < len(parsed_points) - 1:
+            duration = (parsed_points[idx + 1]["dt"] - point["dt"]).total_seconds()
+        else:
+            duration = float(bucket_seconds)
+        if duration <= 0:
+            duration = float(bucket_seconds)
+        duration = max(1.0, min(float(duration), 300.0))
+        if point["is_down"]:
+            current_down_streak += duration
+            if current_down_streak > longest_down_streak:
+                longest_down_streak = current_down_streak
+        else:
+            current_down_streak = 0.0
+
+    stats["down_samples"] = int(down_samples)
+    stats["longest_down_streak_seconds"] = int(round(longest_down_streak))
+    stats["last_sample_ts"] = merged_series[-1].get("ts") if merged_series else ""
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "pppoe": pppoe,
+            "stage": stage,
+            "window_key": "pre7d",
+            "hours": 168,
+            "since": since_iso,
+            "until": until_iso,
+            "anchor_since": anchors["first_added_iso"],
+            "anchor_source": "first_added",
+            "series": merged_series,
+            "stats": stats,
         }
     )
 
@@ -9061,9 +11512,94 @@ async def surveillance_settings_save(request: Request):
                 current["stability"].get("fixed_observation_minutes", current["stability"].get("stable_window_minutes", 10)),
                 min_minutes=1,
             ),
+            "urgency_no_data_points": max(
+                _float("urgency_no_data_points", current["stability"].get("urgency_no_data_points", 25.0)),
+                0.0,
+            ),
+            "urgency_current_down_points": max(
+                _float("urgency_current_down_points", current["stability"].get("urgency_current_down_points", 50.0)),
+                0.0,
+            ),
+            "urgency_down_minutes_cap_points": max(
+                _float("urgency_down_minutes_cap_points", current["stability"].get("urgency_down_minutes_cap_points", 30.0)),
+                0.0,
+            ),
+            "urgency_loss_budget_breach_points": max(
+                _float("urgency_loss_budget_breach_points", current["stability"].get("urgency_loss_budget_breach_points", 20.0)),
+                0.0,
+            ),
+            "urgency_loss_minutes_scale_cap_points": max(
+                _float("urgency_loss_minutes_scale_cap_points", current["stability"].get("urgency_loss_minutes_scale_cap_points", 12.0)),
+                0.0,
+            ),
+            "urgency_loss_events_breach_points": max(
+                _float("urgency_loss_events_breach_points", current["stability"].get("urgency_loss_events_breach_points", 15.0)),
+                0.0,
+            ),
+            "urgency_loss_events_scale_cap_points": max(
+                _float("urgency_loss_events_scale_cap_points", current["stability"].get("urgency_loss_events_scale_cap_points", 10.0)),
+                0.0,
+            ),
+            "urgency_high_latency_points": max(
+                _float("urgency_high_latency_points", current["stability"].get("urgency_high_latency_points", 6.0)),
+                0.0,
+            ),
+            "urgency_very_high_latency_points": max(
+                _float("urgency_very_high_latency_points", current["stability"].get("urgency_very_high_latency_points", 12.0)),
+                0.0,
+            ),
+            "urgency_very_high_latency_multiplier": max(
+                _float(
+                    "urgency_very_high_latency_multiplier",
+                    current["stability"].get("urgency_very_high_latency_multiplier", 2.0),
+                ),
+                1.1,
+            ),
+            "urgency_packet_loss_points": max(
+                _float("urgency_packet_loss_points", current["stability"].get("urgency_packet_loss_points", 5.0)),
+                0.0,
+            ),
+            "urgency_severe_packet_loss_points": max(
+                _float("urgency_severe_packet_loss_points", current["stability"].get("urgency_severe_packet_loss_points", 10.0)),
+                0.0,
+            ),
+            "urgency_packet_loss_warn_pct": max(
+                _float("urgency_packet_loss_warn_pct", current["stability"].get("urgency_packet_loss_warn_pct", 5.0)),
+                0.0,
+            ),
+            "urgency_packet_loss_critical_pct": max(
+                _float("urgency_packet_loss_critical_pct", current["stability"].get("urgency_packet_loss_critical_pct", 20.0)),
+                0.0,
+            ),
+            "urgency_optical_issue_points": max(
+                _float("urgency_optical_issue_points", current["stability"].get("urgency_optical_issue_points", 12.0)),
+                0.0,
+            ),
+            "urgency_manual_fix_stage_points": max(
+                _float("urgency_manual_fix_stage_points", current["stability"].get("urgency_manual_fix_stage_points", 10.0)),
+                0.0,
+            ),
+            "urgency_critical_threshold": max(
+                min(parse_int(form, "urgency_critical_threshold", current["stability"].get("urgency_critical_threshold", 70)), 100),
+                0,
+            ),
+            "urgency_high_threshold": max(
+                min(parse_int(form, "urgency_high_threshold", current["stability"].get("urgency_high_threshold", 45)), 100),
+                0,
+            ),
+            "urgency_watch_threshold": max(
+                min(parse_int(form, "urgency_watch_threshold", current["stability"].get("urgency_watch_threshold", 25)), 100),
+                0,
+            ),
         },
         "entries": list(entry_map.values()),
     }
+    if settings["stability"]["urgency_packet_loss_critical_pct"] < settings["stability"]["urgency_packet_loss_warn_pct"]:
+        settings["stability"]["urgency_packet_loss_critical_pct"] = settings["stability"]["urgency_packet_loss_warn_pct"]
+    if settings["stability"]["urgency_high_threshold"] > settings["stability"]["urgency_critical_threshold"]:
+        settings["stability"]["urgency_high_threshold"] = settings["stability"]["urgency_critical_threshold"]
+    if settings["stability"]["urgency_watch_threshold"] > settings["stability"]["urgency_high_threshold"]:
+        settings["stability"]["urgency_watch_threshold"] = settings["stability"]["urgency_high_threshold"]
     # normalize auto-add numeric bounds
     try:
         wd = float(settings["auto_add"].get("window_days", 3) or 3)
@@ -9083,6 +11619,17 @@ async def surveillance_settings_save(request: Request):
     settings["auto_add"]["max_add_per_eval"] = mae
 
     save_settings("surveillance", settings)
+    _auth_log_event(
+        request,
+        action="surveillance.settings_saved",
+        resource="/surveillance/settings",
+        details=(
+            f"enabled={1 if settings.get('enabled') else 0};"
+            f"auto_add={1 if (settings.get('auto_add') or {}).get('enabled') else 0};"
+            f"interval={int((settings.get('ping') or {}).get('interval_seconds') or 0)}s;"
+            f"max_parallel={int((settings.get('ping') or {}).get('max_parallel') or 0)}"
+        ),
+    )
     return RedirectResponse(url="/surveillance?tab=settings", status_code=303)
 
 
@@ -9092,6 +11639,12 @@ async def surveillance_format(request: Request):
     message = ""
     if not parse_bool(form, "confirm_format"):
         message = "Please confirm format to proceed."
+        _auth_log_event(
+            request,
+            action="surveillance.format_rejected",
+            resource="/surveillance/format",
+            details="confirm_format=0",
+        )
     else:
         try:
             clear_surveillance_history()
@@ -9108,8 +11661,20 @@ async def surveillance_format(request: Request):
             state.pop("surveillance_last_eval_at", None)
             save_state("accounts_ping_state", state)
             message = "Under Surveillance data formatted. Settings preserved."
+            _auth_log_event(
+                request,
+                action="surveillance.formatted",
+                resource="/surveillance/format",
+                details="history+entries cleared",
+            )
         except Exception as exc:
             message = f"Format failed: {exc}"
+            _auth_log_event(
+                request,
+                action="surveillance.format_failed",
+                resource="/surveillance/format",
+                details=str(exc),
+            )
     qs = urllib.parse.urlencode({"tab": "settings", "msg": message})
     return RedirectResponse(url=f"/surveillance?{qs}", status_code=303)
 
@@ -9127,6 +11692,7 @@ async def surveillance_add(request: Request):
     settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
     entry_map = _surveillance_entry_map(settings)
     now_iso = utc_now_iso()
+    actor_name = _auth_actor_name(request, default="admin")
     existing = entry_map.get(pppoe)
     if existing:
         existing["name"] = name or existing.get("name") or pppoe
@@ -9136,6 +11702,10 @@ async def surveillance_add(request: Request):
             existing["first_added_at"] = (existing.get("added_at") or now_iso).strip() or now_iso
         if source and not existing.get("source"):
             existing["source"] = source
+        if (existing.get("added_mode") or "manual").strip().lower() != "auto":
+            existing_added_by = (existing.get("added_by") or "").strip()
+            if not existing_added_by:
+                existing["added_by"] = actor_name[:64]
         entry_map[pppoe] = existing
     else:
         new_entry = {
@@ -9153,6 +11723,7 @@ async def surveillance_add(request: Request):
             "last_fixed_reason": "",
             "last_fixed_mode": "",
             "added_mode": "manual",
+            "added_by": actor_name[:64],
             "auto_source": "",
             "auto_reason": "",
             "stage_history": [
@@ -9160,9 +11731,9 @@ async def surveillance_add(request: Request):
                     "ts": now_iso,
                     "from": "",
                     "to": "under",
-                    "reason": "Added manually by admin",
+                    "reason": f"Added manually by {actor_name}",
                     "action": "add_manual",
-                    "actor": "admin",
+                    "actor": actor_name.lower()[:32] or "admin",
                 }
             ],
             "ai_reports": {stage: _empty_surveillance_ai_report() for stage in _SURV_AI_STAGES},
@@ -9176,6 +11747,16 @@ async def surveillance_add(request: Request):
         ensure_surveillance_session(pppoe, started_at=now_iso, source=source, ip=ip, state="under")
     except Exception:
         pass
+    _auth_log_event(
+        request,
+        action="surveillance.add_manual",
+        resource=pppoe,
+        details=(
+            f"mode={'update' if existing else 'new'};"
+            f"source={(source or 'manual')[:80]};"
+            f"ip={(ip or 'n/a')[:80]}"
+        ),
+    )
     return JSONResponse({"ok": True, "pppoe": pppoe})
 
 
@@ -9213,6 +11794,12 @@ async def surveillance_undo(request: Request):
     entry_map.pop(pppoe, None)
     settings["entries"] = list(entry_map.values())
     save_settings("surveillance", settings)
+    _auth_log_event(
+        request,
+        action="surveillance.undo_add",
+        resource=pppoe,
+        details="removed within undo window",
+    )
     return JSONResponse({"ok": True, "pppoe": pppoe})
 
 
@@ -9240,6 +11827,12 @@ async def surveillance_remove(request: Request):
         except Exception:
             pass
         entry_map.pop(pppoe, None)
+        _auth_log_event(
+            request,
+            action="surveillance.remove",
+            resource=pppoe,
+            details=f"tab={(form.get('tab') or 'under').strip() or 'under'}",
+        )
     settings["entries"] = list(entry_map.values())
     save_settings("surveillance", settings)
     tab = (form.get("tab") or "under").strip() or "under"
@@ -9251,6 +11844,7 @@ async def surveillance_mark_false(request: Request):
     form = await request.form()
     pppoe = (form.get("pppoe") or "").strip()
     raw_pppoes = (form.get("pppoes") or "").strip()
+    remarks = (form.get("remarks") or form.get("reason") or "").strip()
     tab = (form.get("tab") or "under").strip().lower()
     if tab not in ("under", "level2", "observe"):
         tab = "under"
@@ -9273,8 +11867,19 @@ async def surveillance_mark_false(request: Request):
             continue
         seen.add(item)
         unique_pppoes.append(item)
+    if len(remarks) < 3:
+        params = {"tab": tab, "msg": "False-mark remarks are required (minimum 3 characters)."}
+        if unique_pppoes:
+            params["focus"] = unique_pppoes[0]
+        return RedirectResponse(url=f"/surveillance?{urllib.parse.urlencode(params)}", status_code=303)
+    if len(remarks) > 500:
+        params = {"tab": tab, "msg": "False-mark remarks are too long (max 500 characters)."}
+        if unique_pppoes:
+            params["focus"] = unique_pppoes[0]
+        return RedirectResponse(url=f"/surveillance?{urllib.parse.urlencode(params)}", status_code=303)
     settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
     entry_map = _surveillance_entry_map(settings)
+    processed = 0
     for pppoe in unique_pppoes:
         entry = entry_map.get(pppoe) or {}
         if not entry:
@@ -9288,7 +11893,7 @@ async def surveillance_mark_false(request: Request):
                 source=(entry.get("source") or "").strip(),
                 ip=(entry.get("ip") or "").strip(),
                 state=(entry.get("status") or "under"),
-                note="Marked as False by admin",
+                note=f"Marked as False: {remarks}",
                 under_seconds=under_seconds,
                 level2_seconds=level2_seconds,
                 observe_seconds=observe_seconds,
@@ -9296,8 +11901,19 @@ async def surveillance_mark_false(request: Request):
         except Exception:
             pass
         entry_map.pop(pppoe, None)
+        processed += 1
     settings["entries"] = list(entry_map.values())
     save_settings("surveillance", settings)
+    if processed > 0:
+        preview = ",".join(unique_pppoes[:10])
+        if len(unique_pppoes) > 10:
+            preview += f",+{len(unique_pppoes) - 10}"
+        _auth_log_event(
+            request,
+            action="surveillance.mark_false",
+            resource=preview,
+            details=f"count={processed};tab={tab};remarks={remarks[:200]}",
+        )
     return RedirectResponse(url=f"/surveillance?tab={urllib.parse.quote(tab)}", status_code=303)
 
 
@@ -9338,6 +11954,7 @@ async def surveillance_move_level2(request: Request):
         reason=reason,
         action="move_to_manual_fix",
         at_iso=now_iso,
+        actor=_auth_actor_name(request, default="admin"),
     )
     entry["status"] = "level2"
     entry["level2_at"] = now_iso
@@ -9364,6 +11981,12 @@ async def surveillance_move_level2(request: Request):
             pass
     settings["entries"] = list(entry_map.values())
     save_settings("surveillance", settings)
+    _auth_log_event(
+        request,
+        action="surveillance.move_to_manual_fix",
+        resource=pppoe,
+        details=f"from={from_stage};reason={reason}",
+    )
     qs = urllib.parse.urlencode({"tab": "level2", "focus": pppoe})
     return RedirectResponse(url=f"/surveillance?{qs}", status_code=303)
 
@@ -9371,192 +11994,28 @@ async def surveillance_move_level2(request: Request):
 @app.post("/surveillance/ai_regenerate", response_class=HTMLResponse)
 async def surveillance_ai_regenerate(request: Request):
     form = await request.form()
-    pppoe = (form.get("pppoe") or "").strip()
     tab = (form.get("tab") or "under").strip().lower()
-    if tab not in _SURV_AI_STAGES:
+    if tab not in ("under", "level2", "observe", "history", "logs", "settings"):
         tab = "under"
-    ai_stage = (form.get("ai_stage") or tab).strip().lower()
-    if ai_stage not in _SURV_AI_STAGES:
-        ai_stage = tab if tab in _SURV_AI_STAGES else "under"
-
-    if not pppoe:
-        qs = urllib.parse.urlencode({"tab": tab, "msg": "Missing PPPoE for AI report generation."})
-        return RedirectResponse(url=f"/surveillance?{qs}", status_code=303)
-
-    settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
-    entry_map = _surveillance_entry_map(settings)
-    entry = entry_map.get(pppoe)
-    if not isinstance(entry, dict):
-        qs = urllib.parse.urlencode({"tab": tab, "msg": f"Account `{pppoe}` is no longer active."})
-        return RedirectResponse(url=f"/surveillance?{qs}", status_code=303)
-
-    reports = _entry_surveillance_ai_reports(entry)
-    stage_report = reports.get(ai_stage) or _empty_surveillance_ai_report()
-    stage_text = (stage_report.get("text") or "").strip()
-    stage_status = (stage_report.get("status") or "").strip().lower()
-    current_cycle_index = _surveillance_cycle_index_for_stage(entry, ai_stage)
-    try:
-        report_cycle_index = max(int(stage_report.get("cycle_index") or 1), 1)
-    except Exception:
-        report_cycle_index = 1
-    same_cycle_report = report_cycle_index == current_cycle_index
-    if same_cycle_report and (stage_text or stage_status in ("ready", "done")):
-        stage_label = _SURV_AI_STAGE_LABELS.get(ai_stage) or ai_stage
-        qs = urllib.parse.urlencode({"tab": tab, "msg": f"AI report already exists for {stage_label} in this cycle."})
-        return RedirectResponse(url=f"/surveillance?{qs}", status_code=303)
-    if stage_status in ("queued", "running"):
-        stage_label = _SURV_AI_STAGE_LABELS.get(ai_stage) or ai_stage
-        qs = urllib.parse.urlencode({"tab": tab, "msg": f"AI report generation is already running for {stage_label}."})
-        return RedirectResponse(url=f"/surveillance?{qs}", status_code=303)
-
-    with _surv_ai_lock:
-        already_running = pppoe in _surv_ai_running
-    if already_running:
-        qs = urllib.parse.urlencode({"tab": tab, "msg": "AI report generation is already running."})
-        return RedirectResponse(url=f"/surveillance?{qs}", status_code=303)
-
-    provider_override = (form.get("ai_provider_override") or "").strip().lower()
-    if provider_override not in ("chatgpt", "gemini"):
-        provider_override = ""
-    model_override_raw = (form.get("ai_model_override") or "").strip()
-    model_override = _normalize_provider_model_id(provider_override, model_override_raw) if provider_override else ""
-
-    now_iso = utc_now_iso()
-    _queue_surveillance_ai_report(entry, stage=ai_stage, now_iso=now_iso, reset_text=True)
-    if provider_override and model_override:
-        reports = _entry_surveillance_ai_reports(entry)
-        stage_report = reports.get(ai_stage) or _empty_surveillance_ai_report()
-        stage_report["provider_override"] = provider_override
-        stage_report["model_override"] = model_override
-        reports[ai_stage] = stage_report
-        entry["ai_reports"] = reports
-    settings["entries"] = list(entry_map.values())
-    save_settings("surveillance", settings)
-    started = _start_surveillance_ai_report(pppoe)
-    stage_label = _SURV_AI_STAGE_LABELS.get(ai_stage) or ai_stage
-    if started:
-        if provider_override and model_override:
-            message = f"{stage_label}: AI report generation queued using {provider_override}:{model_override}."
-        else:
-            message = f"{stage_label}: AI report generation queued."
-    else:
-        message = f"{stage_label}: AI report queued. Waiting for the current AI generation to finish."
-    qs = urllib.parse.urlencode({"tab": tab, "msg": message})
+    qs = urllib.parse.urlencode(
+        {
+            "tab": tab,
+            "msg": "AI Investigator was removed from Under Surveillance.",
+        }
+    )
     return RedirectResponse(url=f"/surveillance?{qs}", status_code=303)
 
 
 @app.get("/surveillance/ai_reports", response_class=JSONResponse)
 async def surveillance_ai_reports(pppoe: str):
-    pppoe = (pppoe or "").strip()
-    if not pppoe:
-        return JSONResponse({"ok": False, "error": "Missing PPPoE."}, status_code=400)
-    settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
-    entry_map = _surveillance_entry_map(settings)
-    entry = entry_map.get(pppoe)
-    if not isinstance(entry, dict):
-        return JSONResponse({"ok": False, "error": "Account not found."}, status_code=404)
-
-    reports = _entry_surveillance_ai_reports(entry)
-    ai_history = _normalize_surveillance_ai_history(entry.get("ai_report_history"))
-    payload = {}
-    for stage in _SURV_AI_STAGES:
-        report = reports.get(stage) or _empty_surveillance_ai_report()
-        status = (report.get("status") or "").strip().lower()
-        text = (report.get("text") or "").strip()
-        error = (report.get("error") or "").strip()
-        has_report = bool(text)
-        if has_report and status in ("error", "missing_api_key", "missing_key", "disabled"):
-            status = "ready"
-            error = ""
-        is_generating = status in ("queued", "running")
-        has_error = (status in ("error", "missing_api_key", "missing_key") or bool(error)) and not has_report
-        recommend_raw = _normalize_ai_recommendation(report.get("recommend_needs_manual_fix"))
-        if recommend_raw == "yes":
-            recommend_label = "Recommend Needs Manual Fix"
-        elif recommend_raw == "no":
-            recommend_label = "No Manual Fix Needed"
-        else:
-            recommend_label = "Recommendation n/a"
-        try:
-            cycle_index = max(int(report.get("cycle_index") or _surveillance_cycle_index_for_stage(entry, stage)), 1)
-        except Exception:
-            cycle_index = 1
-        current_cycle_index = _surveillance_cycle_index_for_stage(entry, stage)
-        has_current_cycle_report = bool(has_report and cycle_index == current_cycle_index)
-        stage_history = []
-        for item in ai_history:
-            if (item.get("stage") or "") != stage:
-                continue
-            stage_history.append(
-                {
-                    "stage": stage,
-                    "cycle_index": max(int(item.get("cycle_index") or 1), 1),
-                    "generated_at_iso": (item.get("generated_at") or "").strip(),
-                    "generated_at_ph": format_ts_ph(item.get("generated_at")),
-                    "provider": (item.get("provider") or "").strip(),
-                    "model": (item.get("model") or "").strip(),
-                    "status": (item.get("status") or "").strip().lower(),
-                    "error": (item.get("error") or "").strip(),
-                    "text": (item.get("text") or "").strip(),
-                    "recommend_needs_manual_fix": _normalize_ai_recommendation(item.get("recommend_needs_manual_fix")),
-                    "recommend_label": (
-                        "Recommend Needs Manual Fix"
-                        if _normalize_ai_recommendation(item.get("recommend_needs_manual_fix")) == "yes"
-                        else "No Manual Fix Needed"
-                        if _normalize_ai_recommendation(item.get("recommend_needs_manual_fix")) == "no"
-                        else "Recommendation n/a"
-                    ),
-                    "recommendation_reason": (item.get("recommendation_reason") or "").strip(),
-                    "potential_problems": _normalize_ai_potential_problems(item.get("potential_problems")),
-                }
-            )
-        if not stage_history and (text or (report.get("generated_at") or "").strip()):
-            stage_history.append(
-                {
-                    "stage": stage,
-                    "cycle_index": cycle_index,
-                    "generated_at_iso": (report.get("generated_at") or "").strip(),
-                    "generated_at_ph": format_ts_ph(report.get("generated_at")),
-                    "provider": (report.get("provider") or "").strip(),
-                    "model": (report.get("model") or "").strip(),
-                    "status": status,
-                    "error": error,
-                    "text": text,
-                    "recommend_needs_manual_fix": recommend_raw,
-                    "recommend_label": recommend_label,
-                    "recommendation_reason": (report.get("recommendation_reason") or "").strip(),
-                    "potential_problems": _normalize_ai_potential_problems(report.get("potential_problems")),
-                }
-            )
-        stage_history = sorted(
-            stage_history,
-            key=lambda row: _parse_iso_z(row.get("generated_at_iso") or "") or datetime.min,
-            reverse=True,
-        )
-        payload[stage] = {
-            "stage": stage,
-            "stage_label": _SURV_AI_STAGE_LABELS.get(stage) or stage,
-            "status": status,
-            "status_label": _ai_report_status_badge(status),
-            "cycle_index": cycle_index,
-            "current_cycle_index": current_cycle_index,
-            "has_current_cycle_report": has_current_cycle_report,
-            "error": error,
-            "generated_at_iso": (report.get("generated_at") or "").strip(),
-            "generated_at_ph": format_ts_ph(report.get("generated_at")),
-            "provider": (report.get("provider") or "").strip(),
-            "model": (report.get("model") or "").strip(),
-            "text": text,
-            "recommend_needs_manual_fix": recommend_raw,
-            "recommend_label": recommend_label,
-            "recommendation_reason": (report.get("recommendation_reason") or "").strip(),
-            "potential_problems": _normalize_ai_potential_problems(report.get("potential_problems")),
-            "has_report": has_report,
-            "is_generating": is_generating,
-            "has_error": has_error,
-            "history": stage_history,
-        }
-    return JSONResponse({"ok": True, "pppoe": pppoe, "reports": payload})
+    return JSONResponse(
+        {
+            "ok": False,
+            "pppoe": (pppoe or "").strip(),
+            "error": "AI Investigator was removed from Under Surveillance.",
+        },
+        status_code=410,
+    )
 
 
 @app.get("/surveillance/history_detail", response_class=JSONResponse)
@@ -9852,6 +12311,15 @@ async def surveillance_observe_recovered(request: Request):
         return _redirect_with_msg("Selected accounts are no longer active in Post-Fix Observation.")
     settings["entries"] = list(entry_map.values())
     save_settings("surveillance", settings)
+    preview = ",".join(unique_pppoes[:10])
+    if len(unique_pppoes) > 10:
+        preview += f",+{len(unique_pppoes) - 10}"
+    _auth_log_event(
+        request,
+        action="surveillance.mark_fully_recovered",
+        resource=preview,
+        details=f"count={processed};remarks={remarks}",
+    )
     return RedirectResponse(url=f"/surveillance?tab={urllib.parse.quote(tab)}", status_code=303)
 
 
@@ -9910,6 +12378,16 @@ async def surveillance_remove_many(request: Request):
 
     settings["entries"] = list(entry_map.values())
     save_settings("surveillance", settings)
+    if unique_pppoes:
+        preview = ",".join(unique_pppoes[:10])
+        if len(unique_pppoes) > 10:
+            preview += f",+{len(unique_pppoes) - 10}"
+        _auth_log_event(
+            request,
+            action="surveillance.remove_bulk",
+            resource=preview,
+            details=f"count={len(unique_pppoes)};tab={tab}",
+        )
     return RedirectResponse(url=f"/surveillance?tab={urllib.parse.quote(tab)}", status_code=303)
 
 
@@ -9957,6 +12435,7 @@ async def surveillance_fixed(request: Request):
             reason=reason,
             action="mark_fixed",
             at_iso=now_iso,
+            actor=_auth_actor_name(request, default="admin"),
         )
         entry_map[pppoe]["status"] = "under"
         entry_map[pppoe]["added_at"] = now_iso
@@ -9977,6 +12456,12 @@ async def surveillance_fixed(request: Request):
             )
         except Exception:
             pass
+        _auth_log_event(
+            request,
+            action="surveillance.mark_fixed",
+            resource=pppoe,
+            details=f"reason={reason}",
+        )
     settings["entries"] = list(entry_map.values())
     save_settings("surveillance", settings)
     return RedirectResponse(url="/surveillance?tab=observe", status_code=303)
@@ -10052,6 +12537,7 @@ async def surveillance_fixed_many(request: Request):
             reason=reason,
             action="mark_fixed",
             at_iso=now_iso,
+            actor=_auth_actor_name(request, default="admin"),
         )
         entry_map[pppoe]["status"] = "under"
         entry_map[pppoe]["added_at"] = now_iso
@@ -10075,6 +12561,16 @@ async def surveillance_fixed_many(request: Request):
 
     settings["entries"] = list(entry_map.values())
     save_settings("surveillance", settings)
+    if unique_pppoes:
+        preview = ",".join(unique_pppoes[:10])
+        if len(unique_pppoes) > 10:
+            preview += f",+{len(unique_pppoes) - 10}"
+        _auth_log_event(
+            request,
+            action="surveillance.mark_fixed_bulk",
+            resource=preview,
+            details=f"count={len(unique_pppoes)};reason={reason}",
+        )
     return RedirectResponse(url="/surveillance?tab=observe", status_code=303)
 
 def render_wan_ping_response(request, pulse_settings, wan_settings, message, active_tab, wan_window_hours=24, wan_settings_tab="telegram"):
@@ -10085,6 +12581,9 @@ def render_wan_ping_response(request, pulse_settings, wan_settings, message, act
         active_tab = "settings"
     wan_settings_tab = (wan_settings_tab or "telegram").strip().lower()
     if wan_settings_tab not in ("telegram", "targets", "interval", "database", "danger"):
+        wan_settings_tab = "telegram"
+    can_run_danger_actions = _auth_can_run_danger_actions(request)
+    if wan_settings_tab == "danger" and not can_run_danger_actions:
         wan_settings_tab = "telegram"
     wan_rows = build_wan_rows(pulse_settings, wan_settings)
     wan_state = get_state("wan_ping_state", {})
@@ -10170,6 +12669,7 @@ def render_wan_ping_response(request, pulse_settings, wan_settings, message, act
                 "message": message,
                 "active_tab": active_tab,
                 "wan_settings_tab": wan_settings_tab,
+                "can_run_danger_actions": can_run_danger_actions,
             },
         ),
     )
@@ -10600,24 +13100,39 @@ async def settings_root():
 @app.get("/settings/system", response_class=HTMLResponse)
 async def system_settings(request: Request):
     active_tab = (request.query_params.get("tab") or "general").strip().lower()
-    if active_tab not in {"general", "routers", "ai", "backup", "danger"}:
+    if active_tab not in {"general", "routers", "access", "backup", "danger"}:
         active_tab = "general"
+    if active_tab == "access":
+        user_perms = {str(p or "").strip() for p in (getattr(request.state, "auth_permission_codes", []) or [])}
+        if not _auth_check_permission(user_perms, "MANAGE_AccessControl"):
+            active_tab = "general"
     routers_tab = (request.query_params.get("routers_tab") or "cores").strip().lower()
     if routers_tab not in {"cores", "mikrotik-routers", "isps"}:
         routers_tab = "cores"
-    return render_system_settings_response(request, "", active_tab=active_tab, routers_tab=routers_tab)
+    access_tab = (request.query_params.get("access_tab") or "auth").strip().lower()
+    if access_tab not in {"auth", "permissions", "roles", "users"}:
+        access_tab = "auth"
+    return render_system_settings_response(request, "", active_tab=active_tab, routers_tab=routers_tab, access_tab=access_tab)
 
 
-def render_system_settings_response(request: Request, message: str, active_tab: str = "general", routers_tab: str = "cores"):
+def render_system_settings_response(
+    request: Request,
+    message: str,
+    active_tab: str = "general",
+    routers_tab: str = "cores",
+    access_tab: str = "auth",
+):
+    active_tab = (active_tab or "general").strip().lower()
+    if active_tab not in {"general", "routers", "access", "backup", "danger"}:
+        active_tab = "general"
+    access_tab = (access_tab or "auth").strip().lower()
+    if access_tab not in {"auth", "permissions", "roles", "users"}:
+        access_tab = "auth"
+    can_run_danger_actions = _auth_can_run_danger_actions(request)
+    if active_tab == "danger" and not can_run_danger_actions:
+        active_tab = "general"
     system_settings = normalize_system_settings(get_settings("system", SYSTEM_DEFAULTS))
-    ai_settings = system_settings.get("ai") if isinstance(system_settings.get("ai"), dict) else {}
-    ai_model_data = _build_ai_model_options(ai_settings, active_tab)
-    ai_meta = {
-        "chatgpt_api_key_set": bool((ai_settings.get("chatgpt") or {}).get("api_key")),
-        "gemini_api_key_set": bool((ai_settings.get("gemini") or {}).get("api_key")),
-        "chatgpt_model_fetch_error": (ai_model_data.get("errors") or {}).get("chatgpt") or "",
-        "gemini_model_fetch_error": (ai_model_data.get("errors") or {}).get("gemini") or "",
-    }
+    auth_settings = system_settings.get("auth") if isinstance(system_settings.get("auth"), dict) else {}
     pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
     wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
     # Back-compat: Usage originally had its own MikroTik router list. If System Settings is empty,
@@ -10656,6 +13171,54 @@ def render_system_settings_response(request: Request, message: str, active_tab: 
             pass
     interfaces = get_interface_options()
     telegram_state = get_state("telegram_state", {})
+    user_perms = {str(p or "").strip() for p in (getattr(request.state, "auth_permission_codes", []) or [])}
+    can_manage_auth = _auth_check_permission(user_perms, "MANAGE_AccessControl") or (not bool(getattr(request.state, "auth_enabled", True)))
+    auth_permissions = []
+    auth_permission_groups = []
+    role_permission_groups = []
+    auth_roles = []
+    auth_users = []
+    if can_manage_auth:
+        try:
+            auth_permissions = list_auth_permissions()
+            auth_permissions = [
+                item
+                for item in auth_permissions
+                if str((item or {}).get("code") or "").strip().lower() not in AUTH_PERMISSION_DEPRECATED_CODES_LOWER
+            ]
+            auth_permissions = sorted(
+                auth_permissions,
+                key=lambda item: (1 if "." in str(item.get("code") or "") else 0, str(item.get("code") or "").lower()),
+            )
+            auth_permissions = _auth_annotate_permissions_with_dependencies(auth_permissions)
+            auth_permission_groups = _build_auth_permission_groups(auth_permissions)
+            role_permission_groups = _build_role_editor_permission_groups(auth_permission_groups)
+            auth_roles = list_auth_roles(include_permissions=True)
+            for role in auth_roles:
+                codes = sorted(
+                    {
+                        str(item or "").strip()
+                        for item in (role.get("permission_codes") or [])
+                        if str(item or "").strip()
+                        and str(item or "").strip().lower() not in AUTH_PERMISSION_DEPRECATED_CODES_LOWER
+                    },
+                    key=lambda item: str(item).lower(),
+                )
+                role["permission_codes"] = codes
+                role["permission_count"] = len(codes)
+                preview_size = 3
+                if len(codes) <= preview_size:
+                    role["permission_preview"] = ", ".join(codes)
+                else:
+                    role["permission_preview"] = ", ".join(codes[:preview_size]) + f", +{len(codes) - preview_size} more"
+                role["permission_groups"] = _build_role_permission_groups(codes)
+            auth_users = list_auth_users()
+        except Exception:
+            auth_permissions = []
+            auth_permission_groups = []
+            role_permission_groups = []
+            auth_roles = []
+            auth_users = []
 
     wan_rows_loaded = bool(active_tab == "routers" and routers_tab == "isps")
     wan_rows = []
@@ -10698,6 +13261,7 @@ def render_system_settings_response(request: Request, message: str, active_tab: 
                 "message": message,
                 "active_tab": active_tab,
                 "routers_tab": routers_tab,
+                "access_tab": access_tab,
                 "settings": pulse_settings,
                 "wan_settings": wan_settings_data,
                 "wan_rows": wan_rows,
@@ -10706,9 +13270,14 @@ def render_system_settings_response(request: Request, message: str, active_tab: 
                 "interfaces": interfaces,
                 "telegram_state": telegram_state,
                 "system_settings": system_settings,
-                "ai_settings": ai_settings,
-                "ai_model_options": (ai_model_data.get("options") or {}),
-                "ai_meta": ai_meta,
+                "auth_settings": auth_settings,
+                "auth_permissions": auth_permissions,
+                "auth_permission_groups": auth_permission_groups,
+                "role_permission_groups": role_permission_groups,
+                "auth_roles": auth_roles,
+                "auth_users": auth_users,
+                "can_manage_auth": can_manage_auth,
+                "can_run_danger_actions": can_run_danger_actions,
             },
         ),
     )
@@ -10832,175 +13401,423 @@ async def system_telegram_save(request: Request):
 
 @app.post("/settings/system/ai", response_class=HTMLResponse)
 async def system_ai_save(request: Request):
-    form = await request.form()
-    system_settings = normalize_system_settings(get_settings("system", SYSTEM_DEFAULTS))
-    ai_cfg = system_settings.get("ai") if isinstance(system_settings.get("ai"), dict) else {}
-    chatgpt_cfg = ai_cfg.get("chatgpt") if isinstance(ai_cfg.get("chatgpt"), dict) else {}
-    gemini_cfg = ai_cfg.get("gemini") if isinstance(ai_cfg.get("gemini"), dict) else {}
-    report_cfg = ai_cfg.get("report") if isinstance(ai_cfg.get("report"), dict) else {}
-
-    provider = (form.get("ai_provider") or ai_cfg.get("provider") or "chatgpt").strip().lower()
-    if provider not in ("chatgpt", "gemini"):
-        provider = "chatgpt"
-
-    chatgpt_api_key = (form.get("ai_chatgpt_api_key") or "").strip()
-    if parse_bool(form, "ai_chatgpt_clear_api_key"):
-        chatgpt_api_key = ""
-    elif not chatgpt_api_key:
-        chatgpt_api_key = (chatgpt_cfg.get("api_key") or "").strip()
-
-    gemini_api_key = (form.get("ai_gemini_api_key") or "").strip()
-    if parse_bool(form, "ai_gemini_clear_api_key"):
-        gemini_api_key = ""
-    elif not gemini_api_key:
-        gemini_api_key = (gemini_cfg.get("api_key") or "").strip()
-
-    updated_ai = {
-        "enabled": parse_bool(form, "ai_enabled"),
-        "provider": provider,
-        "chatgpt": {
-            "api_key": chatgpt_api_key,
-            "model": _normalize_provider_model_id(
-                "chatgpt",
-                (form.get("ai_chatgpt_model") or chatgpt_cfg.get("model") or "gpt-4o-mini").strip() or "gpt-4o-mini",
-            ),
-            "timeout_seconds": parse_int(
-                form,
-                "ai_chatgpt_timeout_seconds",
-                int(chatgpt_cfg.get("timeout_seconds", 30) or 30),
-            ),
-            "max_tokens": parse_int(
-                form,
-                "ai_chatgpt_max_tokens",
-                int(chatgpt_cfg.get("max_tokens", 900) or 900),
-            ),
-        },
-        "gemini": {
-            "api_key": gemini_api_key,
-            "model": _normalize_provider_model_id(
-                "gemini",
-                (form.get("ai_gemini_model") or gemini_cfg.get("model") or "gemini-2.5-flash-preview-09-2025").strip()
-                or "gemini-2.5-flash-preview-09-2025",
-            ),
-            "timeout_seconds": parse_int(
-                form,
-                "ai_gemini_timeout_seconds",
-                int(gemini_cfg.get("timeout_seconds", 30) or 30),
-            ),
-            "max_tokens": parse_int(
-                form,
-                "ai_gemini_max_tokens",
-                int(gemini_cfg.get("max_tokens", 900) or 900),
-            ),
-        },
-        "report": {
-            "lookback_hours": parse_int(
-                form,
-                "ai_report_lookback_hours",
-                int(report_cfg.get("lookback_hours", 24) or 24),
-            ),
-            "max_samples": parse_int(
-                form,
-                "ai_report_max_samples",
-                int(report_cfg.get("max_samples", 60) or 60),
-            ),
-        },
-    }
-
-    system_settings["ai"] = updated_ai
-    normalized = normalize_system_settings(system_settings)
-    save_settings("system", normalized)
     return render_system_settings_response(
         request,
-        "AI Investigator settings saved.",
-        active_tab="ai",
+        "AI settings were removed from System Settings.",
+        active_tab="general",
         routers_tab="cores",
     )
 
 
 @app.post("/settings/system/ai/test/{provider}", response_class=HTMLResponse)
 async def system_ai_test(request: Request, provider: str):
-    provider = (provider or "").strip().lower()
-    if provider not in ("chatgpt", "gemini"):
-        return render_system_settings_response(
-            request,
-            "Invalid AI provider test request.",
-            active_tab="ai",
-            routers_tab="cores",
-        )
-
-    form = await request.form()
-    system_settings = normalize_system_settings(get_settings("system", SYSTEM_DEFAULTS))
-    ai_cfg = system_settings.get("ai") if isinstance(system_settings.get("ai"), dict) else {}
-    message = ""
-
-    if provider == "chatgpt":
-        saved_cfg = ai_cfg.get("chatgpt") if isinstance(ai_cfg.get("chatgpt"), dict) else {}
-        submitted_key = (form.get("ai_chatgpt_api_key") or "").strip()
-        if parse_bool(form, "ai_chatgpt_clear_api_key"):
-            submitted_key = ""
-        api_key = submitted_key or (saved_cfg.get("api_key") or "").strip()
-        model = _normalize_provider_model_id(
-            "chatgpt",
-            (form.get("ai_chatgpt_model") or saved_cfg.get("model") or "gpt-4o-mini").strip() or "gpt-4o-mini",
-        )
-        timeout_seconds = parse_int(form, "ai_chatgpt_timeout_seconds", int(saved_cfg.get("timeout_seconds", 30) or 30))
-        timeout_seconds = max(5, min(int(timeout_seconds or 30), 180))
-        if not api_key:
-            message = "ChatGPT test failed: no API key provided. Enter a key or save one first."
-        else:
-            model_ids, fetch_err = _fetch_chatgpt_model_ids(api_key, timeout_seconds=timeout_seconds)
-            if not model_ids:
-                message = f"ChatGPT test failed: {fetch_err or 'No models returned.'}"
-            else:
-                source = "entered key" if submitted_key else "saved key"
-                if model in model_ids:
-                    message = (
-                        f"ChatGPT test OK using {source}. Retrieved {len(model_ids)} models. "
-                        f"Selected model `{model}` is available."
-                    )
-                else:
-                    message = (
-                        f"ChatGPT key authenticated using {source}. Retrieved {len(model_ids)} models, "
-                        f"but selected model `{model}` was not listed for this key."
-                    )
-    else:
-        saved_cfg = ai_cfg.get("gemini") if isinstance(ai_cfg.get("gemini"), dict) else {}
-        submitted_key = (form.get("ai_gemini_api_key") or "").strip()
-        if parse_bool(form, "ai_gemini_clear_api_key"):
-            submitted_key = ""
-        api_key = submitted_key or (saved_cfg.get("api_key") or "").strip()
-        model = _normalize_provider_model_id(
-            "gemini",
-            (form.get("ai_gemini_model") or saved_cfg.get("model") or "gemini-2.5-flash-preview-09-2025").strip()
-            or "gemini-2.5-flash-preview-09-2025",
-        )
-        timeout_seconds = parse_int(form, "ai_gemini_timeout_seconds", int(saved_cfg.get("timeout_seconds", 30) or 30))
-        timeout_seconds = max(5, min(int(timeout_seconds or 30), 180))
-        if not api_key:
-            message = "Gemini test failed: no API key provided. Enter a key or save one first."
-        else:
-            model_ids, fetch_err = _fetch_gemini_model_ids(api_key, timeout_seconds=timeout_seconds)
-            if not model_ids:
-                message = f"Gemini test failed: {fetch_err or 'No models returned.'}"
-            else:
-                source = "entered key" if submitted_key else "saved key"
-                if model in model_ids:
-                    message = (
-                        f"Gemini test OK using {source}. Retrieved {len(model_ids)} models. "
-                        f"Selected model `{model}` is available."
-                    )
-                else:
-                    message = (
-                        f"Gemini key authenticated using {source}. Retrieved {len(model_ids)} models, "
-                        f"but selected model `{model}` was not listed for this key."
-                    )
-
     return render_system_settings_response(
         request,
-        message,
-        active_tab="ai",
+        "AI settings were removed from System Settings.",
+        active_tab="general",
         routers_tab="cores",
+    )
+
+
+def _auth_parse_permission_codes(form, field_name="permission_codes"):
+    values = []
+    try:
+        values = list(form.getlist(field_name))
+    except Exception:
+        single = form.get(field_name)
+        if isinstance(single, str):
+            values = [single]
+    out = []
+    seen = set()
+    for value in values or []:
+        code = (value or "").strip()
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        out.append(code)
+    return out
+
+
+@app.post("/settings/system/auth/settings", response_class=HTMLResponse)
+async def system_auth_settings_save(request: Request):
+    form = await request.form()
+    system_settings = normalize_system_settings(get_settings("system", SYSTEM_DEFAULTS))
+    auth_cfg = system_settings.get("auth") if isinstance(system_settings.get("auth"), dict) else {}
+    smtp_cfg = auth_cfg.get("smtp") if isinstance(auth_cfg.get("smtp"), dict) else {}
+
+    smtp_password = (form.get("auth_smtp_password") or "").strip()
+    if parse_bool(form, "auth_smtp_clear_password"):
+        smtp_password = ""
+    elif not smtp_password:
+        smtp_password = (smtp_cfg.get("password") or "").strip()
+
+    auth_cfg["enabled"] = parse_bool(form, "auth_enabled")
+    auth_cfg["session_idle_hours"] = parse_int(form, "auth_session_idle_hours", int(auth_cfg.get("session_idle_hours", 8) or 8))
+    auth_cfg["audit_retention_days"] = parse_int(
+        form,
+        "auth_audit_retention_days",
+        int(auth_cfg.get("audit_retention_days", 180) or 180),
+    )
+    auth_cfg["smtp"] = {
+        "host": (form.get("auth_smtp_host") or "").strip(),
+        "port": parse_int(form, "auth_smtp_port", int(smtp_cfg.get("port", 587) or 587)),
+        "username": (form.get("auth_smtp_username") or "").strip(),
+        "password": smtp_password,
+        "from_email": (form.get("auth_smtp_from_email") or "").strip(),
+        "from_name": (form.get("auth_smtp_from_name") or _system_app_name(system_settings)).strip() or _system_app_name(system_settings),
+        "use_tls": parse_bool(form, "auth_smtp_use_tls"),
+        "use_ssl": parse_bool(form, "auth_smtp_use_ssl"),
+    }
+    system_settings["auth"] = auth_cfg
+    normalized = normalize_system_settings(system_settings)
+    save_settings("system", normalized)
+    _auth_log_event(request, "auth.settings_saved", resource="/settings/system/auth/settings", details="access settings updated")
+    return render_system_settings_response(request, "Access settings saved.", active_tab="access", routers_tab="cores", access_tab="auth")
+
+
+@app.post("/settings/system/auth/test-email", response_class=HTMLResponse)
+async def system_auth_test_email(request: Request):
+    form = await request.form()
+    system_settings = normalize_system_settings(get_settings("system", SYSTEM_DEFAULTS))
+    auth_cfg = system_settings.get("auth") if isinstance(system_settings.get("auth"), dict) else {}
+    smtp_cfg = auth_cfg.get("smtp") if isinstance(auth_cfg.get("smtp"), dict) else {}
+
+    smtp_password = (form.get("auth_smtp_password") or "").strip()
+    if parse_bool(form, "auth_smtp_clear_password"):
+        smtp_password = ""
+    elif not smtp_password:
+        smtp_password = (smtp_cfg.get("password") or "").strip()
+
+    auth_cfg["smtp"] = {
+        "host": (form.get("auth_smtp_host") or "").strip() or (smtp_cfg.get("host") or "").strip(),
+        "port": parse_int(form, "auth_smtp_port", int(smtp_cfg.get("port", 587) or 587)),
+        "username": (form.get("auth_smtp_username") or "").strip() or (smtp_cfg.get("username") or "").strip(),
+        "password": smtp_password,
+        "from_email": (form.get("auth_smtp_from_email") or "").strip() or (smtp_cfg.get("from_email") or "").strip(),
+        "from_name": (form.get("auth_smtp_from_name") or "").strip() or (smtp_cfg.get("from_name") or _system_app_name(system_settings)),
+        "use_tls": parse_bool(form, "auth_smtp_use_tls"),
+        "use_ssl": parse_bool(form, "auth_smtp_use_ssl"),
+    }
+    system_settings["auth"] = auth_cfg
+    system_settings = normalize_system_settings(system_settings)
+    app_name = _system_app_name(system_settings)
+
+    to_email = (form.get("auth_smtp_test_email") or "").strip()
+    if not to_email:
+        current_user = getattr(request.state, "current_user", None)
+        if isinstance(current_user, dict):
+            to_email = (current_user.get("email") or "").strip()
+    if not to_email:
+        return render_system_settings_response(
+            request,
+            "Test email failed: recipient email is required.",
+            active_tab="access",
+            routers_tab="cores",
+            access_tab="auth",
+        )
+    try:
+        _auth_send_email(
+            system_settings,
+            to_email=to_email,
+            subject=f"{app_name} SMTP test",
+            body_text=f"SMTP test successful. This email was sent from {app_name} access settings.",
+        )
+    except Exception as exc:
+        return render_system_settings_response(
+            request,
+            f"SMTP test failed: {exc}",
+            active_tab="access",
+            routers_tab="cores",
+            access_tab="auth",
+        )
+    _auth_log_event(request, "auth.smtp_test", resource="/settings/system/auth/test-email", details=f"sent to {to_email}")
+    return render_system_settings_response(
+        request,
+        f"SMTP test successful. Email sent to {to_email}.",
+        active_tab="access",
+        routers_tab="cores",
+        access_tab="auth",
+    )
+
+
+@app.post("/settings/system/auth/permission/add", response_class=HTMLResponse)
+async def system_auth_permission_add(request: Request):
+    return render_system_settings_response(
+        request,
+        "Permission catalog is system-managed. Assign permissions from the Roles tab.",
+        active_tab="access",
+        routers_tab="cores",
+        access_tab="permissions",
+    )
+
+
+@app.post("/settings/system/auth/role/add", response_class=HTMLResponse)
+async def system_auth_role_add(request: Request):
+    form = await request.form()
+    name = (form.get("role_name") or "").strip().lower()
+    description = (form.get("role_description") or "").strip()
+    permission_codes_raw = _auth_parse_permission_codes(form, field_name="permission_codes")
+    permission_codes, auto_added = _auth_expand_permission_dependencies(permission_codes_raw)
+    try:
+        create_auth_role(name=name, description=description, permission_codes=permission_codes)
+    except Exception as exc:
+        return render_system_settings_response(request, f"Failed to add role: {exc}", active_tab="access", routers_tab="cores", access_tab="roles")
+    _auth_log_event(request, "auth.role_added", resource=name, details=f"permissions={len(permission_codes)}")
+    message = f"Role `{name}` added."
+    if auto_added:
+        preview = ", ".join(auto_added[:3])
+        extra = len(auto_added) - 3
+        if extra > 0:
+            preview = f"{preview}, +{extra} more"
+        message += f" Required dependencies auto-added: {preview}."
+    return render_system_settings_response(request, message, active_tab="access", routers_tab="cores", access_tab="roles")
+
+
+@app.post("/settings/system/auth/role/save/{role_id}", response_class=HTMLResponse)
+async def system_auth_role_save(request: Request, role_id: int):
+    form = await request.form()
+    name = (form.get("role_name") or "").strip().lower()
+    description = (form.get("role_description") or "").strip()
+    role = get_auth_role_by_id(role_id) or {}
+    if (role.get("name") or "").strip().lower() == "owner":
+        return render_system_settings_response(
+            request,
+            "Owner role is locked and cannot be edited.",
+            active_tab="access",
+            routers_tab="cores",
+            access_tab="roles",
+        )
+    permission_codes_raw = _auth_parse_permission_codes(form, field_name="permission_codes")
+    permission_codes, auto_added = _auth_expand_permission_dependencies(permission_codes_raw)
+    try:
+        update_auth_role(role_id, name=name, description=description)
+        set_auth_role_permissions(role_id, permission_codes)
+    except Exception as exc:
+        return render_system_settings_response(request, f"Failed to update role: {exc}", active_tab="access", routers_tab="cores", access_tab="roles")
+    _auth_log_event(request, "auth.role_updated", resource=f"role_id={role_id}", details=f"permissions={len(permission_codes)}")
+    message = f"Role `{name}` updated."
+    if auto_added:
+        preview = ", ".join(auto_added[:3])
+        extra = len(auto_added) - 3
+        if extra > 0:
+            preview = f"{preview}, +{extra} more"
+        message += f" Required dependencies auto-added: {preview}."
+    return render_system_settings_response(request, message, active_tab="access", routers_tab="cores", access_tab="roles")
+
+
+@app.post("/settings/system/auth/role/delete/{role_id}", response_class=HTMLResponse)
+async def system_auth_role_delete(request: Request, role_id: int):
+    role = get_auth_role_by_id(role_id) or {}
+    role_name = (role.get("name") or "").strip() or f"id={role_id}"
+    if role_name.lower() == "owner":
+        return render_system_settings_response(
+            request,
+            "Owner role cannot be deleted.",
+            active_tab="access",
+            routers_tab="cores",
+            access_tab="roles",
+        )
+    try:
+        delete_auth_role(role_id)
+    except Exception as exc:
+        return render_system_settings_response(request, f"Failed to delete role: {exc}", active_tab="access", routers_tab="cores", access_tab="roles")
+    _auth_log_event(request, "auth.role_deleted", resource=role_name, details="role removed")
+    return render_system_settings_response(request, f"Role `{role_name}` deleted.", active_tab="access", routers_tab="cores", access_tab="roles")
+
+
+@app.post("/settings/system/auth/user/add", response_class=HTMLResponse)
+async def system_auth_user_add(request: Request):
+    form = await request.form()
+    username = (form.get("username") or "").strip()
+    email = (form.get("email") or "").strip().lower()
+    full_name = (form.get("full_name") or "").strip()
+    role_id = parse_int(form, "role_id", 0)
+    password = (form.get("password") or "").strip()
+    is_active = parse_bool(form, "is_active")
+    must_change_password = parse_bool(form, "must_change_password")
+
+    if len(password) < AUTH_PASSWORD_MIN_LENGTH:
+        return render_system_settings_response(
+            request,
+            f"New user password must be at least {AUTH_PASSWORD_MIN_LENGTH} characters.",
+            active_tab="access",
+            routers_tab="cores",
+            access_tab="users",
+        )
+    if not email:
+        return render_system_settings_response(
+            request,
+            "Email is required so the system can send login link and credentials.",
+            active_tab="access",
+            routers_tab="cores",
+            access_tab="users",
+        )
+    try:
+        password_hash, password_salt = _auth_hash_password(password)
+        create_auth_user(
+            username=username,
+            email=email,
+            full_name=full_name,
+            role_id=role_id,
+            password_hash=password_hash,
+            password_salt=password_salt,
+            must_change_password=must_change_password,
+            is_active=is_active,
+        )
+    except Exception as exc:
+        return render_system_settings_response(request, f"Failed to add user: {exc}", active_tab="access", routers_tab="cores", access_tab="users")
+    _auth_log_event(request, "auth.user_added", resource=username, details=f"role_id={role_id}")
+    login_link = f"{str(request.base_url).rstrip('/')}/login"
+    email_error = ""
+    try:
+        system_settings = normalize_system_settings(get_settings("system", SYSTEM_DEFAULTS))
+        app_name = _system_app_name(system_settings)
+        _auth_send_email(
+            system_settings,
+            to_email=email,
+            subject=f"{app_name} account created",
+            body_text=(
+                f"Your {app_name} account has been created.\n\n"
+                f"Login URL: {login_link}\n"
+                f"Username: {username}\n"
+                f"Password: {password}\n\n"
+                "Please sign in and change your password as soon as possible."
+            ),
+        )
+        _auth_log_event(request, "auth.user_welcome_email_sent", resource=username, details=f"to={email}")
+    except Exception as exc:
+        email_error = str(exc)
+        _auth_log_event(request, "auth.user_welcome_email_failed", resource=username, details=f"to={email};error={email_error[:180]}")
+    if email_error:
+        return render_system_settings_response(
+            request,
+            f"User `{username}` added, but welcome email failed: {email_error}",
+            active_tab="access",
+            routers_tab="cores",
+            access_tab="users",
+        )
+    return render_system_settings_response(
+        request,
+        f"User `{username}` added and welcome email sent to {email}.",
+        active_tab="access",
+        routers_tab="cores",
+        access_tab="users",
+    )
+
+
+@app.post("/settings/system/auth/user/save/{user_id}", response_class=HTMLResponse)
+async def system_auth_user_save(request: Request, user_id: int):
+    form = await request.form()
+    email = (form.get("email") or "").strip().lower()
+    full_name = (form.get("full_name") or "").strip()
+    role_id = parse_int(form, "role_id", 0)
+    is_active = parse_bool(form, "is_active")
+    new_password = (form.get("new_password") or "").strip()
+    must_change_password = parse_bool(form, "must_change_password")
+    existing_user = get_auth_user_by_id(user_id) or {}
+    if int(role_id or 0) <= 0:
+        try:
+            role_id = int(existing_user.get("role_id") or 0)
+        except Exception:
+            role_id = 0
+    existing_role_name = (existing_user.get("role_name") or "").strip().lower()
+    if existing_role_name == "owner":
+        owner_role_id = _get_owner_role_id()
+        if int(role_id or 0) != int(owner_role_id or 0):
+            return render_system_settings_response(
+                request,
+                "Owner account role cannot be changed.",
+                active_tab="access",
+                routers_tab="cores",
+                access_tab="users",
+            )
+        if not is_active:
+            return render_system_settings_response(
+                request,
+                "Owner account cannot be disabled.",
+                active_tab="access",
+                routers_tab="cores",
+                access_tab="users",
+            )
+
+    try:
+        update_auth_user(user_id=user_id, email=email, full_name=full_name, role_id=role_id, is_active=is_active)
+        if new_password:
+            if len(new_password) < AUTH_PASSWORD_MIN_LENGTH:
+                raise ValueError(f"New password must be at least {AUTH_PASSWORD_MIN_LENGTH} characters.")
+            password_hash, password_salt = _auth_hash_password(new_password)
+            set_auth_user_password(user_id, password_hash, password_salt, must_change_password=must_change_password)
+            revoke_auth_sessions_for_user(user_id)
+    except Exception as exc:
+        return render_system_settings_response(request, f"Failed to update user: {exc}", active_tab="access", routers_tab="cores", access_tab="users")
+    _auth_log_event(request, "auth.user_updated", resource=f"user_id={user_id}", details=f"role_id={role_id}")
+    return render_system_settings_response(request, "User updated.", active_tab="access", routers_tab="cores", access_tab="users")
+
+
+@app.post("/settings/system/auth/user/delete/{user_id}", response_class=HTMLResponse)
+async def system_auth_user_delete(request: Request, user_id: int):
+    current_user = getattr(request.state, "current_user", None)
+    if isinstance(current_user, dict) and int(current_user.get("id") or 0) == int(user_id or 0):
+        return render_system_settings_response(
+            request,
+            "You cannot delete your own account.",
+            active_tab="access",
+            routers_tab="cores",
+            access_tab="users",
+        )
+    user = get_auth_user_by_id(user_id) or {}
+    if (user.get("role_name") or "").strip().lower() == "owner":
+        return render_system_settings_response(
+            request,
+            "Owner account cannot be deleted.",
+            active_tab="access",
+            routers_tab="cores",
+            access_tab="users",
+        )
+    username = (user.get("username") or "").strip() or f"id={user_id}"
+    try:
+        delete_auth_user(user_id)
+    except Exception as exc:
+        return render_system_settings_response(request, f"Failed to delete user: {exc}", active_tab="access", routers_tab="cores", access_tab="users")
+    _auth_log_event(request, "auth.user_deleted", resource=username, details="user removed")
+    return render_system_settings_response(request, f"User `{username}` deleted.", active_tab="access", routers_tab="cores", access_tab="users")
+
+
+@app.post("/settings/system/auth/user/reset/{user_id}", response_class=HTMLResponse)
+async def system_auth_user_reset_password(request: Request, user_id: int):
+    user = get_auth_user_by_id(user_id)
+    if not user:
+        return render_system_settings_response(request, "User not found.", active_tab="access", routers_tab="cores", access_tab="users")
+    email = (user.get("email") or "").strip()
+    if not email:
+        return render_system_settings_response(request, "User has no email configured.", active_tab="access", routers_tab="cores", access_tab="users")
+    temp_password = _auth_generate_temporary_password()
+    password_hash, password_salt = _auth_hash_password(temp_password)
+    try:
+        set_auth_user_password(user_id, password_hash, password_salt, must_change_password=True)
+        revoke_auth_sessions_for_user(user_id)
+        system_settings = normalize_system_settings(get_settings("system", SYSTEM_DEFAULTS))
+        app_name = _system_app_name(system_settings)
+        _auth_send_email(
+            system_settings,
+            to_email=email,
+            subject=f"{app_name} temporary password",
+            body_text=(
+                f"A temporary password was generated for your {app_name} account.\n\n"
+                f"Username: {(user.get('username') or '').strip()}\n"
+                f"Temporary password: {temp_password}\n\n"
+                "Sign in and change your password immediately."
+            ),
+        )
+    except Exception as exc:
+        return render_system_settings_response(request, f"Password reset failed: {exc}", active_tab="access", routers_tab="cores", access_tab="users")
+    _auth_log_event(request, "auth.user_reset_password", resource=(user.get("username") or "").strip(), details="temporary password emailed")
+    return render_system_settings_response(
+        request,
+        f"Temporary password sent to {(user.get('email') or '').strip()}.",
+        active_tab="access",
+        routers_tab="cores",
+        access_tab="users",
     )
 
 
@@ -11277,6 +14094,32 @@ async def system_uninstall(request: Request):
         message = f"Uninstall failed: {exc}"
 
     return render_system_settings_response(request, message, active_tab="danger", routers_tab="cores")
+
+
+@app.post("/settings/system/branding", response_class=HTMLResponse)
+async def system_branding_save(request: Request):
+    form = await request.form()
+    app_name = (form.get("branding_app_name") or "").strip()
+    if not app_name:
+        return render_system_settings_response(
+            request,
+            "Display name is required.",
+            active_tab="general",
+            routers_tab="cores",
+        )
+    if len(app_name) > 80:
+        app_name = app_name[:80].strip()
+    system_settings = normalize_system_settings(get_settings("system", SYSTEM_DEFAULTS))
+    branding = system_settings.get("branding") if isinstance(system_settings.get("branding"), dict) else {}
+    branding["app_name"] = app_name
+    system_settings["branding"] = branding
+    save_settings("system", system_settings)
+    return render_system_settings_response(
+        request,
+        "Branding display name updated.",
+        active_tab="general",
+        routers_tab="cores",
+    )
 
 
 @app.post("/settings/system/logo", response_class=HTMLResponse)
