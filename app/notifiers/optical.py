@@ -79,16 +79,6 @@ def parse_float(value):
     return float(match.group(0))
 
 
-def pick_param(device, paths):
-    for path in paths:
-        raw = get_nested(device, path)
-        value = extract_value(raw)
-        parsed = parse_float(value)
-        if parsed is not None:
-            return parsed
-    return None
-
-
 def pick_param_with_bounds(device, paths, min_value, max_value):
     first_value = None
     first_within = None

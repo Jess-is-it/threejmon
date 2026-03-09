@@ -181,38 +181,6 @@ def compute_rto_stats(history, results):
     return rto_list
 
 
-def summarize_history(history):
-    rows = []
-    for ip, entry in history.items():
-        statuses = entry.get("statuses", [])
-        if not statuses:
-            continue
-        total = len(statuses)
-        failures = total - sum(statuses)
-        rto_pct = (failures / total) * 100.0
-        streak = 0
-        for value in reversed(statuses):
-            if value == 0:
-                streak += 1
-            else:
-                break
-        last_value = statuses[-1]
-        rows.append(
-            {
-                "name": entry.get("name", ip),
-                "ip": ip,
-                "total": total,
-                "failures": failures,
-                "rto_pct": rto_pct,
-                "uptime_pct": 100.0 - rto_pct,
-                "streak": streak,
-                "last_status": "down" if last_value == 0 else "up",
-                "last_check": entry.get("last_check", ""),
-            }
-        )
-    return rows
-
-
 def format_truncate(lines, max_lines, max_chars):
     result_lines = []
     total = 0
@@ -293,23 +261,6 @@ def format_messages(cfg, lines, output_mode):
     if output_mode == "split":
         return format_split(lines, max_chars)
     return [format_truncate(lines, max_lines, max_chars)]
-
-
-def build_results_from_history(history):
-    results = {}
-    for ip, entry in history.items():
-        statuses = entry.get("statuses", [])
-        if not statuses:
-            continue
-        results[ip] = bool(statuses[-1])
-    return results
-
-
-def build_devices_from_history(history):
-    devices = []
-    for ip, entry in history.items():
-        devices.append({"name": entry.get("name", ip), "ip": ip})
-    return devices
 
 
 def format_report(cfg, history, results, devices):
