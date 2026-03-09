@@ -30,14 +30,28 @@
 
 {% if profile.pppoe or profile.ip or profile.device_id %}
 <div class="row row-deck row-cards">
+  {% set can_profile_review = has_perm("profile_review.view") %}
+  {% set can_details = has_perm("profile_review.details.view") %}
+  {% set can_core_details = can_details or can_profile_review %}
+  {% set can_usage = has_perm("profile_review.usage_panel.view") %}
+  {% set can_accounts_ping = has_perm("profile_review.accounts_ping_panel.view") %}
+  {% set can_optical = has_perm("profile_review.optical_panel.view") %}
+  {% set can_any_panel = can_core_details or can_usage or can_accounts_ping or can_optical %}
+  {% set overview_tone = profile.overview.tone if profile.overview and profile.overview.tone else 'secondary' %}
   <div class="col-12">
-    <div class="card">
+    <div class="card card-lg">
       <div class="card-body">
-        <div class="d-flex align-items-start gap-3">
-          <span class="avatar bg-cyan-lt text-cyan">{{ (profile.name or "C")[:1]|upper }}</span>
+        <div class="d-flex align-items-start gap-3 flex-column flex-lg-row">
+          <span class="avatar avatar-lg bg-cyan-lt text-cyan">{{ (profile.name or "C")[:1]|upper }}</span>
           <div class="flex-fill">
             <div class="d-flex align-items-center gap-2 flex-wrap">
               <h3 class="mb-0">{{ profile.name or "Customer" }}</h3>
+              {% if profile.overview and profile.overview.label %}
+                <span class="badge bg-{{ overview_tone }}-lt text-{{ overview_tone }}">{{ profile.overview.label }}</span>
+              {% endif %}
+              {% if (not profile.surveillance or not profile.surveillance.active) and profile.pppoe and profile.overview and profile.overview.state in ["critical", "monitor"] %}
+                <span class="badge bg-orange-lt text-orange"><i class="ti ti-flag me-1"></i>Candidate for Surveillance</span>
+              {% endif %}
               {% for src in profile.sources %}
                 {% if src == "optical" %}
                   <span class="badge bg-azure-lt text-azure"><i class="ti ti-sun me-1"></i>Optical</span>
@@ -45,10 +59,20 @@
                   <span class="badge bg-indigo-lt text-indigo"><i class="ti ti-wifi me-1"></i>ACC-Ping</span>
                 {% elif src == "usage" %}
                   <span class="badge bg-teal-lt text-teal"><i class="ti ti-chart-bar me-1"></i>Usage</span>
+                {% elif src == "offline" %}
+                  <span class="badge bg-red-lt text-red"><i class="ti ti-user-off me-1"></i>Offline</span>
+                {% elif src == "surveillance" %}
+                  <span class="badge bg-orange-lt text-orange"><i class="ti ti-eye me-1"></i>Surveillance</span>
                 {% endif %}
               {% endfor %}
             </div>
+            {% if profile.overview and profile.overview.summary %}
+              <div class="text-muted mt-2">{{ profile.overview.summary }}</div>
+            {% endif %}
             <div class="text-muted mt-1 d-flex flex-wrap gap-3">
+              {% if profile.pppoe %}
+                <span><i class="ti ti-user me-1"></i>{{ profile.pppoe }}</span>
+              {% endif %}
               {% if profile.ip %}
                 <span><i class="ti ti-network me-1"></i>{{ profile.ip }}</span>
               {% endif %}
@@ -67,38 +91,42 @@
               <span><i class="ti ti-clock me-1"></i>Window: {{ profile.window_label }}</span>
             </div>
           </div>
-	          <div class="ms-auto d-flex gap-2 align-items-start">
-              {% set surv_pppoe = (profile.pppoe or '') %}
-              {% set surv_status = surveillance_index.get(surv_pppoe) if surv_pppoe else None %}
-              <span data-surveillance-slot>
-                {% if not surv_pppoe %}
-                  <button type="button" class="btn btn-outline-secondary btn-sm" title="No PPPoE detected for this profile" aria-label="No PPPoE detected" disabled>
-                    <i class="ti ti-eye me-1"></i>For Surveillance
-                  </button>
-                {% elif surv_status == 'under' %}
-                  <a class="btn btn-outline-warning btn-sm" href="/surveillance?tab=under&focus={{ surv_pppoe|urlencode }}" title="Under Surveillance" aria-label="Under Surveillance">
-                    <i class="ti ti-eye me-1"></i>Under Surveillance
-                  </a>
-                {% elif surv_status == 'level2' %}
-                  <a class="btn btn-outline-danger btn-sm" href="/surveillance?tab=level2&focus={{ surv_pppoe|urlencode }}" title="LEVEL II SUSPECT" aria-label="LEVEL II SUSPECT">
-                    <i class="ti ti-eye me-1"></i>LEVEL II SUSPECT
-                  </a>
-                {% else %}
-                  <button type="button"
-                          class="btn btn-outline-secondary btn-sm surveillance-add-btn"
-                          title="For Surveillance"
-                          data-pppoe="{{ surv_pppoe }}"
-                          data-name="{{ surv_pppoe }}"
-                          data-ip="{{ profile.ip }}"
-                          data-source="profile_review">
-                    <i class="ti ti-eye me-1"></i>For Surveillance
-                  </button>
-                {% endif %}
-              </span>
-	            <div class="dropdown">
-	              <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" id="profile-window-button">
-	                Window: {{ profile.window_label }}
-	              </button>
+          <div class="ms-lg-auto d-flex gap-2 align-items-start flex-wrap">
+            {% set surv_pppoe = (profile.pppoe or '') %}
+            {% set surv_status = profile.surveillance.status if profile.surveillance and profile.surveillance.active else (surveillance_index.get(surv_pppoe) if surv_pppoe else None) %}
+            <span data-surveillance-slot>
+              {% if not surv_pppoe %}
+                <button type="button" class="btn btn-outline-secondary btn-sm" title="No PPPoE detected for this profile" aria-label="No PPPoE detected" disabled>
+                  <i class="ti ti-eye me-1"></i>For Surveillance
+                </button>
+              {% elif not has_perm("profile_review.action.add_surveillance.edit") and not surv_status %}
+                <button type="button" class="btn btn-outline-secondary btn-sm" title="You do not have permission to add this account to surveillance" aria-label="No surveillance permission" disabled>
+                  <i class="ti ti-eye me-1"></i>For Surveillance
+                </button>
+              {% elif surv_status == 'under' %}
+                <a class="btn btn-outline-warning btn-sm" href="/surveillance?tab=under&focus={{ surv_pppoe|urlencode }}" title="Under Surveillance" aria-label="Under Surveillance">
+                  <i class="ti ti-eye me-1"></i>Under Surveillance
+                </a>
+              {% elif surv_status == 'level2' %}
+                <a class="btn btn-outline-danger btn-sm" href="/surveillance?tab=level2&focus={{ surv_pppoe|urlencode }}" title="LEVEL II SUSPECT" aria-label="LEVEL II SUSPECT">
+                  <i class="ti ti-eye me-1"></i>LEVEL II SUSPECT
+                </a>
+              {% else %}
+                <button type="button"
+                        class="btn btn-outline-secondary btn-sm surveillance-add-btn"
+                        title="For Surveillance"
+                        data-pppoe="{{ surv_pppoe }}"
+                        data-name="{{ surv_pppoe }}"
+                        data-ip="{{ profile.ip }}"
+                        data-source="profile_review">
+                  <i class="ti ti-eye me-1"></i>For Surveillance
+                </button>
+              {% endif %}
+            </span>
+            <div class="dropdown">
+              <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" id="profile-window-button">
+                Window: {{ profile.window_label }}
+              </button>
               <div class="dropdown-menu dropdown-menu-end">
                 <button class="dropdown-item profile-window-option" data-hours="6" data-label="6H">6H</button>
                 <button class="dropdown-item profile-window-option" data-hours="12" data-label="12H">12H</button>
@@ -112,11 +140,366 @@
               <i class="ti ti-x me-1"></i>Clear
             </a>
           </div>
-	  </div>
-  </div>
-</div>
+        </div>
+        {% if profile.overview and profile.overview.recommendation %}
+          <div class="alert alert-{% if profile.overview.state == 'critical' %}danger{% elif profile.overview.state == 'monitor' %}warning{% elif profile.overview.state == 'stable' %}success{% else %}secondary{% endif %} mt-3 mb-0">
+            <div class="fw-semibold mb-1">Recommendation</div>
+            <div>{{ profile.overview.recommendation }}</div>
+          </div>
+        {% endif %}
+      </div>
+    </div>
   </div>
 
+  {% if can_core_details %}
+    <div class="col-12">
+      <div class="row row-cards">
+        {% for kpi in profile.kpis %}
+          <div class="col-sm-6 col-xl-4 col-xxl-3">
+            <div class="card h-100">
+              <div class="card-body">
+                <div class="d-flex align-items-center gap-3">
+                  <span class="avatar bg-{{ kpi.tone or 'secondary' }}-lt text-{{ kpi.tone or 'secondary' }}">
+                    <i class="{{ kpi.icon or 'ti ti-chart-dots' }}"></i>
+                  </span>
+                  <div class="min-w-0">
+                    <div class="text-muted small text-uppercase">{{ kpi.title }}</div>
+                    <div class="h3 mb-1">{{ kpi.value }}</div>
+                    <div class="small text-muted">{{ kpi.hint }}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="col-lg-7">
+      <div class="card h-100">
+        <div class="card-header">
+          <h3 class="card-title"><i class="ti ti-id me-2"></i>Account Details</h3>
+        </div>
+        <div class="card-body">
+          <div class="row g-3">
+            {% for item in profile.account_details %}
+              <div class="col-md-6">
+                <div class="text-muted small">{{ item.label }}</div>
+                <div class="fw-semibold">
+                  {% if item.href %}
+                    <a class="text-reset text-decoration-none profile-device-link" href="{{ item.href }}" target="_blank" rel="noopener">{{ item.value }}</a>
+                  {% else %}
+                    {{ item.value }}
+                  {% endif %}
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-5">
+      <div class="card h-100">
+        <div class="card-header">
+          <h3 class="card-title"><i class="ti ti-flask me-2"></i>Testing Focus</h3>
+        </div>
+        <div class="card-body">
+          {% if profile.testing_focus %}
+            <div class="list-group list-group-flush">
+              {% for note in profile.testing_focus %}
+                <div class="list-group-item px-0">
+                  <div class="d-flex gap-2">
+                    <i class="ti ti-chevron-right text-{{ overview_tone }} mt-1"></i>
+                    <div>{{ note }}</div>
+                  </div>
+                </div>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div class="text-muted">No testing notes generated for this account yet.</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-6">
+      <div class="card h-100">
+        <div class="card-header">
+          <h3 class="card-title"><i class="ti ti-eye me-2"></i>Under Surveillance</h3>
+          {% if profile.surveillance and profile.surveillance.active %}
+            {% if profile.surveillance.status == "level2" %}
+              <span class="badge bg-red-lt ms-auto"><i class="ti ti-alert-circle me-1"></i>LEVEL II</span>
+            {% else %}
+              <span class="badge bg-yellow-lt ms-auto"><i class="ti ti-eye me-1"></i>Active</span>
+            {% endif %}
+          {% elif profile.surveillance and profile.surveillance.last_outcome_label %}
+            <span class="badge bg-green-lt ms-auto">{{ profile.surveillance.last_outcome_label }}</span>
+          {% else %}
+            <span class="badge bg-secondary-lt ms-auto">No record</span>
+          {% endif %}
+        </div>
+        <div class="card-body">
+          {% if profile.surveillance %}
+            <div class="row g-2 mb-3">
+              <div class="col-6">
+                <div class="text-muted small">Status</div>
+                <div class="fw-semibold">{{ profile.surveillance.status_label or "Not Tagged" }}</div>
+              </div>
+              <div class="col-6">
+                <div class="text-muted small">Source</div>
+                <div class="fw-semibold">{{ profile.surveillance.source or "n/a" }}</div>
+              </div>
+              <div class="col-6">
+                <div class="text-muted small">Since</div>
+                <div class="fw-semibold">{{ profile.surveillance.since or "n/a" }}</div>
+              </div>
+              <div class="col-6">
+                <div class="text-muted small">Duration</div>
+                <div class="fw-semibold">{{ profile.surveillance.duration or "n/a" }}</div>
+              </div>
+              <div class="col-6">
+                <div class="text-muted small">Observed Count</div>
+                <div class="fw-semibold">{{ profile.surveillance.observed_count or 0 }}</div>
+              </div>
+              <div class="col-6">
+                <div class="text-muted small">Last Updated</div>
+                <div class="fw-semibold">{{ profile.surveillance.last_updated or "n/a" }}</div>
+              </div>
+            </div>
+            {% if profile.surveillance.level2_reason %}
+              <div class="alert alert-danger py-2">
+                <div class="fw-semibold mb-1">Level II Reason</div>
+                <div>{{ profile.surveillance.level2_reason }}</div>
+              </div>
+            {% endif %}
+            {% if profile.surveillance.stage_history %}
+              <div class="fw-semibold mb-2">Stage History</div>
+              <div class="table-responsive" style="max-height: 220px; overflow: auto;">
+                <table class="table table-sm table-vcenter">
+                  <thead>
+                    <tr>
+                      <th>At</th>
+                      <th>Move</th>
+                      <th>Reason</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for item in profile.surveillance.stage_history %}
+                      <tr>
+                        <td class="text-muted">{{ item.at }}</td>
+                        <td>{{ item.from }} → {{ item.to }}</td>
+                        <td>{{ item.reason or item.action or "n/a" }}</td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+            {% elif profile.surveillance.history %}
+              <div class="fw-semibold mb-2">Recent Closed Cycles</div>
+              <div class="table-responsive" style="max-height: 220px; overflow: auto;">
+                <table class="table table-sm table-vcenter">
+                  <thead>
+                    <tr>
+                      <th>Ended</th>
+                      <th>Outcome</th>
+                      <th>Duration</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for item in profile.surveillance.history %}
+                      <tr>
+                        <td class="text-muted">{{ item.ended_at }}</td>
+                        <td>{{ item.end_reason }}</td>
+                        <td>{{ item.duration or "n/a" }}</td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+            {% else %}
+              <div class="text-muted">No active or historical surveillance workflow found for this account.</div>
+            {% endif %}
+          {% else %}
+            <div class="empty">
+              <div class="empty-icon"><i class="ti ti-eye-off"></i></div>
+              <p class="empty-title">No surveillance record</p>
+              <p class="empty-subtitle text-muted">Use the action button above to tag this account when testing confirms a recurring issue.</p>
+            </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-6">
+      <div class="card h-100">
+        <div class="card-header">
+          <h3 class="card-title"><i class="ti ti-user-off me-2"></i>Offline</h3>
+          {% if profile.offline and profile.offline.status == "offline" %}
+            <span class="badge bg-red-lt ms-auto"><i class="ti ti-alert-circle me-1"></i>Offline</span>
+          {% elif profile.offline and profile.offline.status == "tracking" %}
+            <span class="badge bg-yellow-lt ms-auto"><i class="ti ti-clock me-1"></i>Tracking</span>
+          {% elif profile.offline and profile.offline.status == "online" %}
+            <span class="badge bg-green-lt ms-auto"><i class="ti ti-check me-1"></i>Online</span>
+          {% elif profile.offline and profile.offline.status == "disabled" %}
+            <span class="badge bg-secondary-lt ms-auto">Disabled</span>
+          {% else %}
+            <span class="badge bg-secondary-lt ms-auto">No record</span>
+          {% endif %}
+        </div>
+        <div class="card-body">
+          {% if profile.offline %}
+            <div class="row g-2 mb-3">
+              <div class="col-6">
+                <div class="text-muted small">Status</div>
+                <div class="fw-semibold">{{ profile.offline.status_label or "No offline data" }}</div>
+              </div>
+              <div class="col-6">
+                <div class="text-muted small">Mode</div>
+                <div class="fw-semibold">{{ profile.offline.mode or "n/a" }}</div>
+              </div>
+              <div class="col-6">
+                <div class="text-muted small">Offline Since</div>
+                <div class="fw-semibold">{{ profile.offline.offline_since or "n/a" }}</div>
+              </div>
+              <div class="col-6">
+                <div class="text-muted small">Offline For</div>
+                <div class="fw-semibold">{{ profile.offline.offline_for or "n/a" }}</div>
+              </div>
+              <div class="col-6">
+                <div class="text-muted small">Threshold</div>
+                <div class="fw-semibold">{{ profile.offline.threshold_text or "n/a" }}</div>
+              </div>
+              <div class="col-6">
+                <div class="text-muted small">Last Check</div>
+                <div class="fw-semibold">{{ profile.offline.last_check or "n/a" }}</div>
+              </div>
+            </div>
+            <div class="row g-2 mb-3">
+              <div class="col-6">
+                <div class="text-muted small">Router</div>
+                <div class="fw-semibold">{{ profile.offline.router_name or "n/a" }}</div>
+              </div>
+              <div class="col-6">
+                <div class="text-muted small">Service Profile</div>
+                <div class="fw-semibold">{{ profile.offline.service_profile or "n/a" }}</div>
+              </div>
+              <div class="col-6">
+                <div class="text-muted small">Last Logged Out</div>
+                <div class="fw-semibold">{{ profile.offline.last_logged_out or "n/a" }}</div>
+              </div>
+              <div class="col-6">
+                <div class="text-muted small">Radius Status</div>
+                <div class="fw-semibold">{{ profile.offline.radius_status or "n/a" }}</div>
+              </div>
+            </div>
+            <div class="text-muted small mb-3">{{ profile.offline.status_hint }}</div>
+            {% if profile.offline.history %}
+              <div class="fw-semibold mb-2">Recent Offline History</div>
+              <div class="table-responsive" style="max-height: 220px; overflow: auto;">
+                <table class="table table-sm table-vcenter">
+                  <thead>
+                    <tr>
+                      <th>Started</th>
+                      <th>Ended</th>
+                      <th>Duration</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for item in profile.offline.history %}
+                      <tr>
+                        <td class="text-muted">{{ item.offline_started }}</td>
+                        <td>{{ item.offline_ended }}</td>
+                        <td>{{ item.duration or "n/a" }}</td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+            {% endif %}
+          {% else %}
+            <div class="empty">
+              <div class="empty-icon"><i class="ti ti-clock-off"></i></div>
+              <p class="empty-title">No offline record</p>
+              <p class="empty-subtitle text-muted">No current or recent offline event was found for this PPPoE account.</p>
+            </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    {% set inspect_pppoe = profile.pppoe or '' %}
+    {% set inspect_surv_status = profile.surveillance.status if profile.surveillance and profile.surveillance.active else (surveillance_index.get(inspect_pppoe) if inspect_pppoe else None) %}
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title"><i class="ti ti-activity me-2"></i>7D Activity</h3>
+          {% if profile.surveillance and profile.surveillance.active %}
+            {% if inspect_surv_status == "level2" %}
+              <span class="badge bg-red-lt text-red ms-auto"><i class="ti ti-alert-circle me-1"></i>LEVEL II Baseline</span>
+            {% else %}
+              <span class="badge bg-indigo-lt text-indigo ms-auto"><i class="ti ti-eye me-1"></i>Pre-Surveillance Baseline</span>
+            {% endif %}
+          {% else %}
+            <span class="badge bg-indigo-lt text-indigo ms-auto">7D ACC-Ping Baseline</span>
+          {% endif %}
+        </div>
+        <div class="card-body">
+          {% if inspect_pppoe %}
+            <div class="d-flex flex-column flex-xl-row align-items-xl-center justify-content-between gap-3 mb-3">
+              <div>
+                <div class="text-muted small" id="profile-inspect-summary">
+                  {% if profile.surveillance and profile.surveillance.active %}
+                    Pre-surveillance ACC-Ping behavior before this account entered surveillance.
+                  {% else %}
+                    Recent 7-day ACC-Ping activity baseline for quick network testing and surveillance decisions.
+                  {% endif %}
+                </div>
+                <div class="text-muted small mt-1" id="profile-inspect-anchor"></div>
+              </div>
+              <a class="btn btn-outline-secondary btn-sm" href="/surveillance{% if inspect_surv_status %}?tab={{ inspect_surv_status }}&focus={{ inspect_pppoe|urlencode }}{% elif inspect_pppoe %}?focus={{ inspect_pppoe|urlencode }}{% endif %}">
+                <i class="ti ti-external-link me-1"></i>Open Surveillance
+              </a>
+            </div>
+            <div id="profile-inspect-loading" class="text-muted">Loading 7D activity...</div>
+            <div id="profile-inspect-error" class="alert alert-danger d-none mb-3"></div>
+            <div id="profile-inspect-body" class="d-none">
+              <div class="row g-2 mb-3">
+                <div class="col-6 col-lg-3"><div class="border rounded p-2"><div class="text-muted small">Samples</div><div class="fw-semibold" id="profile-inspect-kpi-samples">0</div></div></div>
+                <div class="col-6 col-lg-3"><div class="border rounded p-2"><div class="text-muted small">Down Samples</div><div class="fw-semibold" id="profile-inspect-kpi-down">0</div></div></div>
+                <div class="col-6 col-lg-3"><div class="border rounded p-2"><div class="text-muted small">Loss Events</div><div class="fw-semibold" id="profile-inspect-kpi-loss-events">0</div></div></div>
+                <div class="col-6 col-lg-3"><div class="border rounded p-2"><div class="text-muted small">Uptime</div><div class="fw-semibold" id="profile-inspect-kpi-uptime">n/a</div></div></div>
+                <div class="col-6 col-lg-3"><div class="border rounded p-2"><div class="text-muted small">Average Latency</div><div class="fw-semibold" id="profile-inspect-kpi-avg-latency">n/a</div></div></div>
+                <div class="col-6 col-lg-3"><div class="border rounded p-2"><div class="text-muted small">Highest Latency</div><div class="fw-semibold" id="profile-inspect-kpi-max-latency">n/a</div></div></div>
+                <div class="col-6 col-lg-3"><div class="border rounded p-2"><div class="text-muted small">Average Loss</div><div class="fw-semibold" id="profile-inspect-kpi-avg-loss">n/a</div></div></div>
+                <div class="col-6 col-lg-3"><div class="border rounded p-2"><div class="text-muted small">Peak Loss</div><div class="fw-semibold" id="profile-inspect-kpi-max-loss">n/a</div></div></div>
+                <div class="col-6 col-lg-3"><div class="border rounded p-2"><div class="text-muted small">Total Loss Time</div><div class="fw-semibold" id="profile-inspect-kpi-loss-time">n/a</div></div></div>
+                <div class="col-6 col-lg-3"><div class="border rounded p-2"><div class="text-muted small">Full-Down Time</div><div class="fw-semibold" id="profile-inspect-kpi-loss100">n/a</div></div></div>
+                <div class="col-6 col-lg-3"><div class="border rounded p-2"><div class="text-muted small">Longest Down Streak</div><div class="fw-semibold" id="profile-inspect-kpi-longest-down">n/a</div></div></div>
+                <div class="col-6 col-lg-3"><div class="border rounded p-2"><div class="text-muted small">Last Sample</div><div class="fw-semibold" id="profile-inspect-kpi-last">n/a</div></div></div>
+              </div>
+              <div class="border rounded p-2">
+                <div id="profile-inspect-chart" style="min-height: 360px;"></div>
+              </div>
+              <div class="text-muted small mt-2" id="profile-inspect-range"></div>
+            </div>
+          {% else %}
+            <div class="empty">
+              <div class="empty-icon"><i class="ti ti-user-off"></i></div>
+              <p class="empty-title">No PPPoE detected</p>
+              <p class="empty-subtitle text-muted">7D Activity needs a PPPoE username so it can load the ACC-Ping history used by Surveillance.</p>
+            </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  {% elif not can_any_panel %}
+    <div class="col-12">
+      <div class="alert alert-warning mb-0">You can open the profile header, but no detail panels are assigned to your role.</div>
+    </div>
+  {% endif %}
+
+  {% if can_usage %}
   <div class="col-12">
     <div class="card">
       <div class="card-header">
@@ -265,7 +648,9 @@
       </div>
     </div>
   </div>
+  {% endif %}
 
+  {% if can_accounts_ping %}
   <div class="col-lg-6">
     <div class="card">
       <div class="card-header">
@@ -347,7 +732,9 @@
       </div>
     </div>
   </div>
+  {% endif %}
 
+  {% if can_optical %}
   <div class="col-lg-6">
     <div class="card">
       <div class="card-header">
@@ -423,8 +810,9 @@
           </div>
         {% endif %}
       </div>
-	    </div>
-		</div>
+    </div>
+  </div>
+  {% endif %}
 </div>
 {% else %}
 <div class="empty">
@@ -447,6 +835,14 @@
 </div>
 {% endif %}
 
+<div id="profile-loading-overlay" class="d-none position-fixed top-0 start-0 w-100 h-100" style="z-index: 1080; background: rgba(255, 255, 255, 0.86);">
+  <div class="d-flex flex-column align-items-center justify-content-center h-100 text-center px-3">
+    <div class="spinner-border text-cyan mb-3" role="status" aria-hidden="true"></div>
+    <div class="fw-semibold" id="profile-loading-overlay-title">Loading customer profile...</div>
+    <div class="text-muted small mt-1" id="profile-loading-overlay-copy">Fetching 7D Activity, Usage, ACC-Ping, and Optical data.</div>
+  </div>
+</div>
+
 <script>
   document.addEventListener("DOMContentLoaded", () => {
     const profile = {{ profile | tojson }};
@@ -457,8 +853,105 @@
     const top10List = document.getElementById("profile-top10-list");
     const windowButton = document.getElementById("profile-window-button");
     const windowOptions = document.querySelectorAll(".profile-window-option");
+    const loadingOverlay = document.getElementById("profile-loading-overlay");
+    const loadingOverlayTitle = document.getElementById("profile-loading-overlay-title");
+    const loadingOverlayCopy = document.getElementById("profile-loading-overlay-copy");
+    const HEARTBEAT_INTERVAL_MS = 4 * 60 * 1000;
+    const RESUME_WARMUP_THRESHOLD_MS = 2 * 60 * 1000;
     let pendingTimer = null;
+    let heartbeatTimer = null;
     let lastItems = [];
+    let lastHiddenAt = document.hidden ? Date.now() : 0;
+    let lastWarmupAt = 0;
+
+    const showProfileLoadingOverlay = (title = "Loading customer profile...", copy = "Fetching 7D Activity, Usage, ACC-Ping, and Optical data.") => {
+      if (!loadingOverlay) return;
+      if (loadingOverlayTitle) loadingOverlayTitle.textContent = title;
+      if (loadingOverlayCopy) loadingOverlayCopy.textContent = copy;
+      loadingOverlay.classList.remove("d-none");
+    };
+
+    const setChartPlaceholder = (el, message) => {
+      if (!el) return;
+      el.innerHTML = `<div class="d-flex align-items-center justify-content-center text-center text-muted small" style="min-height: 220px;">${message}</div>`;
+    };
+
+    const fetchNoStore = (url, options = {}) => {
+      const headers = { ...(options.headers || {}) };
+      if (!Object.keys(headers).length && options.acceptJson !== false) {
+        headers.Accept = "application/json";
+      }
+      return fetch(url, {
+        cache: "no-store",
+        credentials: "same-origin",
+        ...options,
+        headers,
+      });
+    };
+
+    const buildProfileHref = (item) => {
+      const params = new URLSearchParams();
+      if (item?.pppoe) params.set("pppoe", item.pppoe);
+      if (item?.ip) params.set("ip", item.ip);
+      if (item?.device_id) params.set("device_id", item.device_id);
+      return `/profile-review?${params.toString()}`;
+    };
+
+    const warmProfileNavigation = (item) => {
+      const href = buildProfileHref(item);
+      fetchNoStore(href, { acceptJson: false, method: "HEAD", keepalive: true }).catch(() => null);
+      return href;
+    };
+
+    const sendAuthHeartbeat = () => {
+      return fetchNoStore("/auth/ping", { keepalive: true }).catch(() => null);
+    };
+
+    const warmCurrentProfileData = () => {
+      const urls = [];
+      const hours = String(profile?.window_hours || 24);
+      if (profile?.pppoe) {
+        urls.push(`/surveillance/inspect_activity?${new URLSearchParams({ pppoe: String(profile.pppoe), stage: "under" }).toString()}`);
+      }
+      if (profile?.accounts_ping?.account_id) {
+        urls.push(`/accounts-ping/series?${new URLSearchParams({ account_id: String(profile.accounts_ping.account_id), window: hours }).toString()}`);
+      }
+      if (profile?.optical?.device_id) {
+        urls.push(`/optical/series?${new URLSearchParams({ device_id: String(profile.optical.device_id), window: hours }).toString()}`);
+      }
+      if (profile?.pppoe && profile?.usage?.enabled && profile?.usage?.active) {
+        urls.push(`/usage/series?${new URLSearchParams({ pppoe: String(profile.pppoe), hours }).toString()}`);
+      }
+      if (!urls.length) return Promise.resolve([]);
+      const now = Date.now();
+      if (now - lastWarmupAt < 30000) return Promise.resolve([]);
+      lastWarmupAt = now;
+      return Promise.allSettled(urls.map((url) => fetchNoStore(url, { keepalive: true })));
+    };
+
+    const refreshCurrentDiagnostics = () => {
+      inspectResetPanel({ keepLoading: !!profileInspectChartEl });
+      renderInspectActivity();
+      renderAccPingChart();
+      renderOpticalChart();
+      renderUsageChart();
+    };
+
+    const resumeWarmup = () => {
+      sendAuthHeartbeat();
+      if (!profile?.pppoe && !profile?.ip && !profile?.device_id) return;
+      if (!lastHiddenAt || (Date.now() - lastHiddenAt) < RESUME_WARMUP_THRESHOLD_MS) return;
+      warmCurrentProfileData();
+      refreshCurrentDiagnostics();
+    };
+
+    const startHeartbeatLoop = () => {
+      if (heartbeatTimer) window.clearInterval(heartbeatTimer);
+      heartbeatTimer = window.setInterval(() => {
+        if (document.hidden) return;
+        sendAuthHeartbeat();
+      }, HEARTBEAT_INTERVAL_MS);
+    };
 
     const showTop10 = () => {
       if (!top10Wrap) return;
@@ -482,31 +975,43 @@
       suggestMenu.classList.add("show");
     };
 
-	    const iconFor = (sources) => {
-	      if ((sources || []).includes("optical") && (sources || []).includes("accounts_ping") && (sources || []).includes("usage")) return "ti ti-layers";
-	      if ((sources || []).includes("optical") && (sources || []).includes("accounts_ping")) return "ti ti-layers";
-	      if ((sources || []).includes("optical")) return "ti ti-sun";
-	      if ((sources || []).includes("accounts_ping")) return "ti ti-wifi";
-	      if ((sources || []).includes("usage")) return "ti ti-chart-bar";
-	      return "ti ti-user";
-	    };
+    const iconFor = (sources) => {
+      const items = sources || [];
+      if (items.length > 1) return "ti ti-layers";
+      if (items.includes("surveillance")) return "ti ti-eye";
+      if (items.includes("offline")) return "ti ti-user-off";
+      if (items.includes("optical")) return "ti ti-sun";
+      if (items.includes("accounts_ping")) return "ti ti-wifi";
+      if (items.includes("usage")) return "ti ti-chart-bar";
+      return "ti ti-user";
+    };
 
     const statusBadgeHtml = (item) => {
       const status = String(item?.meta?.status || "").toLowerCase();
       if (!status) return "";
       if (status === "down" || status === "issue") return '<span class="badge bg-red-lt">Critical</span>';
       if (status === "monitor") return '<span class="badge bg-yellow-lt">Monitor</span>';
+      if (status === "tracking") return '<span class="badge bg-yellow-lt">Tracking</span>';
       if (status === "up" || status === "stable") return '<span class="badge bg-green-lt">Stable</span>';
       return "";
     };
 
+    const sourceBadgesHtml = (sources) => {
+      const items = sources || [];
+      return [
+        items.includes("surveillance") ? '<span class="badge bg-orange-lt text-orange">Surveillance</span>' : "",
+        items.includes("offline") ? '<span class="badge bg-red-lt text-red">Offline</span>' : "",
+        items.includes("optical") ? '<span class="badge bg-azure-lt text-azure">Optical</span>' : "",
+        items.includes("accounts_ping") ? '<span class="badge bg-indigo-lt text-indigo">ACC-Ping</span>' : "",
+        items.includes("usage") ? '<span class="badge bg-teal-lt text-teal">Usage</span>' : "",
+      ].join("");
+    };
+
     const navigateTo = (item) => {
       hideTop10();
-      const params = new URLSearchParams();
-      if (item.pppoe) params.set("pppoe", item.pppoe);
-      if (item.ip) params.set("ip", item.ip);
-      if (item.device_id) params.set("device_id", item.device_id);
-      window.location.href = `/profile-review?${params.toString()}`;
+      showProfileLoadingOverlay();
+      const targetHref = warmProfileNavigation(item);
+      window.location.href = targetHref;
     };
 
     const renderTop10 = (payload) => {
@@ -546,11 +1051,11 @@
               </div>
               <div class="d-flex gap-1 align-items-center flex-wrap justify-content-end">
                 ${statusBadgeHtml(item)}
-                ${(item.sources || []).includes("optical") ? '<span class="badge bg-azure-lt text-azure">Optical</span>' : ""}
-                ${(item.sources || []).includes("accounts_ping") ? '<span class="badge bg-indigo-lt text-indigo">ACC-Ping</span>' : ""}
+                ${sourceBadgesHtml(item.sources)}
               </div>
             </div>
           `;
+          row.addEventListener("pointerdown", () => warmProfileNavigation(item));
           row.addEventListener("click", () => navigateTo(item));
           top10List.appendChild(row);
         });
@@ -581,11 +1086,11 @@
             </div>
             <div class="d-flex gap-1">
               ${statusBadgeHtml(item)}
-              ${(item.sources || []).includes("optical") ? '<span class="badge bg-azure-lt text-azure">Optical</span>' : ""}
-              ${(item.sources || []).includes("accounts_ping") ? '<span class="badge bg-indigo-lt text-indigo">ACC-Ping</span>' : ""}
+              ${sourceBadgesHtml(item.sources)}
             </div>
           </div>
         `;
+        row.addEventListener("pointerdown", () => warmProfileNavigation(item));
         row.addEventListener("click", () => navigateTo(item));
         suggestMenu.appendChild(row);
       });
@@ -598,7 +1103,7 @@
         const url = q.length >= 2
           ? `/profile-review/suggest?q=${encodeURIComponent(q)}`
           : "/profile-review/suggest";
-        const res = await fetch(url, { headers: { "Accept": "application/json" } });
+        const res = await fetchNoStore(url);
         if (!res.ok) return;
         const payload = await res.json();
         lastItems = payload.items || [];
@@ -647,6 +1152,7 @@
           if (label) {
             windowButton.textContent = `Window: ${label}`;
           }
+          showProfileLoadingOverlay("Refreshing profile window...", "Updating 7D Activity, Usage, ACC-Ping, and Optical data.");
           const url = new URL(window.location.href);
           url.searchParams.set("window", hours);
           window.location.href = url.toString();
@@ -654,13 +1160,251 @@
       });
     }
 
+    const profileInspectLoadingEl = document.getElementById("profile-inspect-loading");
+    const profileInspectErrorEl = document.getElementById("profile-inspect-error");
+    const profileInspectBodyEl = document.getElementById("profile-inspect-body");
+    const profileInspectChartEl = document.getElementById("profile-inspect-chart");
+    const profileInspectRangeEl = document.getElementById("profile-inspect-range");
+    const profileInspectSummaryEl = document.getElementById("profile-inspect-summary");
+    const profileInspectAnchorEl = document.getElementById("profile-inspect-anchor");
+    const profileInspectState = { chart: null, token: 0 };
+
+    const formatDuration = (seconds) => {
+      const total = Math.max(Math.floor(Number(seconds) || 0), 0);
+      const days = Math.floor(total / 86400);
+      const hours = Math.floor((total % 86400) / 3600);
+      const minutes = Math.floor((total % 3600) / 60);
+      const secs = total % 60;
+      if (days > 0) return `${days}d ${hours}h`;
+      if (hours > 0) return `${hours}h ${minutes}m`;
+      if (minutes > 0) return `${minutes}m ${secs}s`;
+      return `${secs}s`;
+    };
+
+    const formatTsPHT = (value) => {
+      const dt = new Date(value);
+      if (Number.isNaN(dt.getTime())) return "";
+      return dt.toLocaleString("en-PH", {
+        timeZone: "Asia/Manila",
+        month: "short",
+        day: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true,
+      });
+    };
+
+    const inspectSetKpi = (id, value) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = value;
+    };
+
+    const inspectFormatPercent = (value, digits = 1) => {
+      const num = Number(value);
+      return Number.isFinite(num) ? `${num.toFixed(digits)}%` : "n/a";
+    };
+
+    const inspectFormatMs = (value) => {
+      const num = Number(value);
+      return Number.isFinite(num) ? `${num.toFixed(1)}ms` : "n/a";
+    };
+
+    const inspectFormatIsoPht = (value) => {
+      const ts = value ? Date.parse(String(value)) : NaN;
+      return Number.isFinite(ts) ? formatTsPHT(ts) : "n/a";
+    };
+
+    const inspectBaseSummary = profile?.surveillance?.active
+      ? "Pre-surveillance ACC-Ping behavior before this account entered surveillance."
+      : "Recent 7-day ACC-Ping activity baseline for quick network testing and surveillance decisions.";
+
+    const inspectResetPanel = ({ keepLoading = true } = {}) => {
+      profileInspectState.token += 1;
+      if (profileInspectState.chart) {
+        try { profileInspectState.chart.destroy(); } catch (err) {}
+        profileInspectState.chart = null;
+      }
+      if (profileInspectChartEl) setChartPlaceholder(profileInspectChartEl, "Loading 7D activity...");
+      if (profileInspectRangeEl) profileInspectRangeEl.textContent = "";
+      if (profileInspectSummaryEl) profileInspectSummaryEl.textContent = inspectBaseSummary;
+      if (profileInspectAnchorEl) profileInspectAnchorEl.textContent = "";
+      inspectSetKpi("profile-inspect-kpi-samples", "0");
+      inspectSetKpi("profile-inspect-kpi-down", "0");
+      inspectSetKpi("profile-inspect-kpi-loss-events", "0");
+      inspectSetKpi("profile-inspect-kpi-uptime", "n/a");
+      inspectSetKpi("profile-inspect-kpi-avg-latency", "n/a");
+      inspectSetKpi("profile-inspect-kpi-max-latency", "n/a");
+      inspectSetKpi("profile-inspect-kpi-avg-loss", "n/a");
+      inspectSetKpi("profile-inspect-kpi-max-loss", "n/a");
+      inspectSetKpi("profile-inspect-kpi-loss-time", "n/a");
+      inspectSetKpi("profile-inspect-kpi-loss100", "n/a");
+      inspectSetKpi("profile-inspect-kpi-longest-down", "n/a");
+      inspectSetKpi("profile-inspect-kpi-last", "n/a");
+      if (profileInspectLoadingEl) profileInspectLoadingEl.classList.toggle("d-none", !keepLoading);
+      if (profileInspectBodyEl) profileInspectBodyEl.classList.add("d-none");
+      if (profileInspectErrorEl) {
+        profileInspectErrorEl.classList.add("d-none");
+        profileInspectErrorEl.textContent = "";
+      }
+    };
+
+    const renderInspectChart = async (series) => {
+      if (!profileInspectChartEl) return;
+      if (profileInspectState.chart) {
+        try { profileInspectState.chart.destroy(); } catch (err) {}
+        profileInspectState.chart = null;
+      }
+      const points = (Array.isArray(series) ? series : [])
+        .map((row) => {
+          const ts = row && row.ts ? Date.parse(String(row.ts)) : NaN;
+          if (!Number.isFinite(ts)) return null;
+          const loss = row.loss === null || row.loss === undefined ? null : Number(row.loss);
+          const avgMs = row.avg_ms === null || row.avg_ms === undefined ? null : Number(row.avg_ms);
+          return {
+            x: ts,
+            loss: Number.isFinite(loss) ? loss : null,
+            avg_ms: Number.isFinite(avgMs) ? avgMs : null,
+          };
+        })
+        .filter(Boolean);
+      if (!points.length) {
+        setChartPlaceholder(profileInspectChartEl, "No 7D activity data available for this account.");
+        return;
+      }
+      if (!window.ApexCharts) {
+        setChartPlaceholder(profileInspectChartEl, "Chart library unavailable.");
+        return;
+      }
+      const latency = points.map((point) => ({ x: point.x, y: point.avg_ms }));
+      const loss = points.map((point) => ({ x: point.x, y: point.loss }));
+      profileInspectChartEl.innerHTML = "";
+      profileInspectState.chart = new window.ApexCharts(profileInspectChartEl, {
+        chart: {
+          type: "line",
+          height: 360,
+          toolbar: {
+            show: true,
+            tools: {
+              download: false,
+              selection: true,
+              zoom: true,
+              zoomin: true,
+              zoomout: true,
+              pan: true,
+              reset: true,
+            },
+          },
+          zoom: { enabled: true, type: "x", autoScaleYaxis: true },
+          animations: { enabled: false },
+        },
+        stroke: { width: 2 },
+        markers: { size: 0 },
+        series: [
+          { name: "Latency (ms)", data: latency },
+          { name: "Loss (%)", data: loss },
+        ],
+        colors: ["#206bc4", "#d63939"],
+        xaxis: { type: "datetime" },
+        yaxis: [
+          {
+            title: { text: "ms" },
+            tickAmount: 4,
+            labels: { formatter: (value) => { const num = Number(value); return Number.isFinite(num) ? num.toFixed(1) : ""; } },
+          },
+          {
+            opposite: true,
+            min: 0,
+            max: 100,
+            tickAmount: 5,
+            title: { text: "%" },
+            labels: { formatter: (value) => { const num = Number(value); return Number.isFinite(num) ? num.toFixed(0) : ""; } },
+          },
+        ],
+        tooltip: {
+          shared: true,
+          intersect: false,
+          x: { formatter: (value) => formatTsPHT(value) },
+        },
+        grid: { strokeDashArray: 4 },
+        legend: { position: "top" },
+      });
+      await profileInspectState.chart.render();
+    };
+
+    const renderInspectActivity = async () => {
+      if (!profileInspectChartEl || !profile?.pppoe) return;
+      const rawStage = String(profile?.surveillance?.status || "under").toLowerCase();
+      const stage = rawStage === "level2" || rawStage === "observe" ? rawStage : "under";
+      const token = ++profileInspectState.token;
+      if (profileInspectLoadingEl) profileInspectLoadingEl.classList.remove("d-none");
+      if (profileInspectBodyEl) profileInspectBodyEl.classList.add("d-none");
+      if (profileInspectErrorEl) {
+        profileInspectErrorEl.classList.add("d-none");
+        profileInspectErrorEl.textContent = "";
+      }
+      try {
+        const params = new URLSearchParams({ pppoe: String(profile.pppoe), stage });
+        const res = await fetchNoStore(`/surveillance/inspect_activity?${params.toString()}`);
+        if (!res.ok) throw new Error("Failed to load 7D activity.");
+        const payload = await res.json();
+        if (token !== profileInspectState.token) return;
+        if (!payload || !Array.isArray(payload.series)) throw new Error("Invalid 7D activity payload.");
+        const stats = (payload && typeof payload.stats === "object" && payload.stats) ? payload.stats : {};
+        inspectSetKpi("profile-inspect-kpi-samples", `${parseInt(stats.samples || "0", 10) || 0}`);
+        inspectSetKpi("profile-inspect-kpi-down", `${parseInt(stats.down_samples || "0", 10) || 0}`);
+        inspectSetKpi("profile-inspect-kpi-loss-events", `${parseInt(stats.loss_events || "0", 10) || 0}`);
+        inspectSetKpi("profile-inspect-kpi-uptime", inspectFormatPercent(stats.uptime_pct));
+        inspectSetKpi("profile-inspect-kpi-avg-latency", inspectFormatMs(stats.avg_latency_ms));
+        inspectSetKpi("profile-inspect-kpi-max-latency", inspectFormatMs(stats.max_latency_ms));
+        inspectSetKpi("profile-inspect-kpi-avg-loss", inspectFormatPercent(stats.avg_loss_pct));
+        inspectSetKpi("profile-inspect-kpi-max-loss", inspectFormatPercent(stats.max_loss_pct));
+        inspectSetKpi("profile-inspect-kpi-loss-time", formatDuration(Number(stats.downtime_seconds) || 0));
+        inspectSetKpi("profile-inspect-kpi-loss100", formatDuration(Number(stats.loss100_seconds) || 0));
+        inspectSetKpi("profile-inspect-kpi-longest-down", formatDuration(Number(stats.longest_down_streak_seconds) || 0));
+        inspectSetKpi("profile-inspect-kpi-last", inspectFormatIsoPht(stats.last_sample_ts));
+        if (profileInspectRangeEl) {
+          const sinceLabel = inspectFormatIsoPht(payload.since);
+          const untilLabel = inspectFormatIsoPht(payload.until);
+          profileInspectRangeEl.textContent = `Showing: ${sinceLabel} - ${untilLabel} (PHT)`;
+        }
+        if (profileInspectSummaryEl) {
+          profileInspectSummaryEl.textContent = profile?.surveillance?.active
+            ? "Pre-surveillance ACC-Ping behavior before this account entered surveillance."
+            : "Recent 7-day ACC-Ping activity baseline for quick network testing and surveillance decisions.";
+        }
+        if (profileInspectAnchorEl) {
+          if (profile?.surveillance?.active && payload.anchor_since) {
+            profileInspectAnchorEl.textContent = `Baseline anchor: before surveillance started at ${inspectFormatIsoPht(payload.anchor_since)}.`;
+          } else {
+            profileInspectAnchorEl.textContent = "This view mirrors the Surveillance 7-day activity baseline using ACC-Ping history.";
+          }
+        }
+        await renderInspectChart(payload.series || []);
+        if (profileInspectLoadingEl) profileInspectLoadingEl.classList.add("d-none");
+        if (profileInspectBodyEl) profileInspectBodyEl.classList.remove("d-none");
+      } catch (err) {
+        if (token !== profileInspectState.token) return;
+        if (profileInspectLoadingEl) profileInspectLoadingEl.classList.add("d-none");
+        if (profileInspectBodyEl) profileInspectBodyEl.classList.add("d-none");
+        if (profileInspectErrorEl) {
+          profileInspectErrorEl.textContent = String((err && err.message) || "Failed to load 7D activity.");
+          profileInspectErrorEl.classList.remove("d-none");
+        }
+      }
+    };
+
     const renderAccPingChart = async () => {
       const el = document.getElementById("profile-accping-chart");
       if (!el || !profile?.accounts_ping?.account_id) return;
+      setChartPlaceholder(el, "Loading ACC-Ping history...");
       try {
         const params = new URLSearchParams({ account_id: profile.accounts_ping.account_id, window: String(profile.window_hours || 24) });
-        const res = await fetch(`/accounts-ping/series?${params.toString()}`, { headers: { "Accept": "application/json" } });
-        if (!res.ok) return;
+        const res = await fetchNoStore(`/accounts-ping/series?${params.toString()}`);
+        if (!res.ok) {
+          setChartPlaceholder(el, "ACC-Ping history could not be loaded.");
+          return;
+        }
         const payload = await res.json();
         const points = (payload.series || [])
           .map((row) => {
@@ -671,7 +1415,10 @@
             return { x: ts, loss, avg_ms: avg };
           })
           .filter((row) => row !== null);
-        if (!points.length) return;
+        if (!points.length) {
+          setChartPlaceholder(el, "No ACC-Ping history available for this window.");
+          return;
+        }
         const lossSeries = points.map((p) => ({ x: p.x, y: p.loss }));
         const latSeries = points.map((p) => ({ x: p.x, y: p.avg_ms }));
         const chart = new window.ApexCharts(el, {
@@ -716,17 +1463,21 @@
         });
         chart.render();
       } catch (err) {
-        // ignore
+        setChartPlaceholder(el, "ACC-Ping history could not be loaded.");
       }
     };
 
 	    const renderOpticalChart = async () => {
       const el = document.getElementById("profile-optical-chart");
       if (!el || !profile?.optical?.device_id) return;
+      setChartPlaceholder(el, "Loading optical history...");
       try {
         const params = new URLSearchParams({ device_id: profile.optical.device_id, window: String(profile.window_hours || 24) });
-        const res = await fetch(`/optical/series?${params.toString()}`, { headers: { "Accept": "application/json" } });
-        if (!res.ok) return;
+        const res = await fetchNoStore(`/optical/series?${params.toString()}`);
+        if (!res.ok) {
+          setChartPlaceholder(el, "Optical history could not be loaded.");
+          return;
+        }
         const payload = await res.json();
         const txMin = Number(profile?.classification?.tx_realistic_min_dbm ?? -10);
         const txMax = Number(profile?.classification?.tx_realistic_max_dbm ?? 10);
@@ -740,7 +1491,10 @@
             return { x: ts, rx, tx: txPlot, tx_raw: txRaw };
           })
           .filter((row) => row !== null);
-        if (!points.length) return;
+        if (!points.length) {
+          setChartPlaceholder(el, "No optical history available for this window.");
+          return;
+        }
         const rxSeries = points.map((p) => ({ x: p.x, y: p.rx }));
         const txSeries = points.map((p) => ({ x: p.x, y: p.tx }));
         const chartMin = Number(profile?.optical?.chart?.min_dbm ?? -35);
@@ -780,7 +1534,7 @@
         });
         chart.render();
       } catch (err) {
-        // ignore
+        setChartPlaceholder(el, "Optical history could not be loaded.");
       }
 	    };
 
@@ -821,11 +1575,15 @@
 	      const kpiMax = document.getElementById("profile-usage-stat-max");
 	      const kpiAvg = document.getElementById("profile-usage-stat-avg");
 	      const kpiIdle = document.getElementById("profile-usage-stat-idle");
+	      setChartPlaceholder(el, "Loading usage history...");
 	      try {
 	        const hours = Number(profile.window_hours || 24) || 24;
 	        const params = new URLSearchParams({ pppoe: String(profile.pppoe), hours: String(hours) });
-	        const res = await fetch(`/usage/series?${params.toString()}`, { headers: { "Accept": "application/json" } });
-	        if (!res.ok) return;
+	        const res = await fetchNoStore(`/usage/series?${params.toString()}`);
+	        if (!res.ok) {
+	          setChartPlaceholder(el, "Usage history could not be loaded.");
+	          return;
+	        }
 	        const payload = await res.json().catch(() => null);
 	        const seriesRaw = Array.isArray(payload?.series) ? payload.series : [];
 	        const nowMs = Date.now();
@@ -845,10 +1603,17 @@
 	          .filter((p) => p !== null)
 	          .sort((a, b) => a.x - b.x);
 
-	        let dlSeries = points.map((p) => ({ x: p.x, y: p.dl, devices: p.devices }));
-	        let ulSeries = points.map((p) => ({ x: p.x, y: p.ul, devices: p.devices }));
-	        if (!dlSeries.length) dlSeries = [{ x: windowStartMs, y: null, devices: null }, { x: windowEndMs, y: null, devices: null }];
-	        if (!ulSeries.length) ulSeries = [{ x: windowStartMs, y: null, devices: null }, { x: windowEndMs, y: null, devices: null }];
+	        if (!points.length) {
+	          setChartPlaceholder(el, "No usage history available for this window.");
+	          if (kpiTransfer) kpiTransfer.textContent = "n/a";
+	          if (kpiMax) kpiMax.textContent = "n/a";
+	          if (kpiAvg) kpiAvg.textContent = "n/a";
+	          if (kpiIdle) kpiIdle.textContent = "n/a";
+	          return;
+	        }
+
+	        const dlSeries = points.map((p) => ({ x: p.x, y: p.dl, devices: p.devices }));
+	        const ulSeries = points.map((p) => ({ x: p.x, y: p.ul, devices: p.devices }));
 
 	        // Stats (approx) based on samples.
 	        const idleBps = Math.max(0, Number(profile?.usage?.idle_kbps_to || 8) * 1000);
@@ -910,13 +1675,27 @@
 	        });
 	        chart.render();
 	      } catch (err) {
-	        // ignore
+	        setChartPlaceholder(el, "Usage history could not be loaded.");
 	      }
 	    };
 
-	    renderAccPingChart();
-	    renderOpticalChart();
-	    renderUsageChart();
+	    refreshCurrentDiagnostics();
+	    startHeartbeatLoop();
+	    if (!document.hidden) {
+	      sendAuthHeartbeat();
+	    }
+	    document.addEventListener("visibilitychange", () => {
+	      if (document.hidden) {
+	        lastHiddenAt = Date.now();
+	        return;
+	      }
+	      resumeWarmup();
+	    });
+	    window.addEventListener("focus", () => {
+	      if (!document.hidden) {
+	        resumeWarmup();
+	      }
+	    });
 
 	    if (top10Wrap && !profile?.ip && !profile?.device_id) {
 	      fetchSuggest();

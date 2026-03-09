@@ -502,6 +502,31 @@ def _get_pg_pool():
         return _pg_pool
 
 
+def _pg_prepare_conn(pool, conn):
+    try:
+        conn.autocommit = False
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT 1")
+            cur.fetchone()
+        finally:
+            cur.close()
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return _PGConn(pool, conn)
+    except Exception:
+        try:
+            pool.putconn(conn, close=True)
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        raise
+
+
 def get_conn():
     if _use_postgres():
         from psycopg2.pool import PoolError
@@ -513,9 +538,13 @@ def get_conn():
         while True:
             try:
                 conn = pool.getconn()
-                conn.autocommit = False
-                return _PGConn(pool, conn)
+                return _pg_prepare_conn(pool, conn)
             except PoolError:
+                if wait_seconds <= 0 or time.monotonic() >= deadline:
+                    raise
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 0.5)
+            except Exception:
                 if wait_seconds <= 0 or time.monotonic() >= deadline:
                     raise
                 time.sleep(backoff)
@@ -1374,6 +1403,48 @@ def get_offline_history_since(since_iso, limit=500):
         conn.close()
 
 
+def get_offline_history_for_pppoe(pppoe, since_iso="", limit=20):
+    pppoe = (pppoe or "").strip()
+    since_iso = (since_iso or "").strip()
+    limit = max(min(int(limit or 20), 200), 1)
+    if not pppoe:
+        return []
+    conn = get_conn()
+    try:
+        if since_iso:
+            rows = conn.execute(
+                """
+                SELECT
+                    id, pppoe, router_id, router_name, mode,
+                    offline_started_at, offline_ended_at, duration_seconds,
+                    radius_status, disabled, profile, last_logged_out
+                FROM offline_history
+                WHERE lower(pppoe) = lower(?)
+                  AND offline_ended_at >= ?
+                ORDER BY offline_ended_at DESC
+                LIMIT ?
+                """,
+                (pppoe, since_iso, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT
+                    id, pppoe, router_id, router_name, mode,
+                    offline_started_at, offline_ended_at, duration_seconds,
+                    radius_status, disabled, profile, last_logged_out
+                FROM offline_history
+                WHERE lower(pppoe) = lower(?)
+                ORDER BY offline_ended_at DESC
+                LIMIT ?
+                """,
+                (pppoe, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
 def delete_offline_history_older_than(cutoff_iso):
     cutoff_iso = (cutoff_iso or "").strip()
     if not cutoff_iso:
@@ -1421,6 +1492,10 @@ def _get_active_surveillance_session(pppoe):
         return dict(row) if row else None
     finally:
         conn.close()
+
+
+def get_active_surveillance_session(pppoe):
+    return _get_active_surveillance_session(pppoe)
 
 
 def _get_surveillance_observed_total(pppoe):
