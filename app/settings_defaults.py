@@ -457,12 +457,18 @@ OFFLINE_DEFAULTS = {
     # "secrets": MikroTik PPPoE secrets vs /ppp/active
     # "radius": MikroTik /ppp/active vs Radius server (SSH query)
     "mode": "secrets",
+    "mikrotik": {
+        "router_enabled": {},
+    },
     "general": {
         "poll_interval_seconds": 15,
         # Only list an account as "offline" after this duration has elapsed.
         # Stored as value + unit for easy UI editing.
         "min_offline_value": 1,
         "min_offline_unit": "day",  # hour|day
+        "tracking_rules": [
+            {"id": "offline-rule-1", "value": 1, "unit": "day", "enabled": True, "position": 1},
+        ],
         # History retention (days).
         "history_retention_days": 365,
     },

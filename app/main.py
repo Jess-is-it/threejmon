@@ -34,6 +34,8 @@ from fastapi.templating import Jinja2Templates
 from .db import (
     count_auth_users,
     clear_accounts_ping_data,
+    clear_offline_history,
+    clear_optical_results,
     clear_pppoe_usage_samples,
     clear_surveillance_history,
     clear_wan_history,
@@ -108,6 +110,7 @@ from .jobs import JobsManager
 from .mikrotik import RouterOSClient
 from .feature_usage import add_feature_cpu, sample_feature_cpu_percent, register_feature
 from .ai_investigator import AIInvestigatorError, generate_investigation_report
+from .offline_rules import enabled_offline_tracking_rules, normalize_offline_tracking_rules, offline_rules_summary_text
 from .notifiers import optical as optical_notifier
 from .notifiers import rto as rto_notifier
 from .notifiers import wan_ping as wan_ping_notifier
@@ -197,6 +200,9 @@ _SURVEILLANCE_CHECKER_CACHE_SECONDS = 300
 _surveillance_optical_cache_lock = threading.Lock()
 _surveillance_optical_cache = {"at": 0.0, "key": None, "data": {}}
 _SURVEILLANCE_OPTICAL_CACHE_SECONDS = 120
+_surveillance_new_seen_lock = threading.Lock()
+_SURVEILLANCE_NEW_SEEN_STATE_KEY = "surveillance_new_seen_by_user_v1"
+_SURVEILLANCE_NEW_VIEW_SECONDS = 10
 _surv_ai_lock = threading.Lock()
 _surv_ai_running = set()
 _SURV_AI_MAX_PARALLEL = 1
@@ -429,27 +435,29 @@ AUTH_PERMISSION_DEPENDENCIES = {
     "EDIT_Offline": ["VIEW_Offline"],
     "EDIT_WanPing": ["VIEW_WanPing"],
     "EDIT_SystemSettings": ["VIEW_SystemSettings"],
-    "system.general.branding.view": ["system.view"],
-    "system.general.branding.edit": ["system.view", "system.edit", "system.general.branding.view"],
-    "system.general.telegram.view": ["system.view"],
-    "system.general.telegram.edit": ["system.view", "system.edit", "system.general.telegram.view"],
-    "surveillance.settings.danger.run": ["surveillance.view", "surveillance.edit", "settings.danger"],
-    "optical.settings.danger.run": ["optical.view", "optical.edit", "settings.danger"],
-    "accounts_ping.settings.danger.run": ["accounts_ping.view", "accounts_ping.edit", "settings.danger"],
-    "usage.settings.danger.run": ["usage.view", "usage.edit", "settings.danger"],
-    "offline.settings.danger.run": ["offline.view", "offline.edit", "settings.danger"],
-    "wan.settings.danger.run": ["wan.view", "wan.edit", "settings.danger"],
-    "system.danger.uninstall.run": ["system.view", "system.edit", "settings.danger"],
-    "optical.action.test_source.run": ["optical.view", "optical.edit", "tools.test"],
-    "offline.action.radius_test.run": ["offline.view", "offline.edit", "tools.test"],
-    "wan.action.test_router.run": ["wan.view", "wan.edit", "tools.test"],
-    "system.access.auth.view": ["system.view", "auth.manage"],
-    "system.access.auth.edit": ["system.view", "system.edit", "auth.manage", "system.access.auth.view"],
-    "system.access.permissions.view": ["system.view", "auth.manage"],
-    "system.access.roles.view": ["system.view", "auth.manage"],
-    "system.access.roles.edit": ["system.view", "system.edit", "auth.manage", "system.access.roles.view"],
-    "system.access.users.view": ["system.view", "auth.manage"],
-    "system.access.users.edit": ["system.view", "system.edit", "auth.manage", "system.access.users.view"],
+    "settings.danger": ["system.view", "system.tab.danger.view"],
+    "system.general.branding.edit": ["system.general.branding.view"],
+    "system.general.telegram.edit": ["system.general.telegram.view"],
+    "system.routers.mikrotik.edit": ["system.routers.mikrotik.view"],
+    "system.routers.cores.edit": ["system.routers.cores.view"],
+    "system.routers.isp.edit": ["system.routers.isp.view"],
+    "surveillance.settings.danger.run": ["surveillance.view", "surveillance.edit", "system.view", "system.tab.danger.view"],
+    "optical.settings.danger.run": ["optical.view", "optical.edit", "system.view", "system.tab.danger.view"],
+    "accounts_ping.settings.danger.run": ["accounts_ping.view", "accounts_ping.edit", "system.view", "system.tab.danger.view"],
+    "usage.settings.danger.run": ["usage.view", "usage.edit", "system.view", "system.tab.danger.view"],
+    "offline.settings.danger.run": ["offline.view", "offline.edit", "system.view", "system.tab.danger.view"],
+    "wan.settings.danger.run": ["wan.view", "wan.edit", "system.view", "system.tab.danger.view"],
+    "system.danger.uninstall.run": ["system.view", "system.tab.danger.view"],
+    "optical.action.test_source.run": ["optical.view", "optical.edit"],
+    "accounts_ping.action.test_source.run": ["accounts_ping.view", "accounts_ping.edit"],
+    "usage.action.test_source.run": ["usage.view", "usage.edit"],
+    "offline.action.radius_test.run": ["offline.view", "offline.edit"],
+    "wan.action.test_router.run": ["wan.view", "wan.edit"],
+    "system.backup.import_export.run": [],
+    "system.routers.test.run": [],
+    "system.access.auth.edit": ["system.access.auth.view"],
+    "system.access.roles.edit": ["system.access.roles.view"],
+    "system.access.users.edit": ["system.access.users.view"],
     "logs.timeline.view": ["dashboard.view"],
     "logs.search.view": ["logs.timeline.view"],
     "logs.filter.view": ["logs.timeline.view"],
@@ -468,11 +476,11 @@ AUTH_PERMISSION_DEPENDENCIES = {
     "usage.edit": ["usage.view"],
     "offline.edit": ["offline.view"],
     "wan.edit": ["wan.view"],
-    "system.edit": ["system.view"],
-    "tools.test": ["system.view"],
-    "settings.import_export": ["system.view"],
-    "settings.danger": ["system.view", "system.edit"],
-    "auth.manage": ["system.view"],
+    "system.edit": [],
+    "tools.test": [],
+    "settings.import_export": [],
+    "settings.danger": [],
+    "auth.manage": [],
 }
 AUTH_PERMISSION_DEPENDENCIES_LOWER = {
     str(k or "").strip().lower(): [
@@ -492,10 +500,143 @@ AUTH_PERMISSION_DEPRECATED_CODES_LOWER = {
 }
 AUTH_ROLE_EDITOR_HIDDEN_CODES = {
     "dashboard.view",
-    "view_dashboard",
     "logs.view",
+    "system.view",
+    "system.edit",
+    "auth.manage",
+    "tools.test",
+    "settings.import_export",
+    "settings.danger",
+    "system.targets.view",
+    "system.targets.edit",
+    "system.tab.general.view",
+    "system.tab.routers.view",
+    "system.tab.access.view",
+    "system.tab.danger.view",
     "system.access.audit.view",
     "system.access.audit.retention.edit",
+    *AUTH_PERMISSION_ALIASES.keys(),
+}
+AUTH_ROLE_EDITOR_HIDDEN_CODES_LOWER = {
+    str(code or "").strip().lower()
+    for code in AUTH_ROLE_EDITOR_HIDDEN_CODES
+    if str(code or "").strip()
+}
+AUTH_UI_PERMISSION_REPLACEMENTS = {
+    "system.edit": [
+        "system.general.branding.edit",
+        "system.general.telegram.edit",
+        "system.routers.cores.edit",
+        "system.routers.mikrotik.edit",
+        "system.routers.isp.edit",
+    ],
+    "auth.manage": [
+        "system.access.auth.edit",
+        "system.access.permissions.view",
+        "system.access.roles.edit",
+        "system.access.users.edit",
+    ],
+    "tools.test": [
+        "optical.action.test_source.run",
+        "accounts_ping.action.test_source.run",
+        "usage.action.test_source.run",
+        "offline.action.radius_test.run",
+        "wan.action.test_router.run",
+        "system.routers.test.run",
+    ],
+    "settings.import_export": ["system.backup.import_export.run"],
+    "settings.danger": [
+        "surveillance.settings.danger.run",
+        "optical.settings.danger.run",
+        "accounts_ping.settings.danger.run",
+        "usage.settings.danger.run",
+        "offline.settings.danger.run",
+        "wan.settings.danger.run",
+        "system.danger.uninstall.run",
+        "VIEW_SystemSettings",
+        "system.tab.danger.view",
+    ],
+    "system.targets.view": [],
+    "system.targets.edit": [],
+    "system.tab.general.view": [],
+    "system.tab.routers.view": [],
+    "system.tab.access.view": [],
+    "system.tab.danger.view": [],
+}
+AUTH_UI_PERMISSION_REPLACEMENTS_LOWER = {
+    str(code or "").strip().lower(): [
+        str(item or "").strip()
+        for item in (replacements or [])
+        if str(item or "").strip()
+    ]
+    for code, replacements in AUTH_UI_PERMISSION_REPLACEMENTS.items()
+    if str(code or "").strip()
+}
+AUTH_PERMISSION_COMPAT_GRANTS = {
+    "tools.test": [
+        "optical.action.test_source.run",
+        "accounts_ping.action.test_source.run",
+        "usage.action.test_source.run",
+        "offline.action.radius_test.run",
+        "wan.action.test_router.run",
+        "system.routers.test.run",
+    ],
+    "settings.import_export": ["system.backup.import_export.run"],
+    "settings.danger": [
+        "surveillance.settings.danger.run",
+        "optical.settings.danger.run",
+        "accounts_ping.settings.danger.run",
+        "usage.settings.danger.run",
+        "offline.settings.danger.run",
+        "wan.settings.danger.run",
+        "system.danger.uninstall.run",
+        "VIEW_SystemSettings",
+        "system.tab.danger.view",
+    ],
+    "system.general.branding.view": ["system.edit"],
+    "system.general.branding.edit": ["system.edit"],
+    "system.general.telegram.view": ["system.edit"],
+    "system.general.telegram.edit": ["system.edit"],
+    "system.routers.mikrotik.view": ["system.edit"],
+    "system.routers.mikrotik.edit": ["system.edit"],
+    "system.routers.cores.view": ["system.edit"],
+    "system.routers.cores.edit": ["system.edit"],
+    "system.routers.isp.view": ["system.edit"],
+    "system.routers.isp.edit": ["system.edit"],
+    "surveillance.settings.danger.run": ["settings.danger"],
+    "optical.settings.danger.run": ["settings.danger"],
+    "accounts_ping.settings.danger.run": ["settings.danger"],
+    "usage.settings.danger.run": ["settings.danger"],
+    "offline.settings.danger.run": ["settings.danger"],
+    "wan.settings.danger.run": ["settings.danger"],
+    "system.danger.uninstall.run": ["settings.danger"],
+    "optical.action.test_source.run": ["tools.test"],
+    "accounts_ping.action.test_source.run": ["tools.test"],
+    "usage.action.test_source.run": ["tools.test"],
+    "offline.action.radius_test.run": ["tools.test"],
+    "wan.action.test_router.run": ["tools.test"],
+    "system.routers.test.run": ["tools.test"],
+    "system.backup.import_export.run": ["settings.import_export"],
+    "system.access.auth.view": ["auth.manage"],
+    "system.access.auth.edit": ["auth.manage"],
+    "system.access.permissions.view": ["auth.manage"],
+    "system.access.roles.view": ["auth.manage"],
+    "system.access.roles.edit": ["auth.manage"],
+    "system.access.users.view": ["auth.manage"],
+    "system.access.users.edit": ["auth.manage"],
+}
+AUTH_PERMISSION_COMPAT_GRANTS_LOWER = {
+    str(code or "").strip().lower(): [
+        str(item or "").strip()
+        for item in (grants or [])
+        if str(item or "").strip()
+    ]
+    for code, grants in AUTH_PERMISSION_COMPAT_GRANTS.items()
+    if str(code or "").strip()
+}
+AUTH_IMPLICIT_PAGE_VIEW_FEATURES = {
+    "system.view": "system_settings",
+    "view_systemsettings": "system_settings",
 }
 AUTH_AUTODEP_ROOT_VIEW_FEATURES = {
     "dashboard",
@@ -643,13 +784,16 @@ def _auth_infer_modern_dependencies(code: str):
         seen.add(key)
         out.append(value)
 
+    if root == "system" and len(parts) > 2:
+        return out
+
     if action == "view":
         if len(parts) > 2:
             _add(root_view)
         return out
 
     _add(root_view)
-    if root in AUTH_AUTODEP_ROOT_EDIT_FEATURES:
+    if root in AUTH_AUTODEP_ROOT_EDIT_FEATURES and root != "system":
         _add(f"{parts[0]}.edit")
 
     return out
@@ -665,9 +809,6 @@ def _auth_permission_dependencies_for(code: str):
     alias = AUTH_PERMISSION_ALIASES.get(normalized) or AUTH_PERMISSION_ALIASES_LOWER.get(lowered)
     if alias and str(alias or "").strip():
         candidates.append(str(alias or "").strip())
-    legacy = AUTH_PERMISSION_ALIASES_REVERSE.get(normalized) or AUTH_PERMISSION_ALIASES_REVERSE_LOWER.get(lowered)
-    if legacy and str(legacy or "").strip():
-        candidates.append(str(legacy or "").strip())
 
     out = []
     seen = set()
@@ -719,6 +860,51 @@ def _auth_expand_permission_dependencies(permission_codes):
     selected_sorted = sorted(selected, key=lambda item: str(item).lower())
     auto_sorted = sorted({item for item in auto_added if item}, key=lambda item: str(item).lower())
     return selected_sorted, auto_sorted
+
+
+def _auth_is_ui_hidden_permission(code: str) -> bool:
+    lowered = str(code or "").strip().lower()
+    if not lowered:
+        return False
+    return lowered in AUTH_PERMISSION_DEPRECATED_CODES_LOWER or lowered in AUTH_ROLE_EDITOR_HIDDEN_CODES_LOWER
+
+
+def _auth_visible_permission_codes(permission_codes):
+    queue = [str(code or "").strip() for code in (permission_codes or []) if str(code or "").strip()]
+    normalized = []
+    seen_queue = set()
+    while queue:
+        current = (queue.pop(0) or "").strip()
+        current_key = current.lower()
+        if not current or current_key in seen_queue:
+            continue
+        seen_queue.add(current_key)
+
+        alias = AUTH_PERMISSION_ALIASES.get(current) or AUTH_PERMISSION_ALIASES_LOWER.get(current_key)
+        if alias and str(alias or "").strip().lower() != current_key:
+            queue.append(str(alias or "").strip())
+            continue
+
+        replacements = AUTH_UI_PERMISSION_REPLACEMENTS.get(current)
+        if replacements is None:
+            replacements = AUTH_UI_PERMISSION_REPLACEMENTS_LOWER.get(current_key)
+        if replacements is not None:
+            queue.extend(replacements or [])
+            continue
+
+        normalized.append(current)
+
+    expanded, _ = _auth_expand_permission_dependencies(normalized)
+    visible = []
+    seen_visible = set()
+    for raw_code in expanded:
+        code = (raw_code or "").strip()
+        key = code.lower()
+        if not code or key in seen_visible or _auth_is_ui_hidden_permission(code):
+            continue
+        seen_visible.add(key)
+        visible.append(code)
+    return visible
 
 
 def _auth_annotate_permissions_with_dependencies(permission_rows):
@@ -819,8 +1005,157 @@ def _build_role_permission_groups(permission_codes):
     return out
 
 
+AUTH_PERMISSION_SECTION_LABELS = {
+    "access": "Access",
+    "action": "Actions",
+    "backup": "Backup",
+    "chart": "Charts",
+    "danger": "Danger",
+    "details": "Details",
+    "filter": "Filters",
+    "general": "General",
+    "history": "History",
+    "kpi": "KPIs",
+    "logs": "Logs",
+    "needs_attention": "Needs Attention",
+    "resources": "Resources",
+    "routers": "Routers",
+    "search": "Search",
+    "settings": "Settings",
+    "split_view": "Split View",
+    "status": "Status",
+    "system": "System",
+    "tab": "Tabs",
+    "table": "Tables",
+}
+AUTH_PERMISSION_ITEM_LABELS = {
+    "accounts_ping": "Accounts Ping",
+    "add_manual": "Add Manual",
+    "ai": "AI",
+    "auth": "Auth",
+    "auto_add": "Auto Add",
+    "baseline": "Baseline",
+    "branding": "Branding",
+    "checkers": "Checkers",
+    "cores": "Cores",
+    "datasource": "Data Source",
+    "genieacs": "GenieACS",
+    "history": "History",
+    "import_export": "Import / Export",
+    "inspection": "7D Activity",
+    "isps": "ISPs",
+    "isp": "ISP",
+    "kpi": "KPI",
+    "live_ping": "Live Ping",
+    "manual_fix": "Needs Manual Fix",
+    "mark_false": "Mark False",
+    "mark_recovered": "Mark Recovered",
+    "mikrotik": "MikroTik",
+    "move_to_manual_fix": "Move To Manual Fix",
+    "netwatch": "Netwatch",
+    "offline": "Offline",
+    "optical": "Optical",
+    "permissions": "Permissions",
+    "polling": "Polling",
+    "post_fix": "Post-Fix Observation",
+    "pppoe": "PPPoE",
+    "radius": "Radius",
+    "retention": "Retention",
+    "roles": "Roles",
+    "routers": "Routers",
+    "run_now": "Run Now",
+    "series": "Series",
+    "stable": "Stable",
+    "surveillance": "Surveillance",
+    "sync": "Sync",
+    "system": "System",
+    "telegram": "Telegram",
+    "test": "Test Connections",
+    "test_source": "Test Data Source",
+    "thresholds": "Thresholds",
+    "timeline": "Timeline",
+    "under_surveillance": "Under Surveillance",
+    "uninstall": "Uninstall",
+    "usage": "Usage",
+    "usage_panel": "Usage Panel",
+    "users": "Users",
+    "wan": "WAN",
+    "window": "Window",
+}
+AUTH_PERMISSION_ACTION_ORDER = {
+    "view": 0,
+    "edit": 1,
+    "run": 2,
+    "add": 3,
+    "create": 3,
+    "update": 4,
+    "save": 5,
+    "delete": 6,
+    "remove": 7,
+}
+
+
+def _auth_permission_part_label(raw_value: str) -> str:
+    value = str(raw_value or "").strip().lower()
+    if not value:
+        return "General"
+    if value in AUTH_PERMISSION_ITEM_LABELS:
+        return AUTH_PERMISSION_ITEM_LABELS[value]
+    if value in AUTH_PERMISSION_SECTION_LABELS:
+        return AUTH_PERMISSION_SECTION_LABELS[value]
+    return " ".join(piece.capitalize() for piece in value.replace("-", "_").split("_") if piece)
+
+
+def _auth_permission_section_meta(code: str):
+    parts = [part.strip() for part in str(code or "").strip().split(".") if str(part or "").strip()]
+    if len(parts) <= 1:
+        return ("general", "General")
+
+    root = parts[0].lower()
+    second = parts[1].lower()
+
+    if root in {"optical", "accounts_ping", "usage"} and second == "action" and len(parts) >= 3 and parts[2].lower() == "test_source":
+        return ("settings.datasource", "Settings · Data Source")
+    if root == "offline" and second == "action" and len(parts) >= 3 and parts[2].lower() == "radius_test":
+        return ("settings.radius", "Settings · Radius")
+    if root == "wan" and second == "action" and len(parts) >= 3 and parts[2].lower() == "test_router":
+        return ("settings.routers", "Settings · Routers")
+
+    if root == "system":
+        if second in {"general", "routers", "access", "backup", "danger"}:
+            if len(parts) >= 3:
+                third = parts[2].lower()
+                key = f"{second}.{third}"
+                label = f"{_auth_permission_part_label(second)} · {_auth_permission_part_label(third)}"
+                return key, label
+            return second, _auth_permission_part_label(second)
+        if second in {"targets"}:
+            return second, _auth_permission_part_label(second)
+
+    if second in {"tab", "status", "settings", "action", "chart", "split_view", "table", "kpi"}:
+        if len(parts) >= 3:
+            third = parts[2].lower()
+            key = f"{second}.{third}"
+            label = f"{_auth_permission_part_label(second)} · {_auth_permission_part_label(third)}"
+            return key, label
+        return second, _auth_permission_part_label(second)
+
+    return second, _auth_permission_part_label(second)
+
+
+def _auth_permission_leaf_sort_key(item):
+    code = str((item or {}).get("code") or "").strip().lower()
+    parts = [part.strip().lower() for part in code.split(".") if part.strip()]
+    action = parts[-1] if parts else ""
+    action_rank = AUTH_PERMISSION_ACTION_ORDER.get(action, 99)
+    return (
+        action_rank,
+        str((item or {}).get("description") or (item or {}).get("label") or code).lower(),
+        code,
+    )
+
+
 def _build_role_editor_permission_groups(permission_groups):
-    hidden = {str(code or "").strip().lower() for code in AUTH_ROLE_EDITOR_HIDDEN_CODES if str(code or "").strip()}
     out = []
     for group in permission_groups or []:
         permissions = []
@@ -828,16 +1163,30 @@ def _build_role_editor_permission_groups(permission_groups):
             code = str((item or {}).get("code") or "").strip()
             if not code:
                 continue
-            if code.lower() in hidden:
+            if _auth_is_ui_hidden_permission(code):
                 continue
             permissions.append(dict(item or {}))
         if not permissions:
             continue
+        section_map = {}
+        for item in permissions:
+            section_key, section_label = _auth_permission_section_meta(item.get("code"))
+            if section_key not in section_map:
+                section_map[section_key] = {
+                    "key": section_key,
+                    "label": section_label,
+                    "permissions": [],
+                }
+            section_map[section_key]["permissions"].append(item)
+        sections = sorted(section_map.values(), key=lambda item: str(item.get("label") or "").lower())
+        for section in sections:
+            section["permissions"] = sorted(section.get("permissions") or [], key=_auth_permission_leaf_sort_key)
         out.append(
             {
                 "key": group.get("key"),
                 "label": group.get("label"),
-                "permissions": permissions,
+                "permissions": sorted(permissions, key=_auth_permission_leaf_sort_key),
+                "sections": sections,
             }
         )
     return out
@@ -1024,8 +1373,10 @@ def _auth_permission_for_route(path: str, method: str):
     if path.startswith("/surveillance"):
         if method == "GET":
             return "VIEW_UnderSurveillance"
+        if path.endswith("/mark_new_seen"):
+            return "VIEW_UnderSurveillance"
         if path.endswith("/format"):
-            return "RUN_DangerActions"
+            return "surveillance.settings.danger.run"
         if path.endswith("/add"):
             return "ADD_AccessMonitoring_UnderSurveillance"
         if path.endswith("/mark_false"):
@@ -1042,52 +1393,62 @@ def _auth_permission_for_route(path: str, method: str):
         if method == "GET":
             return "VIEW_Optical"
         if path.endswith("/format"):
-            return "RUN_DangerActions"
+            return "optical.settings.danger.run"
         if "/test" in path or path.endswith("/run"):
-            return "RUN_TestTools"
+            return "optical.action.test_source.run"
         return "EDIT_Optical"
 
     if path.startswith("/settings/accounts-ping") or path.startswith("/accounts-ping"):
         if method == "GET":
             return "VIEW_AccountsPing"
         if path.endswith("/format"):
-            return "RUN_DangerActions"
+            return "accounts_ping.settings.danger.run"
         if "/test" in path:
-            return "RUN_TestTools"
+            return "accounts_ping.action.test_source.run"
         return "EDIT_AccountsPing"
 
     if path.startswith("/settings/usage") or path.startswith("/usage"):
         if method == "GET":
             return "VIEW_Usage"
         if path.endswith("/format"):
-            return "RUN_DangerActions"
+            return "usage.settings.danger.run"
         if "/test" in path:
-            return "RUN_TestTools"
+            return "usage.action.test_source.run"
         return "EDIT_Usage"
 
     if path.startswith("/settings/offline") or path.startswith("/offline"):
         if method == "GET":
             return "VIEW_Offline"
+        if path.endswith("/format"):
+            return "offline.settings.danger.run"
         if "/test" in path:
-            return "RUN_TestTools"
+            return "offline.action.radius_test.run"
         return "EDIT_Offline"
 
     if path.startswith("/settings/wan") or path.startswith("/wan"):
         if method == "GET":
             return "VIEW_WanPing"
         if path.endswith("/format") or path.endswith("/database"):
-            return "RUN_DangerActions"
+            return "wan.settings.danger.run"
         if "/test" in path:
-            return "RUN_TestTools"
+            return "wan.action.test_router.run"
         return "EDIT_WanPing"
 
     if path in ("/settings/export", "/settings/db/export"):
-        return "MANAGE_BackupImportExport"
+        return "system.backup.import_export.run"
     if path in ("/settings/import", "/settings/db/import"):
-        return "MANAGE_BackupImportExport"
+        return "system.backup.import_export.run"
 
+    if path == "/settings/system/auth/settings" or path == "/settings/system/auth/test-email":
+        return "system.access.auth.edit"
+    if path == "/settings/system/auth/permission/add":
+        return "system.access.permissions.view"
+    if path.startswith("/settings/system/auth/role/"):
+        return "system.access.roles.edit"
+    if path.startswith("/settings/system/auth/user/"):
+        return "system.access.users.edit"
     if path.startswith("/settings/system/auth"):
-        return "MANAGE_AccessControl"
+        return "system.access.auth.view"
 
     if path.startswith("/settings/system/logo") or path.startswith("/settings/system/browser-logo") or path.startswith("/settings/system/branding"):
         return "system.general.branding.edit"
@@ -1095,11 +1456,22 @@ def _auth_permission_for_route(path: str, method: str):
     if path.startswith("/settings/system/telegram"):
         return "system.general.telegram.edit"
 
+    if path == "/settings/system/mikrotik/test" or path.startswith("/settings/system/routers/pppoe/test/"):
+        return "system.routers.test.run"
+    if path == "/settings/system/mikrotik" or path.startswith("/settings/system/mikrotik/"):
+        return "system.routers.cores.edit"
+    if path == "/settings/system/routers/pppoe" or path.startswith("/settings/system/routers/pppoe/"):
+        return "system.routers.mikrotik.edit"
+    if path == "/settings/system/routers/isps":
+        return "system.routers.isp.edit"
+
     if path.startswith("/settings/system"):
         if method == "GET":
             return "VIEW_SystemSettings"
+        if path.endswith("/danger/run"):
+            return "settings.danger"
         if path.endswith("/uninstall"):
-            return "RUN_DangerActions"
+            return "system.danger.uninstall.run"
         if "/test" in path:
             return "RUN_TestTools"
         return "EDIT_SystemSettings"
@@ -1121,25 +1493,49 @@ def _auth_check_permission(permission_codes, code: str) -> bool:
     if not perms:
         return False
 
-    required_lower = required.lower()
-    candidates = {required_lower}
+    queue = [(required, True)]
+    candidates = set()
+    while queue:
+        current, allow_compat = queue.pop(0)
+        current = (current or "").strip()
+        current_lower = current.lower()
+        if not current or current_lower in candidates:
+            continue
+        candidates.add(current_lower)
 
-    alias = AUTH_PERMISSION_ALIASES.get(required) or AUTH_PERMISSION_ALIASES_LOWER.get(required_lower)
-    if alias:
-        candidates.add(str(alias or "").strip().lower())
+        alias = AUTH_PERMISSION_ALIASES.get(current) or AUTH_PERMISSION_ALIASES_LOWER.get(current_lower)
+        if alias and str(alias or "").strip():
+            queue.append((str(alias or "").strip(), allow_compat))
 
-    legacy = AUTH_PERMISSION_ALIASES_REVERSE.get(required) or AUTH_PERMISSION_ALIASES_REVERSE_LOWER.get(required_lower)
-    if legacy:
-        candidates.add(str(legacy or "").strip().lower())
+        legacy = AUTH_PERMISSION_ALIASES_REVERSE.get(current) or AUTH_PERMISSION_ALIASES_REVERSE_LOWER.get(current_lower)
+        if legacy and str(legacy or "").strip():
+            queue.append((str(legacy or "").strip(), allow_compat))
 
-    return any(item in perms for item in candidates)
+        if allow_compat:
+            compat = AUTH_PERMISSION_COMPAT_GRANTS.get(current)
+            if compat is None:
+                compat = AUTH_PERMISSION_COMPAT_GRANTS_LOWER.get(current_lower, [])
+            queue.extend((item, False) for item in (compat or []))
+
+    if any(item in perms for item in candidates):
+        return True
+
+    implied_feature = None
+    for candidate in candidates:
+        implied_feature = AUTH_IMPLICIT_PAGE_VIEW_FEATURES.get(candidate)
+        if implied_feature:
+            break
+    if implied_feature:
+        return any(_auth_permission_feature_key(item) == implied_feature for item in perms)
+
+    return False
 
 
-def _auth_can_run_danger_actions(request: Request) -> bool:
+def _auth_request_has_permission(request: Request, code: str) -> bool:
     if not bool(getattr(request.state, "auth_enabled", True)):
         return True
     permission_codes = getattr(request.state, "auth_permission_codes", []) or []
-    return _auth_check_permission(permission_codes, "RUN_DangerActions")
+    return _auth_check_permission(permission_codes, code)
 
 
 def _auth_unauthorized_response(request: Request):
@@ -1370,6 +1766,20 @@ def _audit_human_message(username: str, action: str, resource: str, details: str
         return f"User {user} updated Under Surveillance settings."
     if action_l == "surveillance.formatted":
         return f"User {user} formatted Under Surveillance data."
+    if action_l == "optical.formatted":
+        return f"User {user} formatted Optical history."
+    if action_l == "accounts_ping.formatted":
+        return f"User {user} formatted Accounts Ping data."
+    if action_l == "usage.formatted":
+        return f"User {user} formatted Usage data."
+    if action_l == "offline.formatted":
+        return f"User {user} formatted Offline data."
+    if action_l == "wan.formatted":
+        return f"User {user} formatted WAN Ping data."
+    if action_l == "system.danger.formatted_all":
+        return f"User {user} formatted all monitoring feature data."
+    if action_l == "system.uninstall_started":
+        return f"User {user} started a full system uninstall."
     if action_l == "surveillance.ai_generate":
         stage = details_map.get("stage") or ""
         if stage:
@@ -1623,6 +2033,10 @@ async def startup_event():
     except Exception:
         pass
     try:
+        _auth_sync_centralized_danger_role_permissions()
+    except Exception:
+        pass
+    try:
         _prewarm_surveillance_checker_cache()
     except Exception:
         pass
@@ -1700,6 +2114,185 @@ def make_context(request, extra=None):
     return ctx
 
 
+def _offline_nav_entry_id(row):
+    if not isinstance(row, dict):
+        return ""
+    pppoe = (row.get("pppoe") or "").strip().lower()
+    if not pppoe:
+        return ""
+    router_id = (row.get("router_id") or "").strip().lower()
+    mode = (row.get("mode") or "offline").strip().lower()
+    return f"{router_id or mode}|{pppoe}"
+
+
+def _surveillance_nav_entry_id(entry):
+    if not isinstance(entry, dict):
+        return ""
+    pppoe = (entry.get("pppoe") or "").strip().lower()
+    if not pppoe:
+        return ""
+    added_at = (entry.get("added_at") or entry.get("first_added_at") or "").strip()
+    if not added_at:
+        return pppoe
+    return f"{pppoe}|{added_at}"
+
+
+def _surveillance_new_viewer_key(request: Request) -> str:
+    if not bool(getattr(request.state, "auth_enabled", True)):
+        return "anon"
+    current_user = getattr(request.state, "current_user", None)
+    if not isinstance(current_user, dict):
+        return ""
+    try:
+        user_id = int(current_user.get("id") or 0)
+    except Exception:
+        user_id = 0
+    if user_id <= 0:
+        return ""
+    return f"user:{user_id}"
+
+
+def _normalize_surveillance_new_seen_state(raw_state):
+    out = {"users": {}}
+    raw_users = raw_state.get("users") if isinstance(raw_state, dict) else {}
+    if not isinstance(raw_users, dict):
+        return out
+    for raw_viewer_key, raw_user_state in raw_users.items():
+        viewer_key = str(raw_viewer_key or "").strip()
+        if not viewer_key:
+            continue
+        user_state = raw_user_state if isinstance(raw_user_state, dict) else {}
+        entries = {}
+        raw_entries = user_state.get("entries")
+        if isinstance(raw_entries, dict):
+            for raw_entry_id, raw_seen_at in raw_entries.items():
+                entry_id = str(raw_entry_id or "").strip()
+                if not entry_id:
+                    continue
+                entries[entry_id] = str(raw_seen_at or "").strip()
+        out["users"][viewer_key] = {
+            "seeded_at": str(user_state.get("seeded_at") or "").strip(),
+            "entries": entries,
+        }
+    return out
+
+
+def _load_surveillance_new_seen_state():
+    return _normalize_surveillance_new_seen_state(get_state(_SURVEILLANCE_NEW_SEEN_STATE_KEY, {}))
+
+
+def _save_surveillance_new_seen_state(state):
+    save_state(_SURVEILLANCE_NEW_SEEN_STATE_KEY, _normalize_surveillance_new_seen_state(state))
+
+
+def _surveillance_new_ids_for_request(request: Request, current_entry_ids, seed_if_needed: bool = True):
+    viewer_key = _surveillance_new_viewer_key(request)
+    if not viewer_key:
+        return []
+
+    current_ids = []
+    seen = set()
+    for raw_entry_id in current_entry_ids or []:
+        entry_id = str(raw_entry_id or "").strip()
+        if not entry_id or entry_id in seen:
+            continue
+        seen.add(entry_id)
+        current_ids.append(entry_id)
+
+    changed = False
+    with _surveillance_new_seen_lock:
+        state = _load_surveillance_new_seen_state()
+        users = state.setdefault("users", {})
+        user_state = users.get(viewer_key)
+        if not isinstance(user_state, dict):
+            user_state = {"seeded_at": "", "entries": {}}
+            users[viewer_key] = user_state
+            changed = True
+
+        entries = user_state.get("entries")
+        if not isinstance(entries, dict):
+            entries = {}
+            user_state["entries"] = entries
+            changed = True
+
+        current_set = set(current_ids)
+        pruned_entries = {
+            entry_id: str(seen_at or "").strip()
+            for entry_id, seen_at in entries.items()
+            if str(entry_id or "").strip() in current_set
+        }
+        if pruned_entries != entries:
+            user_state["entries"] = pruned_entries
+            entries = pruned_entries
+            changed = True
+        else:
+            entries = pruned_entries
+
+        seeded_at = str(user_state.get("seeded_at") or "").strip()
+        if seed_if_needed and not seeded_at:
+            seeded_at = utc_now_iso()
+            user_state["seeded_at"] = seeded_at
+            user_state["entries"] = {entry_id: seeded_at for entry_id in current_ids}
+            entries = user_state["entries"]
+            changed = True
+
+        new_ids = [entry_id for entry_id in current_ids if entry_id not in entries]
+        if changed:
+            _save_surveillance_new_seen_state(state)
+    return new_ids
+
+
+def _mark_surveillance_new_entries_seen(request: Request, entry_ids):
+    viewer_key = _surveillance_new_viewer_key(request)
+    if not viewer_key:
+        return []
+
+    normalized_ids = []
+    seen = set()
+    for raw_entry_id in entry_ids or []:
+        entry_id = str(raw_entry_id or "").strip()
+        if not entry_id or entry_id in seen:
+            continue
+        seen.add(entry_id)
+        normalized_ids.append(entry_id)
+    if not normalized_ids:
+        return []
+
+    seen_at = utc_now_iso()
+    with _surveillance_new_seen_lock:
+        state = _load_surveillance_new_seen_state()
+        users = state.setdefault("users", {})
+        user_state = users.get(viewer_key)
+        if not isinstance(user_state, dict):
+            user_state = {"seeded_at": seen_at, "entries": {}}
+            users[viewer_key] = user_state
+        if not str(user_state.get("seeded_at") or "").strip():
+            user_state["seeded_at"] = seen_at
+        entries = user_state.get("entries")
+        if not isinstance(entries, dict):
+            entries = {}
+            user_state["entries"] = entries
+        for entry_id in normalized_ids:
+            entries[entry_id] = seen_at
+        _save_surveillance_new_seen_state(state)
+    return normalized_ids
+
+
+def _sort_surveillance_rows_recent(rows, *fields):
+    rows = list(rows or [])
+    rows.sort(key=lambda row: (row.get("pppoe") or "").lower())
+
+    def _primary(row):
+        for field in fields:
+            value = str((row or {}).get(field) or "").strip()
+            if value:
+                return value
+        return ""
+
+    rows.sort(key=_primary, reverse=True)
+    return rows
+
+
 def _json_no_store(payload, status_code=200):
     return JSONResponse(payload, status_code=status_code, headers=NO_STORE_HEADERS)
 
@@ -1714,6 +2307,62 @@ async def auth_ping(request: Request):
             "user": (current_user or {}).get("username", ""),
         }
     )
+
+
+@app.get("/navigation/summary", response_class=JSONResponse)
+async def navigation_summary(request: Request):
+    payload = {
+        "updated_at": utc_now_iso(),
+        "offline": {"current_ids": [], "current_count": 0},
+        "surveillance": {"under_ids": [], "under_count": 0, "new_ids": [], "new_count": 0},
+    }
+
+    if not bool(getattr(request.state, "auth_enabled", True)) or _auth_request_has_permission(request, "offline.view"):
+        try:
+            offline_settings = normalize_offline_settings(get_settings("offline", OFFLINE_DEFAULTS))
+            offline_state = get_state("offline_state", {})
+            offline_rule_views = _build_offline_rule_views(offline_state, offline_settings)
+            current_ids = []
+            seen = set()
+            for rows in (offline_rule_views.get("rows_by_rule") or {}).values():
+                if not isinstance(rows, list):
+                    continue
+                for row in rows:
+                    entry_id = _offline_nav_entry_id(row)
+                    if not entry_id or entry_id in seen:
+                        continue
+                    seen.add(entry_id)
+                    current_ids.append(entry_id)
+            payload["offline"] = {"current_ids": current_ids, "current_count": len(current_ids)}
+        except Exception:
+            pass
+
+    if not bool(getattr(request.state, "auth_enabled", True)) or _auth_request_has_permission(request, "surveillance.view"):
+        try:
+            surveillance_settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
+            entry_map = _surveillance_entry_map(surveillance_settings)
+            under_ids = []
+            for entry in entry_map.values():
+                if not isinstance(entry, dict):
+                    continue
+                if (entry.get("status") or "under").strip().lower() != "under":
+                    continue
+                if str(entry.get("last_fixed_at") or "").strip():
+                    continue
+                entry_id = _surveillance_nav_entry_id(entry)
+                if entry_id:
+                    under_ids.append(entry_id)
+            new_ids = _surveillance_new_ids_for_request(request, under_ids, seed_if_needed=True)
+            payload["surveillance"] = {
+                "under_ids": under_ids,
+                "under_count": len(under_ids),
+                "new_ids": new_ids,
+                "new_count": len(new_ids),
+            }
+        except Exception:
+            pass
+
+    return _json_no_store(payload)
 
 
 def _render_login_page(request: Request, message: str = "", next_url: str = "/", username: str = "", mode: str = "login"):
@@ -3029,6 +3678,235 @@ def normalize_wan_ping_settings(settings):
     summary.setdefault("partial_msg", WAN_SUMMARY_DEFAULTS["partial_msg"])
     summary.setdefault("line_template", WAN_SUMMARY_DEFAULTS["line_template"])
     return settings
+
+
+def normalize_offline_settings(settings):
+    settings = settings if isinstance(settings, dict) else {}
+    settings.setdefault("enabled", False)
+    mode = (settings.get("mode") or OFFLINE_DEFAULTS.get("mode") or "secrets").strip().lower()
+    if mode not in ("secrets", "radius"):
+        mode = "secrets"
+    settings["mode"] = mode
+
+    general = settings.setdefault("general", {})
+    general.setdefault("poll_interval_seconds", OFFLINE_DEFAULTS["general"]["poll_interval_seconds"])
+    general.setdefault("min_offline_value", OFFLINE_DEFAULTS["general"]["min_offline_value"])
+    general.setdefault("min_offline_unit", OFFLINE_DEFAULTS["general"]["min_offline_unit"])
+    general.setdefault("history_retention_days", OFFLINE_DEFAULTS["general"]["history_retention_days"])
+    tracking_rules = normalize_offline_tracking_rules(
+        general.get("tracking_rules"),
+        fallback_value=general.get("min_offline_value", OFFLINE_DEFAULTS["general"]["min_offline_value"]),
+        fallback_unit=general.get("min_offline_unit", OFFLINE_DEFAULTS["general"]["min_offline_unit"]),
+    )
+    enabled_tracking_rules = [dict(rule) for rule in tracking_rules if bool(rule.get("enabled"))] or [dict(tracking_rules[0])]
+    general["tracking_rules"] = tracking_rules
+    general["enabled_tracking_rules"] = enabled_tracking_rules
+    general["min_offline_value"] = int(enabled_tracking_rules[0].get("value", OFFLINE_DEFAULTS["general"]["min_offline_value"]) or 0)
+    general["min_offline_unit"] = (enabled_tracking_rules[0].get("unit") or OFFLINE_DEFAULTS["general"]["min_offline_unit"]).strip().lower()
+    general["tracking_rules_summary"] = offline_rules_summary_text(
+        tracking_rules,
+        fallback_value=general["min_offline_value"],
+        fallback_unit=general["min_offline_unit"],
+    )
+
+    radius = settings.setdefault("radius", {})
+    radius.setdefault("enabled", OFFLINE_DEFAULTS["radius"]["enabled"])
+    ssh = radius.setdefault("ssh", {})
+    for key, value in (OFFLINE_DEFAULTS.get("radius", {}).get("ssh") or {}).items():
+        ssh.setdefault(key, value)
+    radius.setdefault("list_command", OFFLINE_DEFAULTS["radius"]["list_command"])
+
+    mikrotik = settings.setdefault("mikrotik", {})
+    router_enabled = mikrotik.get("router_enabled")
+    mikrotik["router_enabled"] = router_enabled if isinstance(router_enabled, dict) else {}
+    return settings
+
+
+def _parse_offline_tracking_rules_form(form, current_rules):
+    existing_rules = normalize_offline_tracking_rules(current_rules)
+    existing_by_id = {
+        str(rule.get("id") or "").strip().lower(): dict(rule)
+        for rule in existing_rules
+        if str(rule.get("id") or "").strip()
+    }
+    count = parse_int(form, "tracking_rule_count", len(existing_rules))
+    count = max(int(count or 0), 0)
+    parsed_rules = []
+
+    for idx in range(count):
+        rule_id = str(form.get(f"tracking_rule_{idx}_id") or "").strip()
+        remove_rule = parse_bool(form, f"tracking_rule_{idx}_remove")
+        if remove_rule:
+            continue
+        existing = existing_by_id.get(rule_id.lower()) if rule_id else None
+        value_raw = form.get(f"tracking_rule_{idx}_value")
+        unit_raw = form.get(f"tracking_rule_{idx}_unit")
+        position_raw = form.get(f"tracking_rule_{idx}_position")
+        if not rule_id and value_raw in (None, "") and unit_raw in (None, "") and position_raw in (None, ""):
+            continue
+
+        parsed_rules.append(
+            {
+                "id": rule_id or f"offline-rule-{idx + 1}",
+                "value": parse_int(
+                    form,
+                    f"tracking_rule_{idx}_value",
+                    int((existing or {}).get("value", existing_rules[0].get("value", 1)) or 1),
+                ),
+                "unit": (form.get(f"tracking_rule_{idx}_unit") or (existing or {}).get("unit") or "day").strip().lower(),
+                "enabled": parse_bool(form, f"tracking_rule_{idx}_enabled"),
+                "position": parse_int(
+                    form,
+                    f"tracking_rule_{idx}_position",
+                    int((existing or {}).get("position", idx + 1) or idx + 1),
+                ),
+            }
+        )
+
+    if not parsed_rules and ("min_offline_value" in form or "min_offline_unit" in form):
+        parsed_rules = [
+            {
+                "id": "offline-rule-1",
+                "value": parse_int(form, "min_offline_value", int(existing_rules[0].get("value", 1) or 1)),
+                "unit": (form.get("min_offline_unit") or existing_rules[0].get("unit") or "day").strip().lower(),
+                "enabled": True,
+                "position": 1,
+            }
+        ]
+
+    fallback_rule = existing_rules[0] if existing_rules else {"value": 1, "unit": "day"}
+    return normalize_offline_tracking_rules(
+        parsed_rules,
+        fallback_value=fallback_rule.get("value", 1),
+        fallback_unit=fallback_rule.get("unit", "day"),
+    )
+
+
+def _build_offline_rule_views(offline_state, offline_settings):
+    state = offline_state if isinstance(offline_state, dict) else {}
+    settings = normalize_offline_settings(offline_settings)
+    general_cfg = settings.get("general") if isinstance(settings.get("general"), dict) else {}
+    rules = enabled_offline_tracking_rules(
+        general_cfg.get("tracking_rules"),
+        fallback_value=general_cfg.get("min_offline_value", 1),
+        fallback_unit=general_cfg.get("min_offline_unit", "day"),
+    )
+    tracker = state.get("tracker") if isinstance(state.get("tracker"), dict) else {}
+    current_rows = state.get("rows") if isinstance(state.get("rows"), list) else []
+    now_dt = datetime.utcnow()
+    merged = {}
+
+    def _candidate_key(candidate):
+        router_id = (candidate.get("router_id") or "").strip().lower()
+        pppoe = (candidate.get("pppoe") or "").strip().lower()
+        if not pppoe:
+            return ""
+        if router_id:
+            return f"{router_id}|{pppoe}"
+        mode = (candidate.get("mode") or state.get("mode") or "offline").strip().lower()
+        return f"{mode}|{pppoe}"
+
+    def _merge_candidate(candidate):
+        if not isinstance(candidate, dict):
+            return
+        pppoe = (candidate.get("pppoe") or "").strip()
+        if not pppoe:
+            return
+        key = _candidate_key(candidate)
+        if not key:
+            return
+        offline_since_iso = (candidate.get("offline_since") or "").strip()
+        offline_since_dt = _parse_iso_z(offline_since_iso)
+        offline_seconds = int(max(0, (now_dt - offline_since_dt).total_seconds())) if offline_since_dt else 0
+        offline_minutes = int(offline_seconds / 60)
+        row = {
+            "pppoe": pppoe,
+            "router_id": (candidate.get("router_id") or "").strip(),
+            "router_name": (candidate.get("router_name") or candidate.get("router_id") or "").strip(),
+            "mode": (candidate.get("mode") or state.get("mode") or "").strip() or "secrets",
+            "profile": (candidate.get("profile") or "").strip(),
+            "disabled": bool(candidate.get("disabled")) if candidate.get("disabled") is not None else None,
+            "last_logged_out": (candidate.get("last_logged_out") or "").strip(),
+            "radius_status": (candidate.get("radius_status") or "").strip(),
+            "offline_since_ts": offline_since_iso,
+            "offline_since": format_ts_ph(offline_since_iso) if offline_since_iso else "",
+            "offline_duration_seconds": offline_seconds,
+            "offline_duration": _format_duration_short(offline_seconds),
+        }
+        existing = merged.get(key)
+        if not existing:
+            merged[key] = row
+            return
+        existing_score = (
+            existing.get("offline_since_ts") or "",
+            existing.get("router_name") or "",
+            existing.get("radius_status") or "",
+        )
+        row_score = (
+            row.get("offline_since_ts") or "",
+            row.get("router_name") or "",
+            row.get("radius_status") or "",
+        )
+        if row_score > existing_score:
+            merged[key] = row
+            return
+        for field in ("router_id", "router_name", "mode", "profile", "last_logged_out", "radius_status", "offline_since_ts", "offline_since"):
+            if row.get(field) and not existing.get(field):
+                existing[field] = row.get(field)
+        if existing.get("disabled") is None and row.get("disabled") is not None:
+            existing["disabled"] = row.get("disabled")
+
+    for item in tracker.values():
+        if not isinstance(item, dict):
+            continue
+        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        _merge_candidate(
+            {
+                **meta,
+                "mode": item.get("mode") or state.get("mode") or "",
+                "offline_since": item.get("first_offline_at"),
+            }
+        )
+
+    for row in current_rows:
+        if not isinstance(row, dict):
+            continue
+        _merge_candidate(row)
+
+    all_rows = sorted(
+        merged.values(),
+        key=lambda item: (
+            item.get("offline_since_ts") or "",
+            str(item.get("pppoe") or "").lower(),
+        ),
+    )
+
+    rows_by_rule = {}
+    payload_rules = []
+    for idx, rule in enumerate(rules, start=1):
+        threshold_minutes = int(rule.get("minutes", 0) or 0)
+        rule_rows = [dict(row) for row in all_rows if int(row.get("offline_duration_seconds", 0) or 0) >= threshold_minutes * 60]
+        rows_by_rule[rule.get("id")] = rule_rows
+        payload_rules.append(
+            {
+                "id": rule.get("id"),
+                "label": rule.get("label"),
+                "tab_label": rule.get("tab_label"),
+                "value": int(rule.get("value", 0) or 0),
+                "unit": rule.get("unit"),
+                "minutes": threshold_minutes,
+                "position": int(rule.get("position", idx) or idx),
+                "count": len(rule_rows),
+            }
+        )
+
+    default_rule_id = payload_rules[0]["id"] if payload_rules else ""
+    return {
+        "rules": payload_rules,
+        "rows_by_rule": rows_by_rule,
+        "default_rule_id": default_rule_id,
+        "default_rows": rows_by_rule.get(default_rule_id, []),
+    }
 
 
 WAN_STATUS_WINDOW_OPTIONS = [
@@ -4532,6 +5410,19 @@ def _dashboard_job_health(enabled, status):
     return ("Idle", "secondary")
 
 
+def _dashboard_surveillance_health(surveillance):
+    surveillance = surveillance or {}
+    if not bool(surveillance.get("enabled")):
+        return ("Disabled", "secondary")
+    total = int(surveillance.get("total") or 0)
+    level2 = int(surveillance.get("level2") or 0)
+    if total <= 0:
+        return ("Ready", "success")
+    if level2 > 0:
+        return ("Active", "danger")
+    return ("Active", "warning")
+
+
 def _build_dashboard_kpis(job_status):
     now = datetime.utcnow()
     out = {
@@ -4927,7 +5818,10 @@ def _build_dashboard_kpis(job_status):
     features = []
     for label, job_key, enabled, subtitle in feature_defs:
         status = job_status.get(job_key) if job_key else {}
-        state_label, tone = _dashboard_job_health(bool(enabled), status)
+        if label == "Under Surveillance":
+            state_label, tone = _dashboard_surveillance_health(out["surveillance"])
+        else:
+            state_label, tone = _dashboard_job_health(bool(enabled), status)
         features.append(
             {
                 "label": label,
@@ -5917,20 +6811,12 @@ async def usage_series(pppoe: str, router_id: str = "", hours: int = 24):
 
 @app.get("/offline/summary")
 async def offline_summary():
+    settings = normalize_offline_settings(get_settings("offline", OFFLINE_DEFAULTS))
     state = get_state("offline_state", {})
-    rows = state.get("rows") if isinstance(state.get("rows"), list) else []
-    payload_rows = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        offline_since_ts = row.get("offline_since")
-        payload_rows.append(
-            {
-                **row,
-                "offline_since_ts": offline_since_ts,
-                "offline_since": format_ts_ph(offline_since_ts) if offline_since_ts else "",
-            }
-        )
+    rule_views = _build_offline_rule_views(state, settings)
+    payload_rows = rule_views.get("default_rows") if isinstance(rule_views.get("default_rows"), list) else []
+    rules = rule_views.get("rules") if isinstance(rule_views.get("rules"), list) else []
+    rows_by_rule = rule_views.get("rows_by_rule") if isinstance(rule_views.get("rows_by_rule"), dict) else {}
     return JSONResponse(
         {
             "updated_at": utc_now_iso(),
@@ -5938,9 +6824,13 @@ async def offline_summary():
             "mode": (state.get("mode") or "").strip() or "secrets",
             "counts": {"offline": len(payload_rows)},
             "rows": payload_rows,
+            "rules": rules,
+            "rows_by_rule": rows_by_rule,
+            "default_rule_id": (rule_views.get("default_rule_id") or "").strip(),
             "router_errors": state.get("router_errors") if isinstance(state.get("router_errors"), list) else [],
             "radius_error": (state.get("radius_error") or "").strip(),
             "min_offline_minutes": int(state.get("min_offline_minutes") or 0),
+            "tracking_rules_summary": (settings.get("general") or {}).get("tracking_rules_summary", ""),
         }
     )
 
@@ -6822,6 +7712,11 @@ async def optical_settings_run(request: Request):
     )
 
 
+@app.post("/settings/optical/format", response_class=HTMLResponse)
+async def optical_settings_format(request: Request):
+    return _render_system_danger_notice(request, "optical")
+
+
 @app.get("/optical/series", response_class=JSONResponse)
 async def optical_series(device_id: str, window: int = 24):
     if not (device_id or "").strip():
@@ -6840,9 +7735,8 @@ async def usage_settings(request: Request):
     if active_tab not in ("status", "settings"):
         active_tab = "status"
     settings_tab = (request.query_params.get("settings_tab") or "general").strip().lower()
-    if settings_tab not in ("general", "routers", "data", "detection", "storage", "danger"):
-        settings_tab = "general"
-    if settings_tab == "danger" and not _auth_can_run_danger_actions(request):
+    can_run_danger_actions = _auth_request_has_permission(request, "usage.settings.danger.run")
+    if settings_tab not in ("general", "routers", "data", "detection", "storage"):
         settings_tab = "general"
     job_status = {item["job_name"]: dict(item) for item in get_job_status()}
     usage_job = job_status.get("usage", {})
@@ -6867,6 +7761,7 @@ async def usage_settings(request: Request):
                 "message": "",
                 "active_tab": active_tab,
                 "settings_tab": settings_tab,
+                "can_run_danger_actions": can_run_danger_actions,
                 "usage_job": usage_job,
                 "wan_settings": wan_settings,
                 "usage_router_state": router_state_map,
@@ -6884,9 +7779,8 @@ async def usage_settings(request: Request):
 async def usage_settings_save(request: Request):
     form = await request.form()
     settings_tab = (form.get("settings_tab") or "general").strip().lower() or "general"
-    if settings_tab not in ("general", "routers", "data", "detection", "storage", "danger"):
-        settings_tab = "general"
-    if settings_tab == "danger" and not _auth_can_run_danger_actions(request):
+    can_run_danger_actions = _auth_request_has_permission(request, "usage.settings.danger.run")
+    if settings_tab not in ("general", "routers", "data", "detection", "storage"):
         settings_tab = "general"
     settings = get_settings("usage", USAGE_DEFAULTS)
 
@@ -7240,57 +8134,12 @@ async def usage_test_router(request: Request, router_id: str):
 
 @app.post("/settings/usage/format", response_class=HTMLResponse)
 async def usage_format(request: Request):
-    form = await request.form()
-    settings = get_settings("usage", USAGE_DEFAULTS)
-    message = ""
-    if not parse_bool(form, "confirm_format"):
-        message = "Please confirm format to proceed."
-    else:
-        try:
-            clear_pppoe_usage_samples()
-            message = "Usage database formatted."
-        except Exception as exc:
-            message = f"Format failed: {exc}"
-
-    job_status = {item["job_name"]: dict(item) for item in get_job_status()}
-    usage_job = job_status.get("usage", {})
-    usage_job = {
-        "last_run_at_ph": format_ts_ph(usage_job.get("last_run_at")),
-        "last_success_at_ph": format_ts_ph(usage_job.get("last_success_at")),
-        "last_error": (usage_job.get("last_error") or "").strip(),
-        "last_error_at_ph": format_ts_ph(usage_job.get("last_error_at")),
-    }
-    state = get_state("usage_state", {})
-    wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
-    router_state_rows = state.get("routers") if isinstance(state.get("routers"), list) else []
-    router_state_map = {
-        (row.get("router_id") or "").strip(): row for row in router_state_rows if isinstance(row, dict)
-    }
-    return templates.TemplateResponse(
-        "settings_usage.html",
-        make_context(
-            request,
-            {
-                "settings": settings,
-                "message": message,
-                "active_tab": "settings",
-                "settings_tab": "danger",
-                "usage_job": usage_job,
-                "wan_settings": wan_settings,
-                "usage_router_state": router_state_map,
-                "usage_state": {
-                    "last_check": format_ts_ph(state.get("last_check_at")),
-                    "genieacs_last_refresh": format_ts_ph(state.get("last_genieacs_refresh_at")),
-                    "genieacs_error": (state.get("genieacs_error") or "").strip(),
-                },
-            },
-        ),
-    )
+    return _render_system_danger_notice(request, "usage")
 
 
 @app.get("/settings/offline", response_class=HTMLResponse)
 async def offline_settings(request: Request):
-    settings = get_settings("offline", OFFLINE_DEFAULTS)
+    settings = normalize_offline_settings(get_settings("offline", OFFLINE_DEFAULTS))
     active_tab = (request.query_params.get("tab") or "status").strip().lower()
     if active_tab not in ("status", "settings"):
         active_tab = "status"
@@ -7316,7 +8165,12 @@ async def offline_settings(request: Request):
         "router_errors": state.get("router_errors") if isinstance(state.get("router_errors"), list) else [],
         "radius_error": (state.get("radius_error") or "").strip(),
     }
+    router_state_rows = state.get("routers") if isinstance(state.get("routers"), list) else []
+    router_state_map = {
+        (row.get("router_id") or "").strip(): row for row in router_state_rows if isinstance(row, dict)
+    }
     wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    offline_rule_views = _build_offline_rule_views(state, settings)
     return templates.TemplateResponse(
         "settings_offline.html",
         make_context(
@@ -7329,6 +8183,8 @@ async def offline_settings(request: Request):
                 "radius_tab": radius_tab,
                 "offline_job": offline_job,
                 "offline_state": offline_state,
+                "offline_router_state": router_state_map,
+                "offline_rule_tabs": offline_rule_views.get("rules") if isinstance(offline_rule_views.get("rules"), list) else [],
                 "wan_settings": wan_settings,
             },
         ),
@@ -7338,17 +8194,13 @@ async def offline_settings(request: Request):
 @app.post("/settings/offline", response_class=HTMLResponse)
 async def offline_settings_save(request: Request):
     form = await request.form()
-    settings_tab = (form.get("settings_tab") or "general").strip() or "general"
+    settings_tab = (form.get("settings_tab") or "general").strip().lower() or "general"
+    if settings_tab not in ("general", "routers", "radius"):
+        settings_tab = "general"
     radius_tab = (form.get("radius_tab") or "settings").strip().lower()
     if radius_tab not in ("settings", "accounts"):
         radius_tab = "settings"
-    settings = get_settings("offline", OFFLINE_DEFAULTS)
-
-    settings["general"] = settings.get("general") if isinstance(settings.get("general"), dict) else {}
-    settings["radius"] = settings.get("radius") if isinstance(settings.get("radius"), dict) else {}
-    settings["radius"]["ssh"] = (
-        settings["radius"].get("ssh") if isinstance(settings["radius"].get("ssh"), dict) else {}
-    )
+    settings = normalize_offline_settings(get_settings("offline", OFFLINE_DEFAULTS))
 
     try:
         if settings_tab == "general":
@@ -7362,22 +8214,33 @@ async def offline_settings_save(request: Request):
                 "poll_interval_seconds",
                 int(settings["general"].get("poll_interval_seconds", OFFLINE_DEFAULTS["general"]["poll_interval_seconds"])),
             )
-            min_val = parse_int(form, "min_offline_value", int(settings["general"].get("min_offline_value", 1) or 1))
-            if min_val is None:
-                min_val = int(settings["general"].get("min_offline_value", 1) or 1)
-            min_val = max(int(min_val or 0), 0)
-            min_unit = (form.get("min_offline_unit") or settings["general"].get("min_offline_unit") or "day").strip().lower()
-            if min_unit not in ("hour", "day"):
-                min_unit = "day"
-            settings["general"]["min_offline_value"] = min_val
-            settings["general"]["min_offline_unit"] = min_unit
+            tracking_rules = _parse_offline_tracking_rules_form(form, settings["general"].get("tracking_rules"))
+            enabled_tracking_rules = [dict(rule) for rule in tracking_rules if bool(rule.get("enabled"))] or [dict(tracking_rules[0])]
+            settings["general"]["tracking_rules"] = tracking_rules
+            settings["general"]["enabled_tracking_rules"] = enabled_tracking_rules
+            settings["general"]["min_offline_value"] = int(enabled_tracking_rules[0].get("value", 1) or 0)
+            settings["general"]["min_offline_unit"] = (enabled_tracking_rules[0].get("unit") or "day").strip().lower()
+            settings["general"]["tracking_rules_summary"] = offline_rules_summary_text(
+                tracking_rules,
+                fallback_value=settings["general"]["min_offline_value"],
+                fallback_unit=settings["general"]["min_offline_unit"],
+            )
             settings["general"]["history_retention_days"] = parse_int(
                 form,
                 "history_retention_days",
                 int(settings["general"].get("history_retention_days", OFFLINE_DEFAULTS["general"]["history_retention_days"])),
             )
         elif settings_tab == "routers":
-            pass
+            wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+            system_routers = wan_settings.get("pppoe_routers") if isinstance(wan_settings.get("pppoe_routers"), list) else []
+            count = parse_int(form, "router_count", len(system_routers))
+            enabled_map = {}
+            for idx in range(count):
+                router_id = (form.get(f"router_{idx}_id") or "").strip()
+                if not router_id:
+                    continue
+                enabled_map[router_id] = parse_bool(form, f"router_{idx}_enabled")
+            settings["mikrotik"]["router_enabled"] = enabled_map
         elif settings_tab == "radius":
             settings["radius"]["enabled"] = parse_bool(form, "radius_enabled")
             ssh = settings["radius"]["ssh"]
@@ -7405,7 +8268,7 @@ async def offline_settings_save(request: Request):
 
 @app.post("/settings/offline/test-radius", response_class=HTMLResponse)
 async def offline_test_radius(request: Request):
-    settings = get_settings("offline", OFFLINE_DEFAULTS)
+    settings = normalize_offline_settings(get_settings("offline", OFFLINE_DEFAULTS))
     message = ""
     try:
         from .notifiers import offline as offline_notifier
@@ -7421,6 +8284,11 @@ async def offline_test_radius(request: Request):
         "router_errors": state.get("router_errors") if isinstance(state.get("router_errors"), list) else [],
         "radius_error": (state.get("radius_error") or "").strip(),
     }
+    router_state_rows = state.get("routers") if isinstance(state.get("routers"), list) else []
+    router_state_map = {
+        (row.get("router_id") or "").strip(): row for row in router_state_rows if isinstance(row, dict)
+    }
+    offline_rule_views = _build_offline_rule_views(state, settings)
     return templates.TemplateResponse(
         "settings_offline.html",
         make_context(
@@ -7433,10 +8301,17 @@ async def offline_test_radius(request: Request):
                 "radius_tab": "settings",
                 "offline_job": {"last_run_at_ph": "n/a", "last_success_at_ph": "n/a", "last_error": "", "last_error_at_ph": ""},
                 "offline_state": offline_state,
+                "offline_router_state": router_state_map,
+                "offline_rule_tabs": offline_rule_views.get("rules") if isinstance(offline_rule_views.get("rules"), list) else [],
                 "wan_settings": wan_settings,
             },
         ),
     )
+
+
+@app.post("/settings/offline/format", response_class=HTMLResponse)
+async def offline_settings_format(request: Request):
+    return _render_system_danger_notice(request, "offline")
 
 
 def _profile_query_matches(query, *values):
@@ -7640,7 +8515,7 @@ def _build_profile_review_summary(profile):
     if surveillance.get("active"):
         if surveillance.get("status") == "level2":
             surv_severity = 2
-            surv_value = "LEVEL II"
+            surv_value = "Needs Manual Fix"
             surv_hint = surveillance.get("since_label") or "Escalated for manual fix."
             surv_tone = "red"
         else:
@@ -7837,7 +8712,7 @@ def _build_profile_review_summary(profile):
         overall_summary = "Only partial account identity is available from the current search."
 
     if surveillance.get("active") and surveillance.get("status") == "level2":
-        recommendation = "Account is already escalated to LEVEL II. Continue manual-fix validation before closing."
+        recommendation = "Account is already in Needs Manual Fix. Continue manual-fix validation before closing."
     elif surveillance.get("active"):
         recommendation = "Account is already under surveillance. Use the KPIs below to validate recovery or escalation."
     elif overall_state == "critical":
@@ -7851,7 +8726,7 @@ def _build_profile_review_summary(profile):
 
     focus_points = []
     if surveillance.get("active") and surveillance.get("status") == "level2":
-        focus_points.append("LEVEL II workflow is active, so this account already needs manual-fix follow-up.")
+        focus_points.append("Needs Manual Fix workflow is active, so this account already needs manual-fix follow-up.")
     elif surveillance.get("active"):
         focus_points.append("The account is already tagged under surveillance; compare all telemetry before clearing it.")
     elif profile.get("pppoe") and overall_state in ("critical", "monitor"):
@@ -8754,7 +9629,7 @@ async def profile_review(request: Request):
             surveillance_status = (current_status or "under").strip().lower() or "under"
             if surveillance_status not in ("under", "level2"):
                 surveillance_status = "under"
-            surveillance_label = "LEVEL II SUSPECT" if surveillance_status == "level2" else "Under Surveillance"
+            surveillance_label = "Needs Manual Fix" if surveillance_status == "level2" else "Under Surveillance"
             surveillance_since_iso = (
                 (surveillance_entry.get("level2_at") if surveillance_entry and surveillance_status == "level2" else "")
                 or (surveillance_session.get("updated_at") if surveillance_session and surveillance_status == "level2" else "")
@@ -9519,11 +10394,9 @@ def render_accounts_ping_response(
     stable_dir="",
     query="",
 ):
-    can_run_danger_actions = _auth_can_run_danger_actions(request)
+    can_run_danger_actions = _auth_request_has_permission(request, "accounts_ping.settings.danger.run")
     settings_tab = (settings_tab or "general").strip().lower()
-    if settings_tab not in ("general", "source", "classification", "storage", "danger"):
-        settings_tab = "general"
-    if settings_tab == "danger" and not can_run_danger_actions:
+    if settings_tab not in ("general", "source", "classification", "storage"):
         settings_tab = "general"
     settings, tuning = _accounts_ping_tuning_context(settings)
     status_map = {item["job_name"]: dict(item) for item in get_job_status()}
@@ -9634,7 +10507,7 @@ async def accounts_ping_settings_save(request: Request):
     window_hours = _normalize_wan_window(request.query_params.get("window"))
     active_tab = form.get("active_tab", "settings")
     settings_tab = (form.get("settings_tab") or "general").strip().lower()
-    if settings_tab not in ("general", "source", "classification", "storage", "danger"):
+    if settings_tab not in ("general", "source", "classification", "storage"):
         settings_tab = "general"
     message = "Accounts Ping settings saved."
     if requested_parallel > int(tuning.get("effective_parallel") or requested_parallel):
@@ -9673,28 +10546,7 @@ async def accounts_ping_settings_test(request: Request):
 
 @app.post("/settings/accounts-ping/format", response_class=HTMLResponse)
 async def accounts_ping_settings_format(request: Request):
-    form = await request.form()
-    settings = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
-    message = ""
-    if parse_bool(form, "confirm_format"):
-        clear_accounts_ping_data()
-        state = get_state("accounts_ping_state", {})
-        devices = state.get("devices") if isinstance(state.get("devices"), list) else []
-        devices_refreshed_at = state.get("devices_refreshed_at") or ""
-        save_state(
-            "accounts_ping_state",
-            {
-                "accounts": {},
-                "devices": devices,
-                "devices_refreshed_at": devices_refreshed_at,
-                "last_prune_at": None,
-            },
-        )
-        message = "Accounts Ping database formatted."
-    else:
-        message = "Please confirm format before proceeding."
-    window_hours = _normalize_wan_window(request.query_params.get("window"))
-    return render_accounts_ping_response(request, settings, message, "settings", "danger", window_hours)
+    return _render_system_danger_notice(request, "accounts_ping")
 
 
 @app.post("/accounts-ping/investigate", response_class=HTMLResponse)
@@ -11541,6 +12393,7 @@ async def surveillance_page(request: Request):
         return {
             "pppoe": pppoe,
             "name": entry.get("name") or pppoe,
+            "entry_id": _surveillance_nav_entry_id(entry),
             "optical_device_id": (opt.get("device_id") or "").strip(),
             "ip": entry.get("ip") or latest.get("ip") or opt.get("ip") or "",
             "status": entry.get("status") or "under",
@@ -11642,6 +12495,17 @@ async def surveillance_page(request: Request):
         for pppoe in pppoes
         if (entry_map.get(pppoe, {}).get("status") or "") == "level2"
     ]
+    under_rows = _sort_surveillance_rows_recent(under_rows, "added_at_iso")
+    observation_rows = _sort_surveillance_rows_recent(observation_rows, "last_fixed_at_iso", "added_at_iso")
+    level2_rows = _sort_surveillance_rows_recent(level2_rows, "level2_at_iso", "added_at_iso")
+    under_new_ids = _surveillance_new_ids_for_request(
+        request,
+        [row.get("entry_id") for row in under_rows],
+        seed_if_needed=True,
+    )
+    under_new_id_set = set(under_new_ids)
+    for row in under_rows:
+        row["is_new"] = bool(row.get("entry_id") and row.get("entry_id") in under_new_id_set)
 
     def _ai_status_panel(rows):
         rows = list(rows or [])
@@ -11784,9 +12648,21 @@ async def surveillance_page(request: Request):
                 "surveillance_logs_rows": surveillance_logs_rows,
                 "surveillance_logs_query": surveillance_logs_query,
                 "surveillance_logs_pagination": surveillance_logs_pagination,
+                "under_new_view_seconds": _SURVEILLANCE_NEW_VIEW_SECONDS,
             },
         ),
     )
+
+
+@app.post("/surveillance/mark_new_seen", response_class=JSONResponse)
+async def surveillance_mark_new_seen(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    raw_entry_ids = payload.get("entry_ids") if isinstance(payload, dict) else []
+    seen_ids = _mark_surveillance_new_entries_seen(request, raw_entry_ids)
+    return _json_no_store({"ok": True, "seen_ids": seen_ids, "seen_at": utc_now_iso()})
 
 
 @app.get("/surveillance/series", response_class=JSONResponse)
@@ -12784,48 +13660,7 @@ async def surveillance_settings_save(request: Request):
 
 @app.post("/surveillance/format", response_class=HTMLResponse)
 async def surveillance_format(request: Request):
-    form = await request.form()
-    message = ""
-    if not parse_bool(form, "confirm_format"):
-        message = "Please confirm format to proceed."
-        _auth_log_event(
-            request,
-            action="surveillance.format_rejected",
-            resource="/surveillance/format",
-            details="confirm_format=0",
-        )
-    else:
-        try:
-            clear_surveillance_history()
-            settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
-            settings["entries"] = []
-            save_settings("surveillance", settings)
-
-            state = get_state("accounts_ping_state", {})
-            if not isinstance(state, dict):
-                state = {}
-            state.pop("surveillance_sessions_seeded", None)
-            state.pop("surveillance_autoadd_seen", None)
-            state.pop("surveillance_autoadd_last_scan_at", None)
-            state.pop("surveillance_last_eval_at", None)
-            save_state("accounts_ping_state", state)
-            message = "Under Surveillance data formatted. Settings preserved."
-            _auth_log_event(
-                request,
-                action="surveillance.formatted",
-                resource="/surveillance/format",
-                details="history+entries cleared",
-            )
-        except Exception as exc:
-            message = f"Format failed: {exc}"
-            _auth_log_event(
-                request,
-                action="surveillance.format_failed",
-                resource="/surveillance/format",
-                details=str(exc),
-            )
-    qs = urllib.parse.urlencode({"tab": "settings", "msg": message})
-    return RedirectResponse(url=f"/surveillance?{qs}", status_code=303)
+    return _render_system_danger_notice(request, "surveillance")
 
 
 @app.post("/surveillance/add", response_class=JSONResponse)
@@ -13729,11 +14564,9 @@ def render_wan_ping_response(request, pulse_settings, wan_settings, message, act
     if active_tab not in ("status", "settings", "messages"):
         active_tab = "settings"
     wan_settings_tab = (wan_settings_tab or "telegram").strip().lower()
-    if wan_settings_tab not in ("telegram", "targets", "interval", "database", "danger"):
+    if wan_settings_tab not in ("telegram", "targets", "interval", "database"):
         wan_settings_tab = "telegram"
-    can_run_danger_actions = _auth_can_run_danger_actions(request)
-    if wan_settings_tab == "danger" and not can_run_danger_actions:
-        wan_settings_tab = "telegram"
+    can_run_danger_actions = _auth_request_has_permission(request, "wan.settings.danger.run")
     wan_rows = build_wan_rows(pulse_settings, wan_settings)
     wan_state = get_state("wan_ping_state", {})
     window_end = datetime.now(timezone.utc)
@@ -14094,30 +14927,7 @@ async def wan_settings_save_database(request: Request):
 
 @app.post("/settings/wan/format", response_class=HTMLResponse)
 async def wan_format_db(request: Request):
-    form = await request.form()
-    if not parse_bool(form, "confirm_format"):
-        pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
-        wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
-        return render_wan_ping_response(
-            request,
-            pulse_settings,
-            wan_settings_data,
-            "Format canceled. Please confirm before formatting.",
-            "settings",
-            wan_settings_tab="danger",
-        )
-    save_state("wan_ping_state", {"reset_at": utc_now_iso(), "wans": {}})
-    clear_wan_history()
-    pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
-    wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
-    return render_wan_ping_response(
-        request,
-        pulse_settings,
-        wan_settings_data,
-        "WAN database cleared. WAN status history and Target Latency history removed. Settings preserved.",
-        "settings",
-        wan_settings_tab="danger",
-    )
+    return _render_system_danger_notice(request, "wan")
 
 
 @app.get("/settings/pulsewatch")
@@ -14246,21 +15056,487 @@ async def isp_mikrotik_test(request: Request):
 async def settings_root():
     return RedirectResponse(url="/settings/optical", status_code=302)
 
+
+_SYSTEM_DANGER_FEATURE_ORDER = ("surveillance", "optical", "accounts_ping", "usage", "offline", "wan")
+_SYSTEM_DANGER_ACTIONS = {
+    "surveillance": {
+        "label": "Under Surveillance",
+        "button_label": "Format Under Surveillance",
+        "permission": "surveillance.settings.danger.run",
+        "summary": "Clears Active Monitoring, Needs Manual Fix, Post-Fix Observation, and Surveillance History data. Settings are preserved.",
+        "path": "/surveillance?tab=settings",
+    },
+    "optical": {
+        "label": "Optical",
+        "button_label": "Format Optical",
+        "permission": "optical.settings.danger.run",
+        "summary": "Clears stored optical history and trend samples. Settings are preserved.",
+        "path": "/settings/optical?tab=settings",
+    },
+    "accounts_ping": {
+        "label": "Accounts Ping",
+        "button_label": "Format Accounts Ping",
+        "permission": "accounts_ping.settings.danger.run",
+        "summary": "Clears stored Accounts Ping history and cached account states. Settings are preserved.",
+        "path": "/settings/accounts-ping?tab=settings",
+    },
+    "usage": {
+        "label": "Usage",
+        "button_label": "Format Usage",
+        "permission": "usage.settings.danger.run",
+        "summary": "Clears stored usage history and trend samples. Settings are preserved.",
+        "path": "/settings/usage?tab=settings",
+    },
+    "offline": {
+        "label": "Offline",
+        "button_label": "Format Offline",
+        "permission": "offline.settings.danger.run",
+        "summary": "Clears offline history and current offline tracker state. Settings are preserved.",
+        "path": "/settings/offline?tab=settings",
+    },
+    "wan": {
+        "label": "WAN Ping",
+        "button_label": "Format WAN Ping",
+        "permission": "wan.settings.danger.run",
+        "summary": "Clears WAN status history, target latency history, and cached WAN states. Settings are preserved.",
+        "path": "/settings/wan?tab=settings",
+    },
+    "all": {
+        "label": "All Monitoring Features",
+        "button_label": "Format All Features",
+        "permission": "settings.danger",
+        "summary": "Formats Under Surveillance, Optical, Accounts Ping, Usage, Offline, and WAN Ping in one step. Settings are preserved.",
+        "path": "/settings/system?tab=danger",
+    },
+    "uninstall": {
+        "label": "Uninstall System",
+        "button_label": "Uninstall Everything",
+        "permission": "system.danger.uninstall.run",
+        "summary": "Removes Docker, containers, images, volumes, and the application files. This action is irreversible.",
+        "path": "/settings/system?tab=danger",
+        "confirm_text": "UNINSTALL",
+    },
+}
+_SYSTEM_DANGER_GROUPS = (
+    {
+        "key": "subscriber_monitoring",
+        "title": "Subscriber Monitoring",
+        "description": "Feature data tied to account health and recovery workflows.",
+        "actions": ("surveillance", "accounts_ping", "offline"),
+    },
+    {
+        "key": "traffic_and_link",
+        "title": "Traffic & Link Telemetry",
+        "description": "Feature data tied to optical, usage, and WAN history.",
+        "actions": ("optical", "usage", "wan"),
+    },
+)
+_SYSTEM_DANGER_ROLE_TRIGGER_CODES = (
+    "settings.danger",
+    "RUN_DangerActions",
+    "surveillance.settings.danger.run",
+    "optical.settings.danger.run",
+    "accounts_ping.settings.danger.run",
+    "usage.settings.danger.run",
+    "offline.settings.danger.run",
+    "wan.settings.danger.run",
+    "system.danger.uninstall.run",
+)
+_SYSTEM_DANGER_ROLE_GRANTED_CODES = ("system.view", "system.tab.danger.view")
+
+
+def _system_danger_requires_password(request: Request) -> bool:
+    current_user = getattr(request.state, "current_user", None)
+    return bool(getattr(request.state, "auth_enabled", True) and isinstance(current_user, dict) and current_user.get("id"))
+
+
+def _auth_sync_centralized_danger_role_permissions():
+    updated_roles = []
+    try:
+        roles = list_auth_roles(include_permissions=True)
+    except Exception:
+        return updated_roles
+
+    for role in roles or []:
+        role_id = int(role.get("id") or 0)
+        role_name = (role.get("name") or "").strip().lower()
+        if role_id <= 0 or role_name == "owner":
+            continue
+        permission_codes = [
+            str(code or "").strip()
+            for code in (role.get("permission_codes") or [])
+            if str(code or "").strip()
+        ]
+        raw_keys = {code.lower() for code in permission_codes}
+        if not any(str(code or "").strip().lower() in raw_keys for code in _SYSTEM_DANGER_ROLE_TRIGGER_CODES):
+            continue
+
+        next_codes = list(permission_codes)
+        changed = False
+        for grant_code in _SYSTEM_DANGER_ROLE_GRANTED_CODES:
+            if str(grant_code).strip().lower() in raw_keys:
+                continue
+            next_codes.append(grant_code)
+            raw_keys.add(str(grant_code).strip().lower())
+            changed = True
+        if not changed:
+            continue
+        try:
+            set_auth_role_permissions(role_id, next_codes)
+            updated_roles.append(role_name or f"id={role_id}")
+        except Exception:
+            continue
+    return updated_roles
+
+
+def _system_danger_verify_password(request: Request, password: str):
+    if not _system_danger_requires_password(request):
+        return True, ""
+    current_user = getattr(request.state, "current_user", None)
+    if not isinstance(current_user, dict) or not current_user.get("id"):
+        return False, "Your session is missing. Sign in again before running danger actions."
+    user = get_auth_user_by_id(current_user.get("id"))
+    if not user:
+        return False, "Your account could not be loaded. Sign in again before running danger actions."
+    if not _auth_verify_password((password or "").strip(), user.get("password_hash"), user.get("password_salt")):
+        return False, "Current password is incorrect."
+    return True, ""
+
+
+def _system_danger_format_surveillance():
+    clear_surveillance_history()
+    settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
+    settings["entries"] = []
+    save_settings("surveillance", settings)
+
+    state = get_state("accounts_ping_state", {})
+    if not isinstance(state, dict):
+        state = {}
+    state.pop("surveillance_sessions_seeded", None)
+    state.pop("surveillance_autoadd_seen", None)
+    state.pop("surveillance_autoadd_last_scan_at", None)
+    state.pop("surveillance_last_eval_at", None)
+    save_state(_SURVEILLANCE_NEW_SEEN_STATE_KEY, {})
+    save_state("accounts_ping_state", state)
+
+
+def _system_danger_format_optical():
+    clear_optical_results()
+
+
+def _system_danger_format_accounts_ping():
+    clear_accounts_ping_data()
+    state = get_state("accounts_ping_state", {})
+    devices = state.get("devices") if isinstance(state.get("devices"), list) else []
+    devices_refreshed_at = state.get("devices_refreshed_at") or ""
+    save_state(
+        "accounts_ping_state",
+        {
+            "accounts": {},
+            "devices": devices,
+            "devices_refreshed_at": devices_refreshed_at,
+            "last_prune_at": None,
+        },
+    )
+
+
+def _system_danger_format_usage():
+    clear_pppoe_usage_samples()
+
+
+def _system_danger_format_offline():
+    clear_offline_history()
+    save_state("offline_state", {})
+
+
+def _system_danger_format_wan():
+    save_state("wan_ping_state", {"reset_at": utc_now_iso(), "wans": {}})
+    clear_wan_history()
+
+
+def _system_danger_start_uninstall():
+    host_repo = os.environ.get("THREEJ_HOST_REPO", "/opt/threejnotif")
+    command = (
+        "docker run --rm --privileged "
+        "-v /:/host "
+        f"-v {shlex.quote(host_repo)}:/repo "
+        "ubuntu bash -c "
+        "\"cp /repo/scripts/uninstall_all.sh /host/tmp/threej_uninstall.sh && "
+        "chroot /host /bin/bash /tmp/threej_uninstall.sh "
+        f"{shlex.quote(host_repo)}\""
+    )
+    subprocess.Popen(
+        ["/bin/sh", "-c", command],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def _system_danger_capabilities(request: Request):
+    caps = {
+        "can_view_danger_tab": _auth_request_has_permission(request, "system.tab.danger.view"),
+        "can_format_surveillance": _auth_request_has_permission(request, "surveillance.settings.danger.run"),
+        "can_format_optical": _auth_request_has_permission(request, "optical.settings.danger.run"),
+        "can_format_accounts_ping": _auth_request_has_permission(request, "accounts_ping.settings.danger.run"),
+        "can_format_usage": _auth_request_has_permission(request, "usage.settings.danger.run"),
+        "can_format_offline": _auth_request_has_permission(request, "offline.settings.danger.run"),
+        "can_format_wan": _auth_request_has_permission(request, "wan.settings.danger.run"),
+        "can_uninstall_system": _auth_request_has_permission(request, "system.danger.uninstall.run"),
+    }
+    caps["can_format_all_features"] = all(
+        caps.get(key)
+        for key in (
+            "can_format_surveillance",
+            "can_format_optical",
+            "can_format_accounts_ping",
+            "can_format_usage",
+            "can_format_offline",
+            "can_format_wan",
+        )
+    )
+    caps["can_run_danger_actions"] = bool(
+        caps["can_format_surveillance"]
+        or caps["can_format_optical"]
+        or caps["can_format_accounts_ping"]
+        or caps["can_format_usage"]
+        or caps["can_format_offline"]
+        or caps["can_format_wan"]
+        or caps["can_format_all_features"]
+        or caps["can_uninstall_system"]
+    )
+    caps["can_view_danger_tab"] = bool(caps["can_view_danger_tab"] or caps["can_run_danger_actions"])
+    return caps
+
+
+def _build_system_danger_groups(caps: dict):
+    groups = []
+    for group in _SYSTEM_DANGER_GROUPS:
+        items = []
+        for action_key in group.get("actions") or []:
+            meta = _SYSTEM_DANGER_ACTIONS.get(action_key)
+            if not isinstance(meta, dict):
+                continue
+            cap_key = f"can_format_{action_key}"
+            if not caps.get(cap_key):
+                continue
+            item = dict(meta)
+            item["action"] = action_key
+            items.append(item)
+        if items:
+            groups.append(
+                {
+                    "key": group.get("key"),
+                    "title": group.get("title"),
+                    "description": group.get("description"),
+                    "items": items,
+                }
+            )
+    return groups
+
+
+def _render_system_danger_notice(request: Request, action_key: str):
+    meta = _SYSTEM_DANGER_ACTIONS.get(action_key) or {}
+    label = meta.get("label") or "This action"
+    return render_system_settings_response(
+        request,
+        f"{label} formatting moved to System Settings -> Danger. Re-enter your password there to continue.",
+        active_tab="danger",
+    )
+
+
+def _run_system_danger_action(action_key: str):
+    if action_key == "surveillance":
+        _system_danger_format_surveillance()
+        return "Under Surveillance data formatted. Settings preserved."
+    if action_key == "optical":
+        _system_danger_format_optical()
+        return "Optical history formatted. Settings preserved."
+    if action_key == "accounts_ping":
+        _system_danger_format_accounts_ping()
+        return "Accounts Ping data formatted. Settings preserved."
+    if action_key == "usage":
+        _system_danger_format_usage()
+        return "Usage history formatted. Settings preserved."
+    if action_key == "offline":
+        _system_danger_format_offline()
+        return "Offline history and tracker state formatted. Settings preserved."
+    if action_key == "wan":
+        _system_danger_format_wan()
+        return "WAN history and cached state formatted. Settings preserved."
+    if action_key == "all":
+        for feature_key in _SYSTEM_DANGER_FEATURE_ORDER:
+            _run_system_danger_action(feature_key)
+        return "All monitoring feature data formatted. Settings preserved."
+    raise ValueError("Unsupported danger action.")
+
+
+def _handle_system_danger_submission(request: Request, form, default_action: str = ""):
+    action_key = ((form.get("danger_action") or default_action or "").strip().lower())
+    meta = _SYSTEM_DANGER_ACTIONS.get(action_key)
+    if not isinstance(meta, dict):
+        return render_system_settings_response(request, "Unknown danger action.", active_tab="danger")
+
+    danger_caps = _system_danger_capabilities(request)
+    if action_key == "all":
+        if not danger_caps.get("can_format_all_features"):
+            return render_system_settings_response(
+                request,
+                "Format All requires access to every feature danger action.",
+                active_tab="danger",
+            )
+    else:
+        required_code = meta.get("permission") or "settings.danger"
+        if not _auth_request_has_permission(request, required_code):
+            return _auth_forbidden_response(request, required_code)
+
+    ok, password_error = _system_danger_verify_password(request, form.get("confirm_password") or "")
+    if not ok:
+        return render_system_settings_response(request, password_error, active_tab="danger")
+
+    if action_key == "uninstall":
+        confirm_text = (form.get("confirm_text") or "").strip().upper()
+        expected = str(meta.get("confirm_text") or "").strip().upper()
+        if confirm_text != expected:
+            return render_system_settings_response(
+                request,
+                f"Confirmation text does not match. Type {expected} to proceed.",
+                active_tab="danger",
+            )
+        try:
+            _system_danger_start_uninstall()
+            _auth_log_event(
+                request,
+                action="system.uninstall_started",
+                resource="/settings/system/danger/run",
+                details="source=system_settings",
+            )
+            return render_system_settings_response(
+                request,
+                "Uninstall started. This will remove Docker and all app data.",
+                active_tab="danger",
+            )
+        except Exception as exc:
+            return render_system_settings_response(request, f"Uninstall failed: {exc}", active_tab="danger")
+
+    try:
+        message = _run_system_danger_action(action_key)
+    except Exception as exc:
+        return render_system_settings_response(request, f"{meta.get('label') or 'Action'} failed: {exc}", active_tab="danger")
+
+    audit_action = "system.danger.formatted_all" if action_key == "all" else f"{action_key}.formatted"
+    _auth_log_event(
+        request,
+        action=audit_action,
+        resource=meta.get("label") or action_key,
+        details="source=system_settings",
+    )
+    return render_system_settings_response(request, message, active_tab="danger")
+
+
+def _system_settings_caps(request: Request):
+    auth_enabled = bool(getattr(request.state, "auth_enabled", True))
+    user_perms = {str(p or "").strip() for p in (getattr(request.state, "auth_permission_codes", []) or [])}
+
+    def _allow(code: str) -> bool:
+        if not auth_enabled:
+            return True
+        return _auth_check_permission(user_perms, code)
+
+    caps = {
+        "can_view_system_branding": _allow("system.general.branding.view"),
+        "can_edit_system_branding": _allow("system.general.branding.edit"),
+        "can_view_system_telegram": _allow("system.general.telegram.view"),
+        "can_edit_system_telegram": _allow("system.general.telegram.edit"),
+        "can_view_system_router_cores": _allow("system.routers.cores.view"),
+        "can_edit_system_router_cores": _allow("system.routers.cores.edit"),
+        "can_view_system_router_mikrotik": _allow("system.routers.mikrotik.view"),
+        "can_edit_system_router_mikrotik": _allow("system.routers.mikrotik.edit"),
+        "can_view_system_router_isp": _allow("system.routers.isp.view"),
+        "can_edit_system_router_isp": _allow("system.routers.isp.edit"),
+        "can_test_system_routers": _allow("system.routers.test.run"),
+        "can_view_access_auth": _allow("system.access.auth.view"),
+        "can_edit_access_auth": _allow("system.access.auth.edit"),
+        "can_view_access_permissions": _allow("system.access.permissions.view"),
+        "can_view_access_roles": _allow("system.access.roles.view"),
+        "can_edit_access_roles": _allow("system.access.roles.edit"),
+        "can_view_access_users": _allow("system.access.users.view"),
+        "can_edit_access_users": _allow("system.access.users.edit"),
+        "can_manage_import_export": _allow("system.backup.import_export.run"),
+    }
+    caps.update(_system_danger_capabilities(request))
+    caps["can_view_general_tab"] = caps["can_view_system_branding"] or caps["can_view_system_telegram"]
+    caps["can_view_routers_tab"] = (
+        caps["can_view_system_router_cores"]
+        or caps["can_view_system_router_mikrotik"]
+        or caps["can_view_system_router_isp"]
+    )
+    caps["can_view_access_tab"] = (
+        caps["can_view_access_auth"]
+        or caps["can_view_access_permissions"]
+        or caps["can_view_access_roles"]
+        or caps["can_view_access_users"]
+    )
+    return caps
+
+
+def _normalize_system_settings_tabs(active_tab: str, routers_tab: str, access_tab: str, caps: dict):
+    active_tab = (active_tab or "general").strip().lower()
+    routers_tab = (routers_tab or "cores").strip().lower()
+    access_tab = (access_tab or "auth").strip().lower()
+
+    if active_tab not in {"general", "routers", "access", "backup", "danger"}:
+        active_tab = "general"
+    if routers_tab not in {"cores", "mikrotik-routers", "isps"}:
+        routers_tab = "cores"
+    if access_tab not in {"auth", "permissions", "roles", "users"}:
+        access_tab = "auth"
+
+    allowed_main_tabs = []
+    if caps.get("can_view_general_tab"):
+        allowed_main_tabs.append("general")
+    if caps.get("can_view_routers_tab"):
+        allowed_main_tabs.append("routers")
+    if caps.get("can_view_access_tab"):
+        allowed_main_tabs.append("access")
+    if caps.get("can_manage_import_export"):
+        allowed_main_tabs.append("backup")
+    if caps.get("can_view_danger_tab"):
+        allowed_main_tabs.append("danger")
+
+    if allowed_main_tabs and active_tab not in allowed_main_tabs:
+        active_tab = allowed_main_tabs[0]
+
+    allowed_routers_tabs = []
+    if caps.get("can_view_system_router_cores"):
+        allowed_routers_tabs.append("cores")
+    if caps.get("can_view_system_router_mikrotik"):
+        allowed_routers_tabs.append("mikrotik-routers")
+    if caps.get("can_view_system_router_isp"):
+        allowed_routers_tabs.append("isps")
+    if active_tab == "routers" and allowed_routers_tabs and routers_tab not in allowed_routers_tabs:
+        routers_tab = allowed_routers_tabs[0]
+
+    allowed_access_tabs = []
+    if caps.get("can_view_access_auth"):
+        allowed_access_tabs.append("auth")
+    if caps.get("can_view_access_permissions"):
+        allowed_access_tabs.append("permissions")
+    if caps.get("can_view_access_roles"):
+        allowed_access_tabs.append("roles")
+    if caps.get("can_view_access_users"):
+        allowed_access_tabs.append("users")
+    if active_tab == "access" and allowed_access_tabs and access_tab not in allowed_access_tabs:
+        access_tab = allowed_access_tabs[0]
+
+    return active_tab, routers_tab, access_tab
+
+
 @app.get("/settings/system", response_class=HTMLResponse)
 async def system_settings(request: Request):
     active_tab = (request.query_params.get("tab") or "general").strip().lower()
-    if active_tab not in {"general", "routers", "access", "backup", "danger"}:
-        active_tab = "general"
-    if active_tab == "access":
-        user_perms = {str(p or "").strip() for p in (getattr(request.state, "auth_permission_codes", []) or [])}
-        if not _auth_check_permission(user_perms, "MANAGE_AccessControl"):
-            active_tab = "general"
     routers_tab = (request.query_params.get("routers_tab") or "cores").strip().lower()
-    if routers_tab not in {"cores", "mikrotik-routers", "isps"}:
-        routers_tab = "cores"
     access_tab = (request.query_params.get("access_tab") or "auth").strip().lower()
-    if access_tab not in {"auth", "permissions", "roles", "users"}:
-        access_tab = "auth"
     return render_system_settings_response(request, "", active_tab=active_tab, routers_tab=routers_tab, access_tab=access_tab)
 
 
@@ -14271,15 +15547,20 @@ def render_system_settings_response(
     routers_tab: str = "cores",
     access_tab: str = "auth",
 ):
-    active_tab = (active_tab or "general").strip().lower()
-    if active_tab not in {"general", "routers", "access", "backup", "danger"}:
-        active_tab = "general"
-    access_tab = (access_tab or "auth").strip().lower()
-    if access_tab not in {"auth", "permissions", "roles", "users"}:
-        access_tab = "auth"
-    can_run_danger_actions = _auth_can_run_danger_actions(request)
-    if active_tab == "danger" and not can_run_danger_actions:
-        active_tab = "general"
+    caps = _system_settings_caps(request)
+    active_tab, routers_tab, access_tab = _normalize_system_settings_tabs(active_tab, routers_tab, access_tab, caps)
+    can_run_danger_actions = bool(caps.get("can_run_danger_actions"))
+    danger_groups = _build_system_danger_groups(caps)
+    danger_bulk_actions = []
+    if caps.get("can_format_all_features"):
+        bulk_meta = dict(_SYSTEM_DANGER_ACTIONS.get("all") or {})
+        bulk_meta["action"] = "all"
+        danger_bulk_actions.append(bulk_meta)
+    danger_system_actions = []
+    if caps.get("can_uninstall_system"):
+        system_meta = dict(_SYSTEM_DANGER_ACTIONS.get("uninstall") or {})
+        system_meta["action"] = "uninstall"
+        danger_system_actions.append(system_meta)
     system_settings = normalize_system_settings(get_settings("system", SYSTEM_DEFAULTS))
     auth_settings = system_settings.get("auth") if isinstance(system_settings.get("auth"), dict) else {}
     pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
@@ -14320,48 +15601,48 @@ def render_system_settings_response(
             pass
     interfaces = get_interface_options()
     telegram_state = get_state("telegram_state", {})
-    user_perms = {str(p or "").strip() for p in (getattr(request.state, "auth_permission_codes", []) or [])}
-    can_manage_auth = _auth_check_permission(user_perms, "MANAGE_AccessControl") or (not bool(getattr(request.state, "auth_enabled", True)))
     auth_permissions = []
     auth_permission_groups = []
     role_permission_groups = []
     auth_roles = []
     auth_users = []
-    if can_manage_auth:
+    if caps.get("can_view_access_tab"):
         try:
-            auth_permissions = list_auth_permissions()
-            auth_permissions = [
-                item
-                for item in auth_permissions
-                if str((item or {}).get("code") or "").strip().lower() not in AUTH_PERMISSION_DEPRECATED_CODES_LOWER
-            ]
-            auth_permissions = sorted(
-                auth_permissions,
-                key=lambda item: (1 if "." in str(item.get("code") or "") else 0, str(item.get("code") or "").lower()),
-            )
-            auth_permissions = _auth_annotate_permissions_with_dependencies(auth_permissions)
-            auth_permission_groups = _build_auth_permission_groups(auth_permissions)
-            role_permission_groups = _build_role_editor_permission_groups(auth_permission_groups)
-            auth_roles = list_auth_roles(include_permissions=True)
-            for role in auth_roles:
-                codes = sorted(
-                    {
-                        str(item or "").strip()
-                        for item in (role.get("permission_codes") or [])
-                        if str(item or "").strip()
-                        and str(item or "").strip().lower() not in AUTH_PERMISSION_DEPRECATED_CODES_LOWER
-                    },
-                    key=lambda item: str(item).lower(),
+            if caps.get("can_view_access_permissions") or caps.get("can_edit_access_roles"):
+                auth_permissions = list_auth_permissions()
+                auth_permissions = [
+                    item
+                    for item in auth_permissions
+                    if not _auth_is_ui_hidden_permission(str((item or {}).get("code") or "").strip())
+                ]
+                auth_permissions = sorted(
+                    auth_permissions,
+                    key=lambda item: (1 if "." in str(item.get("code") or "") else 0, str(item.get("code") or "").lower()),
                 )
-                role["permission_codes"] = codes
-                role["permission_count"] = len(codes)
-                preview_size = 3
-                if len(codes) <= preview_size:
-                    role["permission_preview"] = ", ".join(codes)
-                else:
-                    role["permission_preview"] = ", ".join(codes[:preview_size]) + f", +{len(codes) - preview_size} more"
-                role["permission_groups"] = _build_role_permission_groups(codes)
-            auth_users = list_auth_users()
+                auth_permissions = _auth_annotate_permissions_with_dependencies(auth_permissions)
+                auth_permission_groups = _build_auth_permission_groups(auth_permissions)
+                role_permission_groups = _build_role_editor_permission_groups(auth_permission_groups)
+
+            if (
+                caps.get("can_view_access_roles")
+                or caps.get("can_edit_access_roles")
+                or caps.get("can_view_access_users")
+                or caps.get("can_edit_access_users")
+            ):
+                auth_roles = list_auth_roles(include_permissions=True)
+                for role in auth_roles:
+                    codes = _auth_visible_permission_codes(role.get("permission_codes") or [])
+                    role["permission_codes"] = codes
+                    role["permission_count"] = len(codes)
+                    preview_size = 3
+                    if len(codes) <= preview_size:
+                        role["permission_preview"] = ", ".join(codes)
+                    else:
+                        role["permission_preview"] = ", ".join(codes[:preview_size]) + f", +{len(codes) - preview_size} more"
+                    role["permission_groups"] = _build_role_permission_groups(codes)
+
+            if caps.get("can_view_access_users") or caps.get("can_edit_access_users"):
+                auth_users = list_auth_users()
         except Exception:
             auth_permissions = []
             auth_permission_groups = []
@@ -14425,8 +15706,12 @@ def render_system_settings_response(
                 "role_permission_groups": role_permission_groups,
                 "auth_roles": auth_roles,
                 "auth_users": auth_users,
-                "can_manage_auth": can_manage_auth,
                 "can_run_danger_actions": can_run_danger_actions,
+                "danger_groups": danger_groups,
+                "danger_bulk_actions": danger_bulk_actions,
+                "danger_system_actions": danger_system_actions,
+                "danger_requires_password": _system_danger_requires_password(request),
+                **caps,
             },
         ),
     )
@@ -15215,34 +16500,13 @@ async def system_save_isps(request: Request):
 @app.post("/settings/system/uninstall", response_class=HTMLResponse)
 async def system_uninstall(request: Request):
     form = await request.form()
-    confirm_text = (form.get("confirm_text") or "").strip().upper()
-    message = ""
-    if confirm_text != "UNINSTALL":
-        message = "Confirmation text does not match. Type UNINSTALL to proceed."
-        return render_system_settings_response(request, message, active_tab="danger", routers_tab="cores")
+    return _handle_system_danger_submission(request, form, default_action="uninstall")
 
-    host_repo = os.environ.get("THREEJ_HOST_REPO", "/opt/threejnotif")
-    command = (
-        "docker run --rm --privileged "
-        "-v /:/host "
-        f"-v {shlex.quote(host_repo)}:/repo "
-        "ubuntu bash -c "
-        "\"cp /repo/scripts/uninstall_all.sh /host/tmp/threej_uninstall.sh && "
-        "chroot /host /bin/bash /tmp/threej_uninstall.sh "
-        f"{shlex.quote(host_repo)}\""
-    )
-    try:
-        subprocess.Popen(
-            ["/bin/sh", "-c", command],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        message = "Uninstall started. This will remove Docker and all app data."
-    except Exception as exc:
-        message = f"Uninstall failed: {exc}"
 
-    return render_system_settings_response(request, message, active_tab="danger", routers_tab="cores")
+@app.post("/settings/system/danger/run", response_class=HTMLResponse)
+async def system_danger_run(request: Request):
+    form = await request.form()
+    return _handle_system_danger_submission(request, form)
 
 
 @app.post("/settings/system/branding", response_class=HTMLResponse)

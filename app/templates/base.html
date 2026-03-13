@@ -40,8 +40,9 @@
             {% if not auth_enabled or has_perm('surveillance.view') %}
               <li class="nav-item">
                 <a class="nav-link" href="/surveillance">
-                  <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-eye"></i></span>
+                  <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-binoculars"></i></span>
                   <span class="nav-link-title">Under Surveillance</span>
+                  <span class="badge bg-yellow-lt text-yellow ms-auto d-none" id="nav-surveillance-new-badge">0</span>
                 </a>
               </li>
             {% endif %}
@@ -82,6 +83,7 @@
                 <a class="nav-link" href="/settings/offline">
                   <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-cloud-off"></i></span>
                   <span class="nav-link-title">Offline</span>
+                  <span class="badge bg-red-lt text-red ms-auto d-none" id="nav-offline-new-badge">0</span>
                 </a>
               </li>
             {% endif %}
@@ -210,9 +212,179 @@
       return `${minutes}m`;
     };
 
+    const THREEJ_IDLE_POLL_MS = 30 * 60 * 1000;
+
+    window.ThreeJPolling = window.ThreeJPolling || (() => {
+      const tasks = new Set();
+      let lastActivityAt = Date.now();
+      let initialized = false;
+
+      const notify = (type) => {
+        tasks.forEach((task) => {
+          try {
+            task._notify(type);
+          } catch (_err) {
+            // ignore per-task failures
+          }
+        });
+      };
+
+      const markActive = (reason = "activity") => {
+        lastActivityAt = Date.now();
+        notify(reason);
+      };
+
+      const isIdle = (idleMs = THREEJ_IDLE_POLL_MS) => {
+        const limit = Math.max(1000, Number(idleMs) || THREEJ_IDLE_POLL_MS);
+        return (Date.now() - lastActivityAt) >= limit;
+      };
+
+      const init = () => {
+        if (initialized) return;
+        initialized = true;
+        ["pointerdown", "keydown", "touchstart", "wheel"].forEach((eventName) => {
+          document.addEventListener(eventName, () => markActive(eventName), { passive: true, capture: true });
+        });
+        window.addEventListener("focus", () => markActive("focus"), { passive: true });
+        window.addEventListener("pageshow", () => markActive("pageshow"), { passive: true });
+        document.addEventListener("visibilitychange", () => {
+          if (document.hidden) {
+            notify("hidden");
+            return;
+          }
+          markActive("visible");
+        });
+      };
+
+      const createTask = (callback, options = {}) => {
+        init();
+        if (typeof callback !== "function") return null;
+        const intervalMs = Math.max(250, Number(options.intervalMs || options.interval || 1000) || 1000);
+        const idleMs = Math.max(1000, Number(options.idleMs || THREEJ_IDLE_POLL_MS) || THREEJ_IDLE_POLL_MS);
+        const pauseWhenHidden = options.pauseWhenHidden !== false;
+        const pauseWhenIdle = options.pauseWhenIdle !== false;
+        const runImmediately = options.runImmediately !== false;
+        const runOnResume = options.runOnResume !== false;
+        const resumeDelayMs = Math.max(0, Number(options.resumeDelayMs || 0) || 0);
+        const minResumeGapMs = Math.max(1000, Number(options.minResumeGapMs || 1500) || 1500);
+        let timer = null;
+        let resumeTimer = null;
+        let running = false;
+        let stopped = false;
+        let lastRunAt = 0;
+
+        const clearTimers = () => {
+          if (timer) {
+            window.clearTimeout(timer);
+            timer = null;
+          }
+          if (resumeTimer) {
+            window.clearTimeout(resumeTimer);
+            resumeTimer = null;
+          }
+        };
+
+        const canRun = () => {
+          if (pauseWhenHidden && document.hidden) return false;
+          if (pauseWhenIdle && isIdle(idleMs)) return false;
+          return true;
+        };
+
+        const schedule = (delayMs = intervalMs) => {
+          if (stopped) return;
+          if (timer) window.clearTimeout(timer);
+          timer = window.setTimeout(() => {
+            timer = null;
+            void run("interval");
+          }, Math.max(250, Number(delayMs) || intervalMs));
+        };
+
+        const run = async (reason = "interval") => {
+          if (stopped) return;
+          if (!canRun()) return;
+          if (running) {
+            schedule(intervalMs);
+            return;
+          }
+          running = true;
+          lastRunAt = Date.now();
+          try {
+            await callback({
+              reason,
+              hidden: document.hidden,
+              idle: isIdle(idleMs),
+              lastRunAt,
+            });
+          } catch (_err) {
+            // ignore task failures here; pages can handle render fallbacks
+          } finally {
+            running = false;
+            if (!stopped && canRun()) {
+              schedule(intervalMs);
+            }
+          }
+        };
+
+        const resume = (reason = "resume") => {
+          if (stopped || !runOnResume || running || timer || !canRun()) return;
+          if (resumeTimer) window.clearTimeout(resumeTimer);
+          const elapsed = Date.now() - lastRunAt;
+          const delay = elapsed >= minResumeGapMs
+            ? resumeDelayMs
+            : Math.max(resumeDelayMs, minResumeGapMs - elapsed);
+          resumeTimer = window.setTimeout(() => {
+            resumeTimer = null;
+            if (stopped || running || timer || !canRun()) return;
+            void run(reason);
+          }, delay);
+        };
+
+        const task = {
+          stop() {
+            stopped = true;
+            clearTimers();
+            tasks.delete(task);
+          },
+          trigger(reason = "manual") {
+            markActive(reason);
+            clearTimers();
+            return run(reason);
+          },
+          _notify(type) {
+            if (stopped) return;
+            if (type === "hidden") {
+              clearTimers();
+              return;
+            }
+            if (!canRun()) return;
+            resume(type);
+          },
+        };
+
+        tasks.add(task);
+        if (runImmediately && canRun()) {
+          void run("initial");
+        } else if (canRun()) {
+          schedule(intervalMs);
+        }
+        return task;
+      };
+
+      init();
+
+      return {
+        createTask,
+        isIdle,
+        markActive,
+        get lastActivityAt() {
+          return lastActivityAt;
+        },
+      };
+    })();
+
     const updateResources = async () => {
       try {
-        const res = await fetch("/system/resources", { headers: { "Accept": "application/json" } });
+        const res = await fetch("/system/resources", { headers: { "Accept": "application/json" }, cache: "no-store" });
         if (!res.ok) return;
         const data = await res.json();
         const cpuEl = document.getElementById("sys-cpu");
@@ -247,9 +419,100 @@
       }
     };
 
-	    updateResources();
-	    setInterval(updateResources, 15000);
+	    if (window.ThreeJPolling?.createTask) {
+	      window.ThreeJPolling.createTask(updateResources, { intervalMs: 15000, resumeDelayMs: 200 });
+	    } else {
+	      updateResources();
+	      setInterval(updateResources, 15000);
+	    }
 	  </script>
+  <script>
+    (() => {
+      const offlineBadge = document.getElementById("nav-offline-new-badge");
+      const surveillanceBadge = document.getElementById("nav-surveillance-new-badge");
+      if (!offlineBadge && !surveillanceBadge) return;
+
+      const offlineSeenKey = "threej_nav_offline_seen_v1";
+      const pathname = String(window.location.pathname || "");
+      const onOfflinePage = pathname.startsWith("/settings/offline") || pathname === "/offline" || pathname.startsWith("/offline/");
+
+      const loadSeen = (key) => {
+        try {
+          const raw = localStorage.getItem(key);
+          if (raw === null) return null;
+          const parsed = JSON.parse(raw);
+          return Array.isArray(parsed) ? parsed.map((item) => String(item || "").trim()).filter(Boolean) : [];
+        } catch {
+          return null;
+        }
+      };
+
+      const saveSeen = (key, ids) => {
+        try {
+          localStorage.setItem(key, JSON.stringify(Array.from(new Set((ids || []).map((item) => String(item || "").trim()).filter(Boolean)))));
+        } catch {}
+      };
+
+      const reconcileSeen = (currentIds, previousSeen, markCurrentSeen) => {
+        const current = Array.from(new Set((currentIds || []).map((item) => String(item || "").trim()).filter(Boolean)));
+        if (previousSeen === null) {
+          return { current, seen: current };
+        }
+        const currentSet = new Set(current);
+        const nextSeen = new Set();
+        (previousSeen || []).forEach((item) => {
+          const value = String(item || "").trim();
+          if (value && currentSet.has(value)) nextSeen.add(value);
+        });
+        if (markCurrentSeen) {
+          current.forEach((item) => nextSeen.add(item));
+        }
+        return { current, seen: Array.from(nextSeen) };
+      };
+
+      const renderBadge = (badgeEl, count) => {
+        if (!badgeEl) return;
+        const safeCount = Math.max(Number(count || 0), 0);
+        if (!safeCount) {
+          badgeEl.classList.add("d-none");
+          badgeEl.textContent = "0";
+          return;
+        }
+        badgeEl.textContent = String(safeCount);
+        badgeEl.classList.remove("d-none");
+      };
+
+      const updateNavigationSummary = async () => {
+        try {
+          const res = await fetch("/navigation/summary", { headers: { "Accept": "application/json" }, cache: "no-store" });
+          if (!res.ok) return;
+          const data = await res.json();
+
+          if (offlineBadge) {
+            const currentIds = Array.isArray(data?.offline?.current_ids) ? data.offline.current_ids : [];
+            const state = reconcileSeen(currentIds, loadSeen(offlineSeenKey), onOfflinePage);
+            const seenSet = new Set(state.seen);
+            saveSeen(offlineSeenKey, state.seen);
+            renderBadge(offlineBadge, state.current.filter((item) => !seenSet.has(item)).length);
+          }
+
+          if (surveillanceBadge) {
+            const serverNewCount = Number(data?.surveillance?.new_count || 0);
+            renderBadge(surveillanceBadge, Number.isFinite(serverNewCount) ? serverNewCount : 0);
+          }
+        } catch (_err) {
+          // ignore nav badge refresh failures
+        }
+      };
+
+      if (window.ThreeJPolling?.createTask) {
+        window.ThreeJPolling.createTask(updateNavigationSummary, { intervalMs: 10000, resumeDelayMs: 250 });
+      } else {
+        updateNavigationSummary();
+        window.setInterval(updateNavigationSummary, 10000);
+      }
+    })();
+  </script>
   <script>
     (() => {
       const AUTO_DISMISS_MS = 8000;
@@ -350,10 +613,10 @@
 	      const safeStatus = status === "level2" ? "level2" : "under";
 	      const href = surveillanceHref(pppoe, safeStatus);
 	      const color = safeStatus === "level2" ? "red" : "yellow";
-	      const title = safeStatus === "level2" ? "LEVEL II SUSPECT" : "Under Surveillance";
+	      const title = safeStatus === "level2" ? "Needs Manual Fix" : "Under Surveillance";
 	      slotEl.innerHTML = `
 	        <a class="badge bg-${color}-lt text-${color} header-icon-badge" href="${href}" title="${title}" aria-label="${title}">
-	          <i class="ti ti-eye"></i>
+	          <i class="ti ti-binoculars"></i>
 	        </a>
 	      `;
 	      setSurveillanceRowHighlight(slotEl, safeStatus);

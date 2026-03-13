@@ -37,6 +37,131 @@
     </div>
   {% endif %}
 {% endif %}
+{% set can_profile_review = (not auth_enabled) or has_perm("profile_review.view") %}
+<style>
+  .usage-status-table-wrap {
+    overflow-x: hidden;
+  }
+
+  .usage-status-table {
+    width: 100%;
+    table-layout: fixed;
+  }
+
+  .usage-status-table > :not(caption) > * > * {
+    vertical-align: middle;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .usage-status-table .us-col-pppoe {
+    width: 16rem;
+    text-align: left;
+  }
+
+  .usage-status-table .us-col-router {
+    width: 10rem;
+  }
+
+  .usage-status-table .us-col-dl-rate,
+  .usage-status-table .us-col-ul-rate {
+    width: 6.5rem;
+  }
+
+  .usage-status-table .us-col-dl-total,
+  .usage-status-table .us-col-ul-total {
+    width: 7rem;
+  }
+
+  .usage-status-table .us-col-devices {
+    width: 5.5rem;
+  }
+
+  .usage-status-table .us-col-trend {
+    width: 7rem;
+    text-align: center;
+  }
+
+  .usage-status-table .us-col-last-seen {
+    width: 8.75rem;
+  }
+
+  .usage-status-table .us-col-actions {
+    width: 5rem;
+  }
+
+  .usage-status-label,
+  .usage-status-cell-truncate {
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+    white-space: nowrap;
+  }
+
+  .usage-status-table .us-col-actions {
+    overflow: visible !important;
+    text-overflow: clip !important;
+  }
+
+  .usage-status-table .us-actions {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: nowrap;
+    gap: 0.25rem;
+    max-width: 100%;
+  }
+
+  .usage-status-table .rto-sparkline {
+    width: 96px;
+    max-width: 100%;
+    height: 30px;
+  }
+
+  @media (max-width: 1600px) {
+    .usage-status-table .us-priority-8,
+    .usage-status-table .us-priority-7 {
+      display: none;
+    }
+  }
+
+  @media (max-width: 1450px) {
+    .usage-status-table .us-priority-6,
+    .usage-status-table .us-priority-5 {
+      display: none;
+    }
+  }
+
+  @media (max-width: 1240px) {
+    .usage-status-table .us-priority-4,
+    .usage-status-table .us-priority-3 {
+      display: none;
+    }
+  }
+
+  @media (max-width: 980px) {
+    .usage-status-table .us-priority-2 {
+      display: none;
+    }
+  }
+
+  @media (max-width: 768px) {
+    .usage-status-table .us-priority-1 {
+      display: none;
+    }
+
+    .usage-status-table .us-col-pppoe {
+      width: auto;
+    }
+
+    .usage-status-table .us-col-actions {
+      width: 4.75rem;
+    }
+  }
+</style>
 
 <div class="card">
   <div class="card-body">
@@ -115,23 +240,24 @@
 	        <div class="tab-content pt-3">
 	          <div class="tab-pane active" id="usage-issues">
               <div class="rto-table-shell">
-                <div class="rto-table-wrap" id="usage-issues-table">
-	              <table class="table table-vcenter rto-table">
+                <div class="rto-table-wrap usage-status-table-wrap" id="usage-issues-table">
+	              <table class="table table-vcenter rto-table usage-status-table">
 	                <thead>
 	                  <tr>
-	                    <th class="rto-tip rto-sort" data-table="issues" data-sort-key="pppoe" aria-sort="none" title="PPPoE username (subscriber)." data-tip="PPPoE username (subscriber).">PPPoE <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-	                    <th class="rto-tip rto-sort" data-table="issues" data-sort-key="router_name" aria-sort="none" title="MikroTik router name." data-tip="MikroTik router name.">Router <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-	                    <th class="rto-tip rto-sort text-end" data-table="issues" data-sort-key="dl_bps" aria-sort="none" title="Download rate (router→client)." data-tip="Download rate (router→client).">DL Rate <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-	                    <th class="rto-tip rto-sort text-end" data-table="issues" data-sort-key="ul_bps" aria-sort="none" title="Upload rate (client→router)." data-tip="Upload rate (client→router).">UL Rate <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-	                    <th class="rto-tip rto-sort text-end" data-table="issues" data-sort-key="dl_total_bytes" aria-sort="none" title="Total downloaded bytes (router→client)." data-tip="Total downloaded bytes (router→client).">DL Total <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-	                    <th class="rto-tip rto-sort text-end" data-table="issues" data-sort-key="ul_total_bytes" aria-sort="none" title="Total uploaded bytes (client→router)." data-tip="Total uploaded bytes (client→router).">UL Total <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-	                    <th class="rto-tip rto-sort text-end" data-table="issues" data-sort-key="host_count" aria-sort="none" title="Connected devices (active only)." data-tip="Connected devices (active only). Click for list.">Devices <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                      <th class="rto-tip" title="Recent usage trend (client-side, from live polling)." data-tip="Recent usage trend (client-side, from live polling). Click to expand.">Trend</th>
-	                    <th class="rto-tip rto-sort" data-table="issues" data-sort-key="last_seen_ts" aria-sort="none" title="Last seen timestamp from polling." data-tip="Last seen timestamp from polling.">Last Seen <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-tip rto-sort us-col-pppoe us-priority-0" data-table="issues" data-sort-key="pppoe" aria-sort="none" title="PPPoE username (subscriber)." data-tip="PPPoE username (subscriber).">PPPoE <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-tip rto-sort us-col-router us-priority-1" data-table="issues" data-sort-key="router_name" aria-sort="none" title="MikroTik router name." data-tip="MikroTik router name.">Router <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-tip rto-sort text-end us-col-dl-rate us-priority-2" data-table="issues" data-sort-key="dl_bps" aria-sort="none" title="Download rate (router→client)." data-tip="Download rate (router→client).">DL Rate <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-tip rto-sort text-end us-col-ul-rate us-priority-3" data-table="issues" data-sort-key="ul_bps" aria-sort="none" title="Upload rate (client→router)." data-tip="Upload rate (client→router).">UL Rate <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-tip rto-sort text-end us-col-dl-total us-priority-7" data-table="issues" data-sort-key="dl_total_bytes" aria-sort="none" title="Total downloaded bytes (router→client)." data-tip="Total downloaded bytes (router→client).">DL Total <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-tip rto-sort text-end us-col-ul-total us-priority-8" data-table="issues" data-sort-key="ul_total_bytes" aria-sort="none" title="Total uploaded bytes (client→router)." data-tip="Total uploaded bytes (client→router).">UL Total <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-tip rto-sort text-end us-col-devices us-priority-4" data-table="issues" data-sort-key="host_count" aria-sort="none" title="Connected devices (active only)." data-tip="Connected devices (active only). Click for list.">Devices <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-tip us-col-trend us-priority-6" title="Recent usage trend (client-side, from live polling)." data-tip="Recent usage trend (client-side, from live polling). Click to expand.">Trend</th>
+	                    <th class="rto-tip rto-sort us-col-last-seen us-priority-5" data-table="issues" data-sort-key="last_seen_ts" aria-sort="none" title="Last seen timestamp from polling." data-tip="Last seen timestamp from polling.">Last Seen <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="text-end us-col-actions us-priority-0">Actions</th>
 	                  </tr>
 	                </thead>
 	                <tbody id="usage-issues-body">
-	                  <tr><td colspan="9" class="text-muted">Loading…</td></tr>
+	                  <tr><td colspan="10" class="text-muted">Loading…</td></tr>
 	                </tbody>
 	              </table>
                 </div>
@@ -141,23 +267,24 @@
 
 	          <div class="tab-pane" id="usage-stable">
               <div class="rto-table-shell">
-                <div class="rto-table-wrap" id="usage-stable-table">
-	              <table class="table table-vcenter rto-table">
+                <div class="rto-table-wrap usage-status-table-wrap" id="usage-stable-table">
+	              <table class="table table-vcenter rto-table usage-status-table">
 	                <thead>
 	                  <tr>
-	                    <th class="rto-tip rto-sort" data-table="stable" data-sort-key="pppoe" aria-sort="none" title="PPPoE username (subscriber)." data-tip="PPPoE username (subscriber).">PPPoE <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-	                    <th class="rto-tip rto-sort" data-table="stable" data-sort-key="router_name" aria-sort="none" title="MikroTik router name." data-tip="MikroTik router name.">Router <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-	                    <th class="rto-tip rto-sort text-end" data-table="stable" data-sort-key="dl_bps" aria-sort="none" title="Download rate (router→client)." data-tip="Download rate (router→client).">DL Rate <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-	                    <th class="rto-tip rto-sort text-end" data-table="stable" data-sort-key="ul_bps" aria-sort="none" title="Upload rate (client→router)." data-tip="Upload rate (client→router).">UL Rate <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-	                    <th class="rto-tip rto-sort text-end" data-table="stable" data-sort-key="dl_total_bytes" aria-sort="none" title="Total downloaded bytes (router→client)." data-tip="Total downloaded bytes (router→client).">DL Total <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-	                    <th class="rto-tip rto-sort text-end" data-table="stable" data-sort-key="ul_total_bytes" aria-sort="none" title="Total uploaded bytes (client→router)." data-tip="Total uploaded bytes (client→router).">UL Total <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-	                    <th class="rto-tip rto-sort text-end" data-table="stable" data-sort-key="host_count" aria-sort="none" title="Connected devices (active only)." data-tip="Connected devices (active only). Click for list.">Devices <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                      <th class="rto-tip" title="Recent usage trend (client-side, from live polling)." data-tip="Recent usage trend (client-side, from live polling). Click to expand.">Trend</th>
-	                    <th class="rto-tip rto-sort" data-table="stable" data-sort-key="last_seen_ts" aria-sort="none" title="Last seen timestamp from polling." data-tip="Last seen timestamp from polling.">Last Seen <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-tip rto-sort us-col-pppoe us-priority-0" data-table="stable" data-sort-key="pppoe" aria-sort="none" title="PPPoE username (subscriber)." data-tip="PPPoE username (subscriber).">PPPoE <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-tip rto-sort us-col-router us-priority-1" data-table="stable" data-sort-key="router_name" aria-sort="none" title="MikroTik router name." data-tip="MikroTik router name.">Router <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-tip rto-sort text-end us-col-dl-rate us-priority-2" data-table="stable" data-sort-key="dl_bps" aria-sort="none" title="Download rate (router→client)." data-tip="Download rate (router→client).">DL Rate <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-tip rto-sort text-end us-col-ul-rate us-priority-3" data-table="stable" data-sort-key="ul_bps" aria-sort="none" title="Upload rate (client→router)." data-tip="Upload rate (client→router).">UL Rate <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-tip rto-sort text-end us-col-dl-total us-priority-7" data-table="stable" data-sort-key="dl_total_bytes" aria-sort="none" title="Total downloaded bytes (router→client)." data-tip="Total downloaded bytes (router→client).">DL Total <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-tip rto-sort text-end us-col-ul-total us-priority-8" data-table="stable" data-sort-key="ul_total_bytes" aria-sort="none" title="Total uploaded bytes (client→router)." data-tip="Total uploaded bytes (client→router).">UL Total <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-tip rto-sort text-end us-col-devices us-priority-4" data-table="stable" data-sort-key="host_count" aria-sort="none" title="Connected devices (active only)." data-tip="Connected devices (active only). Click for list.">Devices <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-tip us-col-trend us-priority-6" title="Recent usage trend (client-side, from live polling)." data-tip="Recent usage trend (client-side, from live polling). Click to expand.">Trend</th>
+	                    <th class="rto-tip rto-sort us-col-last-seen us-priority-5" data-table="stable" data-sort-key="last_seen_ts" aria-sort="none" title="Last seen timestamp from polling." data-tip="Last seen timestamp from polling.">Last Seen <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="text-end us-col-actions us-priority-0">Actions</th>
 	                  </tr>
 	                </thead>
 	                <tbody id="usage-stable-body">
-	                  <tr><td colspan="9" class="text-muted">Loading…</td></tr>
+	                  <tr><td colspan="10" class="text-muted">Loading…</td></tr>
 	                </tbody>
 	              </table>
                 </div>
@@ -190,11 +317,6 @@
           <li class="nav-item">
             <a href="#usage-storage" class="nav-link {% if settings_tab == 'storage' %}active{% endif %}" data-bs-toggle="tab">Storage</a>
           </li>
-          {% if not auth_enabled or has_perm('RUN_DangerActions') %}
-            <li class="nav-item">
-              <a href="#usage-danger" class="nav-link {% if settings_tab == 'danger' %}active{% endif %}" data-bs-toggle="tab">Danger</a>
-            </li>
-          {% endif %}
         </ul>
 
         <div class="tab-content pt-4">
@@ -523,26 +645,7 @@
               </div>
             </form>
           </div>
-
-          {% if not auth_enabled or has_perm('RUN_DangerActions') %}
-            <div class="tab-pane {% if settings_tab == 'danger' %}active{% endif %}" id="usage-danger">
-                <div class="card mb-3 border-danger">
-                  <div class="card-body">
-                    <h4 class="text-danger mb-3">Format Usage Database</h4>
-                    <div class="alert alert-warning">Formatting clears all stored PPPoE usage history. Settings will be preserved.</div>
-                    <div class="d-flex align-items-center gap-3">
-                      <label class="form-check">
-                        <input class="form-check-input" type="checkbox" name="confirm_format" form="usage-format-form" />
-                        <span class="form-check-label">Confirm format</span>
-                      </label>
-                      <button type="submit" class="btn btn-danger" form="usage-format-form">Format Usage Database</button>
-                    </div>
-                  </div>
-                </div>
-            </div>
-          {% endif %}
         </div>
-        <form id="usage-format-form" method="post" action="/settings/usage/format"></form>
       </div>
     </div>
   </div>
@@ -578,6 +681,7 @@
   document.addEventListener("DOMContentLoaded", () => {
     const escMap = { "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" };
     const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => escMap[c] || c);
+    const canProfileReview = {% if can_profile_review %}true{% else %}false{% endif %};
 
     const fmtBytes = (value) => {
       const num = Number(value);
@@ -862,6 +966,24 @@
       return String(row?.router_name || row?.router_id || "").trim();
     }
 
+    function buildProfileReviewHref(item) {
+      const params = new URLSearchParams();
+      const pppoe = String(item?.pppoe || item?.username || "").trim();
+      const ip = String(item?.ip || item?.address || "").trim();
+      const deviceId = String(item?.device_id || "").trim();
+      if (pppoe) params.set("pppoe", pppoe);
+      if (ip && ip !== "—") params.set("ip", ip);
+      if (deviceId) params.set("device_id", deviceId);
+      const query = params.toString();
+      return query ? `/profile-review?${query}` : "/profile-review";
+    }
+
+    function renderProfileReviewAction(item) {
+      if (!canProfileReview) return "";
+      const href = buildProfileReviewHref(item);
+      return `<a class="badge bg-azure-lt text-azure header-icon-badge" href="${esc(href)}" target="_blank" rel="noopener" title="Profile Review" aria-label="Profile Review"><i class="ti ti-user"></i></a>`;
+    }
+
     function rowMatchesRouters(row) {
       if (!selectedRouters.length) return true;
       const r = getRowRouterName(row);
@@ -998,7 +1120,7 @@
       }
       const k = keyForRow(row);
       const pts = sparkPointsForKey(k);
-	      const trendCell = pts
+      const trendCell = pts
 	        ? `<button type="button"
 	                   class="btn btn-link p-0 rto-spark-btn usage-spark-btn"
 	                   data-pppoe="${esc(row.pppoe)}"
@@ -1009,20 +1131,22 @@
              <svg class="rto-sparkline" width="${sparkWidth}" height="${sparkHeight}" viewBox="0 0 ${sparkWidth} ${sparkHeight}" preserveAspectRatio="none">
                <polyline points="${pts}" fill="none" stroke="${row.issue ? "#d63939" : "#2fb344"}" stroke-width="2"></polyline>
              </svg>
-           </button>`
+	           </button>`
         : `<span class="text-muted small">n/a</span>`;
+      const profileAction = renderProfileReviewAction({ pppoe: row.pppoe, address: row.address });
 
       return `
         <tr>
-          <td>${esc(row.pppoe)}</td>
-          <td>${esc(row.router_name || row.router_id || "")}</td>
-          <td class="text-end">${esc(fmtBps(row.dl_bps))}</td>
-          <td class="text-end">${esc(fmtBps(row.ul_bps))}</td>
-          <td class="text-end">${esc(fmtBytes(row.dl_total_bytes))}</td>
-          <td class="text-end">${esc(fmtBytes(row.ul_total_bytes))}</td>
-          <td class="text-end">${devicesCell}</td>
-          <td>${trendCell}</td>
-          <td>${esc(row.last_seen || "n/a")}</td>
+          <td class="us-col-pppoe us-priority-0"><span class="usage-status-label" title="${esc(row.pppoe)}">${esc(row.pppoe)}</span></td>
+          <td class="us-col-router us-priority-1"><span class="usage-status-cell-truncate" title="${esc(row.router_name || row.router_id || "")}">${esc(row.router_name || row.router_id || "")}</span></td>
+          <td class="text-end us-col-dl-rate us-priority-2">${esc(fmtBps(row.dl_bps))}</td>
+          <td class="text-end us-col-ul-rate us-priority-3">${esc(fmtBps(row.ul_bps))}</td>
+          <td class="text-end us-col-dl-total us-priority-7">${esc(fmtBytes(row.dl_total_bytes))}</td>
+          <td class="text-end us-col-ul-total us-priority-8">${esc(fmtBytes(row.ul_total_bytes))}</td>
+          <td class="text-end us-col-devices us-priority-4">${devicesCell}</td>
+          <td class="us-col-trend us-priority-6">${trendCell}</td>
+          <td class="us-col-last-seen us-priority-5"><span class="usage-status-cell-truncate" title="${esc(row.last_seen || "n/a")}">${esc(row.last_seen || "n/a")}</span></td>
+          <td class="text-end us-col-actions us-priority-0"><span class="us-actions">${profileAction}</span></td>
         </tr>
       `;
 	    }
@@ -1054,7 +1178,7 @@
 	        renderRouterKpis();
 	        renderAllTables();
 	      } catch (err) {
-	        issuesBody.innerHTML = '<tr><td colspan="9" class="text-danger">Failed to load usage summary.</td></tr>';
+	        issuesBody.innerHTML = '<tr><td colspan="10" class="text-danger">Failed to load usage summary.</td></tr>';
 	      }
 	    }
 
@@ -1062,8 +1186,8 @@
 	      const issues = applyLimit(sortRows(filterRows(issuesData, "issues"), "issues"));
 	      const stable = applyLimit(sortRows(filterRows(stableData, "stable"), "stable"));
 
-	      issuesBody.innerHTML = issues.length ? issues.map(renderActiveRow).join("") : '<tr><td colspan="9" class="text-muted">No usage issues detected yet.</td></tr>';
-	      stableBody.innerHTML = stable.length ? stable.map(renderActiveRow).join("") : '<tr><td colspan="9" class="text-muted">No stable usage rows yet.</td></tr>';
+	      issuesBody.innerHTML = issues.length ? issues.map(renderActiveRow).join("") : '<tr><td colspan="10" class="text-muted">No usage issues detected yet.</td></tr>';
+	      stableBody.innerHTML = stable.length ? stable.map(renderActiveRow).join("") : '<tr><td colspan="10" class="text-muted">No stable usage rows yet.</td></tr>';
 
 	      initDeviceClickcards();
 	      updateSortIndicators();
@@ -1224,6 +1348,29 @@
       return `${hours}H`;
     }
 
+    function modalTickAmountForHours(hours) {
+      const h = Number(hours);
+      if (!Number.isFinite(h) || h <= 0) return undefined;
+      if (h <= 12) return Math.max(3, h);
+      if (h <= 24) return 8;
+      if (h <= 168) return 7;
+      if (h <= 360) return 15;
+      return 30;
+    }
+
+    function modalAxisLabelForHours(ts, hours) {
+      const dt = new Date(ts);
+      if (Number.isNaN(dt.getTime())) return "";
+      const h = Number(hours || 24);
+      if (h <= 12) {
+        return dt.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+      }
+      if (h <= 24) {
+        return dt.toLocaleTimeString("en-US", { hour: "2-digit", hour12: true });
+      }
+      return dt.toLocaleDateString("en-US", { month: "short", day: "2-digit" });
+    }
+
 	    async function renderUsageModalChart() {
 	      if (!modalChartEl || !modalPppoe) return;
 	      const label = modalWindowLabel(modalHours);
@@ -1289,7 +1436,20 @@
           { name: "DL", data: dl },
           { name: "UL", data: ul },
         ],
-        xaxis: { type: "datetime", min: windowStartMs, max: windowEndMs },
+        xaxis: {
+          type: "datetime",
+          min: windowStartMs,
+          max: windowEndMs,
+          tickAmount: modalTickAmountForHours(modalHours),
+          labels: {
+            show: true,
+            hideOverlappingLabels: modalHours > 24,
+            formatter: (value, timestamp) => {
+              const ts = Number.isFinite(Number(timestamp)) ? Number(timestamp) : Number(value);
+              return modalAxisLabelForHours(ts, modalHours);
+            },
+          },
+        },
         yaxis: {
           labels: {
             formatter: (val) => fmtBps(val),
@@ -1426,8 +1586,12 @@
       });
     });
 
-    refresh();
-    setInterval(refresh, 5000);
+    if (window.ThreeJPolling?.createTask) {
+      window.ThreeJPolling.createTask(refresh, { intervalMs: 5000, resumeDelayMs: 250 });
+    } else {
+      refresh();
+      setInterval(refresh, 5000);
+    }
 
     // no-op: settings tabs submit with explicit hidden settings_tab per form.
   });

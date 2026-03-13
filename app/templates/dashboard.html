@@ -42,6 +42,7 @@
   .kpi-pills{display:flex;flex-wrap:wrap;gap:.35rem}
   .dashboard-logo-badge{font-size:1rem;padding:.52rem .68rem;border-radius:.72rem;line-height:1}
   .dashboard-attention-card .card-body{padding:1rem}
+  .dashboard-side-column{align-self:flex-start}
 </style>
 
 {% set attention_active_items = attention.get('items', []) | selectattr('active') | list %}
@@ -51,7 +52,7 @@
   {% set feature_meta = {
     'WAN Ping': {'icon': 'ti ti-world', 'theme': 'azure'},
     'Accounts Ping': {'icon': 'ti ti-wifi', 'theme': 'green'},
-    'Under Surveillance': {'icon': 'ti ti-eye', 'theme': 'red'},
+    'Under Surveillance': {'icon': 'ti ti-binoculars', 'theme': 'red'},
     'Usage': {'icon': 'ti ti-chart-bar', 'theme': 'indigo'},
     'Offline': {'icon': 'ti ti-cloud-off', 'theme': 'secondary'},
     'Optical Monitoring': {'icon': 'ti ti-sun', 'theme': 'yellow'}
@@ -72,7 +73,7 @@
     {% set theme = meta.get('theme', 'blue') %}
     {% set state_label = item.get('state_label') %}
     {% set badge_label = (wan.get('up', 0)|string ~ '/' ~ wan.get('configured', 0)|string) if label == 'WAN Ping' else state_label %}
-    {% set state_theme = 'green' if (state_label|string|lower) == 'ok' else theme %}
+    {% set state_theme = item.get('tone') or ('green' if (state_label|string|lower) == 'ok' else theme) %}
     <div class="col-md-6 col-xl-4">
       <div class="card dashboard-kpi-card dashboard-kpi-theme-{{ theme }}">
         <div class="card-body">
@@ -168,7 +169,7 @@
       {% endif %}
     </div>
   </div>
-  <div class="col-12 col-xxl-3">
+  <div class="col-12 col-xxl-3 dashboard-side-column">
     {% if attention_active_items and has_perm('dashboard.needs_attention.view') %}
       <div class="card dashboard-kpi-card card-sm dashboard-attention-card mb-2">
         <div class="card-header py-3 px-3 d-flex align-items-center">
@@ -191,7 +192,7 @@
       </div>
     {% endif %}
     {% if has_perm('dashboard.logs.view') %}
-    <div class="card dashboard-kpi-card card-sm dashboard-attention-card h-100">
+    <div class="card dashboard-kpi-card card-sm dashboard-attention-card">
       <div class="card-header py-3 px-3 d-flex align-items-center">
         <h4 class="card-title mb-0 d-flex align-items-center">
           <span class="badge bg-blue-lt text-blue me-2 dashboard-logo-badge"><i class="ti ti-history"></i></span>
@@ -447,12 +448,20 @@
           renderEmpty("Loading process usage…", !!systemModeToggleEl.checked);
         }
       });
-      updateLiveUsage();
-      setInterval(updateLiveUsage, 5000);
+      if (window.ThreeJPolling?.createTask) {
+        window.ThreeJPolling.createTask(updateLiveUsage, { intervalMs: 5000, resumeDelayMs: 200 });
+      } else {
+        updateLiveUsage();
+        setInterval(updateLiveUsage, 5000);
+      }
     }
     if (hasLogsPanel) {
-      updateLatestLogs();
-      setInterval(updateLatestLogs, 5000);
+      if (window.ThreeJPolling?.createTask) {
+        window.ThreeJPolling.createTask(updateLatestLogs, { intervalMs: 5000, resumeDelayMs: 900 });
+      } else {
+        updateLatestLogs();
+        setInterval(updateLatestLogs, 5000);
+      }
     }
   })();
 </script>

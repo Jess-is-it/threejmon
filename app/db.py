@@ -90,6 +90,7 @@ AUTH_DEFAULT_PERMISSIONS = [
     {"code": "accounts_ping.settings.performance.edit", "label": "Accounts Ping · Settings · Performance", "description": "Edit collector performance settings (parallelism/interval)."},
     {"code": "accounts_ping.settings.retention.edit", "label": "Accounts Ping · Settings · Retention", "description": "Edit accounts ping retention settings."},
     {"code": "accounts_ping.settings.danger.run", "label": "Accounts Ping · Settings · Danger", "description": "Run accounts ping destructive format actions."},
+    {"code": "accounts_ping.action.test_source.run", "label": "Accounts Ping · Test Data Source", "description": "Run Accounts Ping source and connectivity test actions."},
     {"code": "accounts_ping.action.run_now.run", "label": "Accounts Ping · Run Now", "description": "Run accounts ping collection manually."},
     {"code": "usage.tab.status.view", "label": "Usage · Status Tab", "description": "View usage status tab."},
     {"code": "usage.tab.settings.view", "label": "Usage · Settings Tab", "description": "View usage settings tab."},
@@ -104,6 +105,7 @@ AUTH_DEFAULT_PERMISSIONS = [
     {"code": "usage.settings.rules.edit", "label": "Usage · Settings · Detection Rules", "description": "Edit usage issue detection rules and working hours."},
     {"code": "usage.settings.retention.edit", "label": "Usage · Settings · Retention", "description": "Edit usage data retention settings."},
     {"code": "usage.settings.danger.run", "label": "Usage · Settings · Danger", "description": "Run usage destructive format actions."},
+    {"code": "usage.action.test_source.run", "label": "Usage · Test Data Source", "description": "Run Usage data source and router test actions."},
     {"code": "offline.tab.status.view", "label": "Offline · Status Tab", "description": "View offline status tab."},
     {"code": "offline.tab.history.view", "label": "Offline · History Tab", "description": "View offline history tab."},
     {"code": "offline.tab.settings.view", "label": "Offline · Settings Tab", "description": "View offline settings tab."},
@@ -130,11 +132,13 @@ AUTH_DEFAULT_PERMISSIONS = [
     {"code": "system.tab.general.view", "label": "System Settings · General Tab", "description": "View System Settings general tab."},
     {"code": "system.tab.routers.view", "label": "System Settings · Routers Tab", "description": "View System Settings routers tab."},
     {"code": "system.tab.access.view", "label": "System Settings · Access Tab", "description": "View System Settings access tab."},
+    {"code": "system.backup.import_export.run", "label": "System Backup · Import / Export", "description": "Use backup and restore actions under System Settings → Backup."},
     {"code": "system.tab.danger.view", "label": "System Settings · Danger Tab", "description": "View System Settings danger tab."},
     {"code": "system.routers.mikrotik.view", "label": "System Routers · MikroTik View", "description": "View MikroTik routers section."},
     {"code": "system.routers.mikrotik.edit", "label": "System Routers · MikroTik Edit", "description": "Edit MikroTik routers section."},
     {"code": "system.routers.cores.view", "label": "System Routers · Cores View", "description": "View router cores section."},
     {"code": "system.routers.cores.edit", "label": "System Routers · Cores Edit", "description": "Edit router cores section."},
+    {"code": "system.routers.test.run", "label": "System Routers · Test Connections", "description": "Run router/core connectivity test actions under System Settings → Routers."},
     {"code": "system.routers.isp.view", "label": "System Routers · ISPs View", "description": "View Add ISP section."},
     {"code": "system.routers.isp.edit", "label": "System Routers · ISPs Edit", "description": "Edit Add ISP section."},
     {"code": "system.targets.view", "label": "System Settings · Targets View", "description": "View shared ping targets settings."},
@@ -1453,6 +1457,15 @@ def delete_offline_history_older_than(cutoff_iso):
     try:
         with conn:
             conn.execute("DELETE FROM offline_history WHERE offline_ended_at < ?", (cutoff_iso,))
+    finally:
+        conn.close()
+
+
+def clear_offline_history():
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM offline_history")
     finally:
         conn.close()
 
@@ -3538,6 +3551,7 @@ def get_accounts_ping_window_stats_by_ip(account_ids, since_iso):
 
 
 def get_optical_latest_results_since(since_iso):
+    rows = []
     conn = get_conn()
     try:
         if _use_postgres():
@@ -3551,25 +3565,114 @@ def get_optical_latest_results_since(since_iso):
                 """,
                 (since_iso,),
             ).fetchall()
-            return [dict(row) for row in rows]
-
-        rows = conn.execute(
-            """
-            SELECT o.timestamp, o.device_id, o.pppoe, o.ip, o.rx, o.tx, o.priority
-            FROM optical_results o
-            JOIN (
-              SELECT device_id, MAX(timestamp) AS max_ts
-              FROM optical_results
-              WHERE timestamp >= ?
-              GROUP BY device_id
-            ) latest
-              ON o.device_id = latest.device_id AND o.timestamp = latest.max_ts
-            """,
-            (since_iso,),
-        ).fetchall()
-        return [dict(row) for row in rows]
+            rows = [dict(row) for row in rows]
+        else:
+            rows = conn.execute(
+                """
+                SELECT o.timestamp, o.device_id, o.pppoe, o.ip, o.rx, o.tx, o.priority
+                FROM optical_results o
+                JOIN (
+                  SELECT device_id, MAX(timestamp) AS max_ts
+                  FROM optical_results
+                  WHERE timestamp >= ?
+                  GROUP BY device_id
+                ) latest
+                  ON o.device_id = latest.device_id AND o.timestamp = latest.max_ts
+                """,
+                (since_iso,),
+            ).fetchall()
+            rows = [dict(row) for row in rows]
+        return _apply_optical_tx_fallback(rows)
     finally:
         conn.close()
+
+OPTICAL_TX_FALLBACK_LOOKBACK_DAYS = 30
+
+
+def _optical_tx_fallback_since_iso(days=OPTICAL_TX_FALLBACK_LOOKBACK_DAYS):
+    lookback_days = max(int(days or OPTICAL_TX_FALLBACK_LOOKBACK_DAYS), 1)
+    return (datetime.utcnow() - timedelta(days=lookback_days)).replace(microsecond=0).isoformat() + "Z"
+
+
+def get_latest_non_null_optical_tx_for_devices(device_ids, since_iso=None):
+    normalized_ids = [str(item).strip() for item in (device_ids or []) if str(item).strip()]
+    if not normalized_ids:
+        return {}
+    conn = get_conn()
+    try:
+        if _use_postgres():
+            params = []
+            where = []
+            if since_iso:
+                where.append("timestamp >= ?")
+                params.append(since_iso)
+            where.extend(["tx IS NOT NULL", "device_id = ANY(?)"])
+            params.append(list(normalized_ids))
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT ON (device_id)
+                    device_id, tx, timestamp
+                FROM optical_results
+                WHERE {' AND '.join(where)}
+                ORDER BY device_id, timestamp DESC
+                """,
+                tuple(params),
+            ).fetchall()
+        else:
+            placeholders = ",".join("?" for _ in normalized_ids)
+            params = []
+            where = []
+            if since_iso:
+                where.append("timestamp >= ?")
+                params.append(since_iso)
+            where.extend(["tx IS NOT NULL", f"device_id IN ({placeholders})"])
+            params.extend(normalized_ids)
+            rows = conn.execute(
+                f"""
+                SELECT o.device_id, o.tx, o.timestamp
+                FROM optical_results o
+                JOIN (
+                    SELECT device_id, MAX(timestamp) AS max_ts
+                    FROM optical_results
+                    WHERE {' AND '.join(where)}
+                    GROUP BY device_id
+                ) latest
+                ON o.device_id = latest.device_id AND o.timestamp = latest.max_ts
+                """,
+                params,
+            ).fetchall()
+        return {row["device_id"]: dict(row) for row in rows if row.get("device_id")}
+    finally:
+        conn.close()
+
+
+def _apply_optical_tx_fallback(rows, fallback_since_iso=None):
+    materialized = [dict(row) for row in (rows or []) if row]
+    if not materialized:
+        return materialized
+    device_ids = []
+    for row in materialized:
+        device_id = (row.get("device_id") or "").strip()
+        if device_id:
+            device_ids.append(device_id)
+    fallback_map = get_latest_non_null_optical_tx_for_devices(
+        device_ids,
+        since_iso=fallback_since_iso or _optical_tx_fallback_since_iso(),
+    )
+    out = []
+    for row in materialized:
+        device_id = (row.get("device_id") or "").strip()
+        fallback_used = False
+        if device_id and row.get("tx") is None:
+            fallback = fallback_map.get(device_id) or {}
+            fallback_tx = fallback.get("tx")
+            if fallback_tx is not None:
+                row["tx"] = fallback_tx
+                row["tx_fallback_at"] = fallback.get("timestamp")
+                fallback_used = True
+        row["tx_fallback_used"] = fallback_used
+        out.append(row)
+    return out
 
 
 def get_optical_samples_for_devices_since(device_ids, since_iso):
@@ -4190,6 +4293,7 @@ def get_latest_optical_by_pppoe(pppoe_list):
     pppoe_list = [str(item).strip() for item in (pppoe_list or []) if str(item).strip()]
     if not pppoe_list:
         return {}
+    rows = []
     conn = get_conn()
     try:
         if _use_postgres():
@@ -4204,24 +4308,26 @@ def get_latest_optical_by_pppoe(pppoe_list):
                 """,
                 list(pppoe_list),
             ).fetchall()
-            return {row["pppoe"]: dict(row) for row in rows if row.get("pppoe")}
-
-        placeholders = ",".join("?" for _ in pppoe_list)
-        rows = conn.execute(
-            f"""
-            SELECT o.timestamp, o.device_id, o.pppoe, o.ip, o.rx, o.tx, o.priority
-            FROM optical_results o
-            JOIN (
-                SELECT pppoe, MAX(timestamp) AS max_ts
-                FROM optical_results
-                WHERE pppoe IN ({placeholders})
-                GROUP BY pppoe
-            ) latest
-            ON o.pppoe = latest.pppoe AND o.timestamp = latest.max_ts
-            """,
-            list(pppoe_list),
-        ).fetchall()
-        return {row["pppoe"]: dict(row) for row in rows if row.get("pppoe")}
+            rows = [dict(row) for row in rows]
+        else:
+            placeholders = ",".join("?" for _ in pppoe_list)
+            rows = conn.execute(
+                f"""
+                SELECT o.timestamp, o.device_id, o.pppoe, o.ip, o.rx, o.tx, o.priority
+                FROM optical_results o
+                JOIN (
+                    SELECT pppoe, MAX(timestamp) AS max_ts
+                    FROM optical_results
+                    WHERE pppoe IN ({placeholders})
+                    GROUP BY pppoe
+                ) latest
+                ON o.pppoe = latest.pppoe AND o.timestamp = latest.max_ts
+                """,
+                list(pppoe_list),
+            ).fetchall()
+            rows = [dict(row) for row in rows]
+        rows = _apply_optical_tx_fallback(rows)
+        return {row["pppoe"]: row for row in rows if row.get("pppoe")}
     finally:
         conn.close()
 
@@ -4256,7 +4362,7 @@ def search_optical_customers(query, since_iso, limit=20):
             """,
             (since_iso, since_iso, pattern, pattern, pattern, limit),
         ).fetchall()
-        return [dict(row) for row in rows]
+        return _apply_optical_tx_fallback([dict(row) for row in rows])
     finally:
         conn.close()
 
@@ -4304,7 +4410,7 @@ def get_optical_worst_candidates(since_iso, limit=200):
             """,
             (since_iso, since_iso, limit),
         ).fetchall()
-        return [dict(row) for row in rows]
+        return _apply_optical_tx_fallback([dict(row) for row in rows])
     finally:
         conn.close()
 

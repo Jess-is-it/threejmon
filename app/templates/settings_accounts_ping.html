@@ -4,10 +4,190 @@
 {% block header_badge %}
   <span class="badge bg-green-lt text-green header-icon-badge"><i class="ti ti-wifi"></i></span>
 {% endblock %}
+{% macro accounts_ping_label(pppoe_value, max_chars=25) %}
+  {% set pppoe_text = (pppoe_value or '') %}
+  {% if pppoe_text|length > max_chars %}
+    {% set pppoe_short = pppoe_text[:max_chars] ~ '…' %}
+  {% else %}
+    {% set pppoe_short = pppoe_text %}
+  {% endif %}
+  <span class="accounts-ping-customer-label text-start" title="{{ pppoe_text }}">{{ pppoe_short }}</span>
+{% endmacro %}
 {% block content %}
+<style>
+  .accounts-ping-status-table-wrap {
+    overflow-x: hidden;
+  }
+
+  .accounts-ping-status-table {
+    width: 100%;
+    table-layout: fixed;
+  }
+
+  .accounts-ping-status-table > :not(caption) > * > * {
+    vertical-align: middle;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .accounts-ping-status-table .ap-col-customer {
+    width: 14rem;
+  }
+
+  .accounts-ping-status-table .ap-col-status {
+    width: 6.5rem;
+  }
+
+  .accounts-ping-status-table .ap-col-ip {
+    width: 8.5rem;
+  }
+
+  .accounts-ping-status-table .ap-col-loss {
+    width: 5.25rem;
+  }
+
+  .accounts-ping-status-table .ap-col-latency {
+    width: 6rem;
+  }
+
+  .accounts-ping-status-table .ap-col-fail {
+    width: 5.5rem;
+  }
+
+  .accounts-ping-status-table .ap-col-uptime {
+    width: 6rem;
+  }
+
+  .accounts-ping-status-table .ap-col-streak {
+    width: 4.5rem;
+  }
+
+  .accounts-ping-status-table .ap-col-down {
+    width: 6.25rem;
+  }
+
+  .accounts-ping-status-table .ap-col-last-check {
+    width: 8.75rem;
+  }
+
+  .accounts-ping-status-table .ap-col-trend {
+    width: 7rem;
+    text-align: center;
+  }
+
+  .accounts-ping-status-table .ap-col-reason {
+    width: 13rem;
+  }
+
+  .accounts-ping-status-table .ap-col-actions {
+    width: 5.5rem;
+    overflow: visible !important;
+    text-overflow: clip !important;
+  }
+
+  .accounts-ping-customer-label,
+  .accounts-ping-cell-truncate {
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+    white-space: nowrap;
+  }
+
+  .accounts-ping-actions {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: nowrap;
+    gap: 0.25rem;
+    max-width: 100%;
+  }
+
+  .accounts-ping-actions > * {
+    flex: 0 0 auto;
+  }
+
+  .accounts-ping-status-table .accounts-ping-spark-btn {
+    display: inline-flex;
+    max-width: 100%;
+    justify-content: center;
+  }
+
+  .accounts-ping-status-table .accounts-ping-sparkline {
+    width: 96px;
+    max-width: 100%;
+    height: 30px;
+  }
+
+  @media (max-width: 1600px) {
+    .accounts-ping-status-table .ap-priority-11,
+    .accounts-ping-status-table .ap-priority-10 {
+      display: none;
+    }
+  }
+
+  @media (max-width: 1450px) {
+    .accounts-ping-status-table .ap-priority-9,
+    .accounts-ping-status-table .ap-priority-8 {
+      display: none;
+    }
+  }
+
+  @media (max-width: 1300px) {
+    .accounts-ping-status-table .ap-priority-7,
+    .accounts-ping-status-table .ap-priority-6 {
+      display: none;
+    }
+  }
+
+  @media (max-width: 1140px) {
+    .accounts-ping-status-table .ap-priority-5,
+    .accounts-ping-status-table .ap-priority-4 {
+      display: none;
+    }
+  }
+
+  @media (max-width: 980px) {
+    .accounts-ping-status-table .ap-priority-3,
+    .accounts-ping-status-table .ap-priority-2 {
+      display: none;
+    }
+  }
+
+  @media (max-width: 768px) {
+    .accounts-ping-status-table .ap-priority-1 {
+      display: none;
+    }
+
+    .accounts-ping-status-table .ap-col-customer {
+      width: auto;
+    }
+
+    .accounts-ping-status-table .ap-col-actions {
+      width: 5.5rem;
+    }
+  }
+</style>
 {% if message %}
   <div class="alert alert-info auto-dismiss-alert">{{ message }}</div>
 {% endif %}
+{% set can_profile_review = (not auth_enabled) or has_perm("profile_review.view") %}
+
+<div id="accounts-ping-status-loading" class="d-none position-fixed top-0 start-50 translate-middle-x mt-3 px-3 w-100" style="z-index: 1080;" role="status" aria-live="polite" aria-atomic="true">
+  <div class="card shadow-sm border-primary mx-auto" style="max-width: 26rem;">
+    <div class="card-body py-2 px-3">
+      <div class="d-flex align-items-center gap-3">
+        <div class="spinner-border spinner-border-sm text-blue" role="status" aria-hidden="true"></div>
+        <div class="min-w-0">
+          <div class="fw-semibold" data-loading-label>Loading Accounts Ping results...</div>
+          <div class="text-muted small">Refreshing the Accounts Ping status tables.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 
 <div class="card">
   <div class="card-body">
@@ -92,23 +272,23 @@
 
         <div class="tab-content pt-3">
 	          <div class="tab-pane active" id="accounts-ping-issues">
-	            <div class="table-responsive">
-	              <table class="table table-vcenter rto-table">
+	            <div class="table-responsive accounts-ping-status-table-wrap">
+	              <table class="table table-vcenter rto-table accounts-ping-status-table">
 	                <thead>
 	                  <tr>
-	                    <th class="rto-sort" data-sort-key="customer" aria-sort="none">Customer <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-	                    <th class="rto-sort" data-sort-key="ip" aria-sort="none">IPv4 <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-	                    <th class="rto-sort" data-sort-key="status" aria-sort="none">Status <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-	                    <th class="rto-sort" data-sort-key="loss" aria-sort="none">Loss <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-	                    <th class="rto-sort" data-sort-key="latency" aria-sort="none">Latency <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-	                    <th class="rto-sort" data-sort-key="fail_pct" aria-sort="none">Fail % <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-	                    <th class="rto-sort" data-sort-key="uptime_pct" aria-sort="none">Uptime % <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-	                    <th class="rto-sort" data-sort-key="streak" aria-sort="none">Streak <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-	                    <th class="rto-sort" data-sort-key="down_seconds" aria-sort="none">Down For <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-	                    <th class="rto-sort" data-sort-key="last_check_at" aria-sort="none">Last Check <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-	                    <th>24H Trend</th>
-	                    <th class="rto-sort" data-sort-key="reason" aria-sort="none">Reason <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-	                    <th class="text-end">Actions</th>
+	                    <th class="rto-sort ap-col-customer ap-priority-0" data-sort-key="customer" aria-sort="none">Customer <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-sort ap-col-ip ap-priority-2" data-sort-key="ip" aria-sort="none">IPv4 <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-sort ap-col-status ap-priority-1" data-sort-key="status" aria-sort="none">Status <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-sort ap-col-loss ap-priority-6" data-sort-key="loss" aria-sort="none">Loss <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-sort ap-col-latency ap-priority-5" data-sort-key="latency" aria-sort="none">Latency <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-sort ap-col-fail ap-priority-4" data-sort-key="fail_pct" aria-sort="none">Fail % <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-sort ap-col-uptime ap-priority-9" data-sort-key="uptime_pct" aria-sort="none">Uptime % <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-sort ap-col-streak ap-priority-8" data-sort-key="streak" aria-sort="none">Streak <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-sort ap-col-down ap-priority-7" data-sort-key="down_seconds" aria-sort="none">Down For <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="rto-sort ap-col-last-check ap-priority-3" data-sort-key="last_check_at" aria-sort="none">Last Check <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="ap-col-trend ap-priority-10">24H Trend</th>
+	                    <th class="rto-sort ap-col-reason ap-priority-11" data-sort-key="reason" aria-sort="none">Reason <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+	                    <th class="text-end ap-col-actions ap-priority-0">Actions</th>
 	                  </tr>
 	                </thead>
 	                <tbody>
@@ -116,23 +296,23 @@
 			                    {% set surv_key = (row.name or '') %}
                         {% set surv_status = surveillance_index.get(surv_key) %}
 				                    <tr class="accounts-ping-row{% if surv_status == 'under' %} table-warning{% elif surv_status == 'level2' %} table-danger{% endif %}" data-search="{{ (row.name ~ ' ' ~ row.ip)|lower }}">
-	                      <td>{{ row.name }}</td>
-                      <td>{{ row.ip }}</td>
-                      <td>
+	                      <td class="ap-col-customer ap-priority-0">{{ accounts_ping_label(row.name) }}</td>
+                      <td class="ap-col-ip ap-priority-2">{{ row.ip }}</td>
+                      <td class="ap-col-status ap-priority-1">
                         {% if row.status == 'down' %}
                           <span class="badge bg-red-lt">Down</span>
                         {% else %}
                           <span class="badge bg-yellow-lt">Monitor</span>
                         {% endif %}
                       </td>
-                      <td>{{ row.loss is not none and ("%.1f"|format(row.loss) ~ "%") or "n/a" }}</td>
-                      <td>{{ row.avg_ms is not none and ("%.1f"|format(row.avg_ms) ~ "ms") or "n/a" }}</td>
-                      <td>{{ "%.1f"|format(row.rto_pct) }}</td>
-                      <td>{{ "%.1f"|format(row.uptime_pct) }}</td>
-                      <td>{{ row.streak }}</td>
-                      <td>{{ row.down_for or "—" }}</td>
-                      <td>{{ row.last_check }}</td>
-	                      <td>
+                      <td class="ap-col-loss ap-priority-6">{{ row.loss is not none and ("%.1f"|format(row.loss) ~ "%") or "n/a" }}</td>
+                      <td class="ap-col-latency ap-priority-5">{{ row.avg_ms is not none and ("%.1f"|format(row.avg_ms) ~ "ms") or "n/a" }}</td>
+                      <td class="ap-col-fail ap-priority-4">{{ "%.1f"|format(row.rto_pct) }}</td>
+                      <td class="ap-col-uptime ap-priority-9">{{ "%.1f"|format(row.uptime_pct) }}</td>
+                      <td class="ap-col-streak ap-priority-8">{{ row.streak }}</td>
+                      <td class="ap-col-down ap-priority-7">{{ row.down_for or "—" }}</td>
+                      <td class="ap-col-last-check ap-priority-3"><span class="accounts-ping-cell-truncate" title="{{ row.last_check }}">{{ row.last_check }}</span></td>
+	                      <td class="ap-col-trend ap-priority-10">
 	                        <button type="button"
 	                                class="btn btn-link p-0 accounts-ping-spark-btn"
 	                                style="line-height:0"
@@ -141,37 +321,49 @@
 	                                data-ip="{{ row.ip }}"
 	                                data-bs-toggle="modal"
 	                                data-bs-target="#accounts-ping-spark-modal">
-	                          <svg class="accounts-ping-sparkline" width="120" height="30" viewBox="0 0 140 28" preserveAspectRatio="none" aria-hidden="true">
+	                          <svg class="accounts-ping-sparkline" width="96" height="30" viewBox="0 0 140 28" preserveAspectRatio="none" aria-hidden="true">
 	                            <polyline fill="none" stroke="#206bc4" stroke-width="2" points="{{ row.spark_points_24h }}" />
 	                          </svg>
 	                        </button>
 	                      </td>
-	                      <td>
+	                      <td class="ap-col-reason ap-priority-11">
 	                        {% set reason_text = row.reasons|join('; ') %}
-	                        <div class="text-muted small text-truncate d-inline-block" style="max-width: 320px;" title="{{ reason_text }}">{{ reason_text }}</div>
+	                        <div class="text-muted small accounts-ping-cell-truncate" title="{{ reason_text }}">{{ reason_text }}</div>
 	                      </td>
-		                      <td class="text-end">
-			                        <span data-surveillance-slot>
-			                          {% if surv_status == 'under' %}
-			                            <a class="badge bg-yellow-lt text-yellow header-icon-badge" href="/surveillance?tab=under&focus={{ row.name|urlencode }}" title="Under Surveillance" aria-label="Under Surveillance">
-			                              <i class="ti ti-eye"></i>
-			                            </a>
-			                          {% elif surv_status == 'level2' %}
-			                            <a class="badge bg-red-lt text-red header-icon-badge" href="/surveillance?tab=level2&focus={{ row.name|urlencode }}" title="LEVEL II SUSPECT" aria-label="LEVEL II SUSPECT">
-			                              <i class="ti ti-eye"></i>
-			                            </a>
-			                          {% else %}
-			                            <button type="button"
-			                                    class="badge bg-blue-lt text-blue header-icon-badge border-0 surveillance-add-btn"
-		                                    title="For Surveillance"
-		                                    data-pppoe="{{ row.name }}"
-		                                    data-name="{{ row.name }}"
-		                                    data-ip="{{ row.ip }}"
-		                                    data-source="accounts_ping">
-		                              <i class="ti ti-eye"></i>
-		                            </button>
-		                          {% endif %}
-		                        </span>
+		                      <td class="text-end ap-col-actions ap-priority-0">
+			                        <div class="d-inline-flex align-items-center justify-content-end gap-1 accounts-ping-actions">
+                                {% if can_profile_review %}
+                                  <a class="badge bg-azure-lt text-azure header-icon-badge"
+                                     href="/profile-review?pppoe={{ row.name|urlencode }}{% if row.ip %}&ip={{ row.ip|urlencode }}{% endif %}"
+                                     target="_blank"
+                                     rel="noopener"
+                                     title="Profile Review"
+                                     aria-label="Profile Review">
+                                    <i class="ti ti-user"></i>
+                                  </a>
+                                {% endif %}
+			                          <span data-surveillance-slot>
+			                            {% if surv_status == 'under' %}
+			                              <a class="badge bg-yellow-lt text-yellow header-icon-badge" href="/surveillance?tab=under&focus={{ row.name|urlencode }}" title="Under Surveillance" aria-label="Under Surveillance">
+			                                <i class="ti ti-binoculars"></i>
+			                              </a>
+			                            {% elif surv_status == 'level2' %}
+			                              <a class="badge bg-red-lt text-red header-icon-badge" href="/surveillance?tab=level2&focus={{ row.name|urlencode }}" title="Needs Manual Fix" aria-label="Needs Manual Fix">
+			                                <i class="ti ti-binoculars"></i>
+			                              </a>
+			                            {% else %}
+			                              <button type="button"
+			                                      class="badge bg-blue-lt text-blue header-icon-badge border-0 surveillance-add-btn"
+		                                      title="For Surveillance"
+		                                      data-pppoe="{{ row.name }}"
+		                                      data-name="{{ row.name }}"
+		                                      data-ip="{{ row.ip }}"
+		                                      data-source="accounts_ping">
+		                                <i class="ti ti-binoculars"></i>
+		                              </button>
+		                            {% endif %}
+		                          </span>
+                              </div>
 			                      </td>
 		                    </tr>
 	                  {% else %}
@@ -204,20 +396,20 @@
 	          </div>
 
 	          <div class="tab-pane" id="accounts-ping-stable">
-	            <div class="table-responsive">
-	              <table class="table table-vcenter rto-table">
+	            <div class="table-responsive accounts-ping-status-table-wrap">
+	              <table class="table table-vcenter rto-table accounts-ping-status-table">
 	                <thead>
 		                  <tr>
-		                    <th class="rto-sort" data-sort-key="customer" aria-sort="none">Customer <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-		                    <th class="rto-sort" data-sort-key="ip" aria-sort="none">IPv4 <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-		                    <th class="rto-sort" data-sort-key="status" aria-sort="none">Status <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-		                    <th class="rto-sort" data-sort-key="loss" aria-sort="none">Loss <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-		                    <th class="rto-sort" data-sort-key="latency" aria-sort="none">Latency <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-		                    <th class="rto-sort" data-sort-key="fail_pct" aria-sort="none">Fail % <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-		                    <th class="rto-sort" data-sort-key="uptime_pct" aria-sort="none">Uptime % <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-		                    <th class="rto-sort" data-sort-key="last_check_at" aria-sort="none">Last Check <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-		                    <th>24H Trend</th>
-		                    <th class="text-end">Actions</th>
+		                    <th class="rto-sort ap-col-customer ap-priority-0" data-sort-key="customer" aria-sort="none">Customer <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+		                    <th class="rto-sort ap-col-ip ap-priority-2" data-sort-key="ip" aria-sort="none">IPv4 <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+		                    <th class="rto-sort ap-col-status ap-priority-1" data-sort-key="status" aria-sort="none">Status <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+		                    <th class="rto-sort ap-col-loss ap-priority-8" data-sort-key="loss" aria-sort="none">Loss <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+		                    <th class="rto-sort ap-col-latency ap-priority-6" data-sort-key="latency" aria-sort="none">Latency <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+		                    <th class="rto-sort ap-col-fail ap-priority-5" data-sort-key="fail_pct" aria-sort="none">Fail % <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+		                    <th class="rto-sort ap-col-uptime ap-priority-7" data-sort-key="uptime_pct" aria-sort="none">Uptime % <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+		                    <th class="rto-sort ap-col-last-check ap-priority-3" data-sort-key="last_check_at" aria-sort="none">Last Check <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+		                    <th class="ap-col-trend ap-priority-4">24H Trend</th>
+		                    <th class="text-end ap-col-actions ap-priority-0">Actions</th>
 		                  </tr>
 	                </thead>
 	                <tbody>
@@ -225,21 +417,21 @@
 			                    {% set surv_key = (row.name or '') %}
                         {% set surv_status = surveillance_index.get(surv_key) %}
 				                    <tr class="accounts-ping-row{% if surv_status == 'under' %} table-warning{% elif surv_status == 'level2' %} table-danger{% endif %}" data-search="{{ (row.name ~ ' ' ~ row.ip)|lower }}">
-	                      <td>{{ row.name }}</td>
-                      <td>{{ row.ip }}</td>
-	                      <td>
+	                      <td class="ap-col-customer ap-priority-0">{{ accounts_ping_label(row.name) }}</td>
+                      <td class="ap-col-ip ap-priority-2">{{ row.ip }}</td>
+	                      <td class="ap-col-status ap-priority-1">
 	                        {% if row.status == 'pending' %}
 	                          <span class="badge bg-secondary-lt">Pending</span>
 	                        {% else %}
 	                          <span class="badge bg-green-lt">Up</span>
 	                        {% endif %}
 	                      </td>
-                      <td>{{ row.loss is not none and ("%.1f"|format(row.loss) ~ "%") or "n/a" }}</td>
-                      <td>{{ row.avg_ms is not none and ("%.1f"|format(row.avg_ms) ~ "ms") or "n/a" }}</td>
-                      <td>{{ "%.1f"|format(row.rto_pct) }}</td>
-                      <td>{{ "%.1f"|format(row.uptime_pct) }}</td>
-                      <td>{{ row.last_check }}</td>
-			                      <td>
+                      <td class="ap-col-loss ap-priority-8">{{ row.loss is not none and ("%.1f"|format(row.loss) ~ "%") or "n/a" }}</td>
+                      <td class="ap-col-latency ap-priority-6">{{ row.avg_ms is not none and ("%.1f"|format(row.avg_ms) ~ "ms") or "n/a" }}</td>
+                      <td class="ap-col-fail ap-priority-5">{{ "%.1f"|format(row.rto_pct) }}</td>
+                      <td class="ap-col-uptime ap-priority-7">{{ "%.1f"|format(row.uptime_pct) }}</td>
+                      <td class="ap-col-last-check ap-priority-3"><span class="accounts-ping-cell-truncate" title="{{ row.last_check }}">{{ row.last_check }}</span></td>
+			                      <td class="ap-col-trend ap-priority-4">
                               {% if row.status == 'pending' %}
                                 <span class="text-muted small">n/a</span>
                               {% else %}
@@ -251,34 +443,46 @@
 		                                  data-ip="{{ row.ip }}"
 		                                  data-bs-toggle="modal"
 		                                  data-bs-target="#accounts-ping-spark-modal">
-		                            <svg class="accounts-ping-sparkline" width="120" height="30" viewBox="0 0 140 28" preserveAspectRatio="none" aria-hidden="true">
+		                            <svg class="accounts-ping-sparkline" width="96" height="30" viewBox="0 0 140 28" preserveAspectRatio="none" aria-hidden="true">
 		                              <polyline fill="none" stroke="#2fb344" stroke-width="2" points="{{ row.spark_points_24h }}" />
 		                            </svg>
 			                          </button>
                               {% endif %}
 			                      </td>
-			                      <td class="text-end">
-				                        <span data-surveillance-slot>
-				                          {% if surv_status == 'under' %}
-				                            <a class="badge bg-yellow-lt text-yellow header-icon-badge" href="/surveillance?tab=under&focus={{ row.name|urlencode }}" title="Under Surveillance" aria-label="Under Surveillance">
-				                              <i class="ti ti-eye"></i>
-				                            </a>
-				                          {% elif surv_status == 'level2' %}
-				                            <a class="badge bg-red-lt text-red header-icon-badge" href="/surveillance?tab=level2&focus={{ row.name|urlencode }}" title="LEVEL II SUSPECT" aria-label="LEVEL II SUSPECT">
-				                              <i class="ti ti-eye"></i>
-				                            </a>
-				                          {% else %}
-				                            <button type="button"
-				                                    class="badge bg-blue-lt text-blue header-icon-badge border-0 surveillance-add-btn"
-			                                    title="For Surveillance"
-			                                    data-pppoe="{{ row.name }}"
-			                                    data-name="{{ row.name }}"
-			                                    data-ip="{{ row.ip }}"
-			                                    data-source="accounts_ping">
-			                              <i class="ti ti-eye"></i>
-			                            </button>
-			                          {% endif %}
-			                        </span>
+			                      <td class="text-end ap-col-actions ap-priority-0">
+				                        <div class="d-inline-flex align-items-center justify-content-end gap-1 accounts-ping-actions">
+                                {% if can_profile_review %}
+                                  <a class="badge bg-azure-lt text-azure header-icon-badge"
+                                     href="/profile-review?pppoe={{ row.name|urlencode }}{% if row.ip %}&ip={{ row.ip|urlencode }}{% endif %}"
+                                     target="_blank"
+                                     rel="noopener"
+                                     title="Profile Review"
+                                     aria-label="Profile Review">
+                                    <i class="ti ti-user"></i>
+                                  </a>
+                                {% endif %}
+				                          <span data-surveillance-slot>
+				                            {% if surv_status == 'under' %}
+				                              <a class="badge bg-yellow-lt text-yellow header-icon-badge" href="/surveillance?tab=under&focus={{ row.name|urlencode }}" title="Under Surveillance" aria-label="Under Surveillance">
+				                                <i class="ti ti-binoculars"></i>
+				                              </a>
+				                            {% elif surv_status == 'level2' %}
+				                              <a class="badge bg-red-lt text-red header-icon-badge" href="/surveillance?tab=level2&focus={{ row.name|urlencode }}" title="Needs Manual Fix" aria-label="Needs Manual Fix">
+				                                <i class="ti ti-binoculars"></i>
+				                              </a>
+				                            {% else %}
+				                              <button type="button"
+				                                      class="badge bg-blue-lt text-blue header-icon-badge border-0 surveillance-add-btn"
+			                                      title="For Surveillance"
+			                                      data-pppoe="{{ row.name }}"
+			                                      data-name="{{ row.name }}"
+			                                      data-ip="{{ row.ip }}"
+			                                      data-source="accounts_ping">
+			                                <i class="ti ti-binoculars"></i>
+			                              </button>
+			                            {% endif %}
+			                          </span>
+                              </div>
 				                      </td>
 		                    </tr>
 	                  {% else %}
@@ -345,9 +549,6 @@
             <li class="nav-item"><a href="#accounts-ping-source" class="nav-link {% if settings_tab == 'source' %}active{% endif %}" data-bs-toggle="tab">Source</a></li>
             <li class="nav-item"><a href="#accounts-ping-classification" class="nav-link {% if settings_tab == 'classification' %}active{% endif %}" data-bs-toggle="tab">Classification</a></li>
             <li class="nav-item"><a href="#accounts-ping-storage" class="nav-link {% if settings_tab == 'storage' %}active{% endif %}" data-bs-toggle="tab">Storage</a></li>
-            {% if can_run_danger_actions %}
-              <li class="nav-item"><a href="#accounts-ping-danger" class="nav-link {% if settings_tab == 'danger' %}active{% endif %}" data-bs-toggle="tab">Danger</a></li>
-            {% endif %}
           </ul>
 
           <div class="tab-content pt-3">
@@ -549,29 +750,6 @@
                 </div>
               </div>
             </div>
-
-            {% if can_run_danger_actions %}
-              <div class="tab-pane {% if settings_tab == 'danger' %}active{% endif %}" id="accounts-ping-danger">
-                <div class="card mb-3">
-                  <div class="card-body">
-                    <h4 class="mb-2">Format Accounts Ping Database</h4>
-                    <div class="alert alert-warning">
-                      <div class="d-flex align-items-center">
-                        <span class="me-2"><i class="ti ti-alert-triangle"></i></span>
-                        <div>Formatting removes stored Accounts Ping history so the next run starts fresh.</div>
-                      </div>
-                    </div>
-                    <label class="form-check">
-                      <input class="form-check-input" type="checkbox" name="confirm_format" form="accounts-ping-format-form" />
-                      <span class="form-check-label">I understand this will erase Accounts Ping history data. <span class="info" data-tip="Required to enable the Format button.">i</span></span>
-                    </label>
-                    <div class="mt-3">
-                      <button type="submit" class="btn btn-danger" form="accounts-ping-format-form">Format Accounts Ping Database</button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            {% endif %}
           </div>
 
           <div class="d-flex justify-content-end gap-2">
@@ -581,7 +759,6 @@
             </button>
           </div>
         </form>
-        <form id="accounts-ping-format-form" method="post" action="/settings/accounts-ping/format"></form>
       </div>
     </div>
   </div>
@@ -613,6 +790,23 @@
         });
       });
 
+      const loadingBanner = document.getElementById("accounts-ping-status-loading");
+      const loadingLabel = loadingBanner ? loadingBanner.querySelector("[data-loading-label]") : null;
+      const showLoadingBanner = (message = "Loading Accounts Ping results...") => {
+        if (loadingLabel) {
+          loadingLabel.textContent = message;
+        }
+        if (loadingBanner) {
+          loadingBanner.classList.remove("d-none");
+        }
+      };
+      const navigateWithLoading = (nextUrl, message = "Loading Accounts Ping results...") => {
+        showLoadingBanner(message);
+        window.setTimeout(() => {
+          window.location.href = nextUrl.toString();
+        }, 40);
+      };
+
       const setupServerSort = (table, prefix, hash) => {
         if (!table) return;
         const headers = Array.from(table.querySelectorAll("th.rto-sort"));
@@ -643,7 +837,7 @@
           nextUrl.searchParams.set(`${prefix}_dir`, nextDir);
           nextUrl.searchParams.set(`${prefix}_page`, "1");
           nextUrl.hash = hash;
-          window.location.href = nextUrl.toString();
+          navigateWithLoading(nextUrl, "Loading Accounts Ping results...");
         });
       };
 
@@ -668,7 +862,7 @@
 	          url.searchParams.set("stable_page", "1");
 	          const tabHash = localStorage.getItem(tabKey) || window.location.hash;
 	          if (tabHash) url.hash = tabHash;
-	          window.location.href = url.toString();
+	          navigateWithLoading(url, q ? "Searching Accounts Ping results..." : "Loading Accounts Ping results...");
 	        };
 	        searchEl.addEventListener("input", () => {
 	          if (timer) clearTimeout(timer);
@@ -693,7 +887,7 @@
         defaultWindow = "24";
         localStorage.setItem("accounts_ping_status_default_window", defaultWindow);
       }
-      const currentWindow = windowParam || "24";
+      let currentWindow = windowParam || "24";
       const updateStars = () => {
         windowStars.forEach((btn) => {
           const icon = btn.querySelector("i");
@@ -719,13 +913,19 @@
       windowOptions.forEach((row) => {
         row.addEventListener("click", () => {
           const hours = row.dataset.hours || "24";
+          const label = row.dataset.label || hours;
+          currentWindow = hours;
+          if (windowBadge) {
+            windowBadge.textContent = label;
+          }
+          updateButtonLabel();
           const url = new URL(window.location.href);
           url.searchParams.set("window", hours);
           url.searchParams.set("issues_page", "1");
           url.searchParams.set("stable_page", "1");
           const tabHash = localStorage.getItem(tabKey) || window.location.hash;
           if (tabHash) url.hash = tabHash;
-          window.location.href = url.toString();
+          navigateWithLoading(url, `Loading ${label} Accounts Ping results...`);
         });
       });
       windowStars.forEach((btn) => {
@@ -748,7 +948,13 @@
           url.searchParams.set("stable_page", "1");
           const tabHash = localStorage.getItem(tabKey) || window.location.hash;
           if (tabHash) url.hash = tabHash;
-          window.location.href = url.toString();
+          navigateWithLoading(url, "Loading Accounts Ping results...");
+        });
+      });
+
+      document.querySelectorAll("#accounts-ping-status .page-link").forEach((link) => {
+        link.addEventListener("click", () => {
+          showLoadingBanner("Loading Accounts Ping results...");
         });
       });
 
@@ -774,9 +980,31 @@
 	    let modalAccountName = "Account";
 	    let modalAccountIp = "";
 	    let chart = null;
+      const modalTickAmountForHours = (hours) => {
+        const h = Number(hours);
+        if (!Number.isFinite(h) || h <= 0) return undefined;
+        if (h <= 12) return Math.max(3, h);
+        if (h <= 24) return 8;
+        if (h <= 168) return 7;
+        if (h <= 360) return 15;
+        return 30;
+      };
+      const modalAxisLabelForHours = (ts, hours) => {
+        const dt = new Date(ts);
+        if (Number.isNaN(dt.getTime())) return "";
+        const h = Number(hours || 24);
+        if (h <= 12) {
+          return dt.toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit", hour12: true });
+        }
+        if (h <= 24) {
+          return dt.toLocaleTimeString("en-PH", { hour: "2-digit", hour12: true });
+        }
+        return dt.toLocaleDateString("en-PH", { month: "short", day: "2-digit" });
+      };
 
 	    const renderChart = async (name, accountId, hours) => {
 	      if (!modalChart) return;
+        const numericHours = Number(hours || 24);
 	      modalChart.innerHTML = "<div class='text-muted'>Loading…</div>";
       if (chart) {
         try { chart.destroy(); } catch (e) {}
@@ -798,6 +1026,9 @@
         if (!points.length) throw new Error("no data");
         const latency = points.map((p) => ({ x: p.x, y: p.avg_ms }));
         const loss = points.map((p) => ({ x: p.x, y: p.loss }));
+        const nowMs = Date.now();
+        const windowStartMs = nowMs - (numericHours * 3600 * 1000);
+        const windowEndMs = nowMs;
         modalChart.innerHTML = "";
 	        chart = new window.ApexCharts(modalChart, {
 	          chart: { type: "line", height: 260, toolbar: { show: false }, zoom: { enabled: false } },
@@ -808,7 +1039,20 @@
             { name: "Loss (%)", data: loss },
           ],
 	          colors: ["#206bc4", "#d63939"],
-	          xaxis: { type: "datetime" },
+	          xaxis: {
+              type: "datetime",
+              min: windowStartMs,
+              max: windowEndMs,
+              tickAmount: modalTickAmountForHours(numericHours),
+              labels: {
+                show: true,
+                hideOverlappingLabels: numericHours > 24,
+                formatter: (value, timestamp) => {
+                  const ts = Number.isFinite(Number(timestamp)) ? Number(timestamp) : Number(value);
+                  return modalAxisLabelForHours(ts, numericHours);
+                },
+              },
+            },
 	          yaxis: [
 	            { title: { text: "ms" } },
 	            { opposite: true, min: 0, max: 100, tickAmount: 5, title: { text: "%" } },

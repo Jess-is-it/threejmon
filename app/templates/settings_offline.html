@@ -5,6 +5,139 @@
   <span class="badge bg-secondary-lt text-secondary header-icon-badge"><i class="ti ti-cloud-off"></i></span>
 {% endblock %}
 {% block content %}
+{% set can_profile_review = (not auth_enabled) or has_perm("profile_review.view") %}
+{% set offline_rules = offline_rule_tabs or settings.general.enabled_tracking_rules or [] %}
+<style>
+  .offline-status-table-wrap {
+    overflow-x: hidden;
+  }
+
+  .offline-status-table {
+    width: 100%;
+    table-layout: fixed;
+  }
+
+  .offline-status-table > :not(caption) > * > * {
+    vertical-align: middle;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .offline-status-table .off-col-pppoe {
+    width: 15rem;
+    text-align: left;
+  }
+
+  .offline-status-table .off-col-router {
+    width: 10rem;
+  }
+
+  .offline-status-table .off-col-status {
+    width: 6.5rem;
+  }
+
+  .offline-status-table .off-col-disabled {
+    width: 5.5rem;
+  }
+
+  .offline-status-table .off-col-profile {
+    width: 9rem;
+  }
+
+  .offline-status-table .off-col-last-logout,
+  .offline-status-table .off-col-offline-since,
+  .offline-status-table .off-col-back-online {
+    width: 8.75rem;
+  }
+
+  .offline-status-table .off-col-mode {
+    width: 6rem;
+  }
+
+  .offline-status-table .off-col-duration {
+    width: 6.25rem;
+  }
+
+  .offline-status-table .off-col-actions {
+    width: 5rem;
+  }
+
+  .offline-status-label,
+  .offline-status-cell-truncate {
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+    white-space: nowrap;
+  }
+
+  .offline-status-table .off-col-actions {
+    overflow: visible !important;
+    text-overflow: clip !important;
+  }
+
+  .offline-status-table .off-actions {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: nowrap;
+    gap: 0.25rem;
+    max-width: 100%;
+  }
+
+  .offline-tracking-rules-table td,
+  .offline-tracking-rules-table th {
+    vertical-align: middle;
+  }
+
+  .offline-rule-order {
+    min-width: 2.5rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .offline-rule-preview {
+    min-width: 7rem;
+    justify-content: center;
+  }
+
+  @media (max-width: 1600px) {
+    .offline-status-table .off-priority-6,
+    .offline-status-table .off-priority-5 {
+      display: none;
+    }
+  }
+
+  @media (max-width: 1300px) {
+    .offline-status-table .off-priority-4,
+    .offline-status-table .off-priority-3 {
+      display: none;
+    }
+  }
+
+  @media (max-width: 980px) {
+    .offline-status-table .off-priority-2 {
+      display: none;
+    }
+  }
+
+  @media (max-width: 768px) {
+    .offline-status-table .off-priority-1 {
+      display: none;
+    }
+
+    .offline-status-table .off-col-pppoe {
+      width: auto;
+    }
+
+    .offline-status-table .off-col-actions {
+      width: 4.75rem;
+    }
+  }
+</style>
 
 <div class="card">
   <div class="card-body">
@@ -26,7 +159,7 @@
               Last poll: <span id="offline-last-check">{{ offline_state.last_check or 'n/a' }}</span> ·
               Mode: <span id="offline-mode">{{ settings.mode }}</span>
             </div>
-            <div class="text-muted small">Minimum offline duration: <span id="offline-min">{{ settings.general.min_offline_value }} {{ settings.general.min_offline_unit }}(s)</span></div>
+            <div class="text-muted small">Tracking rules: <span id="offline-min">{{ settings.general.tracking_rules_summary or 'n/a' }}</span></div>
             <div class="text-muted small">
               Job last run: {{ offline_job.last_run_at_ph or 'n/a' }} · Last success: {{ offline_job.last_success_at_ph or 'n/a' }}
             </div>
@@ -64,12 +197,17 @@
           </div>
         </div>
 
-        <ul class="nav nav-tabs" data-bs-toggle="tabs">
+        <ul class="nav nav-tabs" id="offline-status-tabs">
+          {% for rule in offline_rules %}
           <li class="nav-item">
-            <a href="#offline-current" class="nav-link active" data-bs-toggle="tab">Offline</a>
+            <a href="#" class="nav-link {% if loop.first %}active{% endif %}" data-offline-view="rule" data-offline-rule="{{ rule.id }}">
+              <span>{{ rule.tab_label }}</span>
+              <span class="badge bg-secondary-lt text-secondary ms-2" data-offline-tab-count>{{ rule.count if rule.count is defined else 0 }}</span>
+            </a>
           </li>
+          {% endfor %}
           <li class="nav-item">
-            <a href="#offline-history" class="nav-link" data-bs-toggle="tab">History</a>
+            <a href="#" class="nav-link {% if not offline_rules %}active{% endif %}" data-offline-view="history">History</a>
           </li>
           <li class="nav-item ms-auto">
             <div class="px-2 py-2">
@@ -83,24 +221,25 @@
           </li>
         </ul>
 
-        <div class="tab-content pt-3">
-          <div class="tab-pane active" id="offline-current">
+        <div class="pt-3">
+          <div id="offline-current-pane" {% if not offline_rules %}class="d-none"{% endif %}>
             <div class="rto-table-shell">
-              <div class="rto-table-wrap" id="offline-current-table">
-                <table class="table table-vcenter rto-table">
+              <div class="rto-table-wrap offline-status-table-wrap" id="offline-current-table">
+                <table class="table table-vcenter rto-table offline-status-table">
                   <thead>
                     <tr>
-                      <th class="rto-sort" data-table="current" data-sort-key="pppoe" aria-sort="none">PPPoE <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                      <th class="rto-sort" data-table="current" data-sort-key="router_name" aria-sort="none">Router <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                      <th class="rto-sort" data-table="current" data-sort-key="radius_status" aria-sort="none">Status <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                      <th class="rto-sort" data-table="current" data-sort-key="disabled" aria-sort="none">Disabled <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                      <th class="rto-sort" data-table="current" data-sort-key="profile" aria-sort="none">Profile <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                      <th class="rto-sort" data-table="current" data-sort-key="last_logged_out" aria-sort="none">Last Logged Out <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                      <th class="rto-sort" data-table="current" data-sort-key="offline_since" aria-sort="none">Offline Since <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort off-col-pppoe off-priority-0" data-table="current" data-sort-key="pppoe" aria-sort="none">PPPoE <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort off-col-router off-priority-2" data-table="current" data-sort-key="router_name" aria-sort="none">Router <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort off-col-status off-priority-1" data-table="current" data-sort-key="radius_status" aria-sort="none">Status <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort off-col-disabled off-priority-6" data-table="current" data-sort-key="disabled" aria-sort="none">Disabled <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort off-col-profile off-priority-5" data-table="current" data-sort-key="profile" aria-sort="none">Profile <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort off-col-last-logout off-priority-4" data-table="current" data-sort-key="last_logged_out" aria-sort="none">Last Logged Out <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort off-col-offline-since off-priority-3" data-table="current" data-sort-key="offline_since" aria-sort="none">Offline Since <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="text-end off-col-actions off-priority-0">Actions</th>
                     </tr>
                   </thead>
                   <tbody id="offline-current-body">
-                    <tr><td colspan="7" class="text-muted">Loading…</td></tr>
+                    <tr><td colspan="8" class="text-muted">Loading…</td></tr>
                   </tbody>
                 </table>
               </div>
@@ -108,27 +247,28 @@
             </div>
           </div>
 
-          <div class="tab-pane" id="offline-history">
+          <div id="offline-history-pane" {% if offline_rules %}class="d-none"{% endif %}>
             <div class="rto-table-shell">
-              <div class="rto-table-wrap" id="offline-history-table">
-                <table class="table table-vcenter rto-table">
+              <div class="rto-table-wrap offline-status-table-wrap" id="offline-history-table">
+                <table class="table table-vcenter rto-table offline-status-table">
                   <thead>
                     <tr>
-                      <th class="rto-sort" data-table="history" data-sort-key="pppoe" aria-sort="none">PPPoE <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                      <th class="rto-sort" data-table="history" data-sort-key="router_name" aria-sort="none">Router <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                      <th class="rto-sort" data-table="history" data-sort-key="mode" aria-sort="none">Mode <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                      <th class="rto-sort" data-table="history" data-sort-key="offline_started_at" aria-sort="none">Offline Since <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                      <th class="rto-sort" data-table="history" data-sort-key="offline_ended_at" aria-sort="none">Back Online <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                      <th class="rto-sort" data-table="history" data-sort-key="duration_seconds" aria-sort="none">Duration <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort off-col-pppoe off-priority-0" data-table="history" data-sort-key="pppoe" aria-sort="none">PPPoE <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort off-col-router off-priority-2" data-table="history" data-sort-key="router_name" aria-sort="none">Router <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort off-col-mode off-priority-5" data-table="history" data-sort-key="mode" aria-sort="none">Mode <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort off-col-offline-since off-priority-4" data-table="history" data-sort-key="offline_started_at" aria-sort="none">Offline Since <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort off-col-back-online off-priority-3" data-table="history" data-sort-key="offline_ended_at" aria-sort="none">Back Online <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort off-col-duration off-priority-1" data-table="history" data-sort-key="duration_seconds" aria-sort="none">Duration <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="text-end off-col-actions off-priority-0">Actions</th>
                     </tr>
                   </thead>
                   <tbody id="offline-history-body">
-                    <tr><td colspan="6" class="text-muted">Loading…</td></tr>
+                    <tr><td colspan="7" class="text-muted">Loading…</td></tr>
                   </tbody>
                 </table>
               </div>
               <div class="rto-resize-handle" data-target="offline-history-table"></div>
-              <div class="text-muted small mt-2">History shows accounts that were offline (past threshold) and later became active again.</div>
+              <div class="text-muted small mt-2">History shows accounts that stayed offline past the earliest enabled tracking rule and later became active again.</div>
             </div>
           </div>
         </div>
@@ -178,17 +318,6 @@
                       <div class="text-muted small mt-1">How often to refresh the offline accounts list.</div>
                     </div>
                     <div class="col-md-4">
-                      <label class="form-label">Minimum Offline Duration</label>
-                      <div class="input-group">
-                        <input class="form-control" type="number" name="min_offline_value" value="{{ settings.general.min_offline_value }}" min="0" />
-                        <select class="form-select" name="min_offline_unit">
-                          <option value="hour" {% if settings.general.min_offline_unit == 'hour' %}selected{% endif %}>Hour(s)</option>
-                          <option value="day" {% if settings.general.min_offline_unit != 'hour' %}selected{% endif %}>Day(s)</option>
-                        </select>
-                      </div>
-                      <div class="text-muted small mt-1">Accounts will appear in the Offline table only after being continuously offline for at least this long.</div>
-                    </div>
-                    <div class="col-md-4">
                       <label class="form-label">History Retention (days)</label>
                       <input class="form-control" type="number" name="history_retention_days" value="{{ settings.general.history_retention_days }}" min="1" />
                       <div class="text-muted small mt-1">How long to keep Offline History entries.</div>
@@ -201,6 +330,73 @@
                       </select>
                       <div class="text-muted small mt-1">Mode 2 requires Radius settings (SSH) to be configured.</div>
                     </div>
+                    <div class="col-12">
+                      <div class="border rounded p-3">
+                        <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+                          <div>
+                            <label class="form-label mb-1">Offline Tracking Rules</label>
+                            <div class="text-muted small">Each enabled rule creates its own Offline Status tab. Reorder the rows to choose which tab appears first, second, third, and so on.</div>
+                          </div>
+                          <button type="button" class="btn btn-outline-secondary btn-sm" id="offline-add-rule">
+                            <i class="ti ti-plus"></i>
+                            Add Rule
+                          </button>
+                        </div>
+                        <input type="hidden" name="tracking_rule_count" id="offline-tracking-rule-count" value="{{ (settings.general.tracking_rules or [])|length }}" />
+                        <div class="table-responsive">
+                          <table class="table table-vcenter offline-tracking-rules-table mb-0">
+                            <thead>
+                              <tr>
+                                <th style="width: 10rem;">Order</th>
+                                <th style="width: 14rem;">Duration</th>
+                                <th style="width: 10rem;">Tab Preview</th>
+                                <th style="width: 7rem;">Enabled</th>
+                                <th class="text-end" style="width: 6rem;">Remove</th>
+                              </tr>
+                            </thead>
+                            <tbody id="offline-tracking-rules-body">
+                              {% for rule in settings.general.tracking_rules or [] %}
+                              <tr class="offline-tracking-rule-row">
+                                <td>
+                                  <input type="hidden" data-rule-field="id" value="{{ rule.id }}" />
+                                  <input type="hidden" data-rule-field="position" value="{{ rule.position }}" class="offline-rule-position" />
+                                  <div class="d-flex align-items-center gap-2">
+                                    <span class="badge bg-secondary-lt offline-rule-order">{{ rule.position }}</span>
+                                    <div class="btn-group btn-group-sm">
+                                      <button type="button" class="btn btn-outline-secondary offline-rule-move-up" title="Move up"><i class="ti ti-arrow-up"></i></button>
+                                      <button type="button" class="btn btn-outline-secondary offline-rule-move-down" title="Move down"><i class="ti ti-arrow-down"></i></button>
+                                    </div>
+                                  </div>
+                                </td>
+                                <td>
+                                  <div class="input-group input-group-sm">
+                                    <input class="form-control offline-rule-value" type="number" min="0" data-rule-field="value" value="{{ rule.value }}" />
+                                    <select class="form-select offline-rule-unit" data-rule-field="unit">
+                                      <option value="hour" {% if rule.unit == 'hour' %}selected{% endif %}>Hour(s)</option>
+                                      <option value="day" {% if rule.unit != 'hour' %}selected{% endif %}>Day(s)</option>
+                                    </select>
+                                  </div>
+                                </td>
+                                <td>
+                                  <span class="badge bg-secondary-lt offline-rule-preview">{{ rule.tab_label }}</span>
+                                </td>
+                                <td>
+                                  <label class="form-check m-0">
+                                    <input class="form-check-input offline-rule-enabled" type="checkbox" data-rule-field="enabled" {% if rule.enabled %}checked{% endif %} />
+                                  </label>
+                                </td>
+                                <td class="text-end">
+                                  <button type="button" class="btn btn-outline-danger btn-sm offline-rule-remove" title="Remove rule">
+                                    <i class="ti ti-trash"></i>
+                                  </button>
+                                </td>
+                              </tr>
+                              {% endfor %}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -209,62 +405,129 @@
                 <a class="btn btn-outline-secondary" href="/settings/offline">Back to Status</a>
               </div>
             </form>
+            <template id="offline-tracking-rule-template">
+              <tr class="offline-tracking-rule-row">
+                <td>
+                  <input type="hidden" data-rule-field="id" value="" />
+                  <input type="hidden" data-rule-field="position" value="0" class="offline-rule-position" />
+                  <div class="d-flex align-items-center gap-2">
+                    <span class="badge bg-secondary-lt offline-rule-order">0</span>
+                    <div class="btn-group btn-group-sm">
+                      <button type="button" class="btn btn-outline-secondary offline-rule-move-up" title="Move up"><i class="ti ti-arrow-up"></i></button>
+                      <button type="button" class="btn btn-outline-secondary offline-rule-move-down" title="Move down"><i class="ti ti-arrow-down"></i></button>
+                    </div>
+                  </div>
+                </td>
+                <td>
+                  <div class="input-group input-group-sm">
+                    <input class="form-control offline-rule-value" type="number" min="0" data-rule-field="value" value="1" />
+                    <select class="form-select offline-rule-unit" data-rule-field="unit">
+                      <option value="hour" selected>Hour(s)</option>
+                      <option value="day">Day(s)</option>
+                    </select>
+                  </div>
+                </td>
+                <td>
+                  <span class="badge bg-secondary-lt offline-rule-preview">Offline 1H</span>
+                </td>
+                <td>
+                  <label class="form-check m-0">
+                    <input class="form-check-input offline-rule-enabled" type="checkbox" data-rule-field="enabled" checked />
+                  </label>
+                </td>
+                <td class="text-end">
+                  <button type="button" class="btn btn-outline-danger btn-sm offline-rule-remove" title="Remove rule">
+                    <i class="ti ti-trash"></i>
+                  </button>
+                </td>
+              </tr>
+            </template>
           </div>
 
           <div class="tab-pane {% if settings_tab == 'routers' %}active{% endif %}" id="offline-routers">
-            <div class="alert alert-warning">
-              <div class="d-flex align-items-start gap-2">
-                <i class="ti ti-alert-triangle mt-1"></i>
-                <div>
-                  <div class="fw-semibold">Routers are managed in System Settings</div>
-                  <div class="small text-muted">This page reads the shared router list. To add/edit routers, use System Settings → Routers → Mikrotik Routers.</div>
-                  <a class="btn btn-sm btn-outline-danger mt-2" href="/settings/system?tab=routers&routers_tab=mikrotik-routers#sys-routers-mikrotik">
-                    Open Mikrotik Routers
-                  </a>
+            <form method="post" action="/settings/offline">
+              <input type="hidden" name="active_tab" value="settings" />
+              <input type="hidden" name="settings_tab" value="routers" />
+              <div class="card">
+                <div class="card-body">
+                  <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+                    <div>
+                      <h4 class="mb-0">Routers (from System Settings)</h4>
+                      <div class="text-muted small mt-1">View-only list. Toggle which routers are polled by the Offline collector.</div>
+                    </div>
+                    <a class="btn btn-outline-primary" href="/settings/system?tab=routers&routers_tab=mikrotik-routers#sys-routers-mikrotik">Manage Routers</a>
+                  </div>
+                  {% set routers = (wan_settings.pppoe_routers or []) %}
+                  <input type="hidden" name="router_count" value="{{ routers|length }}" />
+                  {% if routers and routers|length %}
+                    <div class="table-responsive">
+                      <table class="table table-vcenter">
+                        <thead>
+                          <tr>
+                            <th>Router</th>
+                            <th>Host</th>
+                            <th>Port</th>
+                            <th>User</th>
+                            <th>TLS</th>
+                            <th title="When enabled, this router is included in Offline polling.">Offline Enabled</th>
+                            <th>Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {% for r in routers %}
+                            {% set rid = (r.id or '') %}
+                            {% set enabled_map = settings.mikrotik.router_enabled if settings.mikrotik.router_enabled is defined else {} %}
+                            {% set offline_enabled = enabled_map.get(rid, True) %}
+                            {% set st = offline_router_state.get(rid, {}) if offline_router_state is defined else {} %}
+                            <tr>
+                              <td class="fw-semibold">
+                                {{ r.name or r.id }}
+                                <input type="hidden" name="router_{{ loop.index0 }}_id" value="{{ r.id }}" />
+                              </td>
+                              <td class="text-muted">{{ r.host }}</td>
+                              <td class="text-muted">{{ r.port or 8728 }}</td>
+                              <td class="text-muted">{{ r.username }}</td>
+                              <td>
+                                {% if r.use_tls %}
+                                  <span class="badge bg-yellow-lt">Yes</span>
+                                {% else %}
+                                  <span class="badge bg-secondary-lt">No</span>
+                                {% endif %}
+                              </td>
+                              <td>
+                                <label class="form-check form-switch m-0">
+                                  <input class="form-check-input" type="checkbox" name="router_{{ loop.index0 }}_enabled" {% if offline_enabled %}checked{% endif %} />
+                                </label>
+                              </td>
+                              <td>
+                                {% if not offline_enabled %}
+                                  <span class="badge bg-secondary-lt">Disabled</span>
+                                {% elif not st %}
+                                  <span class="badge bg-yellow-lt">Pending</span>
+                                {% elif st.error %}
+                                  <span class="badge bg-red-lt">Error</span>
+                                  <span class="text-muted small">{{ st.error }}</span>
+                                {% elif st.connected %}
+                                  <span class="badge bg-green-lt">OK</span>
+                                  <span class="text-muted small">Active: {{ st.active_count or 0 }}</span>
+                                {% else %}
+                                  <span class="badge bg-yellow-lt">Pending</span>
+                                {% endif %}
+                              </td>
+                            </tr>
+                          {% endfor %}
+                        </tbody>
+                      </table>
+                    </div>
+                  {% else %}
+                    <div class="text-muted">No routers configured yet. Add them in System Settings → Routers → Mikrotik Routers.</div>
+                  {% endif %}
+                </div>
+                <div class="card-footer d-flex justify-content-end">
+                  <button type="submit" class="btn btn-primary">Save Router Selection</button>
                 </div>
               </div>
-            </div>
-
-            <div class="card">
-              <div class="card-body">
-                <h4 class="mb-3">Routers</h4>
-                {% set routers = (wan_settings.pppoe_routers or []) %}
-                {% if routers and routers|length %}
-                  <div class="table-responsive">
-                    <table class="table table-vcenter">
-                      <thead>
-                        <tr>
-                          <th>Name</th>
-                          <th>Host</th>
-                          <th>Port</th>
-                          <th>User</th>
-                          <th>TLS</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {% for r in routers %}
-                          <tr>
-                            <td class="fw-semibold">{{ r.name or r.id }}</td>
-                            <td class="text-muted">{{ r.host }}</td>
-                            <td class="text-muted">{{ r.port or 8728 }}</td>
-                            <td class="text-muted">{{ r.username }}</td>
-                            <td>
-                              {% if r.use_tls %}
-                                <span class="badge bg-yellow-lt">Yes</span>
-                              {% else %}
-                                <span class="badge bg-secondary-lt">No</span>
-                              {% endif %}
-                            </td>
-                          </tr>
-                        {% endfor %}
-                      </tbody>
-                    </table>
-                  </div>
-                {% else %}
-                  <div class="text-muted">No routers configured yet. Add routers in System Settings → Routers → Mikrotik Routers.</div>
-                {% endif %}
-              </div>
-            </div>
+            </form>
           </div>
 
           <div class="tab-pane {% if settings_tab == 'radius' %}active{% endif %}" id="offline-radius">
@@ -334,10 +597,11 @@
                           <th class="rto-sort" data-table="radius_accounts" data-sort-key="online_since" aria-sort="none">Online Since <span class="rto-sort-indicator" aria-hidden="true"></span></th>
                           <th class="rto-sort" data-table="radius_accounts" data-sort-key="last_start" aria-sort="none">Last Start <span class="rto-sort-indicator" aria-hidden="true"></span></th>
                           <th class="rto-sort" data-table="radius_accounts" data-sort-key="last_stop" aria-sort="none">Last Stop <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                          <th class="text-end">Actions</th>
                         </tr>
                       </thead>
                       <tbody id="offline-radius-accounts-body">
-                        <tr><td colspan="10" class="text-muted">Click the Accounts tab to load data.</td></tr>
+                        <tr><td colspan="11" class="text-muted">Click the Accounts tab to load data.</td></tr>
                       </tbody>
                     </table>
                   </div>
@@ -430,14 +694,19 @@
   document.addEventListener("DOMContentLoaded", () => {
     const escMap = { "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" };
     const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => escMap[c] || c);
+    const canProfileReview = {% if can_profile_review %}true{% else %}false{% endif %};
+    const initialOfflineRules = {{ offline_rules|default([])|tojson }};
 
     const currentBody = document.getElementById("offline-current-body");
     const historyBody = document.getElementById("offline-history-body");
+    const currentPane = document.getElementById("offline-current-pane");
+    const historyPane = document.getElementById("offline-history-pane");
     const countEl = document.getElementById("offline-count");
     const historyCountEl = document.getElementById("offline-history-count");
     const lastCheckEl = document.getElementById("offline-last-check");
     const modeEl = document.getElementById("offline-mode");
     const minEl = document.getElementById("offline-min");
+    const statusTabs = document.getElementById("offline-status-tabs");
 
     const searchInput = document.getElementById("offline-status-search");
     const limitButton = document.getElementById("offline-limit-button");
@@ -453,16 +722,22 @@
     const radiusAccountsClearBtn = document.getElementById("offline-radius-accounts-clear");
     const radiusAccountsLimitButton = document.getElementById("offline-radius-accounts-limit-button");
     const radiusAccountsLimitRows = document.querySelectorAll(".offline-radius-accounts-limit-row");
+    const trackingRulesBody = document.getElementById("offline-tracking-rules-body");
+    const trackingRuleCountInput = document.getElementById("offline-tracking-rule-count");
+    const addTrackingRuleBtn = document.getElementById("offline-add-rule");
+    const trackingRuleTemplate = document.getElementById("offline-tracking-rule-template");
 
     const sortStateKey = "offline_sort_state_v1";
     const searchStateKey = "offline_status_search_v1";
     const limitStateKey = "offline_status_limit_v1";
     const routerFilterKey = "offline_status_router_filters_v1";
+    const activeStatusViewKey = "offline_status_active_view_v1";
 
     const numericKeys = new Set(["duration_seconds", "uptime_sec"]);
     const booleanKeys = new Set(["disabled", "online"]);
 
-    let currentData = [];
+    let currentRules = Array.isArray(initialOfflineRules) ? initialOfflineRules : [];
+    let currentRowsByRule = {};
     let historyData = [];
     let radiusAccountsData = [];
     let searchQuery = "";
@@ -473,6 +748,7 @@
     let radiusAccountsShowLimit = 500;
     let radiusAccountsLastFetchAt = 0;
     let radiusAccountsFetching = false;
+    let activeStatusView = { type: currentRules.length ? "rule" : "history", ruleId: currentRules.length ? String(currentRules[0].id || "") : "" };
 
     const radiusAccountsSearchKey = "offline_radius_accounts_search_v1";
     const radiusAccountsStatusKey = "offline_radius_accounts_status_v1";
@@ -491,6 +767,69 @@
 
     function saveJson(key, value) {
       try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+    }
+
+    function ruleCompactLabel(value, unit) {
+      const safeValue = Math.max(Number(value || 0), 0);
+      return `${safeValue}${String(unit || "").trim().toLowerCase() === "hour" ? "H" : "D"}`;
+    }
+
+    function ruleTabLabel(value, unit) {
+      return `Offline ${ruleCompactLabel(value, unit)}`;
+    }
+
+    function getActiveRule() {
+      return currentRules.find((rule) => String(rule?.id || "") === String(activeStatusView.ruleId || "")) || currentRules[0] || null;
+    }
+
+    function getCurrentRows() {
+      const activeRule = getActiveRule();
+      if (!activeRule) return [];
+      const rows = currentRowsByRule?.[activeRule.id];
+      return Array.isArray(rows) ? rows : [];
+    }
+
+    function flattenCurrentRows() {
+      return Object.values(currentRowsByRule || {}).flatMap((rows) => Array.isArray(rows) ? rows : []);
+    }
+
+    function updateStatusTabState() {
+      if (currentPane) currentPane.classList.toggle("d-none", activeStatusView.type !== "rule");
+      if (historyPane) historyPane.classList.toggle("d-none", activeStatusView.type !== "history");
+      if (statusTabs) {
+        statusTabs.querySelectorAll("[data-offline-view]").forEach((link) => {
+          const viewType = String(link.getAttribute("data-offline-view") || "").trim();
+          const ruleId = String(link.getAttribute("data-offline-rule") || "").trim();
+          const isActive = viewType === activeStatusView.type && (viewType !== "rule" || ruleId === String(activeStatusView.ruleId || ""));
+          link.classList.toggle("active", isActive);
+        });
+      }
+      try { localStorage.setItem(activeStatusViewKey, JSON.stringify(activeStatusView)); } catch {}
+    }
+
+    function updateStatusTabBadges() {
+      if (!statusTabs) return;
+      statusTabs.querySelectorAll('[data-offline-view="rule"]').forEach((link) => {
+        const ruleId = String(link.getAttribute("data-offline-rule") || "").trim();
+        const badge = link.querySelector("[data-offline-tab-count]");
+        if (!badge) return;
+        const rule = currentRules.find((item) => String(item?.id || "") === ruleId);
+        badge.textContent = String(rule?.count ?? 0);
+      });
+    }
+
+    function ensureActiveStatusView() {
+      if (activeStatusView.type === "rule") {
+        const activeRule = getActiveRule();
+        if (activeRule) {
+          activeStatusView.ruleId = String(activeRule.id || "");
+        } else {
+          activeStatusView = { type: "history", ruleId: "" };
+        }
+      } else if (activeStatusView.type !== "history") {
+        activeStatusView = { type: currentRules.length ? "rule" : "history", ruleId: currentRules.length ? String(currentRules[0].id || "") : "" };
+      }
+      updateStatusTabState();
     }
 
     function loadSortState() {
@@ -589,6 +928,24 @@
       return String(row?.router_name || row?.router_id || "").trim();
     }
 
+    function buildProfileReviewHref(item) {
+      const params = new URLSearchParams();
+      const pppoe = String(item?.pppoe || item?.username || "").trim();
+      const ip = String(item?.ip || item?.address || "").trim();
+      const deviceId = String(item?.device_id || "").trim();
+      if (pppoe) params.set("pppoe", pppoe);
+      if (ip && ip !== "—") params.set("ip", ip);
+      if (deviceId) params.set("device_id", deviceId);
+      const query = params.toString();
+      return query ? `/profile-review?${query}` : "/profile-review";
+    }
+
+    function renderProfileReviewAction(item) {
+      if (!canProfileReview) return "";
+      const href = buildProfileReviewHref(item);
+      return `<a class="badge bg-azure-lt text-azure header-icon-badge" href="${esc(href)}" target="_blank" rel="noopener" title="Profile Review" aria-label="Profile Review"><i class="ti ti-user"></i></a>`;
+    }
+
     function rowMatchesRouters(row) {
       if (!selectedRouters.length) return true;
       const r = getRowRouterName(row);
@@ -625,7 +982,7 @@
 
     function renderRouterFilterMenu() {
       if (!filterRouters) return;
-      const routers = uniqueRouters([...currentData, ...historyData]);
+      const routers = uniqueRouters([...flattenCurrentRows(), ...historyData]);
       if (!routers.length) {
         filterRouters.innerHTML = '<div class="text-muted small">No routers yet.</div>';
         return;
@@ -648,15 +1005,17 @@
       const status = String(row.radius_status || "").trim();
       const statusCell = status ? `<span class="badge bg-secondary-lt">${esc(status)}</span>` : '<span class="text-muted small">—</span>';
       const since = row.offline_since ? esc(row.offline_since) : "—";
+      const profileAction = renderProfileReviewAction({ pppoe: row.pppoe });
       return `
         <tr>
-          <td class="fw-semibold">${esc(row.pppoe || "")}</td>
-          <td class="text-muted">${esc(row.router_name || row.router_id || "")}</td>
-          <td>${statusCell}</td>
-          <td>${row.disabled === undefined ? '<span class="text-muted small">—</span>' : disabled}</td>
-          <td class="text-muted">${esc(row.profile || "—")}</td>
-          <td class="text-muted">${esc(row.last_logged_out || "—")}</td>
-          <td class="text-muted">${since}</td>
+          <td class="fw-semibold off-col-pppoe off-priority-0"><span class="offline-status-label" title="${esc(row.pppoe || "")}">${esc(row.pppoe || "")}</span></td>
+          <td class="text-muted off-col-router off-priority-2"><span class="offline-status-cell-truncate" title="${esc(row.router_name || row.router_id || "")}">${esc(row.router_name || row.router_id || "")}</span></td>
+          <td class="off-col-status off-priority-1">${statusCell}</td>
+          <td class="off-col-disabled off-priority-6">${row.disabled === undefined ? '<span class="text-muted small">—</span>' : disabled}</td>
+          <td class="text-muted off-col-profile off-priority-5"><span class="offline-status-cell-truncate" title="${esc(row.profile || "—")}">${esc(row.profile || "—")}</span></td>
+          <td class="text-muted off-col-last-logout off-priority-4"><span class="offline-status-cell-truncate" title="${esc(row.last_logged_out || "—")}">${esc(row.last_logged_out || "—")}</span></td>
+          <td class="text-muted off-col-offline-since off-priority-3"><span class="offline-status-cell-truncate" title="${since}">${since}</span></td>
+          <td class="text-end off-col-actions off-priority-0"><span class="off-actions">${profileAction}</span></td>
         </tr>
       `;
     }
@@ -664,27 +1023,41 @@
     function renderHistoryRow(row) {
       const mode = String(row.mode || "").trim() || "—";
       const duration = String(row.duration || "").trim() || "—";
+      const profileAction = renderProfileReviewAction({ pppoe: row.pppoe });
       return `
         <tr>
-          <td class="fw-semibold">${esc(row.pppoe || "")}</td>
-          <td class="text-muted">${esc(row.router_name || row.router_id || "")}</td>
-          <td><span class="badge bg-secondary-lt">${esc(mode)}</span></td>
-          <td class="text-muted">${esc(row.offline_started || "—")}</td>
-          <td class="text-muted">${esc(row.offline_ended || "—")}</td>
-          <td class="text-muted">${esc(duration)}</td>
+          <td class="fw-semibold off-col-pppoe off-priority-0"><span class="offline-status-label" title="${esc(row.pppoe || "")}">${esc(row.pppoe || "")}</span></td>
+          <td class="text-muted off-col-router off-priority-2"><span class="offline-status-cell-truncate" title="${esc(row.router_name || row.router_id || "")}">${esc(row.router_name || row.router_id || "")}</span></td>
+          <td class="off-col-mode off-priority-5"><span class="badge bg-secondary-lt">${esc(mode)}</span></td>
+          <td class="text-muted off-col-offline-since off-priority-4"><span class="offline-status-cell-truncate" title="${esc(row.offline_started || "—")}">${esc(row.offline_started || "—")}</span></td>
+          <td class="text-muted off-col-back-online off-priority-3"><span class="offline-status-cell-truncate" title="${esc(row.offline_ended || "—")}">${esc(row.offline_ended || "—")}</span></td>
+          <td class="text-muted off-col-duration off-priority-1"><span class="offline-status-cell-truncate" title="${esc(duration)}">${esc(duration)}</span></td>
+          <td class="text-end off-col-actions off-priority-0"><span class="off-actions">${profileAction}</span></td>
         </tr>
       `;
     }
 
     function renderAllTables() {
+      const currentRows = getCurrentRows();
+      const activeRule = getActiveRule();
       if (currentBody) {
-        const filtered = applyLimit(sortRows(filterRows(currentData), "current"));
-        currentBody.innerHTML = filtered.length ? filtered.map(renderCurrentRow).join("") : '<tr><td colspan="7" class="text-muted">No offline accounts found.</td></tr>';
+        const filtered = applyLimit(sortRows(filterRows(currentRows), "current"));
+        currentBody.innerHTML = filtered.length ? filtered.map(renderCurrentRow).join("") : '<tr><td colspan="8" class="text-muted">No offline accounts found.</td></tr>';
       }
       if (historyBody) {
         const filtered = applyLimit(sortRows(filterRows(historyData), "history"));
-        historyBody.innerHTML = filtered.length ? filtered.map(renderHistoryRow).join("") : '<tr><td colspan="6" class="text-muted">No history yet.</td></tr>';
+        historyBody.innerHTML = filtered.length ? filtered.map(renderHistoryRow).join("") : '<tr><td colspan="7" class="text-muted">No history yet.</td></tr>';
       }
+      if (countEl) {
+        if (activeStatusView.type === "history") {
+          countEl.textContent = "History View";
+        } else {
+          const label = String(activeRule?.label || "Offline").trim() || "Offline";
+          countEl.textContent = `${label}: ${currentRows.length}`;
+        }
+      }
+      updateStatusTabBadges();
+      updateStatusTabState();
       renderRadiusAccountsTable();
       updateSortIndicators();
     }
@@ -737,6 +1110,7 @@
           : '<span class="badge bg-green-lt">Active</span>';
       const onlineBadge = row?.online ? '<span class="badge bg-green-lt">Online</span>' : '<span class="badge bg-secondary-lt">Offline</span>';
       const uptime = row?.online ? formatDurationShort(row?.uptime_sec) : "—";
+      const profileAction = renderProfileReviewAction({ username: row?.username || "", ip: row?.ip || "" });
       return `
         <tr>
           <td class="fw-semibold">${esc(row?.username || "")}</td>
@@ -749,6 +1123,7 @@
           <td class="text-muted">${esc(row?.online_since || "—")}</td>
           <td class="text-muted">${esc(row?.last_start || "—")}</td>
           <td class="text-muted">${esc(row?.last_stop || "—")}</td>
+          <td class="text-end">${profileAction}</td>
         </tr>
       `;
     }
@@ -761,7 +1136,7 @@
       const limited = radiusAccountsShowLimit > 0 ? sorted.slice(0, radiusAccountsShowLimit) : sorted;
       radiusAccountsBody.innerHTML = limited.length
         ? limited.map(renderRadiusRow).join("")
-        : '<tr><td colspan="10" class="text-muted">No accounts found.</td></tr>';
+        : '<tr><td colspan="11" class="text-muted">No accounts found.</td></tr>';
       if (radiusAccountsCountEl) radiusAccountsCountEl.textContent = `Accounts: ${filtered.length}`;
       if (radiusAccountsLimitButton) radiusAccountsLimitButton.textContent = `Show: ${radiusAccountsShowLimit}`;
     }
@@ -772,9 +1147,17 @@
       if (!Number.isFinite(showLimit) || showLimit <= 0) showLimit = 100;
       selectedRouters = loadJson(routerFilterKey, []);
       if (!Array.isArray(selectedRouters)) selectedRouters = [];
+      const storedStatusView = loadJson(activeStatusViewKey, activeStatusView);
+      if (storedStatusView && typeof storedStatusView === "object") {
+        activeStatusView = {
+          type: String(storedStatusView.type || activeStatusView.type || "rule"),
+          ruleId: String(storedStatusView.ruleId || activeStatusView.ruleId || ""),
+        };
+      }
       if (searchInput) searchInput.value = searchQuery;
       updateLimitButton();
       updateFilterButton();
+      ensureActiveStatusView();
 
       radiusAccountsSearch = String(loadJson(radiusAccountsSearchKey, "") || "");
       radiusAccountsStatus = String(loadJson(radiusAccountsStatusKey, "all") || "all");
@@ -790,21 +1173,19 @@
         const res = await fetch("/offline/summary", { headers: { "Accept": "application/json" } });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        const counts = data.counts || {};
-        if (countEl) countEl.textContent = `Offline: ${counts.offline || 0}`;
         if (lastCheckEl) lastCheckEl.textContent = data.last_check || "n/a";
         if (modeEl) modeEl.textContent = data.mode || "secrets";
-        const minMinutes = Number(data.min_offline_minutes || 0) || 0;
-        if (minEl && minMinutes) {
-          const days = minMinutes >= 1440 ? (minMinutes / 1440) : null;
-          const hours = minMinutes >= 60 ? (minMinutes / 60) : null;
-          minEl.textContent = days && Number.isFinite(days) && days >= 1 ? `${days} day(s)` : (hours && Number.isFinite(hours) ? `${hours} hour(s)` : `${minMinutes} min`);
+        currentRules = Array.isArray(data.rules) && data.rules.length ? data.rules : currentRules;
+        currentRowsByRule = (data.rows_by_rule && typeof data.rows_by_rule === "object") ? data.rows_by_rule : {};
+        if (minEl) minEl.textContent = String(data.tracking_rules_summary || "").trim() || "n/a";
+        if (String(data.default_rule_id || "").trim() && (!activeStatusView.ruleId || !getActiveRule())) {
+          activeStatusView = { type: "rule", ruleId: String(data.default_rule_id || "").trim() };
         }
-        currentData = Array.isArray(data.rows) ? data.rows : [];
+        ensureActiveStatusView();
         renderRouterFilterMenu();
         renderAllTables();
       } catch (err) {
-        if (currentBody) currentBody.innerHTML = '<tr><td colspan="7" class="text-danger">Failed to load offline summary.</td></tr>';
+        if (currentBody) currentBody.innerHTML = '<tr><td colspan="8" class="text-danger">Failed to load offline summary.</td></tr>';
       }
     }
 
@@ -818,7 +1199,7 @@
         renderRouterFilterMenu();
         renderAllTables();
       } catch (err) {
-        if (historyBody) historyBody.innerHTML = '<tr><td colspan="6" class="text-danger">Failed to load offline history.</td></tr>';
+        if (historyBody) historyBody.innerHTML = '<tr><td colspan="7" class="text-danger">Failed to load offline history.</td></tr>';
       }
     }
 
@@ -836,7 +1217,7 @@
       if (radiusAccountsFetching) return;
       radiusAccountsFetching = true;
       try {
-        radiusAccountsBody.innerHTML = '<tr><td colspan="10" class="text-muted">Loading…</td></tr>';
+        radiusAccountsBody.innerHTML = '<tr><td colspan="11" class="text-muted">Loading…</td></tr>';
         const res = await fetch("/offline/radius/accounts?limit=50000", { headers: { "Accept": "application/json" } });
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
@@ -849,20 +1230,89 @@
         renderRadiusAccountsTable();
       } catch (err) {
         radiusAccountsData = [];
-        if (radiusAccountsBody) radiusAccountsBody.innerHTML = `<tr><td colspan="10" class="text-danger">Failed to load radius accounts: ${esc(err?.message || err || 'unknown error')}</td></tr>`;
+        if (radiusAccountsBody) radiusAccountsBody.innerHTML = `<tr><td colspan="11" class="text-danger">Failed to load radius accounts: ${esc(err?.message || err || 'unknown error')}</td></tr>`;
         if (radiusAccountsCountEl) radiusAccountsCountEl.textContent = "Accounts: 0";
       } finally {
         radiusAccountsFetching = false;
       }
     }
 
+    function makeTrackingRuleId() {
+      return `offline-rule-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    }
+
+    function refreshTrackingRulePreview(row) {
+      if (!row) return;
+      const valueInput = row.querySelector(".offline-rule-value");
+      const unitSelect = row.querySelector(".offline-rule-unit");
+      const preview = row.querySelector(".offline-rule-preview");
+      if (!preview) return;
+      preview.textContent = ruleTabLabel(valueInput?.value || 0, unitSelect?.value || "day");
+    }
+
+    function reindexTrackingRuleRows() {
+      if (!trackingRulesBody) return;
+      const rows = Array.from(trackingRulesBody.querySelectorAll(".offline-tracking-rule-row"));
+      rows.forEach((row, idx) => {
+        const position = idx + 1;
+        const orderBadge = row.querySelector(".offline-rule-order");
+        const positionInput = row.querySelector('[data-rule-field="position"]');
+        const idInput = row.querySelector('[data-rule-field="id"]');
+        if (orderBadge) orderBadge.textContent = String(position);
+        if (positionInput) {
+          positionInput.value = String(position);
+          positionInput.name = `tracking_rule_${idx}_position`;
+        }
+        if (idInput) {
+          if (!String(idInput.value || "").trim()) idInput.value = makeTrackingRuleId();
+          idInput.name = `tracking_rule_${idx}_id`;
+        }
+        row.querySelectorAll("[data-rule-field]").forEach((field) => {
+          const fieldName = String(field.getAttribute("data-rule-field") || "").trim();
+          if (!fieldName || fieldName === "id" || fieldName === "position") return;
+          field.name = `tracking_rule_${idx}_${fieldName}`;
+        });
+        refreshTrackingRulePreview(row);
+      });
+      if (trackingRuleCountInput) trackingRuleCountInput.value = String(rows.length);
+    }
+
+    function appendTrackingRuleRow() {
+      if (!trackingRulesBody || !trackingRuleTemplate) return;
+      const fragment = trackingRuleTemplate.content.cloneNode(true);
+      const row = fragment.querySelector(".offline-tracking-rule-row");
+      if (!row) return;
+      const idInput = row.querySelector('[data-rule-field="id"]');
+      if (idInput) idInput.value = makeTrackingRuleId();
+      trackingRulesBody.appendChild(row);
+      reindexTrackingRuleRows();
+    }
+
     document.addEventListener("click", (event) => {
       const th = event.target.closest("th.rto-sort");
-      if (!th) return;
-      const table = (th.dataset.table || "").trim();
-      const key = (th.dataset.sortKey || "").trim();
-      if (!table || !key) return;
-      setSort(table, key);
+      if (th) {
+        const table = (th.dataset.table || "").trim();
+        const key = (th.dataset.sortKey || "").trim();
+        if (!table || !key) return;
+        setSort(table, key);
+        return;
+      }
+
+      const statusLink = event.target.closest("[data-offline-view]");
+      if (statusLink && statusTabs && statusTabs.contains(statusLink)) {
+        event.preventDefault();
+        const viewType = String(statusLink.getAttribute("data-offline-view") || "").trim();
+        if (viewType === "history") {
+          activeStatusView = { type: "history", ruleId: "" };
+        } else if (viewType === "rule") {
+          activeStatusView = {
+            type: "rule",
+            ruleId: String(statusLink.getAttribute("data-offline-rule") || "").trim(),
+          };
+        }
+        ensureActiveStatusView();
+        renderAllTables();
+      }
     });
 
     if (searchInput) {
@@ -912,6 +1362,50 @@
         updateFilterButton();
         renderRouterFilterMenu();
         renderAllTables();
+      });
+    }
+
+    if (addTrackingRuleBtn) {
+      addTrackingRuleBtn.addEventListener("click", () => appendTrackingRuleRow());
+    }
+    if (trackingRulesBody) {
+      trackingRulesBody.addEventListener("click", (event) => {
+        const row = event.target.closest(".offline-tracking-rule-row");
+        if (!row) return;
+        if (event.target.closest(".offline-rule-remove")) {
+          event.preventDefault();
+          row.remove();
+          if (!trackingRulesBody.querySelector(".offline-tracking-rule-row")) appendTrackingRuleRow();
+          reindexTrackingRuleRows();
+          return;
+        }
+        if (event.target.closest(".offline-rule-move-up")) {
+          event.preventDefault();
+          const previous = row.previousElementSibling;
+          if (previous) trackingRulesBody.insertBefore(row, previous);
+          reindexTrackingRuleRows();
+          return;
+        }
+        if (event.target.closest(".offline-rule-move-down")) {
+          event.preventDefault();
+          const next = row.nextElementSibling;
+          if (next) trackingRulesBody.insertBefore(next, row);
+          reindexTrackingRuleRows();
+        }
+      });
+      trackingRulesBody.addEventListener("input", (event) => {
+        const row = event.target.closest(".offline-tracking-rule-row");
+        if (!row) return;
+        if (event.target.closest(".offline-rule-value") || event.target.closest(".offline-rule-unit")) {
+          refreshTrackingRulePreview(row);
+        }
+      });
+      trackingRulesBody.addEventListener("change", (event) => {
+        const row = event.target.closest(".offline-tracking-rule-row");
+        if (!row) return;
+        if (event.target.closest(".offline-rule-unit") || event.target.closest(".offline-rule-enabled")) {
+          refreshTrackingRulePreview(row);
+        }
       });
     }
 
@@ -992,12 +1486,21 @@
     });
 
     initFromStorage();
-    refresh();
-    refreshHistory();
-    refreshRadiusAccounts();
-    setInterval(refresh, 5000);
-    setInterval(refreshHistory, 15000);
-    setInterval(() => refreshRadiusAccounts(false), 60000);
+    reindexTrackingRuleRows();
+    renderRouterFilterMenu();
+    renderAllTables();
+    if (window.ThreeJPolling?.createTask) {
+      window.ThreeJPolling.createTask(refresh, { intervalMs: 5000, resumeDelayMs: 200 });
+      window.ThreeJPolling.createTask(refreshHistory, { intervalMs: 15000, resumeDelayMs: 900 });
+      window.ThreeJPolling.createTask(() => refreshRadiusAccounts(false), { intervalMs: 60000, resumeDelayMs: 1800 });
+    } else {
+      refresh();
+      refreshHistory();
+      refreshRadiusAccounts();
+      setInterval(refresh, 5000);
+      setInterval(refreshHistory, 15000);
+      setInterval(() => refreshRadiusAccounts(false), 60000);
+    }
   });
 </script>
 

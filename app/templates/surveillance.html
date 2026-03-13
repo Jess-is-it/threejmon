@@ -2,7 +2,7 @@
 {% block title %}Under Surveillance{% endblock %}
 {% block header_title %}Under Surveillance{% endblock %}
 {% block header_badge %}
-  <span class="badge bg-red-lt text-red header-icon-badge"><i class="ti ti-eye"></i></span>
+  <span class="badge bg-red-lt text-red header-icon-badge"><i class="ti ti-binoculars"></i></span>
 {% endblock %}
 {% block content %}
 {% macro ai_status_button(panel) %}
@@ -111,8 +111,10 @@
 	              <tbody>
 		                {% for row in under_rows %}
 		                  <tr
-		                    class="surv-row-full"
+		                    class="surv-row-full{% if row.is_new %} table-warning surv-new-entry{% endif %}"
 		                    data-pppoe="{{ row.pppoe }}"
+		                    data-surv-entry-id="{{ row.entry_id or '' }}"
+		                    data-surv-new-entry="{{ 1 if row.is_new else 0 }}"
 		                    data-ip="{{ row.ip or '' }}"
 		                    data-added-mode="{{ row.added_mode or '' }}"
                               data-added-by-label="{{ row.added_by_display or row.added_by or '' }}"
@@ -166,6 +168,9 @@
                           <i class="ti ti-check me-1"></i>Fixed
                         </span>
 	                      {% endif %}
+                                {% if row.is_new %}
+                                  <span class="badge bg-yellow-lt text-yellow" data-surv-new-badge title="New Active Monitoring account for your view">New</span>
+                                {% endif %}
                                 {{ pppoe_label(row.pppoe) }}
                               </div>
 				                    </td>
@@ -293,8 +298,10 @@
 	                    <tbody>
 	                      {% for row in under_rows %}
 	                        <tr
-                          class="surv-row"
+                          class="surv-row{% if row.is_new %} table-warning surv-new-entry{% endif %}"
                           data-pppoe="{{ row.pppoe }}"
+                          data-surv-entry-id="{{ row.entry_id or '' }}"
+                          data-surv-new-entry="{{ 1 if row.is_new else 0 }}"
                           data-ip="{{ row.ip or '' }}"
                           data-ok="{{ 1 if row.ok else 0 }}"
                           data-loss="{{ row.loss if row.loss is not none else '' }}"
@@ -335,7 +342,12 @@
                               data-added-by-label="{{ row.added_by_display or row.added_by or '' }}"
 			                          data-added-at="{{ row.added_at_iso }}">
 			                          <td class="surv-col-pppoe">
-                                  <div class="fw-semibold">{{ pppoe_label(row.pppoe) }}</div>
+                                  <div class="fw-semibold surv-pppoe-inline">
+                                    {% if row.is_new %}
+                                      <span class="badge bg-yellow-lt text-yellow" data-surv-new-badge title="New Active Monitoring account for your view">New</span>
+                                    {% endif %}
+                                    {{ pppoe_label(row.pppoe) }}
+                                  </div>
                                 </td>
 	                        </tr>
 	                      {% else %}
@@ -365,7 +377,7 @@
                   <div>
                     <div class="d-flex align-items-center gap-2 flex-wrap">
                       <span class="badge bg-yellow-lt text-yellow header-icon-badge" title="Under Surveillance" aria-label="Under Surveillance">
-                        <i class="ti ti-eye"></i>
+                        <i class="ti ti-binoculars"></i>
                       </span>
                       <h3 class="m-0">
                         <span data-surv-field="pppoe">Select an account</span>
@@ -2360,11 +2372,6 @@
 		            <li class="nav-item">
 		              <a href="#surv-settings-autoadd" class="nav-link" data-bs-toggle="tab">Auto Add</a>
 		            </li>
-		            {% if not auth_enabled or has_perm('RUN_DangerActions') %}
-		              <li class="nav-item">
-		                <a href="#surv-settings-danger" class="nav-link" data-bs-toggle="tab">Danger</a>
-		              </li>
-		            {% endif %}
 		          </ul>
 
 	          <div class="tab-content pt-3">
@@ -2494,132 +2501,128 @@
 		                </div>
 		              </div>
 
-			              <div class="card mt-3">
-			                <div class="card-body">
-			                  <h4 class="mb-3">Checker Criteria</h4>
+		              <div class="card mt-3">
+		                <div class="card-body">
+		                  <h4 class="mb-3">Checker Criteria</h4>
 		                  <div class="text-muted small mb-3">
 		                    These are the health check rules used by the system. Use them as investigation guide before manual actions.
 		                  </div>
-	                  <div class="row g-3">
-	                    <div class="col-md-4">
-	                      <label class="form-label">Ping <span class="info" data-tip="Ping must be Up.">i</span></label>
-	                      <input class="form-control" type="text" readonly value="Must be Up" />
-	                    </div>
-	                    <div class="col-md-4">
-	                      <label class="form-label">Latency Max (ms) <span class="info" data-tip="Maximum average latency (ms) for the latest sample to be considered healthy.">i</span></label>
-	                      <input class="form-control" type="number" step="0.1" name="latency_max_ms" value="{{ settings.stability.latency_max_ms }}" />
-	                    </div>
-	                    <div class="col-md-4">
-	                      <label class="form-label">Total Loss Max (minutes) <span class="info" data-tip="Maximum equivalent downtime from loss samples since checker start. If total estimated loss time exceeds this, checker fails.">i</span></label>
-	                      <input class="form-control" type="number" step="0.1" min="0" name="loss_max_minutes" value="{{ settings.stability.loss_max_minutes if settings.stability.loss_max_minutes is defined else 10.0 }}" />
-	                    </div>
-	                    <div class="col-md-4">
-	                      <label class="form-label">Loss Events Max (count) <span class="info" data-tip="Maximum allowed full-down events (100% loss streak starts) since checker start.">i</span></label>
-	                      <input class="form-control" type="number" min="0" name="loss_event_max_count" value="{{ settings.stability.loss_event_max_count if settings.stability.loss_event_max_count is defined else 5 }}" />
-	                    </div>
-	                    <div class="col-md-4">
-	                      <label class="form-label">Uptime Threshold (%) <span class="info" data-tip="Minimum uptime percentage to be considered healthy (e.g., 95 or 100).">i</span></label>
-	                      <input class="form-control" type="number" step="0.1" name="uptime_threshold_pct" value="{{ settings.stability.uptime_threshold_pct }}" />
-	                    </div>
-	                    <div class="col-md-4">
-	                      <label class="form-label">Optical RX Min (dBm) <span class="info" data-tip="Minimum acceptable RX reading (e.g., -24). Higher (less negative) is better.">i</span></label>
-	                      <input class="form-control" type="number" step="0.1" name="optical_rx_min_dbm" value="{{ settings.stability.optical_rx_min_dbm }}" />
-			                </div>
-				              </div>
-				            </div>
-				          </div>
-			            </div>
+		                  <div class="row g-3">
+		                    <div class="col-md-4">
+		                      <label class="form-label">Ping <span class="info" data-tip="Ping must be Up.">i</span></label>
+		                      <input class="form-control" type="text" readonly value="Must be Up" />
+		                    </div>
+		                    <div class="col-md-4">
+		                      <label class="form-label">Latency Max (ms) <span class="info" data-tip="Maximum average latency (ms) for the latest sample to be considered healthy.">i</span></label>
+		                      <input class="form-control" type="number" step="0.1" name="latency_max_ms" value="{{ settings.stability.latency_max_ms }}" />
+		                    </div>
+		                    <div class="col-md-4">
+		                      <label class="form-label">Total Loss Max (minutes) <span class="info" data-tip="Maximum equivalent downtime from loss samples since checker start. If total estimated loss time exceeds this, checker fails.">i</span></label>
+		                      <input class="form-control" type="number" step="0.1" min="0" name="loss_max_minutes" value="{{ settings.stability.loss_max_minutes if settings.stability.loss_max_minutes is defined else 10.0 }}" />
+		                    </div>
+		                    <div class="col-md-4">
+		                      <label class="form-label">Loss Events Max (count) <span class="info" data-tip="Maximum allowed full-down events (100% loss streak starts) since checker start.">i</span></label>
+		                      <input class="form-control" type="number" min="0" name="loss_event_max_count" value="{{ settings.stability.loss_event_max_count if settings.stability.loss_event_max_count is defined else 5 }}" />
+		                    </div>
+		                    <div class="col-md-4">
+		                      <label class="form-label">Uptime Threshold (%) <span class="info" data-tip="Minimum uptime percentage to be considered healthy (e.g., 95 or 100).">i</span></label>
+		                      <input class="form-control" type="number" step="0.1" name="uptime_threshold_pct" value="{{ settings.stability.uptime_threshold_pct }}" />
+		                    </div>
+		                    <div class="col-md-4">
+		                      <label class="form-label">Optical RX Min (dBm) <span class="info" data-tip="Minimum acceptable RX reading (e.g., -24). Higher (less negative) is better.">i</span></label>
+		                      <input class="form-control" type="number" step="0.1" name="optical_rx_min_dbm" value="{{ settings.stability.optical_rx_min_dbm }}" />
+		                    </div>
+		                  </div>
+		                </div>
+		              </div>
 
-              <div class="card mt-3">
-                <div class="card-body">
-                  <h4 class="mb-3">Urgency Scoring</h4>
-                  <div class="text-muted small mb-3">
-                    Controls how the <strong>Urgency</strong> badge is computed in Active Monitoring / Needs Manual Fix.
-                  </div>
-                  <div class="row g-3">
-                    <div class="col-md-3">
-                      <label class="form-label">No Data Points <span class="info" data-tip="Added when account has no recent ping samples.">i</span></label>
-                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_no_data_points" value="{{ settings.stability.urgency_no_data_points if settings.stability.urgency_no_data_points is defined else 25 }}" />
-                    </div>
-                    <div class="col-md-3">
-                      <label class="form-label">Current Down Points <span class="info" data-tip="Base points when account is currently down.">i</span></label>
-                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_current_down_points" value="{{ settings.stability.urgency_current_down_points if settings.stability.urgency_current_down_points is defined else 50 }}" />
-                    </div>
-                    <div class="col-md-3">
-                      <label class="form-label">Down Duration Cap <span class="info" data-tip="Extra points from current down duration are capped to this value.">i</span></label>
-                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_down_minutes_cap_points" value="{{ settings.stability.urgency_down_minutes_cap_points if settings.stability.urgency_down_minutes_cap_points is defined else 30 }}" />
-                    </div>
-                    <div class="col-md-3">
-                      <label class="form-label">Manual Fix Stage Points <span class="info" data-tip="Extra points when account is in Needs Manual Fix.">i</span></label>
-                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_manual_fix_stage_points" value="{{ settings.stability.urgency_manual_fix_stage_points if settings.stability.urgency_manual_fix_stage_points is defined else 10 }}" />
-                    </div>
-
-                    <div class="col-md-3">
-                      <label class="form-label">Loss Budget Breach Points <span class="info" data-tip="Points when total loss time exceeds Total Loss Max (minutes).">i</span></label>
-                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_loss_budget_breach_points" value="{{ settings.stability.urgency_loss_budget_breach_points if settings.stability.urgency_loss_budget_breach_points is defined else 20 }}" />
-                    </div>
-                    <div class="col-md-3">
-                      <label class="form-label">Loss Time Scale Cap <span class="info" data-tip="Cap for scaled points from total loss time (minutes).">i</span></label>
-                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_loss_minutes_scale_cap_points" value="{{ settings.stability.urgency_loss_minutes_scale_cap_points if settings.stability.urgency_loss_minutes_scale_cap_points is defined else 12 }}" />
-                    </div>
-                    <div class="col-md-3">
-                      <label class="form-label">Loss Events Breach Points <span class="info" data-tip="Points when loss events exceed Loss Events Max.">i</span></label>
-                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_loss_events_breach_points" value="{{ settings.stability.urgency_loss_events_breach_points if settings.stability.urgency_loss_events_breach_points is defined else 15 }}" />
-                    </div>
-                    <div class="col-md-3">
-                      <label class="form-label">Loss Events Scale Cap <span class="info" data-tip="Cap for scaled points from loss event count.">i</span></label>
-                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_loss_events_scale_cap_points" value="{{ settings.stability.urgency_loss_events_scale_cap_points if settings.stability.urgency_loss_events_scale_cap_points is defined else 10 }}" />
-                    </div>
-
-                    <div class="col-md-3">
-                      <label class="form-label">High Latency Points <span class="info" data-tip="Points when latency is above Latency Max.">i</span></label>
-                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_high_latency_points" value="{{ settings.stability.urgency_high_latency_points if settings.stability.urgency_high_latency_points is defined else 6 }}" />
-                    </div>
-                    <div class="col-md-3">
-                      <label class="form-label">Very High Latency Points <span class="info" data-tip="Points when latency is above multiplier × Latency Max.">i</span></label>
-                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_very_high_latency_points" value="{{ settings.stability.urgency_very_high_latency_points if settings.stability.urgency_very_high_latency_points is defined else 12 }}" />
-                    </div>
-                    <div class="col-md-3">
-                      <label class="form-label">Very High Latency Multiplier <span class="info" data-tip="Multiplier against Latency Max for very high latency points (example: 2 = 2x Latency Max).">i</span></label>
-                      <input class="form-control" type="number" step="0.1" min="1.1" name="urgency_very_high_latency_multiplier" value="{{ settings.stability.urgency_very_high_latency_multiplier if settings.stability.urgency_very_high_latency_multiplier is defined else 2.0 }}" />
-                    </div>
-                    <div class="col-md-3">
-                      <label class="form-label">Optical Issue Points <span class="info" data-tip="Points when optical RX is below Optical RX Min.">i</span></label>
-                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_optical_issue_points" value="{{ settings.stability.urgency_optical_issue_points if settings.stability.urgency_optical_issue_points is defined else 12 }}" />
-                    </div>
-
-                    <div class="col-md-3">
-                      <label class="form-label">Packet Loss Warn % <span class="info" data-tip="Packet loss threshold for warn-level points.">i</span></label>
-                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_packet_loss_warn_pct" value="{{ settings.stability.urgency_packet_loss_warn_pct if settings.stability.urgency_packet_loss_warn_pct is defined else 5.0 }}" />
-                    </div>
-                    <div class="col-md-3">
-                      <label class="form-label">Packet Loss Critical % <span class="info" data-tip="Packet loss threshold for severe points. Must be >= warn %.">i</span></label>
-                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_packet_loss_critical_pct" value="{{ settings.stability.urgency_packet_loss_critical_pct if settings.stability.urgency_packet_loss_critical_pct is defined else 20.0 }}" />
-                    </div>
-                    <div class="col-md-3">
-                      <label class="form-label">Packet Loss Warn Points <span class="info" data-tip="Points added at Packet Loss Warn %.">i</span></label>
-                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_packet_loss_points" value="{{ settings.stability.urgency_packet_loss_points if settings.stability.urgency_packet_loss_points is defined else 5 }}" />
-                    </div>
-                    <div class="col-md-3">
-                      <label class="form-label">Packet Loss Critical Points <span class="info" data-tip="Points added at Packet Loss Critical %.">i</span></label>
-                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_severe_packet_loss_points" value="{{ settings.stability.urgency_severe_packet_loss_points if settings.stability.urgency_severe_packet_loss_points is defined else 10 }}" />
-                    </div>
-
-                    <div class="col-md-4">
-                      <label class="form-label">Critical Threshold <span class="info" data-tip="Urgency score at or above this becomes Critical.">i</span></label>
-                      <input class="form-control" type="number" min="0" max="100" name="urgency_critical_threshold" value="{{ settings.stability.urgency_critical_threshold if settings.stability.urgency_critical_threshold is defined else 70 }}" />
-                    </div>
-                    <div class="col-md-4">
-                      <label class="form-label">High Threshold <span class="info" data-tip="Urgency score at or above this becomes High.">i</span></label>
-                      <input class="form-control" type="number" min="0" max="100" name="urgency_high_threshold" value="{{ settings.stability.urgency_high_threshold if settings.stability.urgency_high_threshold is defined else 45 }}" />
-                    </div>
-                    <div class="col-md-4">
-                      <label class="form-label">Watch Threshold <span class="info" data-tip="Urgency score at or above this becomes Watch.">i</span></label>
-                      <input class="form-control" type="number" min="0" max="100" name="urgency_watch_threshold" value="{{ settings.stability.urgency_watch_threshold if settings.stability.urgency_watch_threshold is defined else 25 }}" />
-                    </div>
-                  </div>
-                </div>
-              </div>
+		              <div class="card mt-3">
+		                <div class="card-body">
+		                  <h4 class="mb-3">Urgency Scoring</h4>
+		                  <div class="text-muted small mb-3">
+		                    Controls how the <strong>Urgency</strong> badge is computed in Active Monitoring / Needs Manual Fix.
+		                  </div>
+		                  <div class="row g-3">
+		                    <div class="col-md-3">
+		                      <label class="form-label">No Data Points <span class="info" data-tip="Added when account has no recent ping samples.">i</span></label>
+		                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_no_data_points" value="{{ settings.stability.urgency_no_data_points if settings.stability.urgency_no_data_points is defined else 25 }}" />
+		                    </div>
+		                    <div class="col-md-3">
+		                      <label class="form-label">Current Down Points <span class="info" data-tip="Base points when account is currently down.">i</span></label>
+		                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_current_down_points" value="{{ settings.stability.urgency_current_down_points if settings.stability.urgency_current_down_points is defined else 50 }}" />
+		                    </div>
+		                    <div class="col-md-3">
+		                      <label class="form-label">Down Duration Cap <span class="info" data-tip="Extra points from current down duration are capped to this value.">i</span></label>
+		                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_down_minutes_cap_points" value="{{ settings.stability.urgency_down_minutes_cap_points if settings.stability.urgency_down_minutes_cap_points is defined else 30 }}" />
+		                    </div>
+		                    <div class="col-md-3">
+		                      <label class="form-label">Manual Fix Stage Points <span class="info" data-tip="Extra points when account is in Needs Manual Fix.">i</span></label>
+		                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_manual_fix_stage_points" value="{{ settings.stability.urgency_manual_fix_stage_points if settings.stability.urgency_manual_fix_stage_points is defined else 10 }}" />
+		                    </div>
+		                    <div class="col-md-3">
+		                      <label class="form-label">Loss Budget Breach Points <span class="info" data-tip="Points when total loss time exceeds Total Loss Max (minutes).">i</span></label>
+		                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_loss_budget_breach_points" value="{{ settings.stability.urgency_loss_budget_breach_points if settings.stability.urgency_loss_budget_breach_points is defined else 20 }}" />
+		                    </div>
+		                    <div class="col-md-3">
+		                      <label class="form-label">Loss Time Scale Cap <span class="info" data-tip="Cap for scaled points from total loss time (minutes).">i</span></label>
+		                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_loss_minutes_scale_cap_points" value="{{ settings.stability.urgency_loss_minutes_scale_cap_points if settings.stability.urgency_loss_minutes_scale_cap_points is defined else 12 }}" />
+		                    </div>
+		                    <div class="col-md-3">
+		                      <label class="form-label">Loss Events Breach Points <span class="info" data-tip="Points when loss events exceed Loss Events Max.">i</span></label>
+		                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_loss_events_breach_points" value="{{ settings.stability.urgency_loss_events_breach_points if settings.stability.urgency_loss_events_breach_points is defined else 15 }}" />
+		                    </div>
+		                    <div class="col-md-3">
+		                      <label class="form-label">Loss Events Scale Cap <span class="info" data-tip="Cap for scaled points from loss event count.">i</span></label>
+		                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_loss_events_scale_cap_points" value="{{ settings.stability.urgency_loss_events_scale_cap_points if settings.stability.urgency_loss_events_scale_cap_points is defined else 10 }}" />
+		                    </div>
+		                    <div class="col-md-3">
+		                      <label class="form-label">High Latency Points <span class="info" data-tip="Points when latency is above Latency Max.">i</span></label>
+		                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_high_latency_points" value="{{ settings.stability.urgency_high_latency_points if settings.stability.urgency_high_latency_points is defined else 6 }}" />
+		                    </div>
+		                    <div class="col-md-3">
+		                      <label class="form-label">Very High Latency Points <span class="info" data-tip="Points when latency is above multiplier × Latency Max.">i</span></label>
+		                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_very_high_latency_points" value="{{ settings.stability.urgency_very_high_latency_points if settings.stability.urgency_very_high_latency_points is defined else 12 }}" />
+		                    </div>
+		                    <div class="col-md-3">
+		                      <label class="form-label">Very High Latency Multiplier <span class="info" data-tip="Multiplier against Latency Max for very high latency points (example: 2 = 2x Latency Max).">i</span></label>
+		                      <input class="form-control" type="number" step="0.1" min="1.1" name="urgency_very_high_latency_multiplier" value="{{ settings.stability.urgency_very_high_latency_multiplier if settings.stability.urgency_very_high_latency_multiplier is defined else 2.0 }}" />
+		                    </div>
+		                    <div class="col-md-3">
+		                      <label class="form-label">Optical Issue Points <span class="info" data-tip="Points when optical RX is below Optical RX Min.">i</span></label>
+		                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_optical_issue_points" value="{{ settings.stability.urgency_optical_issue_points if settings.stability.urgency_optical_issue_points is defined else 12 }}" />
+		                    </div>
+		                    <div class="col-md-3">
+		                      <label class="form-label">Packet Loss Warn % <span class="info" data-tip="Packet loss threshold for warn-level points.">i</span></label>
+		                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_packet_loss_warn_pct" value="{{ settings.stability.urgency_packet_loss_warn_pct if settings.stability.urgency_packet_loss_warn_pct is defined else 5.0 }}" />
+		                    </div>
+		                    <div class="col-md-3">
+		                      <label class="form-label">Packet Loss Critical % <span class="info" data-tip="Packet loss threshold for severe points. Must be >= warn %.">i</span></label>
+		                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_packet_loss_critical_pct" value="{{ settings.stability.urgency_packet_loss_critical_pct if settings.stability.urgency_packet_loss_critical_pct is defined else 20.0 }}" />
+		                    </div>
+		                    <div class="col-md-3">
+		                      <label class="form-label">Packet Loss Warn Points <span class="info" data-tip="Points added at Packet Loss Warn %.">i</span></label>
+		                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_packet_loss_points" value="{{ settings.stability.urgency_packet_loss_points if settings.stability.urgency_packet_loss_points is defined else 5 }}" />
+		                    </div>
+		                    <div class="col-md-3">
+		                      <label class="form-label">Packet Loss Critical Points <span class="info" data-tip="Points added at Packet Loss Critical %.">i</span></label>
+		                      <input class="form-control" type="number" step="0.1" min="0" name="urgency_severe_packet_loss_points" value="{{ settings.stability.urgency_severe_packet_loss_points if settings.stability.urgency_severe_packet_loss_points is defined else 10 }}" />
+		                    </div>
+		                    <div class="col-md-4">
+		                      <label class="form-label">Critical Threshold <span class="info" data-tip="Urgency score at or above this becomes Critical.">i</span></label>
+		                      <input class="form-control" type="number" min="0" max="100" name="urgency_critical_threshold" value="{{ settings.stability.urgency_critical_threshold if settings.stability.urgency_critical_threshold is defined else 70 }}" />
+		                    </div>
+		                    <div class="col-md-4">
+		                      <label class="form-label">High Threshold <span class="info" data-tip="Urgency score at or above this becomes High.">i</span></label>
+		                      <input class="form-control" type="number" min="0" max="100" name="urgency_high_threshold" value="{{ settings.stability.urgency_high_threshold if settings.stability.urgency_high_threshold is defined else 45 }}" />
+		                    </div>
+		                    <div class="col-md-4">
+		                      <label class="form-label">Watch Threshold <span class="info" data-tip="Urgency score at or above this becomes Watch.">i</span></label>
+		                      <input class="form-control" type="number" min="0" max="100" name="urgency_watch_threshold" value="{{ settings.stability.urgency_watch_threshold if settings.stability.urgency_watch_threshold is defined else 25 }}" />
+		                    </div>
+		                  </div>
+		                </div>
+		              </div>
+		            </div>
 				
 			            <div class="tab-pane" id="surv-settings-autoadd">
 		              <div class="card">
@@ -2664,33 +2667,12 @@
 			                </div>
 			              </div>
 			            </div>
-
-		            {% if not auth_enabled or has_perm('RUN_DangerActions') %}
-		              <div class="tab-pane" id="surv-settings-danger">
-		                <div class="card mb-3 border-danger">
-		                  <div class="card-body">
-		                    <h4 class="text-danger mb-3">Format Under Surveillance Data</h4>
-		                    <div class="alert alert-warning">
-		                      Formatting clears Active Monitoring, Needs Manual Fix, Post-Fix Observation, and Surveillance History data. Settings will be preserved.
-		                    </div>
-		                    <div class="d-flex align-items-center gap-3">
-		                      <label class="form-check">
-		                        <input class="form-check-input" type="checkbox" name="confirm_format" form="surv-format-form" />
-		                        <span class="form-check-label">Confirm format</span>
-		                      </label>
-		                      <button type="submit" class="btn btn-danger" form="surv-format-form">Format Under Surveillance Data</button>
-		                    </div>
-		                  </div>
-		                </div>
-		              </div>
-		            {% endif %}
 	          </div>
 
 		          <div class="mt-4 d-flex justify-content-end {% if active_tab != 'settings' %}d-none{% endif %}" data-surv-settings-save-bar>
 		            <button type="submit" class="btn btn-primary">Save Surveillance Settings</button>
 		          </div>
 		        </form>
-		        <form id="surv-format-form" method="post" action="/surveillance/format"></form>
 		      </div>
     </div>
   </div>
@@ -2744,10 +2726,7 @@
 			    removeSurveillanceAiUi();
 
 			    const settingsSaveBar = document.querySelector('[data-surv-settings-save-bar]');
-			    const isSettingsDangerTabActive = () => {
-			      const active = document.querySelector('#surv-settings a[data-bs-toggle="tab"].active');
-		      return !!active && (active.getAttribute("href") || "") === "#surv-settings-danger";
-		    };
+			    const isSettingsDangerTabActive = () => false;
 			    const setSettingsSaveBar = (tab) => {
 			      if (!settingsSaveBar) return;
 			      if (tab === "settings" && !isSettingsDangerTabActive()) settingsSaveBar.classList.remove("d-none");
@@ -5995,12 +5974,110 @@
 	      }
 	    };
 
+    const SURV_NEW_ACK_DELAY_MS = Math.max(Number({{ under_new_view_seconds|default(10)|int }}) || 10, 1) * 1000;
+    let underNewSeenTimer = null;
+    let underNewSeenInFlight = false;
+
+    const collectUnderNewEntryIds = () => {
+      const ids = [];
+      const seen = new Set();
+      document.querySelectorAll('#surv-under [data-surv-entry-id][data-surv-new-entry="1"]').forEach((rowEl) => {
+        const entryId = String(rowEl.getAttribute("data-surv-entry-id") || "").trim();
+        if (!entryId || seen.has(entryId)) return;
+        seen.add(entryId);
+        ids.push(entryId);
+      });
+      return ids;
+    };
+
+    const clearUnderNewMarkers = (entryIds) => {
+      const idSet = new Set((entryIds || []).map((item) => String(item || "").trim()).filter(Boolean));
+      if (!idSet.size) return;
+      document.querySelectorAll("#surv-under [data-surv-entry-id]").forEach((rowEl) => {
+        const entryId = String(rowEl.getAttribute("data-surv-entry-id") || "").trim();
+        if (!idSet.has(entryId)) return;
+        rowEl.setAttribute("data-surv-new-entry", "0");
+        rowEl.classList.remove("table-warning", "surv-new-entry");
+        rowEl.querySelectorAll("[data-surv-new-badge]").forEach((badgeEl) => badgeEl.remove());
+      });
+    };
+
+    const isUnderTabActive = () => {
+      const underPane = document.getElementById("surv-under");
+      return !!(underPane && underPane.classList.contains("active"));
+    };
+
+    const acknowledgeUnderNewEntries = async () => {
+      if (underNewSeenInFlight) return;
+      const entryIds = collectUnderNewEntryIds();
+      if (!entryIds.length) return;
+      underNewSeenInFlight = true;
+      try {
+        const res = await fetch("/surveillance/mark_new_seen", {
+          method: "POST",
+          headers: {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+          },
+          cache: "no-store",
+          body: JSON.stringify({ entry_ids: entryIds }),
+        });
+        if (!res.ok) return;
+        const payload = await res.json();
+        clearUnderNewMarkers(Array.isArray(payload?.seen_ids) ? payload.seen_ids : entryIds);
+      } catch (_err) {
+        // ignore acknowledgement failures; the next page view can retry
+      } finally {
+        underNewSeenInFlight = false;
+      }
+    };
+
+    const scheduleUnderNewSeenAck = () => {
+      if (underNewSeenTimer) {
+        window.clearTimeout(underNewSeenTimer);
+        underNewSeenTimer = null;
+      }
+      if (!isUnderTabActive()) return;
+      if (!collectUnderNewEntryIds().length) return;
+      underNewSeenTimer = window.setTimeout(() => {
+        underNewSeenTimer = null;
+        if (document.visibilityState && document.visibilityState !== "visible") {
+          scheduleUnderNewSeenAck();
+          return;
+        }
+        acknowledgeUnderNewEntries();
+      }, SURV_NEW_ACK_DELAY_MS);
+    };
+
+    document.querySelectorAll('a[data-bs-toggle="tab"]').forEach((tabEl) => {
+      tabEl.addEventListener("shown.bs.tab", () => {
+        scheduleUnderNewSeenAck();
+      });
+      tabEl.addEventListener("hide.bs.tab", () => {
+        if (underNewSeenTimer) {
+          window.clearTimeout(underNewSeenTimer);
+          underNewSeenTimer = null;
+        }
+      });
+    });
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        scheduleUnderNewSeenAck();
+        return;
+      }
+      if (underNewSeenTimer) {
+        window.clearTimeout(underNewSeenTimer);
+        underNewSeenTimer = null;
+      }
+    });
+
     initPane("under");
     initPane("level2");
     initPane("observe");
     initTableSort("under");
     initTableSort("level2");
     initTableSort("observe");
+    scheduleUnderNewSeenAck();
 
   });
 </script>

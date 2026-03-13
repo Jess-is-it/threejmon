@@ -4,7 +4,149 @@
 {% block header_badge %}
   <span class="badge bg-yellow-lt text-yellow header-icon-badge"><i class="ti ti-sun"></i></span>
 {% endblock %}
+{% macro optical_customer_label(name, device_url=None, max_chars=26) %}
+  {% set customer_text = (name or '') %}
+  {% if customer_text|length > max_chars %}
+    {% set customer_short = customer_text[:max_chars] ~ '…' %}
+  {% else %}
+    {% set customer_short = customer_text %}
+  {% endif %}
+  {% if device_url %}
+    <a class="optical-status-label" href="{{ device_url }}" target="_blank" rel="noopener" title="{{ customer_text }}">{{ customer_short }}</a>
+  {% else %}
+    <span class="optical-status-label" title="{{ customer_text }}">{{ customer_short }}</span>
+  {% endif %}
+{% endmacro %}
 {% block content %}
+<style>
+  .optical-status-table-wrap {
+    overflow-x: hidden;
+  }
+
+  .optical-status-table {
+    width: 100%;
+    table-layout: fixed;
+  }
+
+  .optical-status-table > :not(caption) > * > * {
+    vertical-align: middle;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .optical-status-table .op-col-customer {
+    width: 15rem;
+    text-align: left;
+  }
+
+  .optical-status-table .op-col-ip {
+    width: 8rem;
+  }
+
+  .optical-status-table .op-col-status {
+    width: 6.5rem;
+  }
+
+  .optical-status-table .op-col-rx,
+  .optical-status-table .op-col-tx {
+    width: 6rem;
+  }
+
+  .optical-status-table .op-col-samples {
+    width: 5rem;
+  }
+
+  .optical-status-table .op-col-last-check {
+    width: 8.75rem;
+  }
+
+  .optical-status-table .op-col-trend {
+    width: 7rem;
+    text-align: center;
+  }
+
+  .optical-status-table .op-col-reason {
+    width: 13rem;
+  }
+
+  .optical-status-table .op-col-actions {
+    width: 5rem;
+  }
+
+  .optical-status-label,
+  .optical-status-cell-truncate {
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+    white-space: nowrap;
+  }
+
+  .optical-status-table .op-col-rx,
+  .optical-status-table .op-col-tx,
+  .optical-status-table .op-col-actions {
+    overflow: visible !important;
+    text-overflow: clip !important;
+  }
+
+  .optical-status-table .op-actions {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: nowrap;
+    gap: 0.25rem;
+    max-width: 100%;
+  }
+
+  .optical-status-table .rto-sparkline {
+    width: 96px;
+    max-width: 100%;
+    height: 30px;
+  }
+
+  @media (max-width: 1600px) {
+    .optical-status-table .op-priority-8,
+    .optical-status-table .op-priority-7 {
+      display: none;
+    }
+  }
+
+  @media (max-width: 1450px) {
+    .optical-status-table .op-priority-6,
+    .optical-status-table .op-priority-5 {
+      display: none;
+    }
+  }
+
+  @media (max-width: 1240px) {
+    .optical-status-table .op-priority-4,
+    .optical-status-table .op-priority-3 {
+      display: none;
+    }
+  }
+
+  @media (max-width: 980px) {
+    .optical-status-table .op-priority-2 {
+      display: none;
+    }
+  }
+
+  @media (max-width: 768px) {
+    .optical-status-table .op-priority-1 {
+      display: none;
+    }
+
+    .optical-status-table .op-col-customer {
+      width: auto;
+    }
+
+    .optical-status-table .op-col-actions {
+      width: 4.75rem;
+    }
+  }
+</style>
 {% if message %}
   {% set msg_lower = message|lower %}
   {% if 'saved' in msg_lower or 'successfully' in msg_lower or 'formatted' in msg_lower %}
@@ -37,6 +179,21 @@
     </div>
   {% endif %}
 {% endif %}
+{% set can_profile_review = (not auth_enabled) or has_perm("profile_review.view") %}
+
+<div id="optical-status-loading" class="d-none position-fixed top-0 start-50 translate-middle-x mt-3 px-3 w-100" style="z-index: 1080;" role="status" aria-live="polite" aria-atomic="true">
+  <div class="card shadow-sm border-primary mx-auto" style="max-width: 26rem;">
+    <div class="card-body py-2 px-3">
+      <div class="d-flex align-items-center gap-3">
+        <div class="spinner-border spinner-border-sm text-blue" role="status" aria-hidden="true"></div>
+        <div class="min-w-0">
+          <div class="fw-semibold" data-loading-label>Loading optical results...</div>
+          <div class="text-muted small">Refreshing the optical status tables.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 
 <div class="card">
   <div class="card-body">
@@ -119,42 +276,36 @@
         <div class="tab-content pt-3">
 		          <div class="tab-pane active" id="optical-issues">
 	            <div class="rto-table-shell">
-	              <div class="rto-table-wrap" id="optical-issues-table">
-	              <table class="table table-vcenter rto-table">
+	              <div class="rto-table-wrap optical-status-table-wrap" id="optical-issues-table">
+	              <table class="table table-vcenter rto-table optical-status-table">
                 <thead>
                   <tr>
-                    <th class="rto-tip rto-sort" data-sort-key="customer" aria-sort="none" title="Subscriber name detected from GenieACS (PPPoE username or device label)." data-tip="Subscriber name detected from GenieACS (PPPoE username or device label).">Customer <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                    <th class="rto-tip rto-sort" data-sort-key="ip" aria-sort="none" title="IP address reported by GenieACS." data-tip="IP address reported by GenieACS.">IPv4 <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                    <th class="rto-tip rto-sort" data-sort-key="status" aria-sort="none" title="Current health classification based on RX/TX thresholds." data-tip="Current health classification based on RX/TX thresholds.">Status <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                    <th class="rto-tip rto-sort" data-sort-key="rx" aria-sort="none" title="Latest RX power reading in dBm." data-tip="Latest RX power reading in dBm.">RX (dBm) <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                    <th class="rto-tip rto-sort" data-sort-key="tx" aria-sort="none" title="Latest TX power reading in dBm." data-tip="Latest TX power reading in dBm.">TX (dBm) <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                    <th class="rto-tip rto-sort" data-sort-key="samples" aria-sort="none" title="Number of samples in the current window." data-tip="Number of samples in the current window.">Samples <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                    <th class="rto-tip rto-sort" data-sort-key="last_check_at" aria-sort="none" title="Timestamp of the most recent optical reading." data-tip="Timestamp of the most recent optical reading.">Last Check <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                    <th class="rto-tip rto-trend-header" title="RX power trend for the current window." data-tip="RX power trend for the current window. Click to expand.">{{ optical_status.window_label }} Trend</th>
-                    <th class="rto-tip rto-sort" data-sort-key="reason" aria-sort="none" title="Reason this device is flagged under Connection Issues." data-tip="Reason this device is flagged under Connection Issues.">Reason <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                    <th class="text-end"> </th>
+                    <th class="rto-tip rto-sort op-col-customer op-priority-0" data-sort-key="customer" aria-sort="none" title="Subscriber name detected from GenieACS (PPPoE username or device label)." data-tip="Subscriber name detected from GenieACS (PPPoE username or device label).">Customer <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort op-col-ip op-priority-2" data-sort-key="ip" aria-sort="none" title="IP address reported by GenieACS." data-tip="IP address reported by GenieACS.">IPv4 <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort op-col-status op-priority-1" data-sort-key="status" aria-sort="none" title="Current health classification based on RX/TX thresholds." data-tip="Current health classification based on RX/TX thresholds.">Status <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort op-col-rx op-priority-3" data-sort-key="rx" aria-sort="none" title="Latest RX power reading in dBm." data-tip="Latest RX power reading in dBm.">RX (dBm) <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort op-col-tx op-priority-4" data-sort-key="tx" aria-sort="none" title="Latest TX power reading in dBm." data-tip="Latest TX power reading in dBm.">TX (dBm) <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort op-col-samples op-priority-7" data-sort-key="samples" aria-sort="none" title="Number of samples in the current window." data-tip="Number of samples in the current window.">Samples <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort op-col-last-check op-priority-5" data-sort-key="last_check_at" aria-sort="none" title="Timestamp of the most recent optical reading." data-tip="Timestamp of the most recent optical reading.">Last Check <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-trend-header op-col-trend op-priority-6" title="RX power trend for the current window." data-tip="RX power trend for the current window. Click to expand.">{{ optical_status.window_label }} Trend</th>
+                    <th class="rto-tip rto-sort op-col-reason op-priority-8" data-sort-key="reason" aria-sort="none" title="Reason this device is flagged under Connection Issues." data-tip="Reason this device is flagged under Connection Issues.">Reason <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="text-end op-col-actions op-priority-0">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {% for row in optical_status.issue_rows %}
                     {% set surv_status = surveillance_index.get(row.name) %}
                     <tr{% if surv_status == 'under' %} class="table-warning"{% elif surv_status == 'level2' %} class="table-danger"{% endif %}>
-                      <td>
-                        {% if row.device_url %}
-                          <a href="{{ row.device_url }}" target="_blank" rel="noopener">{{ row.name }}</a>
-                        {% else %}
-                          {{ row.name }}
-                        {% endif %}
-                      </td>
-                      <td>{{ row.ip or 'n/a' }}</td>
-                      <td>
+                      <td class="op-col-customer op-priority-0">{{ optical_customer_label(row.name, row.device_url) }}</td>
+                      <td class="op-col-ip op-priority-2"><span class="optical-status-cell-truncate" title="{{ row.ip or 'n/a' }}">{{ row.ip or 'n/a' }}</span></td>
+                      <td class="op-col-status op-priority-1">
                         {% if row.status == 'issue' %}
                           <span class="badge bg-red-lt">Issue</span>
                         {% else %}
                           <span class="badge bg-yellow-lt">Monitor</span>
                         {% endif %}
                       </td>
-                      <td>
+                      <td class="op-col-rx op-priority-3">
                         {% if row.rx_invalid %}
                           {% set rx_raw = row.rx_raw if row.rx_raw is not none else 'n/a' %}
                           <div class="dropdown">
@@ -174,7 +325,7 @@
                           {{ "%.2f"|format(row.rx) if row.rx is not none else 'n/a' }}
                         {% endif %}
                       </td>
-                      <td>
+                      <td class="op-col-tx op-priority-4">
                         {% if row.tx_invalid or row.tx_missing %}
                           {% set tx_raw = row.tx_raw if row.tx_raw is not none else 'n/a' %}
                           <div class="dropdown">
@@ -194,9 +345,9 @@
                           {{ "%.2f"|format(row.tx) if row.tx is not none else 'n/a' }}
                         {% endif %}
                       </td>
-                      <td>{{ row.samples }}</td>
-                      <td>{{ row.last_check or 'n/a' }}</td>
-                      <td>
+                      <td class="op-col-samples op-priority-7">{{ row.samples }}</td>
+                      <td class="op-col-last-check op-priority-5"><span class="optical-status-cell-truncate" title="{{ row.last_check or 'n/a' }}">{{ row.last_check or 'n/a' }}</span></td>
+                      <td class="op-col-trend op-priority-6">
                         {% if row.spark_points_window %}
                           <button type="button"
                                   class="btn btn-link p-0 optical-spark-btn"
@@ -216,29 +367,42 @@
                           <span class="text-muted small">n/a</span>
                         {% endif %}
                       </td>
-                      <td>{{ row.reasons|join(', ') }}</td>
-                      <td class="text-end">
-                        <span data-surveillance-slot>
-                          {% if surv_status == 'under' %}
-                            <a class="badge bg-yellow-lt text-yellow header-icon-badge" href="/surveillance?tab=under&focus={{ row.name|urlencode }}" title="Under Surveillance" aria-label="Under Surveillance">
-                              <i class="ti ti-eye"></i>
+                      {% set reason_text = row.reasons|join(', ') %}
+                      <td class="op-col-reason op-priority-8"><span class="optical-status-cell-truncate" title="{{ reason_text }}">{{ reason_text }}</span></td>
+                      <td class="text-end op-col-actions op-priority-0">
+                        <div class="d-inline-flex align-items-center justify-content-end gap-1 op-actions">
+                          {% if can_profile_review %}
+                            <a class="badge bg-azure-lt text-azure header-icon-badge"
+                               href="/profile-review?pppoe={{ row.name|urlencode }}{% if row.ip %}&ip={{ row.ip|urlencode }}{% endif %}{% if row.device_id %}&device_id={{ row.device_id|urlencode }}{% endif %}"
+                               target="_blank"
+                               rel="noopener"
+                               title="Profile Review"
+                               aria-label="Profile Review">
+                              <i class="ti ti-user"></i>
                             </a>
-                          {% elif surv_status == 'level2' %}
-                            <a class="badge bg-red-lt text-red header-icon-badge" href="/surveillance?tab=level2&focus={{ row.name|urlencode }}" title="LEVEL II SUSPECT" aria-label="LEVEL II SUSPECT">
-                              <i class="ti ti-eye"></i>
-                            </a>
-                          {% else %}
-                            <button type="button"
-                                    class="badge bg-blue-lt text-blue header-icon-badge border-0 surveillance-add-btn"
-                                    title="For Surveillance"
-                                    data-pppoe="{{ row.name }}"
-                                    data-name="{{ row.name }}"
-                                    data-ip="{{ row.ip }}"
-                                    data-source="optical">
-                              <i class="ti ti-eye"></i>
-                            </button>
                           {% endif %}
-                        </span>
+                          <span data-surveillance-slot>
+                            {% if surv_status == 'under' %}
+                              <a class="badge bg-yellow-lt text-yellow header-icon-badge" href="/surveillance?tab=under&focus={{ row.name|urlencode }}" title="Under Surveillance" aria-label="Under Surveillance">
+                                <i class="ti ti-binoculars"></i>
+                              </a>
+                            {% elif surv_status == 'level2' %}
+                              <a class="badge bg-red-lt text-red header-icon-badge" href="/surveillance?tab=level2&focus={{ row.name|urlencode }}" title="Needs Manual Fix" aria-label="Needs Manual Fix">
+                                <i class="ti ti-binoculars"></i>
+                              </a>
+                            {% else %}
+                              <button type="button"
+                                      class="badge bg-blue-lt text-blue header-icon-badge border-0 surveillance-add-btn"
+                                      title="For Surveillance"
+                                      data-pppoe="{{ row.name }}"
+                                      data-name="{{ row.name }}"
+                                      data-ip="{{ row.ip }}"
+                                      data-source="optical">
+                                <i class="ti ti-binoculars"></i>
+                              </button>
+                            {% endif %}
+                          </span>
+                        </div>
                       </td>
                     </tr>
                   {% else %}
@@ -274,41 +438,35 @@
 
 	          <div class="tab-pane" id="optical-stable">
 	            <div class="rto-table-shell">
-	              <div class="rto-table-wrap" id="optical-stable-table">
-	              <table class="table table-vcenter rto-table">
+	              <div class="rto-table-wrap optical-status-table-wrap" id="optical-stable-table">
+	              <table class="table table-vcenter rto-table optical-status-table">
                 <thead>
                   <tr>
-                    <th class="rto-tip rto-sort" data-sort-key="customer" aria-sort="none" title="Subscriber name detected from GenieACS (PPPoE username or device label)." data-tip="Subscriber name detected from GenieACS (PPPoE username or device label).">Customer <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                    <th class="rto-tip rto-sort" data-sort-key="ip" aria-sort="none" title="IP address reported by GenieACS." data-tip="IP address reported by GenieACS.">IPv4 <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                    <th class="rto-tip rto-sort" data-sort-key="status" aria-sort="none" title="Stable classification based on RX/TX thresholds." data-tip="Stable classification based on RX/TX thresholds.">Status <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                    <th class="rto-tip rto-sort" data-sort-key="rx" aria-sort="none" title="Latest RX power reading in dBm." data-tip="Latest RX power reading in dBm.">RX (dBm) <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                    <th class="rto-tip rto-sort" data-sort-key="tx" aria-sort="none" title="Latest TX power reading in dBm." data-tip="Latest TX power reading in dBm.">TX (dBm) <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                    <th class="rto-tip rto-sort" data-sort-key="samples" aria-sort="none" title="Number of samples in the current window." data-tip="Number of samples in the current window.">Samples <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                    <th class="rto-tip rto-sort" data-sort-key="last_check_at" aria-sort="none" title="Timestamp of the most recent optical reading." data-tip="Timestamp of the most recent optical reading.">Last Check <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                    <th class="rto-tip rto-trend-header" title="RX power trend for the current window." data-tip="RX power trend for the current window. Click to expand.">{{ optical_status.window_label }} Trend</th>
-                    <th class="text-end"> </th>
+                    <th class="rto-tip rto-sort op-col-customer op-priority-0" data-sort-key="customer" aria-sort="none" title="Subscriber name detected from GenieACS (PPPoE username or device label)." data-tip="Subscriber name detected from GenieACS (PPPoE username or device label).">Customer <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort op-col-ip op-priority-2" data-sort-key="ip" aria-sort="none" title="IP address reported by GenieACS." data-tip="IP address reported by GenieACS.">IPv4 <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort op-col-status op-priority-1" data-sort-key="status" aria-sort="none" title="Stable classification based on RX/TX thresholds." data-tip="Stable classification based on RX/TX thresholds.">Status <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort op-col-rx op-priority-3" data-sort-key="rx" aria-sort="none" title="Latest RX power reading in dBm." data-tip="Latest RX power reading in dBm.">RX (dBm) <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort op-col-tx op-priority-4" data-sort-key="tx" aria-sort="none" title="Latest TX power reading in dBm." data-tip="Latest TX power reading in dBm.">TX (dBm) <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort op-col-samples op-priority-7" data-sort-key="samples" aria-sort="none" title="Number of samples in the current window." data-tip="Number of samples in the current window.">Samples <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-sort op-col-last-check op-priority-5" data-sort-key="last_check_at" aria-sort="none" title="Timestamp of the most recent optical reading." data-tip="Timestamp of the most recent optical reading.">Last Check <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                    <th class="rto-tip rto-trend-header op-col-trend op-priority-6" title="RX power trend for the current window." data-tip="RX power trend for the current window. Click to expand.">{{ optical_status.window_label }} Trend</th>
+                    <th class="text-end op-col-actions op-priority-0">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {% for row in optical_status.stable_rows %}
                     {% set surv_status = surveillance_index.get(row.name) %}
                     <tr{% if surv_status == 'under' %} class="table-warning"{% elif surv_status == 'level2' %} class="table-danger"{% endif %}>
-                      <td>
-                        {% if row.device_url %}
-                          <a href="{{ row.device_url }}" target="_blank" rel="noopener">{{ row.name }}</a>
-                        {% else %}
-                          {{ row.name }}
-                        {% endif %}
-	                      </td>
-	                      <td>{{ row.ip or 'n/a' }}</td>
-	                      <td>
+                      <td class="op-col-customer op-priority-0">{{ optical_customer_label(row.name, row.device_url) }}</td>
+	                      <td class="op-col-ip op-priority-2"><span class="optical-status-cell-truncate" title="{{ row.ip or 'n/a' }}">{{ row.ip or 'n/a' }}</span></td>
+	                      <td class="op-col-status op-priority-1">
 	                        {% if row.status == 'stable' %}
 	                          <span class="badge bg-green-lt">Stable</span>
 	                        {% else %}
 	                          <span class="badge bg-yellow-lt">Monitor</span>
 	                        {% endif %}
 	                      </td>
-                      <td>
+                      <td class="op-col-rx op-priority-3">
                         {% if row.rx_invalid %}
                           {% set rx_raw = row.rx_raw if row.rx_raw is not none else 'n/a' %}
                           <div class="dropdown">
@@ -328,7 +486,7 @@
                           {{ "%.2f"|format(row.rx) if row.rx is not none else 'n/a' }}
                         {% endif %}
                       </td>
-                      <td>
+                      <td class="op-col-tx op-priority-4">
                         {% if row.tx_invalid or row.tx_missing %}
                           {% set tx_raw = row.tx_raw if row.tx_raw is not none else 'n/a' %}
                           <div class="dropdown">
@@ -348,9 +506,9 @@
                           {{ "%.2f"|format(row.tx) if row.tx is not none else 'n/a' }}
                         {% endif %}
                       </td>
-                      <td>{{ row.samples }}</td>
-                      <td>{{ row.last_check or 'n/a' }}</td>
-	                      <td>
+                      <td class="op-col-samples op-priority-7">{{ row.samples }}</td>
+                      <td class="op-col-last-check op-priority-5"><span class="optical-status-cell-truncate" title="{{ row.last_check or 'n/a' }}">{{ row.last_check or 'n/a' }}</span></td>
+	                      <td class="op-col-trend op-priority-6">
 	                        {% if row.spark_points_window %}
 	                          <button type="button"
 	                                  class="btn btn-link p-0 optical-spark-btn"
@@ -369,29 +527,41 @@
 	                        {% else %}
 	                          <span class="text-muted small">n/a</span>
 	                        {% endif %}
-	                      </td>
-                      <td class="text-end">
-                        <span data-surveillance-slot>
-                          {% if surv_status == 'under' %}
-                            <a class="badge bg-yellow-lt text-yellow header-icon-badge" href="/surveillance?tab=under&focus={{ row.name|urlencode }}" title="Under Surveillance" aria-label="Under Surveillance">
-                              <i class="ti ti-eye"></i>
+                      </td>
+                      <td class="text-end op-col-actions op-priority-0">
+                        <div class="d-inline-flex align-items-center justify-content-end gap-1 op-actions">
+                          {% if can_profile_review %}
+                            <a class="badge bg-azure-lt text-azure header-icon-badge"
+                               href="/profile-review?pppoe={{ row.name|urlencode }}{% if row.ip %}&ip={{ row.ip|urlencode }}{% endif %}{% if row.device_id %}&device_id={{ row.device_id|urlencode }}{% endif %}"
+                               target="_blank"
+                               rel="noopener"
+                               title="Profile Review"
+                               aria-label="Profile Review">
+                              <i class="ti ti-user"></i>
                             </a>
-                          {% elif surv_status == 'level2' %}
-                            <a class="badge bg-red-lt text-red header-icon-badge" href="/surveillance?tab=level2&focus={{ row.name|urlencode }}" title="LEVEL II SUSPECT" aria-label="LEVEL II SUSPECT">
-                              <i class="ti ti-eye"></i>
-                            </a>
-                          {% else %}
-                            <button type="button"
-                                    class="badge bg-blue-lt text-blue header-icon-badge border-0 surveillance-add-btn"
-                                    title="For Surveillance"
-                                    data-pppoe="{{ row.name }}"
-                                    data-name="{{ row.name }}"
-                                    data-ip="{{ row.ip }}"
-                                    data-source="optical">
-                              <i class="ti ti-eye"></i>
-                            </button>
                           {% endif %}
-                        </span>
+                          <span data-surveillance-slot>
+                            {% if surv_status == 'under' %}
+                              <a class="badge bg-yellow-lt text-yellow header-icon-badge" href="/surveillance?tab=under&focus={{ row.name|urlencode }}" title="Under Surveillance" aria-label="Under Surveillance">
+                                <i class="ti ti-binoculars"></i>
+                              </a>
+                            {% elif surv_status == 'level2' %}
+                              <a class="badge bg-red-lt text-red header-icon-badge" href="/surveillance?tab=level2&focus={{ row.name|urlencode }}" title="Needs Manual Fix" aria-label="Needs Manual Fix">
+                                <i class="ti ti-binoculars"></i>
+                              </a>
+                            {% else %}
+                              <button type="button"
+                                      class="badge bg-blue-lt text-blue header-icon-badge border-0 surveillance-add-btn"
+                                      title="For Surveillance"
+                                      data-pppoe="{{ row.name }}"
+                                      data-name="{{ row.name }}"
+                                      data-ip="{{ row.ip }}"
+                                      data-source="optical">
+                                <i class="ti ti-binoculars"></i>
+                              </button>
+                            {% endif %}
+                          </span>
+                        </div>
                       </td>
                     </tr>
                   {% else %}
@@ -456,11 +626,6 @@
             <li class="nav-item">
               <a href="#optical-storage" class="nav-link {% if settings_tab == 'storage' %}active{% endif %}" data-bs-toggle="tab">Storage</a>
             </li>
-            {% if not auth_enabled or has_perm('RUN_DangerActions') %}
-              <li class="nav-item">
-                <a href="#optical-danger" class="nav-link {% if settings_tab == 'danger' %}active{% endif %}" data-bs-toggle="tab">Danger</a>
-              </li>
-            {% endif %}
           </ul>
 
           <div class="tab-content pt-4">
@@ -675,29 +840,8 @@
                 <button type="submit" class="btn btn-primary" name="settings_tab" value="storage">Save Storage Settings</button>
               </div>
             </div>
-
-            {% if not auth_enabled or has_perm('RUN_DangerActions') %}
-              <div class="tab-pane {% if settings_tab == 'danger' %}active{% endif %}" id="optical-danger">
-                <div class="card mb-3 border-danger">
-                  <div class="card-body">
-                    <h4 class="text-danger mb-3">Format Optical Database</h4>
-                    <div class="alert alert-warning">
-                      Formatting clears all stored optical history. Settings will be preserved.
-                    </div>
-                    <div class="d-flex align-items-center gap-3">
-                      <label class="form-check">
-                        <input class="form-check-input" type="checkbox" name="confirm_format" form="optical-format-form" />
-                        <span class="form-check-label">Confirm format</span>
-                      </label>
-                      <button type="submit" class="btn btn-danger" form="optical-format-form">Format Optical Database</button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            {% endif %}
           </div>
         </form>
-        <form id="optical-format-form" method="post" action="/settings/optical/format?window={{ optical_status.window_hours }}"></form>
       </div>
     </div>
   </div>
@@ -752,6 +896,23 @@
       });
     });
 
+    const loadingBanner = document.getElementById("optical-status-loading");
+    const loadingLabel = loadingBanner ? loadingBanner.querySelector("[data-loading-label]") : null;
+    const showLoadingBanner = (message = "Loading optical results...") => {
+      if (loadingLabel) {
+        loadingLabel.textContent = message;
+      }
+      if (loadingBanner) {
+        loadingBanner.classList.remove("d-none");
+      }
+    };
+    const navigateWithLoading = (nextUrl, message = "Loading optical results...") => {
+      showLoadingBanner(message);
+      window.setTimeout(() => {
+        window.location.href = nextUrl.toString();
+      }, 40);
+    };
+
 	    const windowBadge = document.getElementById("optical-status-window");
 	    const windowButton = document.getElementById("optical-window-button");
 	    const windowOptions = document.querySelectorAll(".optical-window-row");
@@ -764,7 +925,7 @@
 		      defaultWindow = "24";
 	      localStorage.setItem("optical_status_default_window", defaultWindow);
 	    }
-	    const currentWindow = windowParam || "24";
+	    let currentWindow = windowParam || "24";
 	    const updateStars = () => {
 	      windowStars.forEach((btn) => {
 	        const icon = btn.querySelector("i");
@@ -792,7 +953,12 @@
     updateButtonLabel();
 		    windowOptions.forEach((row) => {
 		      row.addEventListener("click", () => {
-		        currentWindow = row.dataset.hours;
+		        const nextWindow = row.dataset.hours || "24";
+            const nextLabel = row.dataset.label || nextWindow;
+		        currentWindow = nextWindow;
+            if (windowBadge) {
+              windowBadge.textContent = nextLabel;
+            }
 		        updateStars();
 		        updateButtonLabel();
 		        const url = new URL(window.location.href);
@@ -803,7 +969,7 @@
 		        if (tabHash) {
 		          url.hash = tabHash;
 		        }
-		        window.location.href = url.toString();
+		        navigateWithLoading(url, `Loading ${nextLabel} optical results...`);
 		      });
 		    });
 	    windowStars.forEach((btn) => {
@@ -828,7 +994,13 @@
           if (tabHash) {
             url.hash = tabHash;
           }
-          window.location.href = url.toString();
+          navigateWithLoading(url, "Loading optical results...");
+        });
+      });
+
+      document.querySelectorAll("#optical-status .page-link").forEach((link) => {
+        link.addEventListener("click", () => {
+          showLoadingBanner("Loading optical results...");
         });
       });
 
@@ -864,7 +1036,7 @@
           nextUrl.searchParams.set(`${prefix}_dir`, nextDir);
           nextUrl.searchParams.set(`${prefix}_page`, "1");
           nextUrl.hash = hash;
-          window.location.href = nextUrl.toString();
+          navigateWithLoading(nextUrl, "Loading optical results...");
         });
       };
 
@@ -887,7 +1059,7 @@
             url.searchParams.set("stable_page", "1");
             const tabHash = localStorage.getItem(tabKey) || window.location.hash;
             if (tabHash) url.hash = tabHash;
-            window.location.href = url.toString();
+            navigateWithLoading(url, q ? "Searching optical results..." : "Loading optical results...");
 		      };
           opticalSearch.addEventListener("input", () => {
             if (timer) clearTimeout(timer);
@@ -920,6 +1092,27 @@
 	    const chartMax = {{ optical_status.chart.max_dbm }};
 	    const txRealisticMin = {{ settings.get("classification", {}).get("tx_realistic_min_dbm", -10.0) }};
 	    const txRealisticMax = {{ settings.get("classification", {}).get("tx_realistic_max_dbm", 10.0) }};
+      const modalTickAmountForHours = (hours) => {
+        const h = Number(hours);
+        if (!Number.isFinite(h) || h <= 0) return undefined;
+        if (h <= 12) return Math.max(3, h);
+        if (h <= 24) return 8;
+        if (h <= 168) return 7;
+        if (h <= 360) return 15;
+        return 30;
+      };
+      const modalAxisLabelForHours = (ts, hours) => {
+        const dt = new Date(ts);
+        if (Number.isNaN(dt.getTime())) return "";
+        const h = Number(hours || 24);
+        if (h <= 12) {
+          return dt.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+        }
+        if (h <= 24) {
+          return dt.toLocaleTimeString("en-US", { hour: "2-digit", hour12: true });
+        }
+        return dt.toLocaleDateString("en-US", { month: "short", day: "2-digit" });
+      };
 
 	    const renderModalWhenVisible = () => {
 	      if (!modalDeviceId) return;
@@ -938,6 +1131,7 @@
 	    const renderModalChart = async (name, deviceId, status, hours) => {
 	      const colorMap = { stable: "#2fb344", issue: "#d63939", monitor: "#f59f00" };
 	      const stroke = colorMap[status] || "#2fb344";
+        const numericHours = Number(hours || 24);
 	      const label = hours >= 24 ? `${Math.floor(hours / 24)}D` : `${hours}H`;
       modalTitle.textContent = `${name} · ${label} Trend`;
       if (modalWindowButton) {
@@ -989,8 +1183,12 @@
 	          modalChart.innerHTML = "<div class='text-muted'>No data available.</div>";
 	          return;
 	        }
-	        const rxSeries = points.map((item) => ({ x: item.x, y: item.rx }));
-	        const txSeries = points.map((item) => ({ x: item.x, y: item.tx }));
+          const nowMs = Date.now();
+          const windowStartMs = nowMs - (numericHours * 3600 * 1000);
+          const windowEndMs = nowMs;
+          const chartPoints = [...points].sort((a, b) => a.x - b.x);
+	        const rxSeries = chartPoints.map((item) => ({ x: item.x, y: item.rx }));
+	        const txSeries = chartPoints.map((item) => ({ x: item.x, y: item.tx }));
 	        modalChart.innerHTML = "";
 	        const formatTime = (value) => {
 	          const dt = new Date(value);
@@ -1027,7 +1225,17 @@
 	          markers: { size: 0, hover: { size: 4 } },
 	          xaxis: {
 	            type: "datetime",
-	            labels: { formatter: formatTime },
+              min: windowStartMs,
+              max: windowEndMs,
+              tickAmount: modalTickAmountForHours(numericHours),
+	            labels: {
+                show: true,
+                hideOverlappingLabels: numericHours > 24,
+                formatter: (value, timestamp) => {
+                  const ts = Number.isFinite(Number(timestamp)) ? Number(timestamp) : Number(value);
+                  return modalAxisLabelForHours(ts, numericHours);
+                },
+              },
 	            tooltip: { enabled: false },
 	          },
 	          yaxis: {
@@ -1043,7 +1251,7 @@
 		            x: { formatter: (value) => `${formatDate(value)} ${formatTime(value)}` },
 		            y: {
 		              formatter: (value, { seriesIndex, dataPointIndex }) => {
-		                const point = points?.[dataPointIndex] || null;
+		                const point = chartPoints?.[dataPointIndex] || null;
 		                if (!point) {
 		                  return value === null || value === undefined || Number.isNaN(Number(value)) ? "n/a" : formatDbmTooltip(value);
 		                }
@@ -1086,6 +1294,7 @@
       btn.addEventListener("click", () => {
         const hours = Number(btn.dataset.hours || "24");
         if (!modalDeviceId) return;
+        modalHours = hours;
         renderModalChart(modalTitle.textContent.split(" · ")[0], modalDeviceId, modalStatus, hours);
       });
     });

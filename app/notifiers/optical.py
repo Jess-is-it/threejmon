@@ -1,16 +1,19 @@
 import base64
 import json
+import math
 import re
+import time
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .telegram import send_telegram
-from ..db import insert_optical_result, utc_now_iso
+from ..db import get_latest_non_null_optical_tx_for_devices, insert_optical_result, utc_now_iso
 
 FLOAT_RE = re.compile(r"-?\d+(?:\.\d+)?")
 REALISTIC_RX_MIN = -40.0
 REALISTIC_RX_MAX = 5.0
+TX_FALLBACK_LOOKBACK_DAYS = 30
 
 
 def parse_list(values):
@@ -50,6 +53,66 @@ def fetch_devices(cfg):
     return devices
 
 
+def fetch_device_by_id(cfg, device_id):
+    device_id = str(device_id or "").strip()
+    if not device_id:
+        return None
+    base_url = cfg["genieacs"]["base_url"].rstrip("/")
+    headers = build_auth_header(cfg)
+    params = {
+        "query": json.dumps({"_id": device_id}, separators=(",", ":")),
+        "limit": "1",
+    }
+    url = f"{base_url}/devices?{urllib.parse.urlencode(params)}"
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    if isinstance(payload, list) and payload:
+        return payload[0]
+    return None
+
+
+def request_parameter_values(cfg, device_id, parameter_names, *, timeout_ms=3000):
+    device_id = str(device_id or "").strip()
+    names = [str(item).strip() for item in (parameter_names or []) if str(item).strip()]
+    if not device_id or not names:
+        return False
+    base_url = cfg["genieacs"]["base_url"].rstrip("/")
+    headers = build_auth_header(cfg)
+    headers["Content-Type"] = "application/json"
+    query = f"timeout={max(int(timeout_ms or 0), 1000)}&connection_request"
+    url = f"{base_url}/devices/{urllib.parse.quote(device_id, safe='')}/tasks?{query}"
+    payload = json.dumps(
+        {"name": "getParameterValues", "parameterNames": names},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=max(10, (int(timeout_ms or 0) / 1000.0) + 5)) as resp:
+        return int(getattr(resp, "status", 200) or 200) < 300
+
+
+def refresh_missing_tx(cfg, device_id, tx_paths, tx_min, tx_max):
+    if not device_id:
+        return None
+    try:
+        if not request_parameter_values(cfg, device_id, tx_paths):
+            return None
+    except Exception:
+        return None
+    for attempt in range(4):
+        try:
+            refreshed_device = fetch_device_by_id(cfg, device_id)
+        except Exception:
+            refreshed_device = None
+        if refreshed_device is not None:
+            tx = pick_param_with_bounds(refreshed_device, tx_paths, tx_min, tx_max, prefer_negative=False)
+            if tx is not None:
+                return tx
+        if attempt < 3:
+            time.sleep(0.35)
+    return None
+
+
 def get_nested(node, path):
     current = node
     for key in path.split("."):
@@ -79,13 +142,46 @@ def parse_float(value):
     return float(match.group(0))
 
 
-def pick_param_with_bounds(device, paths, min_value, max_value):
+def _convert_raw_optical_to_dbm(parsed):
+    try:
+        value = float(parsed)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value) or value <= 0:
+        return None
+    try:
+        return 10.0 * math.log10(value / 10000.0)
+    except (ValueError, ZeroDivisionError):
+        return None
+
+
+def normalize_optical_power(value, min_value, max_value, *, prefer_negative=False):
+    parsed = parse_float(value)
+    if parsed is None:
+        return None
+    raw_text = str(value).strip() if value is not None else ""
+    has_decimal = isinstance(value, float) and not float(value).is_integer()
+    if not has_decimal and raw_text:
+        has_decimal = "." in raw_text
+    if min_value <= parsed <= max_value:
+        if prefer_negative and parsed >= 0 and not has_decimal:
+            converted = _convert_raw_optical_to_dbm(parsed)
+            if converted is not None and min_value <= converted <= max_value and converted < parsed:
+                return converted
+        return parsed
+    converted = _convert_raw_optical_to_dbm(parsed)
+    if converted is not None and min_value <= converted <= max_value:
+        return converted
+    return parsed
+
+
+def pick_param_with_bounds(device, paths, min_value, max_value, *, prefer_negative=False):
     first_value = None
     first_within = None
     for path in paths:
         raw = get_nested(device, path)
         value = extract_value(raw)
-        parsed = parse_float(value)
+        parsed = normalize_optical_power(value, min_value, max_value, prefer_negative=prefer_negative)
         if parsed is None:
             continue
         if first_value is None:
@@ -198,23 +294,45 @@ def run(cfg, send_alerts=True):
     tx_low = float(cfg["optical"].get("tx_low_threshold_dbm", -1.0))
     priority_threshold = float(cfg["optical"].get("priority_rx_threshold_dbm", -29.0))
     timestamp = utc_now_iso()
+    fallback_since_iso = (datetime.utcnow() - timedelta(days=TX_FALLBACK_LOOKBACK_DAYS)).replace(microsecond=0).isoformat() + "Z"
 
     realistic_min = float(cfg.get("classification", {}).get("rx_realistic_min_dbm", REALISTIC_RX_MIN))
     realistic_max = float(cfg.get("classification", {}).get("rx_realistic_max_dbm", REALISTIC_RX_MAX))
     tx_min = float(cfg.get("classification", {}).get("tx_realistic_min_dbm", -10.0))
     tx_max = float(cfg.get("classification", {}).get("tx_realistic_max_dbm", 10.0))
+    known_tx_map = get_latest_non_null_optical_tx_for_devices(
+        [device.get("_id") for device in devices if isinstance(device, dict) and device.get("_id")],
+        since_iso=fallback_since_iso,
+    )
 
     rows = []
     for device in devices:
-        rx = pick_param_with_bounds(device, rx_paths, realistic_min, realistic_max)
-        tx = pick_param_with_bounds(device, tx_paths, tx_min, tx_max)
+        device_id = device.get("_id") if isinstance(device, dict) else None
+        rx = pick_param_with_bounds(device, rx_paths, realistic_min, realistic_max, prefer_negative=True)
+        tx = pick_param_with_bounds(device, tx_paths, tx_min, tx_max, prefer_negative=False)
+        if tx is None and device_id:
+            refreshed_device = None
+            try:
+                refreshed_device = fetch_device_by_id(cfg, device_id)
+            except Exception:
+                refreshed_device = None
+            if refreshed_device is not None:
+                tx = pick_param_with_bounds(refreshed_device, tx_paths, tx_min, tx_max, prefer_negative=False)
+        if tx is None and device_id:
+            tx = refresh_missing_tx(cfg, device_id, tx_paths, tx_min, tx_max)
+        if tx is None and device_id:
+            fallback_row = known_tx_map.get(device_id) or {}
+            fallback_tx = fallback_row.get("tx")
+            if fallback_tx is not None:
+                tx = fallback_tx
         if rx is None:
             continue
         pppoe = pick_text(device, pppoe_paths) or device_label(device)
         ip_address = pick_text(device, ip_paths)
-        device_id = device.get("_id") if isinstance(device, dict) else None
         if not device_id:
             device_id = pppoe
+        if tx is not None:
+            known_tx_map[device_id] = {"tx": tx, "timestamp": timestamp}
         priority = rx <= priority_threshold
         insert_optical_result(device_id, pppoe, ip_address, rx, tx, priority, timestamp=timestamp)
         tx_alert = tx is not None and tx <= tx_low

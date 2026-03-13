@@ -37,6 +37,7 @@ from .notifiers import rto as rto_notifier
 from .notifiers import offline as offline_notifier
 from .notifiers import usage as usage_notifier
 from .notifiers.telegram import TelegramError, get_updates, send_telegram
+from .offline_rules import enabled_offline_tracking_rules
 from .settings_defaults import (
     ACCOUNTS_PING_DEFAULTS,
     OFFLINE_DEFAULTS,
@@ -1668,18 +1669,22 @@ class JobsManager:
             poll_seconds = max(poll_seconds, 5)
             timeout_seconds = 5
             general_cfg = cfg.get("general") if isinstance(cfg.get("general"), dict) else {}
-            min_value = int(general_cfg.get("min_offline_value", 1) or 1)
-            min_value = max(min_value, 0)
-            min_unit = (general_cfg.get("min_offline_unit") or "day").strip().lower()
-            if min_unit not in ("hour", "day"):
-                min_unit = "day"
-            min_offline_minutes = min_value * (60 if min_unit == "hour" else 1440)
+            tracking_rules = enabled_offline_tracking_rules(
+                general_cfg.get("tracking_rules"),
+                fallback_value=general_cfg.get("min_offline_value", 1),
+                fallback_unit=general_cfg.get("min_offline_unit", "day"),
+            )
+            min_offline_minutes = min(int(rule.get("minutes", 0) or 0) for rule in tracking_rules) if tracking_rules else 0
             history_retention_days = int(general_cfg.get("history_retention_days", 365) or 365)
             history_retention_days = max(history_retention_days, 1)
 
             mode = (cfg.get("mode") or "secrets").strip().lower()
             if mode not in ("secrets", "radius"):
                 mode = "secrets"
+            mikrotik_cfg = cfg.get("mikrotik") if isinstance(cfg.get("mikrotik"), dict) else {}
+            offline_router_enabled = (
+                mikrotik_cfg.get("router_enabled") if isinstance(mikrotik_cfg.get("router_enabled"), dict) else {}
+            )
 
             wan_cfg = get_settings("wan_ping", WAN_PING_DEFAULTS)
             routers = wan_cfg.get("pppoe_routers") if isinstance(wan_cfg.get("pppoe_routers"), list) else []
@@ -1711,6 +1716,20 @@ class JobsManager:
                     save_settings("wan_ping", wan_cfg)
                     routers = migrated
 
+            enabled_router_ids = set()
+            monitored_routers = []
+            for router in routers:
+                if not isinstance(router, dict):
+                    continue
+                router_id = (router.get("id") or "").strip()
+                host = (router.get("host") or "").strip()
+                if not router_id or not host:
+                    continue
+                if not bool(offline_router_enabled.get(router_id, True)):
+                    continue
+                monitored_routers.append(router)
+                enabled_router_ids.add(router_id)
+
             now_iso = utc_now_iso()
             _safe_update_job_status("offline", last_run_at=now_iso)
             state = get_state("offline_state", {})
@@ -1735,11 +1754,7 @@ class JobsManager:
             if use_cache:
                 try:
                     cached_router_ids = set(usage_state.get("enabled_router_ids") or [])
-                    desired_router_ids = {(r.get("id") or "").strip() for r in routers if isinstance(r, dict)}
-                    desired_router_ids = {rid for rid in desired_router_ids if rid}
-                    if desired_router_ids and cached_router_ids and cached_router_ids != desired_router_ids:
-                        # Usage may be configured to only poll a subset of routers; do not use cache
-                        # for offline calculations in that case.
+                    if not enabled_router_ids or not enabled_router_ids.issubset(cached_router_ids):
                         use_cache = False
                 except Exception:
                     use_cache = False
@@ -1760,29 +1775,33 @@ class JobsManager:
                 if use_cache:
                     active_rows = usage_state.get("active_rows") if isinstance(usage_state.get("active_rows"), list) else []
                     for row in active_rows:
+                        rid = (row.get("router_id") or "").strip()
+                        if rid not in enabled_router_ids:
+                            continue
                         user = (row.get("pppoe") or row.get("name") or "").strip()
-                        rid = (row.get("router_id") or "").strip() or "router"
                         if not user:
                             continue
                         active_users_all.add(user)
                         active_users_by_router.setdefault(rid, set()).add(user)
-                    router_status = usage_state.get("routers") if isinstance(usage_state.get("routers"), list) else []
+                    router_status = [
+                        row
+                        for row in (usage_state.get("routers") if isinstance(usage_state.get("routers"), list) else [])
+                        if isinstance(row, dict) and (row.get("router_id") or "").strip() in enabled_router_ids
+                    ]
 
                     if mode == "secrets":
-                        offline_rows = usage_state.get("offline_rows") if isinstance(usage_state.get("offline_rows"), list) else []
+                        offline_rows = [
+                            row
+                            for row in (usage_state.get("offline_rows") if isinstance(usage_state.get("offline_rows"), list) else [])
+                            if isinstance(row, dict) and (row.get("router_id") or "").strip() in enabled_router_ids
+                        ]
                 else:
-                    enabled_router_ids = set()
-                    for router in routers:
-                        if not isinstance(router, dict):
-                            continue
-                        if not router.get("enabled", True):
-                            continue
+                    for router in monitored_routers:
                         router_id = (router.get("id") or "").strip()
                         router_name = (router.get("name") or router_id or "router").strip()
                         host = (router.get("host") or "").strip()
                         if not router_id or not host:
                             continue
-                        enabled_router_ids.add(router_id)
                         if router.get("use_tls"):
                             router_error = "TLS/API-SSL is not supported by the current RouterOS API client. Disable TLS or use port 8728."
                             router_status.append(
@@ -1897,28 +1916,29 @@ class JobsManager:
                 radius_error = ""
                 radius_accounts = {}
                 if mode == "radius":
-                    radius_cfg = cfg.get("radius") if isinstance(cfg.get("radius"), dict) else {}
-                    if not radius_cfg.get("enabled"):
-                        radius_error = "Radius mode is selected but Radius settings are disabled."
-                    else:
-                        try:
-                            radius_accounts = offline_notifier.fetch_radius_accounts(radius_cfg)
-                        except Exception as exc:
-                            radius_error = str(exc)
-                            radius_accounts = {}
-
                     offline_rows = []
-                    for user, status in (radius_accounts or {}).items():
-                        if user in active_users_all:
-                            continue
-                        offline_rows.append(
-                            {
-                                "router_id": "",
-                                "router_name": "Radius",
-                                "pppoe": user,
-                                "radius_status": status or "",
-                            }
-                        )
+                    if enabled_router_ids:
+                        radius_cfg = cfg.get("radius") if isinstance(cfg.get("radius"), dict) else {}
+                        if not radius_cfg.get("enabled"):
+                            radius_error = "Radius mode is selected but Radius settings are disabled."
+                        else:
+                            try:
+                                radius_accounts = offline_notifier.fetch_radius_accounts(radius_cfg)
+                            except Exception as exc:
+                                radius_error = str(exc)
+                                radius_accounts = {}
+
+                        for user, status in (radius_accounts or {}).items():
+                            if user in active_users_all:
+                                continue
+                            offline_rows.append(
+                                {
+                                    "router_id": "",
+                                    "router_name": "Radius",
+                                    "pppoe": user,
+                                    "radius_status": status or "",
+                                }
+                            )
                 else:
                     radius_error = ""
 
@@ -2023,10 +2043,12 @@ class JobsManager:
                     {
                         "mode": mode,
                         "rows": offline_rows,
+                        "tracking_rules": tracking_rules,
                         "routers": router_status,
                         "router_errors": router_errors,
                         "radius_error": radius_error,
                         "tracker": tracker,
+                        "enabled_router_ids": sorted(list(enabled_router_ids)),
                         "min_offline_minutes": int(min_offline_minutes),
                         "last_check_at": now_iso,
                     }

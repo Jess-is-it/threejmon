@@ -279,11 +279,6 @@
           <li class="nav-item">
             <a href="#wan-settings-database" class="nav-link {% if wan_settings_tab == 'database' %}active{% endif %}" data-bs-toggle="tab">Database</a>
           </li>
-          {% if can_run_danger_actions %}
-            <li class="nav-item">
-              <a href="#wan-settings-danger" class="nav-link {% if wan_settings_tab == 'danger' %}active{% endif %}" data-bs-toggle="tab">Danger</a>
-            </li>
-          {% endif %}
 	        </ul>
 	        <div class="tab-content pt-4">
 	          <div class="tab-pane {% if wan_settings_tab == 'telegram' %}active{% endif %}" id="wan-settings-telegram">
@@ -523,31 +518,6 @@
           </div>
         </form>
           </div>
-
-          {% if can_run_danger_actions %}
-            <div class="tab-pane {% if wan_settings_tab == 'danger' %}active{% endif %}" id="wan-settings-danger">
-	            <div class="card">
-	            <div class="card-body">
-	              <h4 class="mb-2">Format WAN Status Database</h4>
-	              <div class="alert alert-warning">
-	                <div class="d-flex align-items-center">
-	                  <span class="me-2"><i class="ti ti-alert-triangle"></i></span>
-	                  <div>Formatting removes WAN status history and Target Latency history. Settings are preserved.</div>
-	                </div>
-	              </div>
-	              <form method="post" action="/settings/wan/format">
-	                <label class="form-check">
-	                  <input class="form-check-input" type="checkbox" name="confirm_format" />
-                  <span class="form-check-label">I understand this will erase WAN status data.</span>
-                </label>
-                <div class="mt-3">
-                  <button type="submit" class="btn btn-danger">Format WAN Status Database</button>
-                </div>
-              </form>
-            </div>
-          </div>
-            </div>
-          {% endif %}
         </div>
           </div>
 <div class="tab-pane {% if active_tab == 'messages' %}active{% endif %}" id="wan-messages">
@@ -1370,15 +1340,21 @@
     renderChart(filterEl ? filterEl.value : "all", getRangeHours(), targetEl.value, fromTs, toTs);
   });
 
-  updateChart();
-  fetchStatus();
-  setInterval(() => {
-    fetchStatus();
-    updateChart();
+  const runWanStatusRefresh = async () => {
+    await Promise.allSettled([
+      Promise.resolve(fetchStatus()),
+      Promise.resolve(updateChart()),
+    ]);
     if (stabilityDaysEl && stabilityDaysEl.value === "live") {
-      fetchStability();
+      await Promise.resolve(fetchStability());
     }
-  }, wanRefreshSeconds * 1000);
+  };
+  if (window.ThreeJPolling?.createTask) {
+    window.ThreeJPolling.createTask(runWanStatusRefresh, { intervalMs: wanRefreshSeconds * 1000, resumeDelayMs: 250 });
+  } else {
+    runWanStatusRefresh();
+    setInterval(runWanStatusRefresh, wanRefreshSeconds * 1000);
+  }
 
   setTimeout(() => {
     updateChart();
@@ -2195,6 +2171,7 @@
 		  };
 
 		  let wanTargetCountdownTimer = null;
+		  let wanTargetCountdownTask = null;
 		  const updateWanTargetCountdowns = () => {
 		    const nowMs = Date.now();
 		    const els = Array.from(document.querySelectorAll(".wan-target-countdown[data-next-ms], .wan-target-isp-next[data-next-ms]"));
@@ -2221,7 +2198,15 @@
 		      const data = await res.json().catch(() => null);
 		      renderWanTargetPolling(data);
 		      updateWanTargetCountdowns();
-		      if (!wanTargetCountdownTimer) {
+		      if (!wanTargetCountdownTask && window.ThreeJPolling?.createTask) {
+		        wanTargetCountdownTask = window.ThreeJPolling.createTask(updateWanTargetCountdowns, {
+		          intervalMs: 1000,
+		          runImmediately: false,
+		          pauseWhenIdle: false,
+		          resumeDelayMs: 0,
+		          minResumeGapMs: 1000,
+		        });
+		      } else if (!wanTargetCountdownTask && !wanTargetCountdownTimer) {
 		        wanTargetCountdownTimer = setInterval(updateWanTargetCountdowns, 1000);
 		      }
 		    } catch (err) {
@@ -2848,7 +2833,11 @@
 				    });
 				  }
 
-			  fetchAllWanTargetMinis();
-		  setInterval(fetchAllWanTargetMinis, wanTargetUiRefreshSeconds * 1000);
+			  if (window.ThreeJPolling?.createTask) {
+			    window.ThreeJPolling.createTask(fetchAllWanTargetMinis, { intervalMs: wanTargetUiRefreshSeconds * 1000, resumeDelayMs: 1200 });
+			  } else {
+			    fetchAllWanTargetMinis();
+			    setInterval(fetchAllWanTargetMinis, wanTargetUiRefreshSeconds * 1000);
+			  }
 		</script>
 		{% endblock %}
