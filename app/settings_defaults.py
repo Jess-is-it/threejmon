@@ -351,7 +351,11 @@ ACCOUNTS_PING_DEFAULTS = {
         "remote_csv_path": "/opt/libreqos/src/ShapedDevices.csv",
     },
     "source": {
+        "mode": "ssh_csv",
         "refresh_minutes": 15,
+        "mikrotik": {
+            "router_enabled": {},
+        },
     },
     "general": {
         "base_interval_seconds": 30,

@@ -2,8 +2,8 @@ import threading
 import time as time_module
 from datetime import datetime, time, timedelta
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout, as_completed
-import base64
 import os
+import queue
 import re
 import subprocess
 
@@ -31,9 +31,15 @@ from .db import (
     insert_auth_audit_log,
 )
 from .db import delete_accounts_ping_raw_older_than, delete_accounts_ping_rollups_older_than, insert_accounts_ping_result
+from .accounts_ping_sources import (
+    ACCOUNTS_PING_SOURCE_MIKROTIK,
+    build_accounts_ping_account_id,
+    build_accounts_ping_account_ids_by_pppoe,
+    build_accounts_ping_source_devices,
+    normalize_accounts_ping_source_mode,
+)
 from .notifiers import optical as optical_notifier
 from .notifiers import wan_ping as wan_ping_notifier
-from .notifiers import rto as rto_notifier
 from .notifiers import offline as offline_notifier
 from .notifiers import usage as usage_notifier
 from .notifiers.telegram import TelegramError, get_updates, send_telegram
@@ -128,6 +134,27 @@ def _ping_with_source(ip, source_ip, timeout_seconds, count):
         "avg_ms": avg_ms,
         "max_ms": max_ms,
         "raw_output": output,
+        "replies": replies,
+    }
+
+
+def _router_ping_with_client(client, ip, timeout_seconds, count):
+    timeout_seconds = max(int(timeout_seconds or 1), 1)
+    count = max(int(count or 1), 1)
+    times = client.ping_times(ip, count=count, timeout=f"{timeout_seconds * 1000}ms")
+    replies = len(times)
+    loss = 100.0
+    if count > 0:
+        loss = round(100.0 * (count - replies) / count, 1)
+    min_ms = min(times) if times else None
+    max_ms = max(times) if times else None
+    avg_ms = round(sum(times) / len(times), 1) if times else None
+    return {
+        "loss": loss,
+        "min_ms": min_ms,
+        "avg_ms": avg_ms,
+        "max_ms": max_ms,
+        "raw_output": "",
         "replies": replies,
     }
 
@@ -261,36 +288,44 @@ class JobsManager:
                 state = get_state("accounts_ping_state", {"accounts": {}, "last_prune_at": None})
                 accounts_state = state.get("accounts") if isinstance(state.get("accounts"), dict) else {}
                 devices = state.get("devices") if isinstance(state.get("devices"), list) else []
+                wan_cfg = get_settings("wan_ping", WAN_PING_DEFAULTS)
+                routers = wan_cfg.get("pppoe_routers") if isinstance(wan_cfg.get("pppoe_routers"), list) else []
+                router_catalog = {
+                    (router.get("id") or "").strip(): router
+                    for router in routers
+                    if isinstance(router, dict) and (router.get("id") or "").strip()
+                }
                 refreshed_at = state.get("devices_refreshed_at")
                 refreshed_dt = datetime.fromisoformat(refreshed_at.replace("Z", "")) if refreshed_at else None
                 refresh_minutes = int((cfg.get("source", {}) or {}).get("refresh_minutes", 15) or 15)
                 if refresh_minutes < 1:
                     refresh_minutes = 1
+                source_cfg = cfg.get("source") if isinstance(cfg.get("source"), dict) else {}
+                mikrotik_source_cfg = (
+                    source_cfg.get("mikrotik") if isinstance(source_cfg.get("mikrotik"), dict) else {}
+                )
+                mikrotik_timeout_seconds = max(int(mikrotik_source_cfg.get("timeout_seconds", 5) or 5), 1)
+                source_mode = source_cfg.get("mode")
 
-                def account_id_for_pppoe(pppoe):
-                    raw = (pppoe or "").strip().encode("utf-8")
-                    if not raw:
-                        return ""
-                    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+                def account_id_for_target(pppoe, router_id=""):
+                    return build_accounts_ping_account_id(
+                        pppoe,
+                        source_mode=source_mode,
+                        router_id=router_id,
+                    )
 
-                # refresh devices list from SSH CSV (same source as RTO)
+                # Refresh tracked devices from the configured source.
                 should_refresh = (not refreshed_dt) or (refreshed_dt + timedelta(minutes=refresh_minutes) < now) or not devices
-                ssh_cfg = cfg.get("ssh", {}) or {}
-                has_ssh = bool((ssh_cfg.get("host") or "").strip() and (ssh_cfg.get("user") or "").strip())
-                if should_refresh and has_ssh:
+                if should_refresh:
                     try:
-                        csv_text = rto_notifier.fetch_csv_text(cfg)
-                        parsed = rto_notifier.parse_devices(csv_text)
-                        devices = [
-                            {
-                                "pppoe": (d.get("pppoe") or d.get("name") or d.get("ip") or "").strip(),
-                                "name": (d.get("pppoe") or d.get("name") or d.get("ip") or "").strip(),
-                                "ip": (d.get("ip") or "").strip(),
-                            }
-                            for d in (parsed or [])
-                            if (d.get("ip") or "").strip()
-                        ]
+                        source_mode, devices, router_status = build_accounts_ping_source_devices(
+                            cfg,
+                            routers=routers,
+                            previous_devices=devices,
+                            now=now,
+                        )
                         state["devices"] = devices
+                        state["router_status"] = router_status
                         state["devices_refreshed_at"] = now.replace(microsecond=0).isoformat() + "Z"
                         save_state("accounts_ping_state", state)
                     except Exception:
@@ -328,12 +363,23 @@ class JobsManager:
                     for device in devices:
                         pppoe = (device.get("pppoe") or device.get("name") or "").strip()
                         ip = (device.get("ip") or "").strip()
-                        if not pppoe or not ip:
+                        account_id = (device.get("account_id") or "").strip() or account_id_for_target(
+                            pppoe,
+                            router_id=(device.get("router_id") or "").strip(),
+                        )
+                        if not pppoe or not ip or not account_id:
                             continue
-                        account_id = account_id_for_pppoe(pppoe)
-                        if not account_id:
-                            continue
-                        target_map[account_id] = {"id": account_id, "pppoe": pppoe, "name": pppoe, "ip": ip}
+                        target_map[account_id] = {
+                            "id": account_id,
+                            "pppoe": pppoe,
+                            "name": pppoe,
+                            "ip": ip,
+                            "router_id": (device.get("router_id") or "").strip(),
+                            "router_name": (device.get("router_name") or "").strip(),
+                            "source_mode": normalize_accounts_ping_source_mode(device.get("source_mode") or source_mode),
+                            "source_missing": bool(device.get("source_missing")),
+                            "source_missing_since": (device.get("source_missing_since") or "").strip(),
+                        }
 
                 surv_changed = False
                 if has_surveillance_targets:
@@ -352,12 +398,21 @@ class JobsManager:
                                 )
                             except Exception:
                                 pass
-                        account_id = account_id_for_pppoe(pppoe)
+                        account_id = account_id_for_target(pppoe)
                         if not account_id or not ip:
                             continue
                         target_map.setdefault(account_id, {"id": account_id, "pppoe": pppoe, "name": pppoe, "ip": ip})
 
                 targets = list(target_map.values())
+                account_ids_by_pppoe = build_accounts_ping_account_ids_by_pppoe(devices)
+                for target in targets:
+                    pppoe = (target.get("pppoe") or "").strip().lower()
+                    aid = (target.get("id") or "").strip()
+                    if not pppoe or not aid:
+                        continue
+                    account_ids_by_pppoe.setdefault(pppoe, [])
+                    if aid not in account_ids_by_pppoe[pppoe]:
+                        account_ids_by_pppoe[pppoe].append(aid)
 
                 if not targets:
                     time_module.sleep(2)
@@ -390,9 +445,7 @@ class JobsManager:
 
                 base_interval = max(int((cfg.get("general", {}) or {}).get("base_interval_seconds", 30) or 30), 1)
                 configured_parallel = max(int((cfg.get("general", {}) or {}).get("max_parallel", 64) or 64), 1)
-                cpu_cores = max(int(os.cpu_count() or 1), 1)
-                safe_parallel_cap = max(8, min(32, cpu_cores * 4))
-                max_parallel = min(configured_parallel, safe_parallel_cap)
+                max_parallel = configured_parallel
                 ping_cfg = cfg.get("ping", {}) or {}
                 count = max(int(ping_cfg.get("count", 3) or 3), 1)
                 timeout_seconds = max(int(ping_cfg.get("timeout_seconds", 1) or 1), 1)
@@ -489,9 +542,136 @@ class JobsManager:
 
                 _safe_update_job_status("accounts_ping", last_run_at=utc_now_iso())
 
+                router_client_pools = {}
+                router_pool_wait_seconds = {}
+                router_clients_to_close = []
+                mikrotik_due_counts = {}
+                for target in due_targets:
+                    if normalize_accounts_ping_source_mode(target.get("source_mode") or source_mode) != ACCOUNTS_PING_SOURCE_MIKROTIK:
+                        continue
+                    router_id = (target.get("router_id") or "").strip()
+                    if not router_id:
+                        continue
+                    mikrotik_due_counts[router_id] = mikrotik_due_counts.get(router_id, 0) + 1
+                for router_id, router_target_count in mikrotik_due_counts.items():
+                    router = router_catalog.get(router_id) or {}
+                    host = (router.get("host") or "").strip()
+                    if not host or bool(router.get("use_tls")):
+                        continue
+                    pool_size = min(
+                        max(router_target_count, 1),
+                        max(1, min(max_parallel, 4)),
+                    )
+                    ping_budget_seconds = max(
+                        timeout_seconds * count,
+                        burst_timeout_seconds * burst_count,
+                        1,
+                    )
+                    router_pool_wait_seconds[router_id] = max(
+                        int(((router_target_count + pool_size - 1) // pool_size) * ping_budget_seconds) + 2,
+                        2,
+                    )
+                    pool = queue.LifoQueue()
+                    for _ in range(pool_size):
+                        try:
+                            client = RouterOSClient(
+                                host,
+                                int(router.get("port", 8728) or 8728),
+                                router.get("username", ""),
+                                router.get("password", ""),
+                                timeout=mikrotik_timeout_seconds,
+                            )
+                            client.connect()
+                            pool.put(client)
+                            router_clients_to_close.append(client)
+                        except Exception:
+                            break
+                    if not pool.empty():
+                        router_client_pools[router_id] = pool
+
+                def _ping_via_router(router_id, ip, mode, client=None):
+                    router = router_catalog.get(router_id) or {}
+                    host = (router.get("host") or "").strip()
+                    if not host:
+                        raise RuntimeError(f"Accounts Ping router '{router_id}' has no host configured.")
+                    if bool(router.get("use_tls")):
+                        raise RuntimeError(
+                            f"Accounts Ping router '{router_id}' uses TLS API, which is not supported by router-side ping."
+                        )
+                    owns_client = client is None
+                    active_client = client
+                    if active_client is None:
+                        active_client = RouterOSClient(
+                            host,
+                            int(router.get("port", 8728) or 8728),
+                            router.get("username", ""),
+                            router.get("password", ""),
+                            timeout=mikrotik_timeout_seconds,
+                        )
+                        active_client.connect()
+                    try:
+                        if mode in ("burst", "surveillance"):
+                            return _router_ping_with_client(active_client, ip, burst_timeout_seconds, burst_count)
+                        return _router_ping_with_client(active_client, ip, timeout_seconds, count)
+                    finally:
+                        if owns_client:
+                            try:
+                                active_client.close()
+                            except Exception:
+                                pass
+
                 def do_ping(target_row):
                     ip = target_row["ip"]
                     mode = target_row.get("_mode") or "normal"
+                    if target_row.get("source_missing"):
+                        return target_row, {
+                            "loss": 100.0,
+                            "min_ms": None,
+                            "avg_ms": None,
+                            "max_ms": None,
+                            "replies": 0,
+                            "source_missing": True,
+                        }
+                    target_source_mode = normalize_accounts_ping_source_mode(target_row.get("source_mode") or source_mode)
+                    router_id = (target_row.get("router_id") or "").strip()
+                    if target_source_mode == ACCOUNTS_PING_SOURCE_MIKROTIK and router_id:
+                        pool = router_client_pools.get(router_id)
+                        wait_timeout = router_pool_wait_seconds.get(
+                            router_id,
+                            max(timeout_seconds * count, burst_timeout_seconds * burst_count, 1) + 2,
+                        )
+                        if pool is not None:
+                            client = None
+                            try:
+                                client = pool.get(timeout=wait_timeout)
+                                return target_row, _ping_via_router(router_id, ip, mode, client=client)
+                            except queue.Empty:
+                                client = None
+                            except Exception:
+                                if client is not None:
+                                    try:
+                                        client.close()
+                                    except Exception:
+                                        pass
+                                    client = None
+                            finally:
+                                if client is not None:
+                                    try:
+                                        pool.put(client)
+                                    except Exception:
+                                        pass
+                        try:
+                            return target_row, _ping_via_router(router_id, ip, mode)
+                        except Exception as exc:
+                            return target_row, {
+                                "loss": None,
+                                "min_ms": None,
+                                "avg_ms": None,
+                                "max_ms": None,
+                                "raw_output": "",
+                                "replies": 0,
+                                "probe_error": str(exc),
+                            }
                     if mode in ("burst", "surveillance"):
                         res = _ping_with_source(ip, "", burst_timeout_seconds, burst_count)
                     else:
@@ -509,80 +689,108 @@ class JobsManager:
                             results.append((target, {"loss": 100.0, "min_ms": None, "avg_ms": None, "max_ms": None, "replies": 0}))
 
                 changed = False
-                for target, res in results:
-                    account_id = target["id"]
-                    name = target.get("name") or ""
-                    ip = target["ip"]
-                    mode = target.get("_mode") or "normal"
-                    loss = res.get("loss")
-                    min_ms = res.get("min_ms")
-                    avg_ms = res.get("avg_ms")
-                    max_ms = res.get("max_ms")
-                    ok = bool(loss is not None and float(loss) < down_loss_pct and int(res.get("replies") or 0) > 0)
+                try:
+                    for target, res in results:
+                        account_id = target["id"]
+                        name = target.get("name") or ""
+                        ip = target["ip"]
+                        mode = target.get("_mode") or "normal"
+                        loss = res.get("loss")
+                        min_ms = res.get("min_ms")
+                        avg_ms = res.get("avg_ms")
+                        max_ms = res.get("max_ms")
+                        probe_error = (res.get("probe_error") or "").strip()
+                        source_missing = bool(target.get("source_missing") or res.get("source_missing"))
+                        entry = accounts_state.get(account_id, {}) if isinstance(accounts_state.get(account_id), dict) else {}
+                        if probe_error and loss is None:
+                            entry["last_probe_error"] = probe_error[:500]
+                            entry["last_probe_error_at"] = now.replace(microsecond=0).isoformat() + "Z"
+                            accounts_state[account_id] = entry
+                            changed = True
+                            continue
+                        ok = bool(loss is not None and float(loss) < down_loss_pct and int(res.get("replies") or 0) > 0)
 
-                    is_issue = (not ok) or (loss is not None and float(loss) >= issue_loss_pct) or (
-                        avg_ms is not None and float(avg_ms) >= issue_latency_ms
-                    )
+                        is_issue = (not ok) or (loss is not None and float(loss) >= issue_loss_pct) or (
+                            avg_ms is not None and float(avg_ms) >= issue_latency_ms
+                        )
 
-                    entry = accounts_state.get(account_id, {}) if isinstance(accounts_state.get(account_id), dict) else {}
-                    # clear expired windows
-                    burst_until_dt = parse_dt(entry.get("burst_until"))
-                    if burst_until_dt and now >= burst_until_dt:
-                        entry["burst_until"] = ""
-                        burst_until_dt = None
-                    down_since_dt = parse_dt(entry.get("down_since"))
-                    if ok:
-                        entry["streak"] = 0
-                        entry["down_since"] = ""
-                        entry["last_up_at"] = now.replace(microsecond=0).isoformat() + "Z"
-                        if is_issue:
-                            if not entry.get("issue_since"):
-                                entry["issue_since"] = now.replace(microsecond=0).isoformat() + "Z"
+                        # clear expired windows
+                        burst_until_dt = parse_dt(entry.get("burst_until"))
+                        if burst_until_dt and now >= burst_until_dt:
+                            entry["burst_until"] = ""
+                            burst_until_dt = None
+                        down_since_dt = parse_dt(entry.get("down_since"))
+                        if ok:
+                            entry["streak"] = 0
+                            entry["down_since"] = ""
+                            entry["last_up_at"] = now.replace(microsecond=0).isoformat() + "Z"
+                            if is_issue:
+                                if not entry.get("issue_since"):
+                                    entry["issue_since"] = now.replace(microsecond=0).isoformat() + "Z"
+                            else:
+                                entry["issue_since"] = ""
                         else:
+                            entry["streak"] = int(entry.get("streak", 0) or 0) + 1
+                            if not down_since_dt:
+                                entry["down_since"] = now.replace(microsecond=0).isoformat() + "Z"
                             entry["issue_since"] = ""
-                    else:
-                        entry["streak"] = int(entry.get("streak", 0) or 0) + 1
-                        if not down_since_dt:
-                            entry["down_since"] = now.replace(microsecond=0).isoformat() + "Z"
-                        entry["issue_since"] = ""
 
-                    entry["last_check_at"] = now.replace(microsecond=0).isoformat() + "Z"
-                    entry["last_status"] = "up" if ok and not is_issue else ("issue" if ok else "down")
-                    entry["last_ip"] = ip
-                    entry["last_ok"] = bool(ok)
-                    entry["last_loss"] = loss
-                    entry["last_avg_ms"] = avg_ms
+                        entry["last_check_at"] = now.replace(microsecond=0).isoformat() + "Z"
+                        entry["last_status"] = "up" if ok and not is_issue else ("issue" if ok else "down")
+                        entry["last_ip"] = ip
+                        entry["last_ok"] = bool(ok)
+                        entry["last_loss"] = loss
+                        entry["last_avg_ms"] = avg_ms
+                        entry["last_probe_error"] = ""
+                        entry["last_probe_error_at"] = ""
+                        entry["router_id"] = (target.get("router_id") or "").strip()
+                        entry["router_name"] = (target.get("router_name") or "").strip()
+                        entry["source_missing"] = source_missing
+                        if source_missing:
+                            entry["source_missing_since"] = (
+                                (target.get("source_missing_since") or "").strip()
+                                or (entry.get("source_missing_since") or "")
+                                or now.replace(microsecond=0).isoformat() + "Z"
+                            )
+                        else:
+                            entry["source_missing_since"] = ""
 
-                    is_long_down = False
-                    down_since_dt2 = parse_dt(entry.get("down_since"))
-                    if down_since_dt2 and (now - down_since_dt2).total_seconds() >= long_down_seconds:
-                        is_long_down = True
-                    if is_long_down:
-                        entry["burst_until"] = ""
-                    else:
-                        if mode not in ("surveillance",) and burst_enabled and ((is_issue and trigger_on_issue) or (not ok)) and not burst_until_dt:
-                            entry["burst_until"] = (now + timedelta(seconds=burst_duration)).replace(microsecond=0).isoformat() + "Z"
+                        is_long_down = False
+                        down_since_dt2 = parse_dt(entry.get("down_since"))
+                        if down_since_dt2 and (now - down_since_dt2).total_seconds() >= long_down_seconds:
+                            is_long_down = True
+                        if is_long_down:
+                            entry["burst_until"] = ""
+                        else:
+                            if mode not in ("surveillance",) and burst_enabled and ((is_issue and trigger_on_issue) or (not ok)) and not burst_until_dt:
+                                entry["burst_until"] = (now + timedelta(seconds=burst_duration)).replace(microsecond=0).isoformat() + "Z"
 
-                    accounts_state[account_id] = entry
-                    changed = True
+                        accounts_state[account_id] = entry
+                        changed = True
 
-                    insert_accounts_ping_result(
-                        account_id=account_id,
-                        name=name,
-                        ip=ip,
-                        loss=loss,
-                        min_ms=min_ms,
-                        avg_ms=avg_ms,
-                        max_ms=max_ms,
-                        ok=ok,
-                        mode=mode,
-                        timestamp=now.replace(microsecond=0).isoformat() + "Z",
-                        bucket_seconds=bucket_seconds,
-                    )
+                        insert_accounts_ping_result(
+                            account_id=account_id,
+                            name=name,
+                            ip=ip,
+                            loss=loss,
+                            min_ms=min_ms,
+                            avg_ms=avg_ms,
+                            max_ms=max_ms,
+                            ok=ok,
+                            mode=mode,
+                            timestamp=now.replace(microsecond=0).isoformat() + "Z",
+                            bucket_seconds=bucket_seconds,
+                        )
 
-                if changed:
-                    state["accounts"] = accounts_state
-                    save_state("accounts_ping_state", state)
+                    if changed:
+                        state["accounts"] = accounts_state
+                        save_state("accounts_ping_state", state)
+                finally:
+                    for client in router_clients_to_close:
+                        try:
+                            client.close()
+                        except Exception:
+                            pass
 
                 # auto-transition surveillance entries (every ~5 seconds)
                 if surv_enabled and (has_surveillance_targets or auto_add_enabled):
@@ -767,25 +975,72 @@ class JobsManager:
                         require_optical = bool(stab_cfg.get("require_optical", False))
 
                         if surv_map:
+                            def account_ids_for_pppoe(pppoe):
+                                ids = list(account_ids_by_pppoe.get((pppoe or "").strip().lower()) or [])
+                                fallback = build_accounts_ping_account_id(pppoe)
+                                if not ids and fallback:
+                                    ids = [fallback]
+                                return ids
+
+                            def aggregate_checker_rows(rows_in):
+                                rows_in = [row for row in (rows_in or []) if isinstance(row, dict)]
+                                if not rows_in:
+                                    return {}
+                                out = {
+                                    "total": 0,
+                                    "failures": 0,
+                                    "downtime_seconds": 0,
+                                    "loss_events": 0,
+                                }
+                                avg_sum = 0.0
+                                avg_weight = 0.0
+                                for row in rows_in:
+                                    total = int(row.get("total") or 0)
+                                    failures = int(row.get("failures") or 0)
+                                    out["total"] += total
+                                    out["failures"] += failures
+                                    out["downtime_seconds"] += int(row.get("downtime_seconds") or 0)
+                                    out["loss_events"] += int(row.get("loss_events") or 0)
+                                    avg_ms_avg = row.get("avg_ms_avg")
+                                    if avg_ms_avg is None:
+                                        continue
+                                    try:
+                                        avg_sum += float(avg_ms_avg) * max(total, 1)
+                                        avg_weight += max(total, 1)
+                                    except Exception:
+                                        pass
+                                out["avg_ms_avg"] = (avg_sum / avg_weight) if avg_weight > 0 else None
+                                return out
+
+                            def latest_row(rows_in):
+                                rows_in = [row for row in (rows_in or []) if isinstance(row, dict)]
+                                if not rows_in:
+                                    return {}
+                                return max(rows_in, key=lambda row: (row.get("timestamp") or "", row.get("account_id") or ""))
+
                             surveilled_pppoes = list(surv_map.keys())
-                            surveilled_ids = [account_id_for_pppoe(p) for p in surveilled_pppoes]
                             checker_since_by_account = {}
+                            surveilled_ids = []
+                            seen_surveilled_ids = set()
                             for pppoe in surveilled_pppoes:
-                                aid = account_id_for_pppoe(pppoe)
-                                if not aid:
-                                    continue
                                 entry = surv_map.get(pppoe) or {}
                                 added_at = parse_dt(entry.get("added_at")) or now
                                 fixed_at = parse_dt(entry.get("last_fixed_at"))
                                 anchor_dt = fixed_at if (fixed_at and fixed_at <= now) else added_at
                                 anchor_iso = anchor_dt.replace(microsecond=0).isoformat() + "Z"
-                                current_iso = checker_since_by_account.get(aid)
-                                if not current_iso:
-                                    checker_since_by_account[aid] = anchor_iso
-                                    continue
-                                current_dt = parse_dt(current_iso)
-                                if current_dt is None or anchor_dt > current_dt:
-                                    checker_since_by_account[aid] = anchor_iso
+                                for aid in account_ids_for_pppoe(pppoe):
+                                    if not aid:
+                                        continue
+                                    current_iso = checker_since_by_account.get(aid)
+                                    if not current_iso:
+                                        checker_since_by_account[aid] = anchor_iso
+                                    else:
+                                        current_dt = parse_dt(current_iso)
+                                        if current_dt is None or anchor_dt > current_dt:
+                                            checker_since_by_account[aid] = anchor_iso
+                                    if aid not in seen_surveilled_ids:
+                                        seen_surveilled_ids.add(aid)
+                                        surveilled_ids.append(aid)
 
                             checker_stats_map = get_accounts_ping_checker_stats_map(
                                 checker_since_by_account,
@@ -796,9 +1051,9 @@ class JobsManager:
 
                             for pppoe, entry in list(surv_map.items()):
                                     status = (entry.get("status") or "under").strip().lower()
-                                    aid = account_id_for_pppoe(pppoe)
-                                    stats = checker_stats_map.get(aid) or {}
-                                    latest = latest_map.get(aid) or {}
+                                    account_ids = account_ids_for_pppoe(pppoe)
+                                    stats = aggregate_checker_rows([checker_stats_map.get(aid) for aid in account_ids])
+                                    latest = latest_row([latest_map.get(aid) for aid in account_ids])
 
                                     total = int(stats.get("total") or 0)
                                     failures = int(stats.get("failures") or 0)
@@ -825,32 +1080,6 @@ class JobsManager:
                                     if status == "under":
                                         fixed_at = parse_dt(entry.get("last_fixed_at"))
                                         if fixed_at:
-                                            continue
-                                        added_at = parse_dt(entry.get("added_at"))
-                                        window_minutes = stable_window_minutes
-                                        window_anchor = added_at
-                                        has_full_window = bool(
-                                            window_anchor
-                                            and (now - window_anchor).total_seconds() >= float(window_minutes) * 60.0
-                                        )
-                                        if stable and has_full_window:
-                                            under_seconds, level2_seconds, observe_seconds = stage_seconds(entry)
-                                            try:
-                                                end_surveillance_session(
-                                                    pppoe,
-                                                    "healed",
-                                                    started_at=(entry.get("added_at") or "").strip(),
-                                                    source=(entry.get("source") or "").strip(),
-                                                    ip=(entry.get("ip") or "").strip(),
-                                                    state=(entry.get("status") or "under"),
-                                                    under_seconds=under_seconds,
-                                                    level2_seconds=level2_seconds,
-                                                    observe_seconds=observe_seconds,
-                                                )
-                                            except Exception:
-                                                pass
-                                            surv_map.pop(pppoe, None)
-                                            entries_changed = True
                                             continue
                                     elif status == "level2":
                                         continue
@@ -2043,6 +2272,7 @@ class JobsManager:
                     {
                         "mode": mode,
                         "rows": offline_rows,
+                        "active_accounts": len(active_users_all),
                         "tracking_rules": tracking_rules,
                         "routers": router_status,
                         "router_errors": router_errors,

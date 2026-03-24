@@ -85,7 +85,7 @@ AUTH_DEFAULT_PERMISSIONS = [
     {"code": "accounts_ping.tab.status.view", "label": "Accounts Ping · Status Tab", "description": "View accounts ping status tab and table."},
     {"code": "accounts_ping.tab.settings.view", "label": "Accounts Ping · Settings Tab", "description": "View accounts ping settings tab."},
     {"code": "accounts_ping.chart.series.view", "label": "Accounts Ping · Chart Series", "description": "View accounts ping line chart data and modal."},
-    {"code": "accounts_ping.settings.datasource.edit", "label": "Accounts Ping · Settings · Data Source", "description": "Edit Accounts Ping source (SSH/CSV) settings."},
+    {"code": "accounts_ping.settings.datasource.edit", "label": "Accounts Ping · Settings · Data Source", "description": "Edit Accounts Ping source settings, including SSH/CSV and MikroTik router selection."},
     {"code": "accounts_ping.settings.checkers.edit", "label": "Accounts Ping · Settings · Checkers", "description": "Edit latency/loss checker settings."},
     {"code": "accounts_ping.settings.performance.edit", "label": "Accounts Ping · Settings · Performance", "description": "Edit collector performance settings (parallelism/interval)."},
     {"code": "accounts_ping.settings.retention.edit", "label": "Accounts Ping · Settings · Retention", "description": "Edit accounts ping retention settings."},
@@ -1511,6 +1511,34 @@ def get_active_surveillance_session(pppoe):
     return _get_active_surveillance_session(pppoe)
 
 
+def list_active_surveillance_sessions(limit=500):
+    try:
+        limit = int(limit or 500)
+    except Exception:
+        limit = 500
+    if limit < 1:
+        limit = 500
+    if limit > 5000:
+        limit = 5000
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, pppoe, source, started_at, ended_at, end_reason, end_note,
+                   under_seconds, level2_seconds, observe_seconds,
+                   observed_count, last_state, last_ip, updated_at
+            FROM surveillance_sessions
+            WHERE ended_at IS NULL
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows] if rows else []
+    finally:
+        conn.close()
+
+
 def _get_surveillance_observed_total(pppoe):
     pppoe = (pppoe or "").strip()
     if not pppoe:
@@ -1530,7 +1558,7 @@ def _get_surveillance_observed_total(pppoe):
         conn.close()
 
 
-def ensure_surveillance_session(pppoe, started_at=None, source="", ip="", state="under"):
+def ensure_surveillance_session(pppoe, started_at=None, source="", ip="", state="under", observed_total_hint=None):
     """
     Ensures there is an active (non-ended) session for this PPPoE.
     Returns the active session row as a dict.
@@ -1546,7 +1574,14 @@ def ensure_surveillance_session(pppoe, started_at=None, source="", ip="", state=
     state = (state or "under").strip().lower() or "under"
     if state not in ("under", "level2"):
         state = "under"
-    observed_total = _get_surveillance_observed_total(pppoe)
+    observed_total = None
+    try:
+        if observed_total_hint is not None:
+            observed_total = max(int(observed_total_hint or 0), 0)
+    except Exception:
+        observed_total = None
+    if observed_total is None:
+        observed_total = _get_surveillance_observed_total(pppoe)
     conn = get_conn()
     try:
         with conn:
@@ -1729,7 +1764,7 @@ def end_surveillance_session(
             )
     finally:
         conn.close()
-    return None
+    return session
 
 
 def list_surveillance_sessions(query="", page=1, limit=50):
@@ -1784,7 +1819,7 @@ def list_surveillance_sessions(query="", page=1, limit=50):
 
 def list_surveillance_history(query="", page=1, limit=50, end_reason=""):
     """
-    History is only sessions that have ended (removed/healed/fixed/false/recovered).
+    History is only finalized sessions the operators care about by default.
     """
     try:
         page = int(page or 1)
@@ -1802,12 +1837,18 @@ def list_surveillance_history(query="", page=1, limit=50, end_reason=""):
         limit = 500
     query = (query or "").strip().lower()
     end_reason = (end_reason or "").strip().lower()
+    final_only = False
     if end_reason in ("all", "any"):
         end_reason = ""
+    elif end_reason in ("closed", "final", "finalized"):
+        end_reason = ""
+        final_only = True
     if end_reason and end_reason not in ("healed", "removed", "fixed", "false", "recovered"):
         end_reason = ""
     params = []
     where_parts = ["ended_at IS NOT NULL"]
+    if final_only:
+        where_parts.append("end_reason IN ('false', 'recovered')")
     if query:
         where_parts.append("lower(pppoe) LIKE ?")
         params.append(f"%{query}%")
@@ -2864,6 +2905,18 @@ def delete_auth_audit_logs_older_than(cutoff_iso):
     try:
         with conn:
             conn.execute("DELETE FROM auth_audit_logs WHERE timestamp < ?", (cutoff_iso,))
+    finally:
+        conn.close()
+
+
+def delete_auth_audit_logs_by_action_prefix(prefix):
+    prefix = (prefix or "").strip()
+    if not prefix:
+        return
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM auth_audit_logs WHERE action LIKE ?", (f"{prefix}%",))
     finally:
         conn.close()
 
@@ -4025,6 +4078,10 @@ def clear_surveillance_history():
         conn.close()
 
 
+def clear_surveillance_audit_logs():
+    delete_auth_audit_logs_by_action_prefix("surveillance.")
+
+
 def insert_rto_result(ip, name, ok, timestamp=None):
     stamp = timestamp or utc_now_iso()
     conn = get_conn()
@@ -4419,7 +4476,10 @@ def clear_accounts_ping_data():
     conn = get_conn()
     try:
         with conn:
-            conn.execute("DELETE FROM accounts_ping_results")
-            conn.execute("DELETE FROM accounts_ping_rollups")
+            if _use_postgres():
+                conn.execute("TRUNCATE TABLE accounts_ping_results, accounts_ping_rollups RESTART IDENTITY")
+            else:
+                conn.execute("DELETE FROM accounts_ping_results")
+                conn.execute("DELETE FROM accounts_ping_rollups")
     finally:
         conn.close()

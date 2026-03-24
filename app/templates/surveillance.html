@@ -263,8 +263,11 @@
                         </button>
 				                      <button type="button"
                                   class="badge bg-orange-lt text-orange header-icon-badge border-0"
+                                  data-bs-toggle="modal"
+                                  data-bs-target="#surv-false-modal"
                                   data-surv-row-false="under"
                                   data-surv-row-false-open="under"
+                                  data-tab="under"
                                   data-pppoe="{{ row.pppoe }}"
                                   title="Mark as False"
                                   aria-label="Mark as False">
@@ -425,6 +428,18 @@
                             data-surv-action-pppoe
                             disabled>
                       <i class="ti ti-user-exclamation me-1"></i>Needs Manual Fix
+                    </button>
+                    <button type="button"
+                            class="btn btn-sm btn-outline-warning"
+                            title="Mark as False"
+                            aria-label="Mark as False"
+                            data-bs-toggle="modal"
+                            data-bs-target="#surv-false-modal"
+                            data-surv-row-false-open="under"
+                            data-tab="under"
+                            data-surv-action-pppoe
+                            disabled>
+                      <i class="ti ti-circle-x me-1"></i>Mark as False
                     </button>
                     <button type="button"
                             class="btn btn-sm btn-outline-primary surv-ai-view-selected"
@@ -1807,19 +1822,17 @@
 	        <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
 	          <div>
 	            <h4 class="mb-1">History</h4>
-	            <div class="text-muted small">Tracks when accounts were placed under surveillance and how the investigation ended.</div>
+	            <div class="text-muted small">Tracks finalized cases after they were marked false or fully recovered.</div>
 	            <div class="mt-2">
 	              <span class="badge bg-indigo-lt text-indigo">Total: {{ (history_pagination.total if history_pagination else (history_rows|length)) }}</span>
 	            </div>
 	          </div>
 		          <div class="d-flex align-items-center gap-2">
                 <select class="form-select form-select-sm" id="surv-history-action" style="min-width: 180px;">
-                  <option value="all" {% if (history_action or 'all') == 'all' %}selected{% endif %}>All Actions</option>
+                  <option value="closed" {% if (history_action or 'closed') == 'closed' %}selected{% endif %}>Closed Cases</option>
                   <option value="false" {% if history_action == 'false' %}selected{% endif %}>Marked False</option>
-                  <option value="fixed" {% if history_action == 'fixed' %}selected{% endif %}>Fixed</option>
                   <option value="recovered" {% if history_action == 'recovered' %}selected{% endif %}>Fully Recovered</option>
-                  <option value="healed" {% if history_action == 'healed' %}selected{% endif %}>Auto Healed</option>
-                  <option value="removed" {% if history_action == 'removed' %}selected{% endif %}>Removed</option>
+                  <option value="all" {% if history_action == 'all' %}selected{% endif %}>All Session Actions</option>
                 </select>
 		            <div class="input-icon">
 		              <input class="form-control form-control-sm" id="surv-history-search" type="text" placeholder="Search PPPoE" autocomplete="off" value="{{ history_query or '' }}" />
@@ -2331,6 +2344,28 @@
                       </div>
                       <div id="surv-inspect-chart" class="rto-spark-modal-chart" style="min-height: 380px;"></div>
                       <div class="text-muted small mt-2" id="surv-inspect-range"></div>
+                      <div class="border-top mt-4 pt-4">
+                        <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
+                          <div>
+                            <div class="fw-semibold">Optical Baseline</div>
+                            <div class="text-muted small">RX/TX behavior in the same 7-day pre-surveillance window.</div>
+                          </div>
+                          <div class="d-flex flex-wrap gap-2">
+                            <span class="badge bg-secondary-lt text-secondary">Device ID: <span id="surv-inspect-optical-device">n/a</span></span>
+                            <span class="badge bg-secondary-lt text-secondary">Goal RX: <span id="surv-inspect-optical-goal">n/a</span></span>
+                            <span class="badge bg-secondary-lt text-secondary" id="surv-inspect-optical-status">No Data</span>
+                          </div>
+                        </div>
+                        <div class="row g-2 mb-3">
+                          <div class="col-6 col-lg-3"><div class="border rounded p-2"><div class="text-muted small">Optical Samples</div><div class="fw-semibold" id="surv-inspect-kpi-optical-samples">0</div></div></div>
+                          <div class="col-6 col-lg-3"><div class="border rounded p-2"><div class="text-muted small">Latest RX</div><div class="fw-semibold" id="surv-inspect-kpi-optical-rx">n/a</div></div></div>
+                          <div class="col-6 col-lg-3"><div class="border rounded p-2"><div class="text-muted small">Latest TX</div><div class="fw-semibold" id="surv-inspect-kpi-optical-tx">n/a</div></div></div>
+                          <div class="col-6 col-lg-3"><div class="border rounded p-2"><div class="text-muted small">Worst RX</div><div class="fw-semibold" id="surv-inspect-kpi-optical-worst">n/a</div></div></div>
+                          <div class="col-12 col-lg-6"><div class="border rounded p-2"><div class="text-muted small">Last Optical Sample</div><div class="fw-semibold" id="surv-inspect-kpi-optical-last">n/a</div></div></div>
+                        </div>
+                        <div id="surv-inspect-optical-chart" class="rto-spark-modal-chart" style="min-height: 320px;"></div>
+                        <div class="text-muted small mt-2" id="surv-inspect-optical-range"></div>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -2743,25 +2778,64 @@
 			    }
 			    const tabs = document.querySelectorAll('#surv-under, #surv-observe, #surv-level2, #surv-history, #surv-logs, #surv-settings');
 			    const links = document.querySelectorAll('a[data-bs-toggle="tab"]');
-			    links.forEach((link) => {
-			      link.addEventListener("shown.bs.tab", (event) => {
-			        const href = event.target.getAttribute("href") || "";
-			        if (!["#surv-under", "#surv-observe", "#surv-level2", "#surv-history", "#surv-logs", "#surv-settings"].includes(href)) return;
-			        const tab = href === "#surv-observe" ? "observe" : href === "#surv-level2" ? "level2" : href === "#surv-history" ? "history" : href === "#surv-logs" ? "logs" : href === "#surv-settings" ? "settings" : "under";
-			        setSettingsSaveBar(tab);
-			        if (tab === "observe") collapseObservePreFixTimeline();
-			        const url = new URL(window.location.href);
-			        url.searchParams.set("tab", tab);
-		        if (tab !== "history") {
-		          url.searchParams.delete("q");
-	          url.searchParams.delete("page");
-            url.searchParams.delete("action");
-	        }
+          const surveillanceTabMap = {
+            "#surv-under": "under",
+            "#surv-observe": "observe",
+            "#surv-level2": "level2",
+            "#surv-history": "history",
+            "#surv-logs": "logs",
+            "#surv-settings": "settings",
+          };
+          const serverBackedTabs = new Set(["history", "logs"]);
+          const tabNameFromHref = (href) => surveillanceTabMap[href || ""] || "";
+          const buildTopTabUrl = (tab) => {
+            const url = new URL(window.location.href);
+            url.searchParams.set("tab", tab);
+            if (tab !== "history") {
+              url.searchParams.delete("q");
+              url.searchParams.delete("page");
+              url.searchParams.delete("action");
+            }
             if (tab !== "logs") {
               url.searchParams.delete("logs_q");
               url.searchParams.delete("logs_page");
             }
-	        history.replaceState(null, "", url.toString());
+            const hash = Object.entries(surveillanceTabMap).find(([, value]) => value === tab)?.[0];
+            if (hash) url.hash = hash;
+            return url;
+          };
+          try {
+            const initialHashTab = tabNameFromHref(window.location.hash || "");
+            const currentTab = (new URL(window.location.href).searchParams.get("tab") || "under").toLowerCase();
+            if (serverBackedTabs.has(initialHashTab) && currentTab !== initialHashTab) {
+              window.location.replace(buildTopTabUrl(initialHashTab).toString());
+              return;
+            }
+          } catch (e) {
+            // ignore
+          }
+          links.forEach((link) => {
+            const href = link.getAttribute("href") || "";
+            const tab = tabNameFromHref(href);
+            if (!tab) return;
+            link.addEventListener("click", (event) => {
+              if (!serverBackedTabs.has(tab)) return;
+              const currentUrl = new URL(window.location.href);
+              const currentTab = (currentUrl.searchParams.get("tab") || "under").toLowerCase();
+              if (currentTab === tab) return;
+              event.preventDefault();
+              window.location.href = buildTopTabUrl(tab).toString();
+            });
+          });
+			    links.forEach((link) => {
+			      link.addEventListener("shown.bs.tab", (event) => {
+			        const href = event.target.getAttribute("href") || "";
+			        const tab = tabNameFromHref(href);
+              if (!tab) return;
+			        setSettingsSaveBar(tab);
+			        if (tab === "observe") collapseObservePreFixTimeline();
+              if (serverBackedTabs.has(tab)) return;
+	        history.replaceState(null, "", buildTopTabUrl(tab).toString());
 	      });
 	    });
 
@@ -2854,18 +2928,22 @@
           falseModal.show();
         };
         if (falseModalEl) {
-          document.addEventListener("click", (event) => {
-            const btn = event.target && event.target.closest ? event.target.closest("[data-surv-row-false-open]") : null;
-            if (!btn) return;
-            if (btn.disabled) {
+          falseModalEl.addEventListener("show.bs.modal", (event) => {
+            const trigger = event.relatedTarget;
+            const isSingle = !!(trigger && trigger.getAttribute && trigger.hasAttribute("data-surv-row-false-open"));
+            if (!isSingle) return;
+            const pppoeValue = (trigger.getAttribute("data-pppoe") || "").trim();
+            if (!pppoeValue) {
               event.preventDefault();
               return;
             }
-            event.preventDefault();
-            const pppoeValue = (btn.getAttribute("data-pppoe") || "").trim();
-            if (!pppoeValue) return;
-            const tabValue = (btn.getAttribute("data-surv-row-false-open") || "under").trim().toLowerCase();
-            openFalseModal({ pppoe: pppoeValue, pppoes: [pppoeValue], tab: tabValue });
+            let tabValue = (trigger.getAttribute("data-tab") || trigger.getAttribute("data-surv-row-false-open") || "under").trim().toLowerCase();
+            if (tabValue !== "under" && tabValue !== "level2" && tabValue !== "observe") tabValue = "under";
+            if (falseModalPppoe) falseModalPppoe.value = pppoeValue;
+            if (falseModalPppoes) falseModalPppoes.value = "";
+            if (falseModalTab) falseModalTab.value = tabValue;
+            if (falseModalPppoeLabel) falseModalPppoeLabel.textContent = pppoeValue;
+            if (falseModalRemarks) falseModalRemarks.value = "";
           });
           falseModalEl.addEventListener("shown.bs.modal", () => {
             if (falseModalRemarks) falseModalRemarks.focus();
@@ -4332,7 +4410,14 @@
         const inspectModalBodyEl = document.getElementById("surv-inspect-body");
         const inspectModalChartEl = document.getElementById("surv-inspect-chart");
         const inspectModalRangeEl = document.getElementById("surv-inspect-range");
-        const inspectState = { chart: null, token: 0 };
+        const inspectModalOpticalChartEl = document.getElementById("surv-inspect-optical-chart");
+        const inspectModalOpticalRangeEl = document.getElementById("surv-inspect-optical-range");
+        const inspectOpticalDefaultThresholdDbm = Number({{ settings.stability.optical_rx_min_dbm }});
+        const inspectOpticalChartMin = {{ surv_optical_chart_min_dbm }};
+        const inspectOpticalChartMax = {{ surv_optical_chart_max_dbm }};
+        const inspectOpticalTxRealisticMin = {{ surv_optical_tx_realistic_min_dbm }};
+        const inspectOpticalTxRealisticMax = {{ surv_optical_tx_realistic_max_dbm }};
+        const inspectState = { chart: null, opticalChart: null, token: 0 };
 
         const inspectSetKpi = (id, value) => {
           const el = document.getElementById(id);
@@ -4349,9 +4434,29 @@
           return Number.isFinite(num) ? `${num.toFixed(1)}ms` : "n/a";
         };
 
+        const inspectFormatDbm = (value) => {
+          const num = Number(value);
+          return Number.isFinite(num) ? `${num.toFixed(2)} dBm` : "n/a";
+        };
+
         const inspectFormatIsoPht = (value) => {
           const ts = value ? Date.parse(String(value)) : NaN;
           return Number.isFinite(ts) ? formatTsPHT(ts) : "n/a";
+        };
+
+        const inspectSetOpticalStatus = (state, label) => {
+          const el = document.getElementById("surv-inspect-optical-status");
+          if (!el) return;
+          const normalized = String(state || "").trim().toLowerCase();
+          el.className = "badge";
+          if (normalized === "pass") {
+            el.classList.add("bg-green-lt", "text-green");
+          } else if (normalized === "fail") {
+            el.classList.add("bg-red-lt", "text-red");
+          } else {
+            el.classList.add("bg-secondary-lt", "text-secondary");
+          }
+          el.textContent = label || "No Data";
         };
 
         const inspectResetModal = ({ keepLoading = true } = {}) => {
@@ -4360,8 +4465,14 @@
             try { inspectState.chart.destroy(); } catch (e) {}
             inspectState.chart = null;
           }
+          if (inspectState.opticalChart) {
+            try { inspectState.opticalChart.destroy(); } catch (e) {}
+            inspectState.opticalChart = null;
+          }
           if (inspectModalChartEl) inspectModalChartEl.innerHTML = "<div class='text-muted'>No data available.</div>";
+          if (inspectModalOpticalChartEl) inspectModalOpticalChartEl.innerHTML = "<div class='text-muted'>No optical data available.</div>";
           if (inspectModalRangeEl) inspectModalRangeEl.textContent = "";
+          if (inspectModalOpticalRangeEl) inspectModalOpticalRangeEl.textContent = "";
           inspectSetKpi("surv-inspect-kpi-samples", "0");
           inspectSetKpi("surv-inspect-kpi-down", "0");
           inspectSetKpi("surv-inspect-kpi-loss-events", "0");
@@ -4374,6 +4485,14 @@
           inspectSetKpi("surv-inspect-kpi-loss100", "n/a");
           inspectSetKpi("surv-inspect-kpi-longest-down", "n/a");
           inspectSetKpi("surv-inspect-kpi-last", "n/a");
+          inspectSetKpi("surv-inspect-optical-device", "n/a");
+          inspectSetKpi("surv-inspect-optical-goal", Number.isFinite(inspectOpticalDefaultThresholdDbm) ? `≥ ${inspectOpticalDefaultThresholdDbm.toFixed(1)} dBm` : "n/a");
+          inspectSetKpi("surv-inspect-kpi-optical-samples", "0");
+          inspectSetKpi("surv-inspect-kpi-optical-rx", "n/a");
+          inspectSetKpi("surv-inspect-kpi-optical-tx", "n/a");
+          inspectSetKpi("surv-inspect-kpi-optical-worst", "n/a");
+          inspectSetKpi("surv-inspect-kpi-optical-last", "n/a");
+          inspectSetOpticalStatus("na", "No Data");
           if (inspectModalLoadingEl) inspectModalLoadingEl.classList.toggle("d-none", !keepLoading);
           if (inspectModalBodyEl) inspectModalBodyEl.classList.add("d-none");
           if (inspectModalErrorEl) {
@@ -4464,6 +4583,84 @@
           await inspectState.chart.render();
         };
 
+        const inspectRenderOpticalChart = async (series) => {
+          if (!inspectModalOpticalChartEl) return;
+          if (inspectState.opticalChart) {
+            try { inspectState.opticalChart.destroy(); } catch (e) {}
+            inspectState.opticalChart = null;
+          }
+          const points = (Array.isArray(series) ? series : [])
+            .map((row) => {
+              const ts = row && row.ts ? Date.parse(String(row.ts)) : NaN;
+              if (!Number.isFinite(ts)) return null;
+              const rx = row.rx === null || row.rx === undefined ? null : Number(row.rx);
+              const txRaw = row.tx === null || row.tx === undefined ? null : Number(row.tx);
+              const tx = Number.isFinite(txRaw) && txRaw >= inspectOpticalTxRealisticMin && txRaw <= inspectOpticalTxRealisticMax
+                ? txRaw
+                : null;
+              return {
+                x: ts,
+                rx: Number.isFinite(rx) ? rx : null,
+                tx,
+              };
+            })
+            .filter(Boolean);
+          if (!points.length) {
+            inspectModalOpticalChartEl.innerHTML = "<div class='text-muted'>No optical baseline data available in the last 7 days before surveillance.</div>";
+            return;
+          }
+          if (!window.ApexCharts) {
+            inspectModalOpticalChartEl.innerHTML = "<div class='text-muted'>Chart library unavailable.</div>";
+            return;
+          }
+          const rxSeries = points.map((p) => ({ x: p.x, y: p.rx }));
+          const txSeries = points.map((p) => ({ x: p.x, y: p.tx }));
+          inspectModalOpticalChartEl.innerHTML = "";
+          inspectState.opticalChart = new window.ApexCharts(inspectModalOpticalChartEl, {
+            chart: {
+              type: "line",
+              height: 320,
+              toolbar: {
+                show: true,
+                tools: {
+                  download: false,
+                  selection: true,
+                  zoom: true,
+                  zoomin: true,
+                  zoomout: true,
+                  pan: true,
+                  reset: true,
+                },
+              },
+              zoom: { enabled: true, type: "x", autoScaleYaxis: true },
+            },
+            stroke: { width: 2 },
+            markers: { size: 0 },
+            series: [
+              { name: "RX (dBm)", data: rxSeries },
+              { name: "TX (dBm)", data: txSeries },
+            ],
+            colors: ["#2fb344", "#206bc4"],
+            xaxis: { type: "datetime" },
+            yaxis: {
+              min: inspectOpticalChartMin,
+              max: inspectOpticalChartMax,
+              tickAmount: 5,
+              title: { text: "dBm" },
+              labels: { formatter: (v) => { const n = Number(v); return Number.isFinite(n) ? n.toFixed(1) : ""; } },
+            },
+            tooltip: {
+              shared: true,
+              intersect: false,
+              x: { formatter: (value) => formatTsPHT(value) },
+              y: { formatter: (value) => inspectFormatDbm(value) },
+            },
+            grid: { strokeDashArray: 4 },
+            legend: { position: "top" },
+          });
+          await inspectState.opticalChart.render();
+        };
+
         const inspectLoadData = async (pppoe, stageKey) => {
           if (!pppoe) return;
           const token = ++inspectState.token;
@@ -4481,6 +4678,7 @@
             if (token !== inspectState.token) return;
             if (!payload || !Array.isArray(payload.series)) throw new Error("Invalid inspect payload.");
             const stats = (payload && typeof payload.stats === "object" && payload.stats) ? payload.stats : {};
+            const optical = (payload && typeof payload.optical === "object" && payload.optical) ? payload.optical : {};
             inspectSetKpi("surv-inspect-kpi-samples", `${parseInt(stats.samples || "0", 10) || 0}`);
             inspectSetKpi("surv-inspect-kpi-down", `${parseInt(stats.down_samples || "0", 10) || 0}`);
             inspectSetKpi("surv-inspect-kpi-loss-events", `${parseInt(stats.loss_events || "0", 10) || 0}`);
@@ -4493,12 +4691,28 @@
             inspectSetKpi("surv-inspect-kpi-loss100", formatDuration(Number(stats.loss100_seconds) || 0));
             inspectSetKpi("surv-inspect-kpi-longest-down", formatDuration(Number(stats.longest_down_streak_seconds) || 0));
             inspectSetKpi("surv-inspect-kpi-last", inspectFormatIsoPht(stats.last_sample_ts));
+            inspectSetKpi("surv-inspect-optical-device", optical.device_id || "n/a");
+            inspectSetKpi("surv-inspect-optical-goal", Number.isFinite(Number(optical.rx_threshold_dbm)) ? `≥ ${Number(optical.rx_threshold_dbm).toFixed(1)} dBm` : (Number.isFinite(inspectOpticalDefaultThresholdDbm) ? `≥ ${inspectOpticalDefaultThresholdDbm.toFixed(1)} dBm` : "n/a"));
+            inspectSetKpi("surv-inspect-kpi-optical-samples", `${parseInt(optical.samples || "0", 10) || 0}`);
+            inspectSetKpi("surv-inspect-kpi-optical-rx", inspectFormatDbm(optical.latest_rx));
+            inspectSetKpi("surv-inspect-kpi-optical-tx", inspectFormatDbm(optical.latest_tx));
+            inspectSetKpi("surv-inspect-kpi-optical-worst", inspectFormatDbm(optical.worst_rx));
+            inspectSetKpi("surv-inspect-kpi-optical-last", optical.last_sample_at_ph || inspectFormatIsoPht(optical.last_sample_at_iso));
+            inspectSetOpticalStatus(optical.status, optical.status_label || "No Data");
             if (inspectModalRangeEl) {
               const sinceLabel = inspectFormatIsoPht(payload.since);
               const untilLabel = inspectFormatIsoPht(payload.until);
               inspectModalRangeEl.textContent = `Showing: ${sinceLabel} – ${untilLabel} (PHT)`;
             }
-            await inspectRenderChart(payload.series || []);
+            if (inspectModalOpticalRangeEl) {
+              const sinceLabel = inspectFormatIsoPht(payload.since);
+              const untilLabel = inspectFormatIsoPht(payload.until);
+              inspectModalOpticalRangeEl.textContent = `Showing: ${sinceLabel} – ${untilLabel} (PHT)`;
+            }
+            await Promise.all([
+              inspectRenderChart(payload.series || []),
+              inspectRenderOpticalChart((optical && optical.series) || []),
+            ]);
             if (inspectModalLoadingEl) inspectModalLoadingEl.classList.add("d-none");
             if (inspectModalBodyEl) inspectModalBodyEl.classList.remove("d-none");
           } catch (err) {

@@ -4,7 +4,7 @@
 {% block header_badge %}
   <span class="badge bg-green-lt text-green header-icon-badge"><i class="ti ti-wifi"></i></span>
 {% endblock %}
-{% macro accounts_ping_label(pppoe_value, max_chars=25) %}
+{% macro accounts_ping_label(pppoe_value, router_name='', max_chars=25) %}
   {% set pppoe_text = (pppoe_value or '') %}
   {% if pppoe_text|length > max_chars %}
     {% set pppoe_short = pppoe_text[:max_chars] ~ '…' %}
@@ -12,6 +12,9 @@
     {% set pppoe_short = pppoe_text %}
   {% endif %}
   <span class="accounts-ping-customer-label text-start" title="{{ pppoe_text }}">{{ pppoe_short }}</span>
+  {% if router_name %}
+    <span class="accounts-ping-customer-meta">{{ router_name }}</span>
+  {% endif %}
 {% endmacro %}
 {% block content %}
 <style>
@@ -93,6 +96,16 @@
     overflow: hidden;
     text-overflow: ellipsis;
     vertical-align: middle;
+    white-space: nowrap;
+  }
+
+  .accounts-ping-customer-meta {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    color: var(--tblr-muted);
+    font-size: 0.75rem;
+    text-overflow: ellipsis;
     white-space: nowrap;
   }
 
@@ -204,7 +217,15 @@
       <div class="tab-pane {% if active_tab == 'status' %}active{% endif %}" id="accounts-ping-status">
         <div class="d-flex flex-wrap align-items-center justify-content-between mb-3 gap-2">
           <div>
-            <h4 class="mb-1">Accounts Ping <span class="badge bg-azure-lt" id="accounts-ping-status-window">{{ accounts_ping_status.window_label }}</span></h4>
+            <h4 class="mb-1">
+              Accounts Ping
+              <span class="badge bg-azure-lt" id="accounts-ping-status-window">{{ accounts_ping_status.window_label }}</span>
+              {% if settings.source.mode == 'mikrotik_routers' %}
+                <span class="badge bg-orange-lt text-orange">Source: MikroTik Routers</span>
+              {% else %}
+                <span class="badge bg-blue-lt text-blue">Source: SSH / CSV</span>
+              {% endif %}
+            </h4>
             <div class="text-muted small">
               Last run: {{ accounts_ping_job.last_run_at_ph or 'n/a' }} · Last success: {{ accounts_ping_job.last_success_at_ph or 'n/a' }}
             </div>
@@ -243,13 +264,18 @@
         <div class="alert alert-info">
           <div class="d-flex align-items-start">
             <span class="me-2"><i class="ti ti-info-circle"></i></span>
-		            <div>
-		              Accounts Ping uses SSH to pull the ShapedDevices CSV and pings each IPv4 entry.
-		              Issues are shown when a customer is down, loss is at least {{ accounts_ping_status.rules.issue_loss_pct }}%, latency is at least {{ accounts_ping_status.rules.issue_latency_ms }}ms, or Fail % is at least {{ accounts_ping_status.rules.issue_rto_pct }}%.
-		              Up accounts with Fail % above {{ accounts_ping_status.rules.stable_rto_pct }}% are shown as Monitor.
-		            </div>
-		          </div>
-		        </div>
+            <div>
+              {% if settings.source.mode == 'mikrotik_routers' %}
+                Accounts Ping uses the selected MikroTik routers to read `/ppp/active` and ping each Active Connections Address.
+                If a tracked session disappears from the active list, it stays visible and is treated as down until it returns.
+              {% else %}
+                Accounts Ping uses SSH to pull the ShapedDevices CSV and pings each IPv4 entry.
+              {% endif %}
+              Issues are shown when a customer is down, loss is at least {{ accounts_ping_status.rules.issue_loss_pct }}%, latency is at least {{ accounts_ping_status.rules.issue_latency_ms }}ms, or Fail % is at least {{ accounts_ping_status.rules.issue_rto_pct }}%.
+              Up accounts with Fail % above {{ accounts_ping_status.rules.stable_rto_pct }}% are shown as Monitor.
+            </div>
+          </div>
+        </div>
 
         <ul class="nav nav-tabs" data-bs-toggle="tabs">
           <li class="nav-item">
@@ -293,10 +319,10 @@
 	                </thead>
 	                <tbody>
 	                  {% for row in accounts_ping_status.issue_rows %}
-			                    {% set surv_key = (row.name or '') %}
+				                    {% set surv_key = (row.name or '') %}
                         {% set surv_status = surveillance_index.get(surv_key) %}
-				                    <tr class="accounts-ping-row{% if surv_status == 'under' %} table-warning{% elif surv_status == 'level2' %} table-danger{% endif %}" data-search="{{ (row.name ~ ' ' ~ row.ip)|lower }}">
-	                      <td class="ap-col-customer ap-priority-0">{{ accounts_ping_label(row.name) }}</td>
+					                    <tr class="accounts-ping-row{% if surv_status == 'under' %} table-warning{% elif surv_status == 'level2' %} table-danger{% endif %}" data-search="{{ (row.name ~ ' ' ~ (row.router_name or '') ~ ' ' ~ row.ip)|lower }}">
+		                      <td class="ap-col-customer ap-priority-0">{{ accounts_ping_label(row.name, row.router_name) }}</td>
                       <td class="ap-col-ip ap-priority-2">{{ row.ip }}</td>
                       <td class="ap-col-status ap-priority-1">
                         {% if row.status == 'down' %}
@@ -317,7 +343,7 @@
 	                                class="btn btn-link p-0 accounts-ping-spark-btn"
 	                                style="line-height:0"
 	                                data-account-id="{{ row.id }}"
-	                                data-name="{{ row.name }}"
+		                                data-name="{{ row.display_name }}"
 	                                data-ip="{{ row.ip }}"
 	                                data-bs-toggle="modal"
 	                                data-bs-target="#accounts-ping-spark-modal">
@@ -413,11 +439,11 @@
 		                  </tr>
 	                </thead>
 	                <tbody>
-	                  {% for row in accounts_ping_status.stable_rows %}
-			                    {% set surv_key = (row.name or '') %}
+		                  {% for row in accounts_ping_status.stable_rows %}
+				                    {% set surv_key = (row.name or '') %}
                         {% set surv_status = surveillance_index.get(surv_key) %}
-				                    <tr class="accounts-ping-row{% if surv_status == 'under' %} table-warning{% elif surv_status == 'level2' %} table-danger{% endif %}" data-search="{{ (row.name ~ ' ' ~ row.ip)|lower }}">
-	                      <td class="ap-col-customer ap-priority-0">{{ accounts_ping_label(row.name) }}</td>
+					                    <tr class="accounts-ping-row{% if surv_status == 'under' %} table-warning{% elif surv_status == 'level2' %} table-danger{% endif %}" data-search="{{ (row.name ~ ' ' ~ (row.router_name or '') ~ ' ' ~ row.ip)|lower }}">
+		                      <td class="ap-col-customer ap-priority-0">{{ accounts_ping_label(row.name, row.router_name) }}</td>
                       <td class="ap-col-ip ap-priority-2">{{ row.ip }}</td>
 	                      <td class="ap-col-status ap-priority-1">
 	                        {% if row.status == 'pending' %}
@@ -439,7 +465,7 @@
 			                                  class="btn btn-link p-0 accounts-ping-spark-btn"
 		                                  style="line-height:0"
 		                                  data-account-id="{{ row.id }}"
-		                                  data-name="{{ row.name }}"
+			                                  data-name="{{ row.display_name }}"
 		                                  data-ip="{{ row.ip }}"
 		                                  data-bs-toggle="modal"
 		                                  data-bs-target="#accounts-ping-spark-modal">
@@ -588,13 +614,8 @@
                         <div class="fw-semibold">Hardware Sizing & Tuning Guide</div>
                         <div class="small">
                           Detected server: <strong>{{ accounts_ping_tuning.cpu_cores }}</strong> CPU cores · <strong>{{ accounts_ping_tuning.ram_gb }}</strong> GB RAM.
-                          Safety cap for this server: <strong>{{ accounts_ping_tuning.safe_parallel_cap }}</strong> Max Parallel.
+                          Use the guide below as a recommendation only.
                         </div>
-                        {% if accounts_ping_tuning.was_clamped %}
-                          <div class="text-danger small mt-1">
-                            Saved value {{ accounts_ping_tuning.configured_parallel }} was above hardware-safe limit and is now capped to {{ accounts_ping_tuning.effective_parallel }}.
-                          </div>
-                        {% endif %}
                         <div class="table-responsive mt-2">
                           <table class="table table-sm table-vcenter mb-2">
                             <thead>
@@ -648,13 +669,47 @@
             <div class="tab-pane {% if settings_tab == 'source' %}active{% endif %}" id="accounts-ping-source">
               <div class="card mb-3">
                 <div class="card-body">
-                  <div class="alert alert-info">
+                  <div class="alert alert-info mb-3" id="accounts-ping-source-help-ssh" {% if settings.source.mode == 'mikrotik_routers' %}hidden{% endif %}>
                     <div class="d-flex align-items-start">
                       <span class="me-2"><i class="ti ti-info-circle"></i></span>
-                      <div>Accounts Ping uses SSH to pull the ShapedDevices CSV and pings each IPv4 entry.</div>
+                      <div>
+                        Accounts Ping uses SSH to pull the ShapedDevices CSV and pings each IPv4 entry.
+                      </div>
                     </div>
                   </div>
-                  <h5 class="mb-3">SSH Source</h5>
+                  <div class="alert alert-info mb-3" id="accounts-ping-source-help-mikrotik" {% if settings.source.mode != 'mikrotik_routers' %}hidden{% endif %}>
+                    <div class="d-flex align-items-start">
+                      <span class="me-2"><i class="ti ti-info-circle"></i></span>
+                      <div>
+                        Accounts Ping uses the selected MikroTik routers to read `/ppp/active` and ping each Active Connections Address.
+                        When a tracked session disappears from the active list, it stays on the page and is treated as down until it returns.
+                      </div>
+                    </div>
+                  </div>
+                  <div class="row g-3 mb-4">
+                    <div class="col-lg-9">
+                      <label class="form-label">Source Mode <span class="info" data-tip="Choose whether Accounts Ping loads accounts from the SSH CSV file or from the selected MikroTik routers.">i</span></label>
+                      <select class="form-select" id="accounts-ping-source-mode" name="source_mode">
+                        <option value="ssh_csv" {% if settings.source.mode != 'mikrotik_routers' %}selected{% endif %}>SSH / CSV</option>
+                        <option value="mikrotik_routers" {% if settings.source.mode == 'mikrotik_routers' %}selected{% endif %}>MikroTik Routers</option>
+                      </select>
+                      <div class="text-muted small mt-2">Choose which source Accounts Ping should use, then configure only the panel that appears below.</div>
+                    </div>
+                    <div class="col-lg-3">
+                      <label class="form-label">Refresh (minutes) <span class="info" data-tip="How often to reload the selected source into the Accounts Ping cache.">i</span></label>
+                      <input class="form-control" type="number" name="source_refresh_minutes" value="{{ settings.source.refresh_minutes }}" min="1" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="card mb-3" id="accounts-ping-source-ssh-card" {% if settings.source.mode == 'mikrotik_routers' %}hidden{% endif %}>
+                <div class="card-body">
+                  <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+                    <div>
+                      <h5 class="mb-0">SSH / CSV Source</h5>
+                      <div class="text-muted small mt-1">Configure the SSH endpoint and the remote `ShapedDevices` CSV path used by Accounts Ping.</div>
+                    </div>
+                  </div>
                   <div class="row g-3">
                     <div class="col-md-6">
                       <label class="form-label">Host <span class="info" data-tip="SSH host that contains the ShapedDevices CSV file.">i</span></label>
@@ -687,11 +742,81 @@
                       <label class="form-label">CSV Path <span class="info" data-tip="Remote path to the ShapedDevices CSV file to import accounts from.">i</span></label>
                       <input class="form-control" type="text" name="ssh_remote_csv_path" value="{{ settings.ssh.remote_csv_path }}" />
                     </div>
-                    <div class="col-md-3">
-                      <label class="form-label">Refresh (minutes) <span class="info" data-tip="How often to reload the CSV source into the Accounts Ping cache (minutes).">i</span></label>
-                      <input class="form-control" type="number" name="source_refresh_minutes" value="{{ settings.source.refresh_minutes }}" min="1" />
-                    </div>
                   </div>
+                </div>
+              </div>
+              <div class="card mb-3" id="accounts-ping-source-mikrotik-card" {% if settings.source.mode != 'mikrotik_routers' %}hidden{% endif %}>
+                <div class="card-body">
+                  <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+                    <div>
+                      <h5 class="mb-0">MikroTik Routers</h5>
+                      <div class="text-muted small mt-1">This follows the same shared router list model as Usage.</div>
+                    </div>
+                    <a class="btn btn-outline-primary" href="/settings/system?tab=routers&routers_tab=mikrotik-routers#sys-routers-mikrotik">Manage Routers</a>
+                  </div>
+                  <input type="hidden" name="router_count" value="{{ (wan_settings.pppoe_routers or [])|length }}" />
+                  <div class="table-responsive">
+                    <table class="table table-vcenter">
+                      <thead>
+                        <tr>
+                          <th>Router</th>
+                          <th>Host</th>
+                          <th>Port</th>
+                          <th>User</th>
+                          <th>TLS</th>
+                          <th title="When enabled, this router is included when Accounts Ping loads `/ppp/active`.">Accounts Ping Enabled</th>
+                          <th>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {% for r in (wan_settings.pppoe_routers or []) %}
+                          {% set rid = (r.id or '') %}
+                          {% set enabled_map = settings.source.mikrotik.router_enabled if settings.source.mikrotik is defined and settings.source.mikrotik.router_enabled is defined else {} %}
+                          {% set router_enabled = enabled_map.get(rid, True) %}
+                          {% set st = accounts_ping_router_state.get(rid, {}) if accounts_ping_router_state is defined else {} %}
+                          <tr>
+                            <td class="fw-semibold">
+                              {{ r.name or r.id }}
+                              <input type="hidden" name="router_{{ loop.index0 }}_id" value="{{ r.id }}" />
+                            </td>
+                            <td class="text-muted">{{ r.host }}</td>
+                            <td class="text-muted">{{ r.port or 8728 }}</td>
+                            <td class="text-muted">{{ r.username }}</td>
+                            <td>
+                              {% if r.use_tls %}
+                                <span class="badge bg-yellow-lt">Yes</span>
+                              {% else %}
+                                <span class="badge bg-secondary-lt">No</span>
+                              {% endif %}
+                            </td>
+                            <td>
+                              <label class="form-check form-switch m-0">
+                                <input class="form-check-input" type="checkbox" name="router_{{ loop.index0 }}_enabled" {% if router_enabled %}checked{% endif %} />
+                              </label>
+                            </td>
+                            <td>
+                              {% if not st %}
+                                <span class="text-muted">n/a</span>
+                              {% else %}
+                                {% if st.error %}
+                                  <span class="badge bg-red-lt">Error</span>
+                                  <span class="text-muted small">{{ st.error }}</span>
+                                {% elif st.connected %}
+                                  <span class="badge bg-green-lt">OK</span>
+                                  <span class="text-muted small">Active: {{ st.active_count or 0 }}</span>
+                                {% else %}
+                                  <span class="badge bg-yellow-lt">Pending</span>
+                                {% endif %}
+                              {% endif %}
+                            </td>
+                          </tr>
+                        {% endfor %}
+                      </tbody>
+                    </table>
+                  </div>
+                  {% if not (wan_settings.pppoe_routers or []) %}
+                    <div class="text-muted">No MikroTik routers added yet. Add them in System Settings → Routers → Mikrotik Routers.</div>
+                  {% endif %}
                 </div>
               </div>
             </div>
@@ -752,12 +877,12 @@
             </div>
           </div>
 
-          <div class="d-flex justify-content-end gap-2">
-            <button type="submit" class="btn btn-primary">Save Accounts Ping Settings</button>
-            <button type="submit" class="btn btn-outline-secondary" formaction="/settings/accounts-ping/test" formmethod="post">
-              Test SSH & Load CSV
-            </button>
-          </div>
+	          <div class="d-flex justify-content-end gap-2">
+	            <button type="submit" class="btn btn-primary">Save Accounts Ping Settings</button>
+	            <button type="submit" class="btn btn-outline-secondary" formaction="/settings/accounts-ping/test" formmethod="post" data-source-test-button data-label-ssh="Test SSH / CSV Source" data-label-mikrotik="Test MikroTik Routers">
+	              {% if settings.source.mode == 'mikrotik_routers' %}Test MikroTik Routers{% else %}Test SSH / CSV Source{% endif %}
+	            </button>
+	          </div>
         </form>
       </div>
     </div>
@@ -766,6 +891,29 @@
 
 	<script>
 	  document.addEventListener("DOMContentLoaded", () => {
+      const sourceModeInput = document.getElementById("accounts-ping-source-mode");
+      const sourceHelpSsh = document.getElementById("accounts-ping-source-help-ssh");
+      const sourceHelpMikrotik = document.getElementById("accounts-ping-source-help-mikrotik");
+      const sourceSshCard = document.getElementById("accounts-ping-source-ssh-card");
+      const sourceMikrotikCard = document.getElementById("accounts-ping-source-mikrotik-card");
+      const sourceTestButton = document.querySelector("[data-source-test-button]");
+      const readSourceMode = () => sourceModeInput ? sourceModeInput.value : "ssh_csv";
+      const syncSourceModeUi = () => {
+        const mode = readSourceMode();
+        const useMikrotik = mode === "mikrotik_routers";
+        if (sourceHelpSsh) sourceHelpSsh.hidden = useMikrotik;
+        if (sourceHelpMikrotik) sourceHelpMikrotik.hidden = !useMikrotik;
+        if (sourceSshCard) sourceSshCard.hidden = useMikrotik;
+        if (sourceMikrotikCard) sourceMikrotikCard.hidden = !useMikrotik;
+        if (sourceTestButton) {
+          sourceTestButton.textContent = useMikrotik
+            ? (sourceTestButton.dataset.labelMikrotik || "Test MikroTik Routers")
+            : (sourceTestButton.dataset.labelSsh || "Test SSH / CSV Source");
+        }
+      };
+      if (sourceModeInput) sourceModeInput.addEventListener("change", syncSourceModeUi);
+      syncSourceModeUi();
+
       const tabLinks = document.querySelectorAll('a[data-bs-toggle="tab"]');
       const tabKey = "accounts_ping_active_tab";
       const storedTab = localStorage.getItem(tabKey);

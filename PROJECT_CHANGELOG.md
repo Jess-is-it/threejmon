@@ -38,6 +38,54 @@ Use this file to record every meaningful system change in reverse-chronological 
 
 ## Entries
 
+## 2026-03-13 07:59 UTC — Added MikroTik router source mode to Accounts Ping
+- Type: feature
+- Scope: Accounts Ping / shared MikroTik routers / surveillance compatibility / project docs
+- Summary:
+  - Added a selectable Accounts Ping source mode so operators can load targets from either the SSH ShapedDevices CSV or the shared MikroTik routers defined in System Settings.
+  - Reused the Usage-style per-router enablement model for Accounts Ping and pulled `/ppp/active` addresses from the selected routers while preserving router-specific duplicate rows.
+  - Kept previously seen MikroTik accounts visible and treated them as down when they disappear from the active connections list, instead of removing them from Accounts Ping.
+  - Updated Accounts Ping-related aggregation paths so router-specific account identities continue to work with the page, profile lookups, and surveillance diagnostics.
+- Files:
+  - `app/accounts_ping_sources.py`
+  - `app/main.py`
+  - `app/jobs.py`
+  - `app/settings_defaults.py`
+  - `app/db.py`
+  - `app/templates/settings_accounts_ping.html`
+  - `PROJECT_DESCRIPTION.md`
+  - `PROJECT_CHANGELOG.md`
+- DB/Config Impact:
+  - Schema: none
+  - Settings/State keys: adds `accounts_ping.source.mode`, `accounts_ping.source.mikrotik.router_enabled`, and state field `accounts_ping_state.router_status`
+- Runtime Impact:
+  - Accounts Ping can now track router-loaded active sessions in addition to the SSH CSV source, and disconnected MikroTik sessions remain visible as down for operators.
+- Validation:
+  - `python3 -m py_compile /opt/threejnotif/app/main.py /opt/threejnotif/app/jobs.py /opt/threejnotif/app/accounts_ping_sources.py /opt/threejnotif/app/db.py /opt/threejnotif/app/settings_defaults.py`
+  - `python3 - <<'PY'` with `jinja2.Environment().parse(Path('/opt/threejnotif/app/templates/settings_accounts_ping.html').read_text())`
+- Rollback:
+  - Revert the files listed above and rebuild the `threejnotif` service.
+
+## 2026-03-13 06:08 UTC — Documented mandatory permission backfills for moved or new features
+- Type: docs
+- Scope: Project description / Access control maintenance rules
+- Summary:
+  - Added an explicit project rule that any new, changed, renamed, or moved permissioned feature must update the permission catalog, dependencies, route mapping, and role editor behavior.
+  - Added a mandatory requirement to backfill existing role permissions when protected features are relocated or introduced, so current users inherit the correct access without manual repair.
+  - Extended the Definition of Done to treat permission maintenance and existing-role compatibility as part of a complete change.
+- Files:
+  - `PROJECT_DESCRIPTION.md`
+  - `PROJECT_CHANGELOG.md`
+- DB/Config Impact:
+  - Schema: none
+  - Settings/State keys: none
+- Runtime Impact:
+  - No runtime behavior change; this strengthens the documented engineering rules for future permissioned feature work.
+- Validation:
+  - `git -C /opt/threejnotif diff --check -- PROJECT_DESCRIPTION.md PROJECT_CHANGELOG.md`
+- Rollback:
+  - Revert the files listed above.
+
 ## 2026-03-13 05:40 UTC — Added per-user new-entry markers for Active Monitoring
 - Type: feature
 - Scope: Under Surveillance / Sidebar navigation

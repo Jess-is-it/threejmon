@@ -30,6 +30,7 @@ from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup, escape
 
 from .db import (
     count_auth_users,
@@ -37,6 +38,7 @@ from .db import (
     clear_offline_history,
     clear_optical_results,
     clear_pppoe_usage_samples,
+    clear_surveillance_audit_logs,
     clear_surveillance_history,
     clear_wan_history,
     create_auth_permission,
@@ -91,6 +93,7 @@ from .db import (
     list_auth_permissions,
     list_auth_roles,
     list_auth_users,
+    list_active_surveillance_sessions,
     list_surveillance_history,
     revoke_auth_session,
     revoke_auth_sessions_for_user,
@@ -105,6 +108,15 @@ from .db import (
     insert_wan_target_ping_result,
     utc_now_iso,
 )
+from .accounts_ping_sources import (
+    ACCOUNTS_PING_SOURCE_MIKROTIK,
+    ACCOUNTS_PING_SOURCE_SSH_CSV,
+    build_accounts_ping_account_id,
+    build_accounts_ping_account_ids_by_pppoe,
+    build_accounts_ping_source_devices,
+    normalize_accounts_ping_device,
+    normalize_accounts_ping_source_mode,
+)
 from .forms import parse_bool, parse_float, parse_int, parse_int_list, parse_lines
 from .jobs import JobsManager
 from .mikrotik import RouterOSClient
@@ -112,7 +124,6 @@ from .feature_usage import add_feature_cpu, sample_feature_cpu_percent, register
 from .ai_investigator import AIInvestigatorError, generate_investigation_report
 from .offline_rules import enabled_offline_tracking_rules, normalize_offline_tracking_rules, offline_rules_summary_text
 from .notifiers import optical as optical_notifier
-from .notifiers import rto as rto_notifier
 from .notifiers import wan_ping as wan_ping_notifier
 from .notifiers.telegram import TelegramError, send_telegram
 from .settings_defaults import (
@@ -2036,16 +2047,20 @@ async def startup_event():
         _auth_sync_centralized_danger_role_permissions()
     except Exception:
         pass
-    try:
-        _prewarm_surveillance_checker_cache()
-    except Exception:
-        pass
     jobs_manager.start()
-    try:
-        job_status = {item["job_name"]: dict(item) for item in get_job_status()}
-        _get_dashboard_kpis_cached(job_status, force=True)
-    except Exception:
-        pass
+
+    def _startup_prewarm():
+        try:
+            _prewarm_surveillance_checker_cache()
+        except Exception:
+            pass
+        try:
+            job_status = {item["job_name"]: dict(item) for item in get_job_status()}
+            _get_dashboard_kpis_cached(job_status, force=True)
+        except Exception:
+            pass
+
+    threading.Thread(target=_startup_prewarm, daemon=True).start()
 
 
 @app.on_event("shutdown")
@@ -5589,18 +5604,12 @@ def _build_dashboard_kpis(job_status):
         acc_cfg = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
         acc_state = get_state("accounts_ping_state", {})
         accounts = acc_state.get("accounts") if isinstance(acc_state.get("accounts"), dict) else {}
-        devices = acc_state.get("devices") if isinstance(acc_state.get("devices"), list) else []
-        device_account_ids = set()
-        for device in devices:
-            if not isinstance(device, dict):
-                continue
-            ip = (device.get("ip") or "").strip()
-            if not ip:
-                continue
-            pppoe = (device.get("pppoe") or device.get("name") or "").strip() or ip
-            aid = _accounts_ping_account_id_for_pppoe(pppoe)
-            if aid:
-                device_account_ids.add(aid)
+        devices = _accounts_ping_state_devices(acc_state)
+        device_account_ids = {
+            (device.get("account_id") or "").strip()
+            for device in devices
+            if isinstance(device, dict) and (device.get("account_id") or "").strip()
+        }
 
         tracked_ids = device_account_ids or set(accounts.keys())
         down = issue = up = burst = 0
@@ -6822,7 +6831,10 @@ async def offline_summary():
             "updated_at": utc_now_iso(),
             "last_check": format_ts_ph(state.get("last_check_at")),
             "mode": (state.get("mode") or "").strip() or "secrets",
-            "counts": {"offline": len(payload_rows)},
+            "counts": {
+                "active": int(state.get("active_accounts") or 0),
+                "offline": len(payload_rows),
+            },
             "rows": payload_rows,
             "rules": rules,
             "rows_by_rule": rows_by_rule,
@@ -8162,6 +8174,7 @@ async def offline_settings(request: Request):
     state = get_state("offline_state", {})
     offline_state = {
         "last_check": format_ts_ph(state.get("last_check_at")),
+        "active_accounts": int(state.get("active_accounts") or 0),
         "router_errors": state.get("router_errors") if isinstance(state.get("router_errors"), list) else [],
         "radius_error": (state.get("radius_error") or "").strip(),
     }
@@ -8390,6 +8403,353 @@ def _profile_merge_search_item(
     if last_seen and last_seen > (row.get("last_seen") or ""):
         row["last_seen"] = last_seen
     _profile_merge_search_status(row, status)
+
+
+def _profile_search_item_target_key(item):
+    row = item if isinstance(item, dict) else {}
+    pppoe = (row.get("pppoe") or "").strip().lower()
+    if pppoe:
+        return f"ppp:{pppoe}"
+    ip = (row.get("ip") or "").strip()
+    if ip:
+        return f"ip:{ip}"
+    device_id = (row.get("device_id") or "").strip().lower()
+    if device_id:
+        return f"dev:{device_id}"
+    name = (row.get("name") or "").strip().lower()
+    if name:
+        return f"name:{name}"
+    return ""
+
+
+def _profile_search_item_href(item):
+    row = item if isinstance(item, dict) else {}
+    params = []
+    pppoe = (row.get("pppoe") or "").strip()
+    ip = (row.get("ip") or "").strip()
+    device_id = (row.get("device_id") or "").strip()
+    if pppoe:
+        params.append(("pppoe", pppoe))
+    if ip:
+        params.append(("ip", ip))
+    if device_id:
+        params.append(("device_id", device_id))
+    query = urllib.parse.urlencode(params)
+    return f"/profile-review?{query}" if query else "/profile-review"
+
+
+def _profile_highlight_markup(value, query):
+    text = str(value or "").strip()
+    if not text:
+        return Markup("")
+    needle = (query or "").strip()
+    if not needle:
+        return escape(text)
+    parts = []
+    last = 0
+    for match in re.finditer(re.escape(needle), text, flags=re.IGNORECASE):
+        start = match.start()
+        end = match.end()
+        if start > last:
+            parts.append(escape(text[last:start]))
+        parts.append(Markup("<mark>"))
+        parts.append(escape(text[start:end]))
+        parts.append(Markup("</mark>"))
+        last = end
+    if not parts:
+        return escape(text)
+    if last < len(text):
+        parts.append(escape(text[last:]))
+    return Markup("").join(parts)
+
+
+def _profile_render_search_results(items, query):
+    rendered = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        row = dict(item)
+        row["href"] = _profile_search_item_href(row)
+        row["highlight_name"] = _profile_highlight_markup(row.get("name") or row.get("pppoe") or row.get("ip") or "Customer", query)
+        row["highlight_pppoe"] = _profile_highlight_markup(row.get("pppoe"), query)
+        row["highlight_ip"] = _profile_highlight_markup(row.get("ip"), query)
+        row["highlight_device_id"] = _profile_highlight_markup(row.get("device_id"), query)
+        last_seen = (row.get("last_seen") or "").strip()
+        row["last_seen_label"] = format_ts_ph(last_seen) if last_seen else ""
+        rendered.append(row)
+    return rendered
+
+
+def _empty_profile_review_profile(window_hours, window_label):
+    return {
+        "window_hours": int(window_hours or 24),
+        "window_label": window_label or "1D",
+        "ip": "",
+        "device_id": "",
+        "device_url": "",
+        "name": "",
+        "pppoe": "",
+        "sources": [],
+        "accounts_ping": None,
+        "optical": None,
+        "usage": None,
+        "surveillance": None,
+        "offline": None,
+        "overview": {},
+        "kpis": [],
+        "testing_focus": [],
+        "account_details": [],
+        "classification": {
+            "tx_realistic_min_dbm": float(OPTICAL_DEFAULTS["classification"]["tx_realistic_min_dbm"]),
+            "tx_realistic_max_dbm": float(OPTICAL_DEFAULTS["classification"]["tx_realistic_max_dbm"]),
+        },
+    }
+
+
+def _profile_search_items(query, limit=12):
+    query = (query or "").strip()
+    if len(query) < 2:
+        return []
+    limit = max(min(int(limit or 12), 250), 1)
+    since_iso = (datetime.utcnow() - timedelta(days=120)).replace(microsecond=0).isoformat() + "Z"
+
+    optical_hits = search_optical_customers(query, since_iso, limit=limit)
+    optical_settings = get_settings("optical", OPTICAL_DEFAULTS)
+    accounts_ping_settings = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
+    usage_settings = get_settings("usage", USAGE_DEFAULTS)
+    ping_state = get_state("accounts_ping_state", {"accounts": {}, "devices": []})
+    devices = _accounts_ping_state_devices(ping_state)
+    state_accounts = ping_state.get("accounts") if isinstance(ping_state.get("accounts"), dict) else {}
+    usage_state = get_state("usage_state", {})
+    usage_rows = usage_state.get("active_rows") if isinstance(usage_state.get("active_rows"), list) else []
+    usage_hosts = usage_state.get("pppoe_hosts") if isinstance(usage_state.get("pppoe_hosts"), dict) else {}
+    usage_anytime_issues = usage_state.get("anytime_issues") if isinstance(usage_state.get("anytime_issues"), dict) else {}
+    offline_state = get_state("offline_state", {})
+    offline_current_map = _profile_collect_offline_current_map(offline_state)
+    surveillance_settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
+    surveillance_entries = _surveillance_entry_map(surveillance_settings)
+
+    optical_class = optical_settings.get("classification", {}) or {}
+    issue_rx = float(optical_class.get("issue_rx_dbm", OPTICAL_DEFAULTS["classification"]["issue_rx_dbm"]))
+    issue_tx = float(optical_class.get("issue_tx_dbm", OPTICAL_DEFAULTS["classification"]["issue_tx_dbm"]))
+    stable_rx = float(optical_class.get("stable_rx_dbm", OPTICAL_DEFAULTS["classification"]["stable_rx_dbm"]))
+    stable_tx = float(optical_class.get("stable_tx_dbm", OPTICAL_DEFAULTS["classification"]["stable_tx_dbm"]))
+    rx_realistic_min = float(optical_class.get("rx_realistic_min_dbm", OPTICAL_DEFAULTS["classification"]["rx_realistic_min_dbm"]))
+    rx_realistic_max = float(optical_class.get("rx_realistic_max_dbm", OPTICAL_DEFAULTS["classification"]["rx_realistic_max_dbm"]))
+    tx_realistic_min = float(optical_class.get("tx_realistic_min_dbm", OPTICAL_DEFAULTS["classification"]["tx_realistic_min_dbm"]))
+    tx_realistic_max = float(optical_class.get("tx_realistic_max_dbm", OPTICAL_DEFAULTS["classification"]["tx_realistic_max_dbm"]))
+
+    ping_class = accounts_ping_settings.get("classification", {}) or {}
+    issue_loss_pct = float(ping_class.get("issue_loss_pct", ACCOUNTS_PING_DEFAULTS["classification"]["issue_loss_pct"]) or 20.0)
+    issue_latency_ms = float(ping_class.get("issue_latency_ms", ACCOUNTS_PING_DEFAULTS["classification"]["issue_latency_ms"]) or 200.0)
+    stable_fail_pct = float(ping_class.get("stable_rto_pct", ACCOUNTS_PING_DEFAULTS["classification"]["stable_rto_pct"]) or 2.0)
+    issue_fail_pct = float(ping_class.get("issue_rto_pct", ACCOUNTS_PING_DEFAULTS["classification"]["issue_rto_pct"]) or 5.0)
+
+    merged = {}
+    for row in optical_hits:
+        ip = (row.get("ip") or "").strip()
+        pppoe = (row.get("pppoe") or "").strip()
+        key = f"ppp:{pppoe}" if pppoe else (f"ip:{ip}" if ip else f"dev:{row.get('device_id')}")
+        rx = row.get("rx")
+        tx = row.get("tx")
+        optical_status = "stable"
+        rx_invalid = rx is None or rx < rx_realistic_min or rx > rx_realistic_max
+        tx_missing = tx is None
+        tx_unrealistic = (tx is not None) and (tx < tx_realistic_min or tx > tx_realistic_max)
+        if rx_invalid:
+            optical_status = "issue"
+        elif tx_missing or tx_unrealistic:
+            optical_status = "monitor"
+        elif (rx is not None and rx <= issue_rx) or (tx is not None and tx <= issue_tx):
+            optical_status = "issue"
+        elif not (rx is not None and rx >= stable_rx and tx is not None and tx >= stable_tx):
+            optical_status = "monitor"
+        _profile_merge_search_item(
+            merged,
+            key,
+            name=pppoe,
+            pppoe=pppoe,
+            ip=ip,
+            device_id=(row.get("device_id") or "").strip(),
+            source="optical",
+            last_seen=(row.get("timestamp") or "").strip(),
+            status=optical_status,
+        )
+
+    matching_devices = []
+    matching_account_ids = []
+    seen_account_ids = set()
+    for dev in devices:
+        ip = (dev.get("ip") or "").strip()
+        if not ip:
+            continue
+        pppoe = (dev.get("pppoe") or dev.get("name") or "").strip() or ip
+        router_name = (dev.get("router_name") or "").strip()
+        if not _profile_query_matches(query, pppoe, ip, router_name):
+            continue
+        matching_devices.append(dev)
+        aid = (dev.get("account_id") or "").strip() or _accounts_ping_account_id_for_device(dev)
+        if aid and aid not in seen_account_ids:
+            seen_account_ids.add(aid)
+            matching_account_ids.append(aid)
+    ping_stats_map = get_accounts_ping_window_stats(matching_account_ids, since_iso) if matching_account_ids else {}
+
+    for dev in matching_devices:
+        ip = (dev.get("ip") or "").strip()
+        pppoe = (dev.get("pppoe") or dev.get("name") or "").strip() or ip
+        router_name = (dev.get("router_name") or "").strip()
+        aid = (dev.get("account_id") or "").strip() or _accounts_ping_account_id_for_device(dev)
+        st = state_accounts.get(aid) if isinstance(state_accounts.get(aid), dict) else {}
+        last_seen = (st.get("last_check_at") or "").strip()
+        key = f"ppp:{pppoe}|{(dev.get('router_id') or '').strip()}"
+        status = "pending"
+        if last_seen:
+            if not bool(st.get("last_ok")):
+                status = "down"
+            else:
+                last_loss = st.get("last_loss")
+                last_avg_ms = st.get("last_avg_ms")
+                fail_pct = 0.0
+                stats = (ping_stats_map.get(aid) or {}) if aid else {}
+                total = int(stats.get("total") or 0)
+                failures = int(stats.get("failures") or 0)
+                if total:
+                    fail_pct = (failures / total) * 100.0
+                issue_hit = False
+                if last_loss is not None and float(last_loss) >= issue_loss_pct:
+                    issue_hit = True
+                if last_avg_ms is not None and float(last_avg_ms) >= issue_latency_ms:
+                    issue_hit = True
+                if total and fail_pct >= issue_fail_pct:
+                    issue_hit = True
+                if total and fail_pct > stable_fail_pct:
+                    issue_hit = True
+                status = "monitor" if issue_hit else "stable"
+        _profile_merge_search_item(
+            merged,
+            key,
+            name=f"{pppoe} ({router_name})" if router_name else pppoe,
+            pppoe=pppoe,
+            ip=ip,
+            source="accounts_ping",
+            last_seen=last_seen,
+            status=status,
+        )
+
+    usage_detect = usage_settings.get("detection") if isinstance(usage_settings.get("detection"), dict) else {}
+    peak_enabled = bool(usage_detect.get("peak_enabled", True))
+    min_devices = max(int(usage_detect.get("min_connected_devices", 2) or 2), 1)
+    kbps_from = usage_detect.get("total_kbps_from")
+    kbps_to = usage_detect.get("total_kbps_to")
+    if kbps_from is None:
+        kbps_from = 0
+    if kbps_to is None:
+        kbps_to = usage_detect.get("min_total_kbps", 8)
+    kbps_from = max(float(kbps_from or 0.0), 0.0)
+    kbps_to = max(float(kbps_to or 0.0), 0.0)
+    if kbps_to < kbps_from:
+        kbps_from, kbps_to = kbps_to, kbps_from
+    range_from_bps = kbps_from * 1000.0
+    range_to_bps = kbps_to * 1000.0
+    start_ph = (usage_detect.get("peak_start_ph") or "17:30").strip()
+    end_ph = (usage_detect.get("peak_end_ph") or "21:00").strip()
+    in_peak = is_time_window_ph(datetime.now(PH_TZ), start_ph, end_ph)
+
+    for row in usage_rows:
+        if not isinstance(row, dict):
+            continue
+        pppoe = (row.get("pppoe") or row.get("name") or "").strip()
+        address = (row.get("address") or "").strip()
+        router_name = (row.get("router_name") or row.get("router_id") or "").strip()
+        if not _profile_query_matches(query, pppoe, address, router_name):
+            continue
+        pppoe_key = pppoe.lower()
+        host_info = usage_hosts.get(pppoe) or usage_hosts.get(pppoe_key) or {}
+        host_count = int(host_info.get("host_count") or 0)
+        total_bps = float(row.get("rx_bps") or 0.0) + float(row.get("tx_bps") or 0.0)
+        peak_issue = bool(
+            peak_enabled
+            and in_peak
+            and host_count >= min_devices
+            and (range_from_bps <= total_bps <= range_to_bps)
+        )
+        router_id = (row.get("router_id") or "").strip()
+        anytime_issue = bool(usage_anytime_issues.get(f"{router_id}|{pppoe_key}"))
+        _profile_merge_search_item(
+            merged,
+            f"ppp:{pppoe}",
+            name=pppoe,
+            pppoe=pppoe,
+            ip=address,
+            source="usage",
+            last_seen=(row.get("timestamp") or "").strip(),
+            status="monitor" if (peak_issue or anytime_issue) else "stable",
+        )
+
+    for row in offline_current_map.values():
+        if not isinstance(row, dict):
+            continue
+        if not _profile_query_matches(
+            query,
+            row.get("pppoe"),
+            row.get("router_name"),
+            row.get("service_profile"),
+            row.get("radius_status"),
+        ):
+            continue
+        _profile_merge_search_item(
+            merged,
+            f"ppp:{(row.get('pppoe') or '').strip()}",
+            name=(row.get("pppoe") or "").strip(),
+            pppoe=(row.get("pppoe") or "").strip(),
+            source="offline",
+            last_seen=(row.get("last_offline_at_iso") or row.get("offline_since_iso") or "").strip(),
+            status="down" if row.get("listed") else "tracking",
+        )
+
+    for entry in surveillance_entries.values():
+        if not isinstance(entry, dict):
+            continue
+        pppoe = (entry.get("pppoe") or "").strip()
+        ip = (entry.get("ip") or "").strip()
+        name = (entry.get("name") or pppoe).strip()
+        if not _profile_query_matches(query, pppoe, ip, name):
+            continue
+        surv_status = (entry.get("status") or "under").strip().lower()
+        _profile_merge_search_item(
+            merged,
+            f"ppp:{pppoe}",
+            name=name,
+            pppoe=pppoe,
+            ip=ip,
+            source="surveillance",
+            last_seen=(entry.get("updated_at") or entry.get("added_at") or "").strip(),
+            status="issue" if surv_status == "level2" else "monitor",
+        )
+
+    items = []
+    for value in merged.values():
+        sources = sorted(value["sources"])
+        items.append(
+            {
+                "name": value.get("name") or value.get("ip") or value.get("device_id") or "Customer",
+                "pppoe": value.get("pppoe") or "",
+                "ip": value.get("ip") or "",
+                "device_id": value.get("device_id") or "",
+                "sources": sources,
+                "last_seen": value.get("last_seen") or "",
+                "meta": value.get("meta") or {},
+            }
+        )
+    items.sort(
+        key=lambda x: (
+            _profile_status_rank((x.get("meta") or {}).get("status")),
+            x.get("last_seen") or "",
+            str(x.get("name") or "").lower(),
+        ),
+        reverse=True,
+    )
+    return items[:limit]
 
 
 def _profile_collect_offline_current_map(offline_state):
@@ -8784,7 +9144,7 @@ async def profile_review_suggest(q: str = "", limit: int = 12):
         optical_settings = get_settings("optical", OPTICAL_DEFAULTS)
         accounts_ping_settings = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
         ping_state = get_state("accounts_ping_state", {"accounts": {}, "devices": []})
-        devices = ping_state.get("devices") if isinstance(ping_state.get("devices"), list) else []
+        devices = _accounts_ping_state_devices(ping_state)
         state_accounts = ping_state.get("accounts") if isinstance(ping_state.get("accounts"), dict) else {}
 
         cls = accounts_ping_settings.get("classification", {}) or {}
@@ -8800,10 +9160,17 @@ async def profile_review_suggest(q: str = "", limit: int = 12):
             if not ip:
                 continue
             pppoe = (dev.get("pppoe") or dev.get("name") or "").strip() or ip
-            aid = _accounts_ping_account_id_for_pppoe(pppoe)
+            aid = (dev.get("account_id") or "").strip() or _accounts_ping_account_id_for_device(dev)
             if not aid:
                 continue
-            rows.append({"pppoe": pppoe, "ip": ip, "account_id": aid})
+            rows.append(
+                {
+                    "pppoe": pppoe,
+                    "ip": ip,
+                    "account_id": aid,
+                    "router_name": (dev.get("router_name") or "").strip(),
+                }
+            )
             account_ids.append(aid)
 
         stats_by_ip_map = get_accounts_ping_window_stats_by_ip(account_ids, since_iso) if account_ids else {}
@@ -8843,7 +9210,11 @@ async def profile_review_suggest(q: str = "", limit: int = 12):
                 acc_items.append(
                     {
                         "group": "ACC-Ping",
-                        "name": row.get("pppoe") or chosen_ip,
+                        "name": (
+                            f"{row.get('pppoe')} ({row.get('router_name')})"
+                            if row.get("router_name")
+                            else (row.get("pppoe") or chosen_ip)
+                        ),
                         "pppoe": row.get("pppoe") or "",
                         "ip": chosen_ip,
                         "device_id": "",
@@ -8939,243 +9310,7 @@ async def profile_review_suggest(q: str = "", limit: int = 12):
                 "items": acc_items + optical_items,
             }
         )
-    since_iso = (datetime.utcnow() - timedelta(days=120)).replace(microsecond=0).isoformat() + "Z"
-
-    optical_hits = search_optical_customers(query, since_iso, limit=limit)
-    optical_settings = get_settings("optical", OPTICAL_DEFAULTS)
-    accounts_ping_settings = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
-    usage_settings = get_settings("usage", USAGE_DEFAULTS)
-    ping_state = get_state("accounts_ping_state", {"accounts": {}, "devices": []})
-    devices = ping_state.get("devices") if isinstance(ping_state.get("devices"), list) else []
-    state_accounts = ping_state.get("accounts") if isinstance(ping_state.get("accounts"), dict) else {}
-    usage_state = get_state("usage_state", {})
-    usage_rows = usage_state.get("active_rows") if isinstance(usage_state.get("active_rows"), list) else []
-    usage_hosts = usage_state.get("pppoe_hosts") if isinstance(usage_state.get("pppoe_hosts"), dict) else {}
-    usage_anytime_issues = usage_state.get("anytime_issues") if isinstance(usage_state.get("anytime_issues"), dict) else {}
-    offline_state = get_state("offline_state", {})
-    offline_current_map = _profile_collect_offline_current_map(offline_state)
-    surveillance_settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
-    surveillance_entries = _surveillance_entry_map(surveillance_settings)
-
-    optical_class = optical_settings.get("classification", {}) or {}
-    issue_rx = float(optical_class.get("issue_rx_dbm", OPTICAL_DEFAULTS["classification"]["issue_rx_dbm"]))
-    issue_tx = float(optical_class.get("issue_tx_dbm", OPTICAL_DEFAULTS["classification"]["issue_tx_dbm"]))
-    stable_rx = float(optical_class.get("stable_rx_dbm", OPTICAL_DEFAULTS["classification"]["stable_rx_dbm"]))
-    stable_tx = float(optical_class.get("stable_tx_dbm", OPTICAL_DEFAULTS["classification"]["stable_tx_dbm"]))
-    rx_realistic_min = float(optical_class.get("rx_realistic_min_dbm", OPTICAL_DEFAULTS["classification"]["rx_realistic_min_dbm"]))
-    rx_realistic_max = float(optical_class.get("rx_realistic_max_dbm", OPTICAL_DEFAULTS["classification"]["rx_realistic_max_dbm"]))
-    tx_realistic_min = float(optical_class.get("tx_realistic_min_dbm", OPTICAL_DEFAULTS["classification"]["tx_realistic_min_dbm"]))
-    tx_realistic_max = float(optical_class.get("tx_realistic_max_dbm", OPTICAL_DEFAULTS["classification"]["tx_realistic_max_dbm"]))
-
-    ping_class = accounts_ping_settings.get("classification", {}) or {}
-    issue_loss_pct = float(ping_class.get("issue_loss_pct", ACCOUNTS_PING_DEFAULTS["classification"]["issue_loss_pct"]) or 20.0)
-    issue_latency_ms = float(ping_class.get("issue_latency_ms", ACCOUNTS_PING_DEFAULTS["classification"]["issue_latency_ms"]) or 200.0)
-    stable_fail_pct = float(ping_class.get("stable_rto_pct", ACCOUNTS_PING_DEFAULTS["classification"]["stable_rto_pct"]) or 2.0)
-    issue_fail_pct = float(ping_class.get("issue_rto_pct", ACCOUNTS_PING_DEFAULTS["classification"]["issue_rto_pct"]) or 5.0)
-    device_account_ids = []
-    seen_account_ids = set()
-    for dev in devices:
-        ip = (dev.get("ip") or "").strip()
-        if not ip:
-            continue
-        pppoe = (dev.get("pppoe") or dev.get("name") or "").strip() or ip
-        aid = _accounts_ping_account_id_for_pppoe(pppoe)
-        if not aid or aid in seen_account_ids:
-            continue
-        seen_account_ids.add(aid)
-        device_account_ids.append(aid)
-    ping_stats_map = get_accounts_ping_window_stats(device_account_ids, since_iso) if device_account_ids else {}
-
-    merged = {}
-    for row in optical_hits:
-        ip = (row.get("ip") or "").strip()
-        pppoe = (row.get("pppoe") or "").strip()
-        key = f"ppp:{pppoe}" if pppoe else (f"ip:{ip}" if ip else f"dev:{row.get('device_id')}")
-        rx = row.get("rx")
-        tx = row.get("tx")
-        optical_status = "stable"
-        rx_invalid = rx is None or rx < rx_realistic_min or rx > rx_realistic_max
-        tx_missing = tx is None
-        tx_unrealistic = (tx is not None) and (tx < tx_realistic_min or tx > tx_realistic_max)
-        if rx_invalid:
-            optical_status = "issue"
-        elif tx_missing or tx_unrealistic:
-            optical_status = "monitor"
-        elif (rx is not None and rx <= issue_rx) or (tx is not None and tx <= issue_tx):
-            optical_status = "issue"
-        elif not (rx is not None and rx >= stable_rx and tx is not None and tx >= stable_tx):
-            optical_status = "monitor"
-        _profile_merge_search_item(
-            merged,
-            key,
-            name=pppoe,
-            pppoe=pppoe,
-            ip=ip,
-            device_id=(row.get("device_id") or "").strip(),
-            source="optical",
-            last_seen=(row.get("timestamp") or "").strip(),
-            status=optical_status,
-        )
-
-    for dev in devices:
-        ip = (dev.get("ip") or "").strip()
-        if not ip:
-            continue
-        pppoe = (dev.get("pppoe") or dev.get("name") or "").strip() or ip
-        if not _profile_query_matches(query, pppoe, ip):
-            continue
-        aid = _accounts_ping_account_id_for_pppoe(pppoe)
-        st = state_accounts.get(aid) if isinstance(state_accounts.get(aid), dict) else {}
-        last_seen = (st.get("last_check_at") or "").strip()
-        key = f"ppp:{pppoe}"
-        status = "pending"
-        if last_seen:
-            if not bool(st.get("last_ok")):
-                status = "down"
-            else:
-                last_loss = st.get("last_loss")
-                last_avg_ms = st.get("last_avg_ms")
-                fail_pct = 0.0
-                stats = (ping_stats_map.get(aid) or {}) if aid else {}
-                total = int(stats.get("total") or 0)
-                failures = int(stats.get("failures") or 0)
-                if total:
-                    fail_pct = (failures / total) * 100.0
-                issue_hit = False
-                if last_loss is not None and float(last_loss) >= issue_loss_pct:
-                    issue_hit = True
-                if last_avg_ms is not None and float(last_avg_ms) >= issue_latency_ms:
-                    issue_hit = True
-                if total and fail_pct >= issue_fail_pct:
-                    issue_hit = True
-                if total and fail_pct > stable_fail_pct:
-                    issue_hit = True
-                status = "monitor" if issue_hit else "stable"
-        _profile_merge_search_item(
-            merged,
-            key,
-            name=pppoe,
-            pppoe=pppoe,
-            ip=ip,
-            source="accounts_ping",
-            last_seen=last_seen,
-            status=status,
-        )
-
-    usage_detect = usage_settings.get("detection") if isinstance(usage_settings.get("detection"), dict) else {}
-    peak_enabled = bool(usage_detect.get("peak_enabled", True))
-    min_devices = max(int(usage_detect.get("min_connected_devices", 2) or 2), 1)
-    kbps_from = usage_detect.get("total_kbps_from")
-    kbps_to = usage_detect.get("total_kbps_to")
-    if kbps_from is None:
-        kbps_from = 0
-    if kbps_to is None:
-        kbps_to = usage_detect.get("min_total_kbps", 8)
-    kbps_from = max(float(kbps_from or 0.0), 0.0)
-    kbps_to = max(float(kbps_to or 0.0), 0.0)
-    if kbps_to < kbps_from:
-        kbps_from, kbps_to = kbps_to, kbps_from
-    range_from_bps = kbps_from * 1000.0
-    range_to_bps = kbps_to * 1000.0
-    start_ph = (usage_detect.get("peak_start_ph") or "17:30").strip()
-    end_ph = (usage_detect.get("peak_end_ph") or "21:00").strip()
-    in_peak = is_time_window_ph(datetime.now(PH_TZ), start_ph, end_ph)
-
-    for row in usage_rows:
-        if not isinstance(row, dict):
-            continue
-        pppoe = (row.get("pppoe") or row.get("name") or "").strip()
-        address = (row.get("address") or "").strip()
-        router_name = (row.get("router_name") or row.get("router_id") or "").strip()
-        if not _profile_query_matches(query, pppoe, address, router_name):
-            continue
-        pppoe_key = pppoe.lower()
-        host_info = usage_hosts.get(pppoe) or usage_hosts.get(pppoe_key) or {}
-        host_count = int(host_info.get("host_count") or 0)
-        total_bps = float(row.get("rx_bps") or 0.0) + float(row.get("tx_bps") or 0.0)
-        peak_issue = bool(
-            peak_enabled
-            and in_peak
-            and host_count >= min_devices
-            and (range_from_bps <= total_bps <= range_to_bps)
-        )
-        router_id = (row.get("router_id") or "").strip()
-        anytime_issue = bool(usage_anytime_issues.get(f"{router_id}|{pppoe_key}"))
-        _profile_merge_search_item(
-            merged,
-            f"ppp:{pppoe}",
-            name=pppoe,
-            pppoe=pppoe,
-            ip=address,
-            source="usage",
-            last_seen=(row.get("timestamp") or "").strip(),
-            status="monitor" if (peak_issue or anytime_issue) else "stable",
-        )
-
-    for row in offline_current_map.values():
-        if not isinstance(row, dict):
-            continue
-        if not _profile_query_matches(
-            query,
-            row.get("pppoe"),
-            row.get("router_name"),
-            row.get("service_profile"),
-            row.get("radius_status"),
-        ):
-            continue
-        _profile_merge_search_item(
-            merged,
-            f"ppp:{(row.get('pppoe') or '').strip()}",
-            name=(row.get("pppoe") or "").strip(),
-            pppoe=(row.get("pppoe") or "").strip(),
-            source="offline",
-            last_seen=(row.get("last_offline_at_iso") or row.get("offline_since_iso") or "").strip(),
-            status="down" if row.get("listed") else "tracking",
-        )
-
-    for entry in surveillance_entries.values():
-        if not isinstance(entry, dict):
-            continue
-        pppoe = (entry.get("pppoe") or "").strip()
-        ip = (entry.get("ip") or "").strip()
-        name = (entry.get("name") or pppoe).strip()
-        if not _profile_query_matches(query, pppoe, ip, name):
-            continue
-        surv_status = (entry.get("status") or "under").strip().lower()
-        _profile_merge_search_item(
-            merged,
-            f"ppp:{pppoe}",
-            name=name,
-            pppoe=pppoe,
-            ip=ip,
-            source="surveillance",
-            last_seen=(entry.get("updated_at") or entry.get("added_at") or "").strip(),
-            status="issue" if surv_status == "level2" else "monitor",
-        )
-
-    items = []
-    for value in merged.values():
-        sources = sorted(value["sources"])
-        items.append(
-            {
-                "name": value.get("name") or value.get("ip") or value.get("device_id") or "Customer",
-                "pppoe": value.get("pppoe") or "",
-                "ip": value.get("ip") or "",
-                "device_id": value.get("device_id") or "",
-                "sources": sources,
-                "last_seen": value.get("last_seen") or "",
-                "meta": value.get("meta") or {},
-            }
-        )
-    items.sort(
-        key=lambda x: (
-            _profile_status_rank((x.get("meta") or {}).get("status")),
-            x.get("last_seen") or "",
-            str(x.get("name") or "").lower(),
-        ),
-        reverse=True,
-    )
-    return JSONResponse({"mode": "search", "header": "Results", "items": items[:limit]})
+    return JSONResponse({"mode": "search", "header": "Results", "items": _profile_search_items(query, limit=limit)})
 
 
 @app.get("/profile-review", response_class=HTMLResponse)
@@ -9183,8 +9318,44 @@ async def profile_review(request: Request):
     pppoe = (request.query_params.get("pppoe") or "").strip()
     ip = (request.query_params.get("ip") or "").strip()
     device_id = (request.query_params.get("device_id") or "").strip()
+    search_query = (request.query_params.get("q") or "").strip()
     window_hours = _normalize_wan_window(request.query_params.get("window"))
     window_label = next((label for label, hours in WAN_STATUS_WINDOW_OPTIONS if hours == window_hours), "1D")
+
+    if search_query and not any((pppoe, ip, device_id)):
+        search_results = []
+        search_state = "too_short"
+        search_account_count = 0
+        if len(search_query) >= 2:
+            search_results = _profile_search_items(search_query, limit=200)
+            unique_targets = {}
+            for item in search_results:
+                key = _profile_search_item_target_key(item)
+                if key and key not in unique_targets:
+                    unique_targets[key] = item
+            search_account_count = len(unique_targets)
+            if search_account_count == 1 and unique_targets:
+                first_item = next(iter(unique_targets.values()))
+                return RedirectResponse(_profile_search_item_href(first_item), status_code=303)
+            search_state = "results" if search_results else "empty"
+
+        response = templates.TemplateResponse(
+            "profile_review.html",
+            make_context(
+                request,
+                {
+                    "profile": _empty_profile_review_profile(window_hours, window_label),
+                    "search_query": search_query,
+                    "search_results": _profile_render_search_results(search_results, search_query),
+                    "search_state": search_state,
+                    "search_result_count": len(search_results),
+                    "search_account_count": search_account_count,
+                },
+            ),
+        )
+        response.headers["Cache-Control"] = NO_STORE_HEADERS["Cache-Control"]
+        return response
+
     now_dt = datetime.utcnow().replace(microsecond=0)
     since_iso = (now_dt - timedelta(hours=window_hours)).isoformat() + "Z"
     offline_history_since_iso = (now_dt - timedelta(days=90)).isoformat() + "Z"
@@ -9197,7 +9368,7 @@ async def profile_review(request: Request):
     surveillance_entries = _surveillance_entry_map(surveillance_settings)
 
     ping_state = get_state("accounts_ping_state", {"accounts": {}, "devices": []})
-    devices = ping_state.get("devices") if isinstance(ping_state.get("devices"), list) else []
+    devices = _accounts_ping_state_devices(ping_state)
     state_accounts = ping_state.get("accounts") if isinstance(ping_state.get("accounts"), dict) else {}
     usage_state = get_state("usage_state", {})
     active_rows = usage_state.get("active_rows") if isinstance(usage_state.get("active_rows"), list) else []
@@ -9239,8 +9410,8 @@ async def profile_review(request: Request):
             pass
 
     if pppoe and not ip:
-        aid = _accounts_ping_account_id_for_pppoe(pppoe)
-        st = state_accounts.get(aid) if isinstance(state_accounts.get(aid), dict) else {}
+        account_ids = _accounts_ping_account_ids_for_pppoe(pppoe, ping_state)
+        st = _accounts_ping_best_state_entry(account_ids, state_accounts)
         ip = (st.get("last_ip") or "").strip() or ip
 
     if ip and not device_id:
@@ -9431,16 +9602,16 @@ async def profile_review(request: Request):
         stable_fail_pct = float(cls.get("stable_rto_pct", ACCOUNTS_PING_DEFAULTS["classification"]["stable_rto_pct"]) or 2.0)
         issue_fail_pct = float(cls.get("issue_rto_pct", ACCOUNTS_PING_DEFAULTS["classification"]["issue_rto_pct"]) or 5.0)
 
-        account_id = _accounts_ping_account_id_for_pppoe(profile["pppoe"])
-        st = state_accounts.get(account_id) if isinstance(state_accounts.get(account_id), dict) else {}
+        account_ids = _accounts_ping_account_ids_for_pppoe(profile["pppoe"], ping_state)
+        account_id = account_ids[0] if account_ids else _accounts_ping_account_id_for_pppoe(profile["pppoe"])
+        st = _accounts_ping_best_state_entry(account_ids, state_accounts)
         has_recent = bool((st.get("last_check_at") or "").strip())
         last_ok = bool(st.get("last_ok")) if has_recent else True
         last_loss = st.get("last_loss")
         last_avg_ms = st.get("last_avg_ms")
         last_seen = format_ts_ph(st.get("last_check_at")) if has_recent else "n/a"
 
-        stats_map = get_accounts_ping_window_stats([account_id], since_iso)
-        stats = stats_map.get(account_id) or {}
+        stats = _accounts_ping_window_stats_aggregate(account_ids, since_iso)
         total = int(stats.get("total") or 0)
         failures = int(stats.get("failures") or 0)
         fail_pct = (failures / total) * 100.0 if total else 0.0
@@ -9462,7 +9633,8 @@ async def profile_review(request: Request):
                     issue_hit = True
                 status = "monitor" if issue_hit else "stable"
 
-        chosen_ip = (get_accounts_ping_latest_ip_since(account_id, since_iso) or "").strip()
+        latest_row = _accounts_ping_latest_row_for_account_ids(account_ids)
+        chosen_ip = (latest_row.get("ip") or "").strip()
         if not chosen_ip:
             chosen_ip = (st.get("last_ip") or profile.get("ip") or "").strip()
         if chosen_ip and not profile.get("ip"):
@@ -9470,7 +9642,7 @@ async def profile_review(request: Request):
 
         recent_rows = []
         try:
-            rows = get_accounts_ping_series(account_id, since_iso)
+            rows = _accounts_ping_series_rows_for_account_ids(account_ids, since_iso)
             if chosen_ip:
                 rows = [row for row in rows if (row.get("ip") or "").strip() == chosen_ip]
             recent_rows = list(reversed(rows))[:12]
@@ -9875,6 +10047,11 @@ async def profile_review(request: Request):
             request,
             {
                 "profile": profile,
+                "search_query": search_query,
+                "search_results": [],
+                "search_state": "",
+                "search_result_count": 0,
+                "search_account_count": 0,
             },
         ),
     )
@@ -9917,10 +10094,25 @@ async def accounts_ping_settings(request: Request):
 
 def _accounts_ping_tuning_context(settings):
     normalized = copy.deepcopy(settings or {})
+    ssh_cfg = normalized.get("ssh") if isinstance(normalized.get("ssh"), dict) else {}
     general = normalized.get("general") if isinstance(normalized.get("general"), dict) else {}
     ping_cfg = normalized.get("ping") if isinstance(normalized.get("ping"), dict) else {}
     source_cfg = normalized.get("source") if isinstance(normalized.get("source"), dict) else {}
     storage_cfg = normalized.get("storage") if isinstance(normalized.get("storage"), dict) else {}
+    mikrotik_cfg = source_cfg.get("mikrotik") if isinstance(source_cfg.get("mikrotik"), dict) else {}
+    router_enabled = mikrotik_cfg.get("router_enabled") if isinstance(mikrotik_cfg.get("router_enabled"), dict) else {}
+    source_cfg["mode"] = normalize_accounts_ping_source_mode(source_cfg.get("mode"))
+    try:
+        refresh_minutes = int(source_cfg.get("refresh_minutes", ACCOUNTS_PING_DEFAULTS["source"]["refresh_minutes"]) or 1)
+    except Exception:
+        refresh_minutes = int(ACCOUNTS_PING_DEFAULTS["source"]["refresh_minutes"])
+    source_cfg["refresh_minutes"] = max(refresh_minutes, 1)
+    mikrotik_cfg["router_enabled"] = {
+        str(key).strip(): bool(value)
+        for key, value in router_enabled.items()
+        if str(key).strip()
+    }
+    source_cfg["mikrotik"] = mikrotik_cfg
 
     try:
         configured_parallel = int(general.get("max_parallel", ACCOUNTS_PING_DEFAULTS["general"]["max_parallel"]) or 1)
@@ -9932,9 +10124,10 @@ def _accounts_ping_tuning_context(settings):
     mem_total_kb = int((_memory_details_kb() or {}).get("mem_total_kb") or 0)
     ram_gb = round(mem_total_kb / (1024 * 1024), 1) if mem_total_kb > 0 else 0.0
     safe_parallel_cap = max(8, min(32, cpu_cores * 4))
-    effective_parallel = min(configured_parallel, safe_parallel_cap)
+    effective_parallel = configured_parallel
 
-    general["max_parallel"] = effective_parallel
+    general["max_parallel"] = configured_parallel
+    normalized["ssh"] = ssh_cfg
     normalized["general"] = general
     normalized["ping"] = ping_cfg
     normalized["source"] = source_cfg
@@ -10034,7 +10227,7 @@ def _accounts_ping_tuning_context(settings):
         "safe_parallel_cap": safe_parallel_cap,
         "configured_parallel": configured_parallel,
         "effective_parallel": effective_parallel,
-        "was_clamped": configured_parallel != effective_parallel,
+        "was_clamped": False,
         "recommendation": recommendation,
         "tiers": tiers,
     }
@@ -10110,17 +10303,23 @@ def build_accounts_ping_status(
     issues_page = _parse_table_page(issues_page, default=1)
     stable_page = _parse_table_page(stable_page, default=1)
     state = get_state("accounts_ping_state", {"accounts": {}, "devices": []})
-    devices = state.get("devices") if isinstance(state.get("devices"), list) else []
+    devices = _accounts_ping_state_devices(state)
     account_map = {}
     for device in devices:
         ip = (device.get("ip") or "").strip()
-        if not ip:
-            continue
         pppoe = (device.get("pppoe") or device.get("name") or "").strip() or ip
-        aid = _accounts_ping_account_id_for_pppoe(pppoe)
+        aid = (device.get("account_id") or "").strip() or _accounts_ping_account_id_for_device(device)
         if not aid:
             continue
-        account_map[aid] = {"id": aid, "name": pppoe, "ip": ip}
+        account_map[aid] = {
+            "id": aid,
+            "name": pppoe,
+            "ip": ip,
+            "router_id": (device.get("router_id") or "").strip(),
+            "router_name": (device.get("router_name") or "").strip(),
+            "source_mode": normalize_accounts_ping_source_mode(device.get("source_mode")),
+            "source_missing": bool(device.get("source_missing")),
+        }
 
     account_rows = list(account_map.values())
     account_ids = [row["id"] for row in account_rows]
@@ -10204,6 +10403,13 @@ def build_accounts_ping_status(
             "id": aid,
             "name": account["name"],
             "ip": chosen_ip or account["ip"],
+            "router_id": account.get("router_id") or (st.get("router_id") or "").strip(),
+            "router_name": account.get("router_name") or (st.get("router_name") or "").strip(),
+            "display_name": (
+                f"{account['name']} ({account.get('router_name') or st.get('router_name')})"
+                if (account.get("router_name") or st.get("router_name"))
+                else account["name"]
+            ),
             "status": status,
             "loss": loss,
             "avg_ms": avg_ms,
@@ -10221,6 +10427,10 @@ def build_accounts_ping_status(
             "spark_points_24h_large": "",
             "pending": status == "pending",
         }
+        if bool(st.get("source_missing")) and status == "down":
+            row["reasons"] = ["Not in active connections"] + [
+                reason for reason in row["reasons"] if reason != "Currently down"
+            ]
         if status in ("up", "pending"):
             stable_rows.append(row)
         else:
@@ -10241,9 +10451,12 @@ def build_accounts_ping_status(
 
     def _sort_key_for(row, key, desc=False):
         if key in ("customer", "name"):
-            return _sort_text(row.get("name"), desc=desc)
+            label = row.get("display_name") or row.get("name")
+            return _sort_text(label, desc=desc)
         if key in ("ip", "ipv4"):
             return _sort_text(row.get("ip"), desc=desc)
+        if key in ("router", "router_name"):
+            return _sort_text(row.get("router_name"), desc=desc)
         if key == "status":
             order = {"down": 0, "monitor": 1, "up": 2, "pending": 3}
             return (0, -order.get(row.get("status"), 9) if desc else order.get(row.get("status"), 9))
@@ -10271,6 +10484,7 @@ def build_accounts_ping_status(
             hay = " ".join(
                 [
                     str(row.get("name") or ""),
+                    str(row.get("router_name") or ""),
                     str(row.get("ip") or ""),
                     " ".join(row.get("reasons") or []),
                 ]
@@ -10284,9 +10498,18 @@ def build_accounts_ping_status(
     # defaults
     default_issue = sorted(
         issue_rows,
-        key=lambda x: (x["status"] != "down", -(x["loss"] or 0), -(x["avg_ms"] or 0), x["name"].lower()),
+        key=lambda x: (
+            x["status"] != "down",
+            -(x["loss"] or 0),
+            -(x["avg_ms"] or 0),
+            (x.get("name") or "").lower(),
+            (x.get("router_name") or "").lower(),
+        ),
     )
-    default_stable = sorted(stable_rows, key=lambda x: (x.get("pending", False), x["name"].lower()))
+    default_stable = sorted(
+        stable_rows,
+        key=lambda x: (x.get("pending", False), (x.get("name") or "").lower(), (x.get("router_name") or "").lower()),
+    )
 
     issues_sort = (issues_sort or "").strip()
     stable_sort = (stable_sort or "").strip()
@@ -10431,6 +10654,13 @@ def render_accounts_ping_response(
         stable_dir=stable_dir,
         query=query,
     )
+    ping_state = get_state("accounts_ping_state", {})
+    router_state_rows = ping_state.get("router_status") if isinstance(ping_state.get("router_status"), list) else []
+    router_state_map = {
+        (row.get("router_id") or "").strip(): row
+        for row in router_state_rows
+        if isinstance(row, dict) and (row.get("router_id") or "").strip()
+    }
     return templates.TemplateResponse(
         "settings_accounts_ping.html",
         make_context(
@@ -10445,16 +10675,171 @@ def render_accounts_ping_response(
                 "accounts_ping_window_options": WAN_STATUS_WINDOW_OPTIONS,
                 "accounts_ping_tuning": tuning,
                 "can_run_danger_actions": can_run_danger_actions,
+                "wan_settings": normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS)),
+                "accounts_ping_router_state": router_state_map,
             },
         ),
     )
 
 
-def _accounts_ping_account_id_for_pppoe(pppoe):
-    raw = (pppoe or "").strip().encode("utf-8")
-    if not raw:
+def _accounts_ping_state_devices(state=None):
+    state = state if isinstance(state, dict) else get_state("accounts_ping_state", {"devices": []})
+    raw_devices = state.get("devices") if isinstance(state.get("devices"), list) else []
+    devices = []
+    for raw_device in raw_devices:
+        device = normalize_accounts_ping_device(raw_device)
+        if device:
+            devices.append(device)
+    return devices
+
+
+def _accounts_ping_account_id_for_pppoe(pppoe, source_mode=ACCOUNTS_PING_SOURCE_SSH_CSV, router_id=""):
+    return build_accounts_ping_account_id(pppoe, source_mode=source_mode, router_id=router_id)
+
+
+def _accounts_ping_account_id_for_device(device):
+    normalized = normalize_accounts_ping_device(device)
+    if not normalized:
         return ""
-    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    return (normalized.get("account_id") or "").strip()
+
+
+def _accounts_ping_account_ids_for_pppoe(pppoe, state=None):
+    pppoe_value = (pppoe or "").strip()
+    if not pppoe_value:
+        return []
+    devices = _accounts_ping_state_devices(state)
+    mapping = build_accounts_ping_account_ids_by_pppoe(devices)
+    account_ids = list(mapping.get(pppoe_value.lower()) or [])
+    fallback = _accounts_ping_account_id_for_pppoe(pppoe_value)
+    if not account_ids and fallback:
+        account_ids = [fallback]
+    return account_ids
+
+
+def _accounts_ping_window_stats_aggregate(account_ids, since_iso):
+    account_ids = [aid for aid in (account_ids or []) if (aid or "").strip()]
+    if not account_ids:
+        return {}
+    stats_map = get_accounts_ping_window_stats(account_ids, since_iso)
+    total = 0
+    failures = 0
+    avg_ms_sum = 0.0
+    avg_ms_weight = 0.0
+    loss_sum = 0.0
+    loss_weight = 0.0
+    for account_id in account_ids:
+        row = (stats_map.get(account_id) or {}) if isinstance(stats_map, dict) else {}
+        row_total = int(row.get("total") or 0)
+        total += row_total
+        failures += int(row.get("failures") or 0)
+        avg_ms_avg = row.get("avg_ms_avg")
+        if avg_ms_avg is not None:
+            try:
+                avg_ms_sum += float(avg_ms_avg) * max(row_total, 1)
+                avg_ms_weight += max(row_total, 1)
+            except Exception:
+                pass
+        loss_avg = row.get("loss_avg")
+        if loss_avg is not None:
+            try:
+                loss_sum += float(loss_avg) * max(row_total, 1)
+                loss_weight += max(row_total, 1)
+            except Exception:
+                pass
+    return {
+        "total": total,
+        "failures": failures,
+        "avg_ms_avg": (avg_ms_sum / avg_ms_weight) if avg_ms_weight > 0 else None,
+        "loss_avg": (loss_sum / loss_weight) if loss_weight > 0 else None,
+    }
+
+
+def _accounts_ping_latest_row_for_account_ids(account_ids):
+    account_ids = [aid for aid in (account_ids or []) if (aid or "").strip()]
+    if not account_ids:
+        return {}
+    latest_map = get_latest_accounts_ping_map(account_ids)
+    rows = [latest_map.get(aid) for aid in account_ids] if isinstance(latest_map, dict) else []
+    rows = [row for row in rows if isinstance(row, dict)]
+    if not rows:
+        return {}
+    return max(rows, key=lambda row: ((row.get("timestamp") or "").strip(), (row.get("account_id") or "").strip()))
+
+
+def _accounts_ping_series_rows_for_account_ids(account_ids, since_iso, until_iso=""):
+    rows = []
+    account_ids = [aid for aid in (account_ids or []) if (aid or "").strip()]
+    for account_id in account_ids:
+        if until_iso:
+            rows.extend(get_accounts_ping_series_range(account_id, since_iso, until_iso) or [])
+        else:
+            rows.extend(get_accounts_ping_series(account_id, since_iso) or [])
+    return sorted(rows, key=lambda row: ((row.get("timestamp") or "").strip(), (row.get("account_id") or "").strip()))
+
+
+def _accounts_ping_rollup_rows_for_account_ids(account_ids, since_iso, until_iso):
+    account_ids = [aid for aid in (account_ids or []) if (aid or "").strip()]
+    merged = {}
+    for account_id in account_ids:
+        for row in get_accounts_ping_rollups_range(account_id, since_iso, until_iso) or []:
+            bucket_ts = (row.get("bucket_ts") or "").strip()
+            if not bucket_ts:
+                continue
+            item = merged.setdefault(
+                bucket_ts,
+                {
+                    "bucket_ts": bucket_ts,
+                    "sample_count": 0,
+                    "ok_count": 0,
+                    "avg_sum": 0.0,
+                    "avg_count": 0,
+                    "loss_sum": 0.0,
+                    "loss_count": 0,
+                    "min_ms": None,
+                    "max_ms": None,
+                    "max_avg_ms": None,
+                },
+            )
+            item["sample_count"] += int(row.get("sample_count") or 0)
+            item["ok_count"] += int(row.get("ok_count") or 0)
+            try:
+                item["avg_sum"] += float(row.get("avg_sum") or 0.0)
+            except Exception:
+                pass
+            item["avg_count"] += int(row.get("avg_count") or 0)
+            try:
+                item["loss_sum"] += float(row.get("loss_sum") or 0.0)
+            except Exception:
+                pass
+            item["loss_count"] += int(row.get("loss_count") or 0)
+            for field, reducer in (("min_ms", min), ("max_ms", max), ("max_avg_ms", max)):
+                value = row.get(field)
+                if value is None:
+                    continue
+                current = item.get(field)
+                try:
+                    item[field] = value if current is None else reducer(float(current), float(value))
+                except Exception:
+                    item[field] = current if current is not None else value
+    return [merged[key] for key in sorted(merged)]
+
+
+def _accounts_ping_best_state_entry(account_ids, state_accounts):
+    order = {"down": 0, "issue": 1, "up": 2}
+    candidates = []
+    for account_id in account_ids or []:
+        entry = state_accounts.get(account_id) if isinstance(state_accounts.get(account_id), dict) else {}
+        if not entry:
+            continue
+        status = (entry.get("last_status") or "").strip().lower()
+        rank = order.get(status, 3)
+        candidates.append((rank, (entry.get("last_check_at") or "").strip(), entry))
+    if not candidates:
+        return {}
+    best_rank = min(item[0] for item in candidates)
+    ranked = [item for item in candidates if item[0] == best_rank]
+    return max(ranked, key=lambda item: item[1])[2]
 
 
 def _accounts_ping_account_id_for_ip(ip):
@@ -10462,10 +10847,27 @@ def _accounts_ping_account_id_for_ip(ip):
     return _accounts_ping_account_id_for_pppoe(ip)
 
 
-@app.post("/settings/accounts-ping", response_class=HTMLResponse)
-async def accounts_ping_settings_save(request: Request):
-    form = await request.form()
-    settings = {
+def _accounts_ping_settings_from_form(form):
+    existing = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
+    existing, _ = _accounts_ping_tuning_context(existing)
+    existing_source = existing.get("source") if isinstance(existing.get("source"), dict) else {}
+    existing_mikrotik = existing_source.get("mikrotik") if isinstance(existing_source.get("mikrotik"), dict) else {}
+    wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    system_routers = wan_settings.get("pppoe_routers") if isinstance(wan_settings.get("pppoe_routers"), list) else []
+    router_count = parse_int(form, "router_count", len(system_routers))
+    router_enabled = {}
+    for idx in range(router_count):
+        router_id = (form.get(f"router_{idx}_id") or "").strip()
+        if not router_id:
+            continue
+        router_enabled[router_id] = parse_bool(form, f"router_{idx}_enabled")
+    if not router_enabled and isinstance(existing_mikrotik.get("router_enabled"), dict):
+        router_enabled = {
+            str(key).strip(): bool(value)
+            for key, value in existing_mikrotik.get("router_enabled", {}).items()
+            if str(key).strip()
+        }
+    return {
         "enabled": parse_bool(form, "enabled"),
         "ssh": {
             "host": (form.get("ssh_host") or "").strip(),
@@ -10477,7 +10879,11 @@ async def accounts_ping_settings_save(request: Request):
             "remote_csv_path": (form.get("ssh_remote_csv_path") or "").strip() or "/opt/libreqos/src/ShapedDevices.csv",
         },
         "source": {
+            "mode": normalize_accounts_ping_source_mode(form.get("source_mode")),
             "refresh_minutes": parse_int(form, "source_refresh_minutes", 15),
+            "mikrotik": {
+                "router_enabled": router_enabled,
+            },
         },
         "general": {
             "base_interval_seconds": parse_int(form, "base_interval_seconds", 30),
@@ -10501,7 +10907,12 @@ async def accounts_ping_settings_save(request: Request):
             "bucket_seconds": parse_int(form, "bucket_seconds", 60),
         },
     }
-    requested_parallel = int(settings.get("general", {}).get("max_parallel") or 1)
+
+
+@app.post("/settings/accounts-ping", response_class=HTMLResponse)
+async def accounts_ping_settings_save(request: Request):
+    form = await request.form()
+    settings = _accounts_ping_settings_from_form(form)
     settings, tuning = _accounts_ping_tuning_context(settings)
     save_settings("accounts_ping", settings)
     window_hours = _normalize_wan_window(request.query_params.get("window"))
@@ -10510,38 +10921,43 @@ async def accounts_ping_settings_save(request: Request):
     if settings_tab not in ("general", "source", "classification", "storage"):
         settings_tab = "general"
     message = "Accounts Ping settings saved."
-    if requested_parallel > int(tuning.get("effective_parallel") or requested_parallel):
-        message = (
-            f"Accounts Ping settings saved. Max Parallel was capped to {tuning.get('effective_parallel')} "
-            f"for this server ({tuning.get('cpu_cores')} cores / {tuning.get('ram_gb')} GB RAM)."
-        )
     return render_accounts_ping_response(request, settings, message, active_tab, settings_tab, window_hours)
 
 
 @app.post("/settings/accounts-ping/test", response_class=HTMLResponse)
 async def accounts_ping_settings_test(request: Request):
-    cfg = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
+    form = await request.form()
+    cfg = _accounts_ping_settings_from_form(form)
+    cfg, _ = _accounts_ping_tuning_context(cfg)
     message = ""
     try:
-        csv_text = rto_notifier.fetch_csv_text(cfg)
-        devices = rto_notifier.parse_devices(csv_text)
         state = get_state("accounts_ping_state", {"accounts": {}, "devices": []})
-        state["devices"] = [
-            {
-                "pppoe": (d.get("pppoe") or d.get("name") or d.get("ip") or "").strip(),
-                "name": (d.get("pppoe") or d.get("name") or d.get("ip") or "").strip(),
-                "ip": (d.get("ip") or "").strip(),
-            }
-            for d in (devices or [])
-            if (d.get("ip") or "").strip()
-        ]
+        wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+        routers = wan_settings.get("pppoe_routers") if isinstance(wan_settings.get("pppoe_routers"), list) else []
+        source_mode, devices, router_status = build_accounts_ping_source_devices(
+            cfg,
+            routers=routers,
+            previous_devices=state.get("devices") if isinstance(state.get("devices"), list) else [],
+            now=datetime.utcnow(),
+        )
+        state["devices"] = devices
+        state["router_status"] = router_status
         state["devices_refreshed_at"] = utc_now_iso()
         save_state("accounts_ping_state", state)
-        message = f"SSH OK. Loaded {len(state['devices'])} accounts from CSV."
+        if source_mode == ACCOUNTS_PING_SOURCE_MIKROTIK:
+            active_total = sum(1 for item in devices if not bool(item.get("source_missing")))
+            preserved_total = sum(1 for item in devices if bool(item.get("source_missing")))
+            ok_routers = sum(1 for row in router_status if isinstance(row, dict) and bool(row.get("connected")))
+            message = (
+                f"MikroTik source OK. Loaded {active_total} active session(s) from {ok_routers} router(s) "
+                f"and kept {preserved_total} inactive tracked session(s) visible as down candidates."
+            )
+        else:
+            message = f"SSH OK. Loaded {len(state['devices'])} accounts from CSV."
     except Exception as exc:
-        message = f"SSH test failed: {exc}"
+        message = f"Accounts Ping source test failed: {exc}"
     window_hours = _normalize_wan_window(request.query_params.get("window"))
-    return render_accounts_ping_response(request, cfg, message, "settings", "general", window_hours)
+    return render_accounts_ping_response(request, cfg, message, "settings", "source", window_hours)
 
 
 @app.post("/settings/accounts-ping/format", response_class=HTMLResponse)
@@ -11134,11 +11550,10 @@ def _build_surveillance_ai_context(pppoe, entry, ai_cfg):
     since = now - timedelta(hours=max(lookback_hours, 1))
     since_iso = since.isoformat() + "Z"
     until_iso = now.isoformat() + "Z"
-    account_id = _accounts_ping_account_id_for_pppoe(pppoe)
+    account_ids = _accounts_ping_account_ids_for_pppoe(pppoe)
 
-    latest_map = get_latest_accounts_ping_map([account_id])
-    latest = latest_map.get(account_id) if isinstance(latest_map, dict) else {}
-    ping_series = get_accounts_ping_series_range(account_id, since_iso, until_iso)
+    latest = _accounts_ping_latest_row_for_account_ids(account_ids)
+    ping_series = _accounts_ping_series_rows_for_account_ids(account_ids, since_iso, until_iso)
     ping_series = _sample_rows_for_ai(ping_series, max_samples)
     ping_samples = []
     down_samples = 0
@@ -11157,8 +11572,7 @@ def _build_surveillance_ai_context(pppoe, entry, ai_cfg):
             }
         )
 
-    ping_window_stats = get_accounts_ping_window_stats([account_id], since_iso)
-    ping_window = ping_window_stats.get(account_id) if isinstance(ping_window_stats, dict) else {}
+    ping_window = _accounts_ping_window_stats_aggregate(account_ids, since_iso)
 
     optical_latest_map = get_latest_optical_by_pppoe([pppoe])
     optical_latest = optical_latest_map.get(pppoe) if isinstance(optical_latest_map, dict) else {}
@@ -11704,6 +12118,98 @@ def _surveillance_entry_map(settings):
     return merged
 
 
+def _surveillance_entry_from_active_session(session):
+    if not isinstance(session, dict):
+        return None
+    pppoe = (session.get("pppoe") or "").strip()
+    if not pppoe or (session.get("ended_at") or "").strip():
+        return None
+    now_iso = utc_now_iso()
+    started_at = (session.get("started_at") or "").strip() or now_iso
+    updated_at = (session.get("updated_at") or "").strip() or started_at
+    source = (session.get("source") or "").strip()
+    status = (session.get("last_state") or "under").strip().lower()
+    if status not in ("under", "level2"):
+        status = "under"
+    added_mode = "auto" if source == "accounts_ping" else "manual"
+    auto_source = source if added_mode == "auto" else ""
+    level2_at = ""
+    level2_reason = ""
+    stage_history = [
+        {
+            "ts": started_at,
+            "from": "",
+            "to": "under",
+            "reason": "Recovered from active surveillance session.",
+            "action": "restore_active_session",
+            "actor": "system",
+        }
+    ]
+    if status == "level2":
+        stage_ts = updated_at or started_at
+        level2_at = stage_ts
+        level2_reason = "Recovered from active manual-fix session."
+        stage_history.append(
+            {
+                "ts": stage_ts,
+                "from": "under",
+                "to": "level2",
+                "reason": level2_reason,
+                "action": "restore_active_session",
+                "actor": "system",
+            }
+        )
+    return {
+        "pppoe": pppoe,
+        "name": pppoe,
+        "ip": (session.get("last_ip") or "").strip(),
+        "source": source,
+        "status": status,
+        "added_at": started_at,
+        "first_added_at": started_at,
+        "updated_at": updated_at,
+        "level2_at": level2_at,
+        "level2_reason": level2_reason,
+        "last_fixed_at": "",
+        "last_fixed_reason": "",
+        "last_fixed_mode": "",
+        "added_mode": added_mode,
+        "added_by": "",
+        "auto_source": auto_source,
+        "auto_reason": "Recovered from active surveillance session." if auto_source else "",
+        "stage_history": _normalize_surveillance_stage_history(stage_history),
+        "ai_reports": {stage: _empty_surveillance_ai_report() for stage in _SURV_AI_STAGES},
+        "ai_report_history": [],
+        "ai_report_pending_stage": "",
+    }
+
+
+def _reconcile_surveillance_active_entries(settings, entry_map=None, persist=False):
+    settings = settings if isinstance(settings, dict) else {}
+    merged = entry_map if isinstance(entry_map, dict) else _surveillance_entry_map(settings)
+    changed = False
+    try:
+        active_sessions = list_active_surveillance_sessions(limit=5000)
+    except Exception:
+        active_sessions = []
+    for session in active_sessions or []:
+        if not isinstance(session, dict):
+            continue
+        pppoe = (session.get("pppoe") or "").strip()
+        if not pppoe or pppoe in merged:
+            continue
+        recovered = _surveillance_entry_from_active_session(session)
+        if not recovered:
+            continue
+        merged[pppoe] = recovered
+        changed = True
+    if changed:
+        settings["entries"] = list(merged.values())
+        if persist:
+            save_settings("surveillance", settings)
+    return merged, changed
+
+
 def _normalize_surveillance_stage_history(raw_items):
     out = []
     if not isinstance(raw_items, list):
@@ -11864,6 +12370,140 @@ def _surveillance_entry_anchors(entry, stage="under", now_utc=None):
     }
 
 
+def _surveillance_checker_stats_zero():
+    return {
+        "total": 0,
+        "failures": 0,
+        "loss_avg": None,
+        "avg_ms_avg": None,
+        "downtime_seconds": 0,
+        "loss_events": 0,
+    }
+
+
+def _surveillance_checker_maps(entry_map, now_utc=None):
+    if not isinstance(entry_map, dict):
+        entry_map = {}
+    now = now_utc if isinstance(now_utc, datetime) else datetime.utcnow().replace(microsecond=0)
+    now_iso = now.isoformat() + "Z"
+    checker_anchor_by_pppoe = {}
+    checker_since_by_account = {}
+    for pppoe, raw_entry in entry_map.items():
+        if not pppoe:
+            continue
+        entry = raw_entry if isinstance(raw_entry, dict) else {}
+        added_iso = (entry.get("added_at") or "").strip()
+        fixed_iso = (entry.get("last_fixed_at") or "").strip()
+        added_dt = _parse_iso_z(added_iso)
+        fixed_dt = _parse_iso_z(fixed_iso)
+
+        anchor_iso = added_iso or now_iso
+        anchor_dt = added_dt or now
+        anchor_source = "added"
+        if fixed_dt and fixed_iso and fixed_dt <= now:
+            anchor_iso = fixed_iso
+            anchor_dt = fixed_dt
+            anchor_source = "fixed"
+
+        checker_anchor_by_pppoe[pppoe] = {
+            "since_iso": anchor_iso,
+            "since_dt": anchor_dt,
+            "source": anchor_source,
+        }
+
+        account_id = _accounts_ping_account_id_for_ip(pppoe)
+        if not account_id:
+            continue
+        current_since = checker_since_by_account.get(account_id)
+        if not current_since:
+            checker_since_by_account[account_id] = anchor_iso
+            continue
+        current_dt = _parse_iso_z(current_since)
+        if current_dt is None or anchor_dt > current_dt:
+            checker_since_by_account[account_id] = anchor_iso
+    return checker_anchor_by_pppoe, checker_since_by_account
+
+
+def _surveillance_checker_refresh_async(target_key, payload, target_until_iso):
+    try:
+        fresh_rows = get_accounts_ping_checker_stats_map(payload, target_until_iso)
+        if not isinstance(fresh_rows, dict):
+            fresh_rows = {}
+        with _surveillance_checker_cache_lock:
+            if _surveillance_checker_cache.get("key") == target_key:
+                _surveillance_checker_cache["at"] = time.monotonic()
+                _surveillance_checker_cache["data"] = copy.deepcopy(fresh_rows)
+    finally:
+        with _surveillance_checker_cache_lock:
+            if _surveillance_checker_cache.get("key") == target_key:
+                _surveillance_checker_cache["refreshing"] = False
+
+
+def _prime_surveillance_checker_cache(entry_map, reset_pppoes=None, now_utc=None):
+    checker_anchor_by_pppoe, checker_since_by_account = _surveillance_checker_maps(entry_map, now_utc=now_utc)
+    if not checker_since_by_account:
+        return checker_anchor_by_pppoe, checker_since_by_account
+
+    reset_account_ids = set()
+    for raw in reset_pppoes or []:
+        pppoe = (raw or "").strip()
+        if not pppoe:
+            continue
+        account_id = _accounts_ping_account_id_for_ip(pppoe)
+        if account_id:
+            reset_account_ids.add(account_id)
+
+    cache_key = tuple(sorted(checker_since_by_account.items()))
+    primed_data = {}
+    should_refresh = False
+    now_mono = time.monotonic()
+    with _surveillance_checker_cache_lock:
+        cached_key = _surveillance_checker_cache.get("key")
+        cached_data = _surveillance_checker_cache.get("data") if isinstance(_surveillance_checker_cache.get("data"), dict) else {}
+        old_pairs = cached_key if isinstance(cached_key, tuple) else tuple(cached_key or [])
+        old_map = {}
+        for item in old_pairs:
+            if isinstance(item, tuple) and len(item) == 2:
+                aid = (item[0] or "").strip()
+                since_iso = (item[1] or "").strip()
+                if aid and since_iso:
+                    old_map[aid] = since_iso
+
+        can_prime = bool(old_map)
+        if can_prime:
+            for account_id, since_iso in checker_since_by_account.items():
+                if account_id in reset_account_ids:
+                    primed_data[account_id] = _surveillance_checker_stats_zero()
+                    continue
+                if old_map.get(account_id) != since_iso:
+                    can_prime = False
+                    primed_data = {}
+                    break
+                row = cached_data.get(account_id)
+                if isinstance(row, dict):
+                    primed_data[account_id] = copy.deepcopy(row)
+                else:
+                    primed_data[account_id] = _surveillance_checker_stats_zero()
+
+        if primed_data:
+            _surveillance_checker_cache["key"] = cache_key
+            _surveillance_checker_cache["at"] = now_mono
+            _surveillance_checker_cache["data"] = primed_data
+            _surveillance_checker_cache["refreshing"] = True
+            should_refresh = True
+
+    if should_refresh:
+        until_dt = now_utc if isinstance(now_utc, datetime) else datetime.utcnow().replace(microsecond=0)
+        until_iso = until_dt.isoformat() + "Z"
+        threading.Thread(
+            target=_surveillance_checker_refresh_async,
+            args=(cache_key, dict(checker_since_by_account), until_iso),
+            daemon=True,
+        ).start()
+
+    return checker_anchor_by_pppoe, checker_since_by_account
+
+
 def _get_surveillance_checker_stats_cached(account_since_map, until_iso):
     if not isinstance(account_since_map, dict) or not account_since_map:
         return {}
@@ -11881,20 +12521,6 @@ def _get_surveillance_checker_stats_cached(account_since_map, until_iso):
     cache_key = tuple(sorted(normalized.items()))
     now_mono = time.monotonic()
 
-    def _refresh_async(target_key, payload, target_until_iso):
-        try:
-            fresh_rows = get_accounts_ping_checker_stats_map(payload, target_until_iso)
-            if not isinstance(fresh_rows, dict):
-                fresh_rows = {}
-            with _surveillance_checker_cache_lock:
-                if _surveillance_checker_cache.get("key") == target_key:
-                    _surveillance_checker_cache["at"] = time.monotonic()
-                    _surveillance_checker_cache["data"] = copy.deepcopy(fresh_rows)
-        finally:
-            with _surveillance_checker_cache_lock:
-                if _surveillance_checker_cache.get("key") == target_key:
-                    _surveillance_checker_cache["refreshing"] = False
-
     with _surveillance_checker_cache_lock:
         cached_key = _surveillance_checker_cache.get("key")
         cached_at = float(_surveillance_checker_cache.get("at") or 0.0)
@@ -11907,7 +12533,7 @@ def _get_surveillance_checker_stats_cached(account_since_map, until_iso):
             if not refreshing:
                 _surveillance_checker_cache["refreshing"] = True
                 threading.Thread(
-                    target=_refresh_async,
+                    target=_surveillance_checker_refresh_async,
                     args=(cache_key, dict(normalized), until_iso),
                     daemon=True,
                 ).start()
@@ -11964,30 +12590,7 @@ def _prewarm_surveillance_checker_cache():
 
     now = datetime.utcnow().replace(microsecond=0)
     now_iso = now.isoformat() + "Z"
-    checker_since_by_account = {}
-    for pppoe, entry in entry_map.items():
-        if not isinstance(entry, dict):
-            continue
-        added_iso = (entry.get("added_at") or "").strip()
-        fixed_iso = (entry.get("last_fixed_at") or "").strip()
-        added_dt = _parse_iso_z(added_iso)
-        fixed_dt = _parse_iso_z(fixed_iso)
-        anchor_iso = added_iso or now_iso
-        anchor_dt = added_dt or now
-        if fixed_dt and fixed_iso and fixed_dt <= now:
-            anchor_iso = fixed_iso
-            anchor_dt = fixed_dt
-
-        account_id = _accounts_ping_account_id_for_ip(pppoe)
-        if not account_id:
-            continue
-        current_since = checker_since_by_account.get(account_id)
-        if not current_since:
-            checker_since_by_account[account_id] = anchor_iso
-            continue
-        current_dt = _parse_iso_z(current_since)
-        if current_dt is None or anchor_dt > current_dt:
-            checker_since_by_account[account_id] = anchor_iso
+    _, checker_since_by_account = _surveillance_checker_maps(entry_map, now_utc=now)
 
     if checker_since_by_account:
         _get_surveillance_checker_stats_cached(checker_since_by_account, now_iso)
@@ -11999,7 +12602,9 @@ async def surveillance_page(request: Request):
     raw = get_settings("surveillance", SURVEILLANCE_DEFAULTS)
     settings = normalize_surveillance_settings(raw)
     entry_map = _surveillance_entry_map(settings)
-    save_settings("surveillance", settings)
+    entry_map, reconciled_entries = _reconcile_surveillance_active_entries(settings, entry_map=entry_map, persist=False)
+    if settings != raw or reconciled_entries:
+        save_settings("surveillance", settings)
 
     active_tab = (request.query_params.get("tab") or "").strip().lower()
     focus = (request.query_params.get("focus") or "").strip()
@@ -12097,39 +12702,7 @@ async def surveillance_page(request: Request):
     now = datetime.utcnow().replace(microsecond=0)
     now_iso = now.isoformat() + "Z"
 
-    checker_anchor_by_pppoe = {}
-    checker_since_by_account = {}
-    for pppoe in pppoes:
-        entry = entry_map.get(pppoe) or {}
-        added_iso = (entry.get("added_at") or "").strip()
-        fixed_iso = (entry.get("last_fixed_at") or "").strip()
-        added_dt = _parse_iso_z(added_iso)
-        fixed_dt = _parse_iso_z(fixed_iso)
-
-        anchor_iso = added_iso or now_iso
-        anchor_dt = added_dt or now
-        anchor_source = "added"
-        if fixed_dt and fixed_iso and fixed_dt <= now:
-            anchor_iso = fixed_iso
-            anchor_dt = fixed_dt
-            anchor_source = "fixed"
-
-        checker_anchor_by_pppoe[pppoe] = {
-            "since_iso": anchor_iso,
-            "since_dt": anchor_dt,
-            "source": anchor_source,
-        }
-
-        account_id = _accounts_ping_account_id_for_ip(pppoe)
-        if not account_id:
-            continue
-        current_since = checker_since_by_account.get(account_id)
-        if not current_since:
-            checker_since_by_account[account_id] = anchor_iso
-            continue
-        current_dt = _parse_iso_z(current_since)
-        if current_dt is None or anchor_dt > current_dt:
-            checker_since_by_account[account_id] = anchor_iso
+    checker_anchor_by_pppoe, checker_since_by_account = _surveillance_checker_maps(entry_map, now_utc=now)
 
     latest_map = get_latest_accounts_ping_map(account_ids)
     checker_stats_map = _get_surveillance_checker_stats_cached(checker_since_by_account, now_iso)
@@ -12532,9 +13105,9 @@ async def surveillance_page(request: Request):
         }
 
     history_query = (request.query_params.get("q") or "").strip() if active_tab == "history" else ""
-    history_action = (request.query_params.get("action") or "all").strip().lower() if active_tab == "history" else "all"
-    if history_action not in ("all", "false", "fixed", "recovered", "healed", "removed"):
-        history_action = "all"
+    history_action = (request.query_params.get("action") or "closed").strip().lower() if active_tab == "history" else "closed"
+    if history_action not in ("closed", "all", "false", "fixed", "recovered", "healed", "removed"):
+        history_action = "closed"
     history_page = _parse_table_page(request.query_params.get("page"), default=1) if active_tab == "history" else 1
     history_rows = []
     history_pagination = {"page": 1, "pages": 1, "total": 0}
@@ -12710,8 +13283,8 @@ async def surveillance_series(pppoe: str, window: str = "24", stage: str = "unde
     if since_dt > until_dt:
         since_iso = until_iso
 
-    account_id = _accounts_ping_account_id_for_pppoe(pppoe)
-    rows = get_accounts_ping_series_range(account_id, since_iso, until_iso)
+    account_ids = _accounts_ping_account_ids_for_pppoe(pppoe)
+    rows = _accounts_ping_series_rows_for_account_ids(account_ids, since_iso, until_iso)
 
     def _merge_rows(rows_in):
         merged = []
@@ -12791,8 +13364,8 @@ async def surveillance_inspect_activity(pppoe: str, stage: str = "under"):
 
     since_iso = since_dt.isoformat() + "Z"
     until_iso = until_dt.isoformat() + "Z"
-    account_id = _accounts_ping_account_id_for_pppoe(pppoe)
-    rows = get_accounts_ping_series_range(account_id, since_iso, until_iso)
+    account_ids = _accounts_ping_account_ids_for_pppoe(pppoe)
+    rows = _accounts_ping_series_rows_for_account_ids(account_ids, since_iso, until_iso)
 
     def _merge_rows(rows_in):
         merged = []
@@ -12894,6 +13467,53 @@ async def surveillance_inspect_activity(pppoe: str, stage: str = "under"):
     stats["longest_down_streak_seconds"] = int(round(longest_down_streak))
     stats["last_sample_ts"] = merged_series[-1].get("ts") if merged_series else ""
 
+    optical_threshold_dbm = -24.0
+    try:
+        optical_threshold_dbm = float((settings.get("stability") or {}).get("optical_rx_min_dbm", -24.0) or -24.0)
+    except Exception:
+        optical_threshold_dbm = -24.0
+
+    optical_latest_map = get_latest_optical_by_pppoe([pppoe]) if pppoe else {}
+    optical_latest = optical_latest_map.get(pppoe) if isinstance(optical_latest_map, dict) else {}
+    optical_device_id = (optical_latest.get("device_id") or "").strip() if isinstance(optical_latest, dict) else ""
+    optical_rows = get_optical_results_for_device_since(optical_device_id, since_iso) if optical_device_id else []
+    optical_filtered = []
+    optical_rx_values = []
+    optical_series = []
+    for item in optical_rows:
+        ts = (item.get("timestamp") or "").strip()
+        dt = _parse_iso_z(ts)
+        if not ts or not isinstance(dt, datetime):
+            continue
+        if dt < since_dt or dt > until_dt:
+            continue
+        optical_filtered.append(item)
+        rx_val = _to_float(item.get("rx"))
+        tx_val = _to_float(item.get("tx"))
+        if rx_val is not None:
+            optical_rx_values.append(rx_val)
+        optical_series.append(
+            {
+                "ts": ts,
+                "rx": rx_val,
+                "tx": tx_val,
+            }
+        )
+    optical_sample_total = len(optical_filtered)
+    optical_latest_row = optical_filtered[-1] if optical_filtered else {}
+    optical_latest_rx = _to_float(optical_latest_row.get("rx")) if optical_latest_row else None
+    optical_latest_tx = _to_float(optical_latest_row.get("tx")) if optical_latest_row else None
+    optical_worst_rx = min(optical_rx_values) if optical_rx_values else None
+    optical_status = "na"
+    optical_status_label = "No Data"
+    if optical_latest_rx is not None:
+        if optical_latest_rx >= optical_threshold_dbm:
+            optical_status = "pass"
+            optical_status_label = "Pass"
+        else:
+            optical_status = "fail"
+            optical_status_label = "Below Goal"
+
     return _json_no_store(
         {
             "ok": True,
@@ -12907,6 +13527,19 @@ async def surveillance_inspect_activity(pppoe: str, stage: str = "under"):
             "anchor_source": "first_added",
             "series": merged_series,
             "stats": stats,
+            "optical": {
+                "device_id": optical_device_id,
+                "samples": optical_sample_total,
+                "latest_rx": optical_latest_rx,
+                "latest_tx": optical_latest_tx,
+                "worst_rx": optical_worst_rx,
+                "last_sample_at_iso": (optical_latest_row.get("timestamp") or "").strip() if optical_latest_row else "",
+                "last_sample_at_ph": format_ts_ph(optical_latest_row.get("timestamp")) if optical_latest_row else "n/a",
+                "rx_threshold_dbm": optical_threshold_dbm,
+                "status": optical_status,
+                "status_label": optical_status_label,
+                "series": optical_series,
+            },
         }
     )
 
@@ -13267,8 +13900,8 @@ async def surveillance_series_range(pppoe: str, since: str, until: str, stage: s
     since = since_dt.replace(microsecond=0).isoformat() + "Z"
     until = until_dt.replace(microsecond=0).isoformat() + "Z"
 
-    account_id = _accounts_ping_account_id_for_pppoe(pppoe)
-    rows = get_accounts_ping_series_range(account_id, since, until)
+    account_ids = _accounts_ping_account_ids_for_pppoe(pppoe)
+    rows = _accounts_ping_series_rows_for_account_ids(account_ids, since, until)
     # Keep the range chart consistent with the dropdown chart by using the same raw dataset.
     series = []
     cur = None
@@ -13371,14 +14004,14 @@ async def surveillance_timeline(pppoe: str, stage: str = "under", until: str = "
     def to_utc_iso(dt_local):
         return dt_local.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
-    account_id = _accounts_ping_account_id_for_pppoe(pppoe)
+    account_ids = _accounts_ping_account_ids_for_pppoe(pppoe)
 
     day_items = []
 
     # Total since stage anchor (rounded down to minute boundary).
     anchor_floor = anchor_dt.replace(second=0, microsecond=0)
-    total_rollups = get_accounts_ping_rollups_range(
-        account_id,
+    total_rollups = _accounts_ping_rollup_rows_for_account_ids(
+        account_ids,
         anchor_floor.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z"),
         to_utc_iso(now_local + timedelta(minutes=1)),
     )
@@ -13403,7 +14036,7 @@ async def surveillance_timeline(pppoe: str, stage: str = "under", until: str = "
         series = []
         stats = None
         if kind != "future":
-            rollups = get_accounts_ping_rollups_range(account_id, to_utc_iso(query_start_local), to_utc_iso(query_until_local))
+            rollups = _accounts_ping_rollup_rows_for_account_ids(account_ids, to_utc_iso(query_start_local), to_utc_iso(query_until_local))
             payload = _surv_rollup_points_and_stats(rollups, bucket_seconds=60)
             stats = payload["stats"]
             series = _surv_downsample_points(payload["points"], max_points=96)
@@ -14063,8 +14696,8 @@ async def surveillance_history_detail(id: int):
     if total_seconds <= 0 and isinstance(started_dt, datetime) and isinstance(ended_dt, datetime):
         total_seconds = max(int((ended_dt - started_dt).total_seconds()), 0)
 
-    account_id = _accounts_ping_account_id_for_pppoe(pppoe)
-    ping_series = get_accounts_ping_series_range(account_id, since_iso, until_iso) if account_id else []
+    account_ids = _accounts_ping_account_ids_for_pppoe(pppoe)
+    ping_series = _accounts_ping_series_rows_for_account_ids(account_ids, since_iso, until_iso)
     ping_samples = 0
     ping_down_samples = 0
     ping_loss_values = []
@@ -14397,7 +15030,7 @@ async def surveillance_fixed(request: Request):
         now_iso = utc_now_iso()
         under_seconds, level2_seconds, observe_seconds = _surveillance_stage_seconds(old)
         try:
-            end_surveillance_session(
+            ended_session = end_surveillance_session(
                 pppoe,
                 "fixed",
                 started_at=(old.get("added_at") or "").strip(),
@@ -14410,7 +15043,7 @@ async def surveillance_fixed(request: Request):
                 observe_seconds=observe_seconds,
             )
         except Exception:
-            pass
+            ended_session = {}
 
         _append_surveillance_stage_history(
             entry_map[pppoe],
@@ -14437,6 +15070,7 @@ async def surveillance_fixed(request: Request):
                 source=(entry_map[pppoe].get("source") or "").strip(),
                 ip=(entry_map[pppoe].get("ip") or "").strip(),
                 state="under",
+                observed_total_hint=(ended_session or {}).get("observed_count"),
             )
         except Exception:
             pass
@@ -14448,6 +15082,10 @@ async def surveillance_fixed(request: Request):
         )
     settings["entries"] = list(entry_map.values())
     save_settings("surveillance", settings)
+    try:
+        _prime_surveillance_checker_cache(entry_map, reset_pppoes=[pppoe])
+    except Exception:
+        pass
     return RedirectResponse(url="/surveillance?tab=observe", status_code=303)
 
 
@@ -14500,7 +15138,7 @@ async def surveillance_fixed_many(request: Request):
         old = dict(entry_map.get(pppoe) or {})
         under_seconds, level2_seconds, observe_seconds = _surveillance_stage_seconds(old)
         try:
-            end_surveillance_session(
+            ended_session = end_surveillance_session(
                 pppoe,
                 "fixed",
                 started_at=(old.get("added_at") or "").strip(),
@@ -14513,7 +15151,7 @@ async def surveillance_fixed_many(request: Request):
                 observe_seconds=observe_seconds,
             )
         except Exception:
-            pass
+            ended_session = {}
         _append_surveillance_stage_history(
             entry_map[pppoe],
             from_stage="level2",
@@ -14539,12 +15177,17 @@ async def surveillance_fixed_many(request: Request):
                 source=(entry_map[pppoe].get("source") or "").strip(),
                 ip=(entry_map[pppoe].get("ip") or "").strip(),
                 state="under",
+                observed_total_hint=(ended_session or {}).get("observed_count"),
             )
         except Exception:
             pass
 
     settings["entries"] = list(entry_map.values())
     save_settings("surveillance", settings)
+    try:
+        _prime_surveillance_checker_cache(entry_map, reset_pppoes=unique_pppoes)
+    except Exception:
+        pass
     if unique_pppoes:
         preview = ",".join(unique_pppoes[:10])
         if len(unique_pppoes) > 10:
@@ -15205,6 +15848,7 @@ def _system_danger_verify_password(request: Request, password: str):
 
 def _system_danger_format_surveillance():
     clear_surveillance_history()
+    clear_surveillance_audit_logs()
     settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
     settings["entries"] = []
     save_settings("surveillance", settings)
@@ -15228,12 +15872,14 @@ def _system_danger_format_accounts_ping():
     clear_accounts_ping_data()
     state = get_state("accounts_ping_state", {})
     devices = state.get("devices") if isinstance(state.get("devices"), list) else []
+    router_status = state.get("router_status") if isinstance(state.get("router_status"), list) else []
     devices_refreshed_at = state.get("devices_refreshed_at") or ""
     save_state(
         "accounts_ping_state",
         {
             "accounts": {},
             "devices": devices,
+            "router_status": router_status,
             "devices_refreshed_at": devices_refreshed_at,
             "last_prune_at": None,
         },
@@ -15424,7 +16070,12 @@ def _handle_system_danger_submission(request: Request, form, default_action: str
     except Exception as exc:
         return render_system_settings_response(request, f"{meta.get('label') or 'Action'} failed: {exc}", active_tab="danger")
 
-    audit_action = "system.danger.formatted_all" if action_key == "all" else f"{action_key}.formatted"
+    if action_key == "all":
+        audit_action = "system.danger.formatted_all"
+    elif action_key == "surveillance":
+        audit_action = "system.danger.formatted_surveillance"
+    else:
+        audit_action = f"{action_key}.formatted"
     _auth_log_event(
         request,
         action=audit_action,

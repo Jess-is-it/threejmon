@@ -174,6 +174,7 @@
             {% endif %}
           </div>
           <div class="d-flex gap-2 align-items-center">
+            <span class="badge bg-green-lt" id="offline-active-count">Active: {{ offline_state.active_accounts or 0 }}</span>
             <span class="badge bg-secondary-lt" id="offline-count">Offline: 0</span>
             <span class="badge bg-azure-lt" id="offline-history-count">History: 0</span>
             <div class="dropdown">
@@ -701,6 +702,7 @@
     const historyBody = document.getElementById("offline-history-body");
     const currentPane = document.getElementById("offline-current-pane");
     const historyPane = document.getElementById("offline-history-pane");
+    const activeCountEl = document.getElementById("offline-active-count");
     const countEl = document.getElementById("offline-count");
     const historyCountEl = document.getElementById("offline-history-count");
     const lastCheckEl = document.getElementById("offline-last-check");
@@ -1173,6 +1175,7 @@
         const res = await fetch("/offline/summary", { headers: { "Accept": "application/json" } });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
+        if (activeCountEl) activeCountEl.textContent = `Active: ${data?.counts?.active || 0}`;
         if (lastCheckEl) lastCheckEl.textContent = data.last_check || "n/a";
         if (modeEl) modeEl.textContent = data.mode || "secrets";
         currentRules = Array.isArray(data.rules) && data.rules.length ? data.rules : currentRules;

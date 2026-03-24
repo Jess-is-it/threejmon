@@ -115,7 +115,9 @@ Top header also shows live CPU/RAM/Disk/Uptime from `/system/resources`.
 - Page: `app/templates/settings_accounts_ping.html`
 - Routes in `app/main.py` under `/settings/accounts-ping` and `/accounts-ping/*`
 - Collector loop: `_accounts_ping_loop` in `app/jobs.py`
-- Stores raw and rollup samples for account latency/loss availability
+- Supports `SSH / CSV` source loading or shared MikroTik router `/ppp/active` loading from System Settings
+- Stores raw and rollup samples for account latency/loss availability, including router-specific duplicates when MikroTik router mode is used
+- In MikroTik router mode, previously seen accounts stay visible and are treated as down when they disappear from the active connections list
 
 ## Optical Monitoring
 - Page: `app/templates/settings_optical.html`
@@ -143,7 +145,7 @@ Top header also shows live CPU/RAM/Disk/Uptime from `/system/resources`.
 
 ## System Settings
 - Page: `app/templates/settings_system.html`
-- Controls branding, routers, ISPs, access management, backup/import-export, danger actions, and other global settings
+- Controls branding, shared routers for Usage/Offline/Accounts Ping, ISPs, access management, backup/import-export, danger actions, and other global settings
 
 ## Logs
 - Page: `app/templates/logs.html`
@@ -212,6 +214,12 @@ System uses role-based permissions with granular feature/page/tab/action scopes.
 - Owner/Admin/Viewer base roles exist (Owner is full control)
 - Route-level permission checks happen in auth middleware
 - Logs visibility can be category-restricted per role
+- When a feature, page, tab, route, action, or setting is added, removed, renamed, or moved, the change must include the corresponding permission updates.
+- Permission work is not complete unless it covers all of the following:
+  - permission catalog / dependencies / route mapping
+  - role editor visibility and assignment behavior
+  - compatibility grants or migration/backfill for existing roles so current users keep the correct access after the change
+- Because users inherit access from roles in this system, updating existing role permissions is mandatory whenever a permissioned feature is introduced or relocated.
 
 ---
 
@@ -264,6 +272,7 @@ After coding:
 2. Check `docker compose ps`.
 3. Check app logs for exceptions.
 4. Validate affected page/endpoint behavior.
+5. If the change affects permissions or moves a protected feature, update permission seeds/mappings and backfill existing roles so current users inherit the correct access.
 
 ---
 
@@ -276,6 +285,7 @@ Treat this as part of Definition of Done:
 - Code change without project description + changelog update = incomplete change.
 - Include what changed, where (file/route/module), and operational impact.
 - Use the entry template in `PROJECT_CHANGELOG.md` for each change.
+- Permissioned feature changes are incomplete unless role/permission updates and existing-role backfills are included when needed.
 
 ---
 

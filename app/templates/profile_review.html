@@ -15,12 +15,14 @@
       </div>
       <div class="col-md-6 col-lg-5">
         <div class="position-relative">
-          <div class="input-icon">
-            <input class="form-control" id="profile-search" type="text" placeholder="Search customer..." autocomplete="off" />
-            <span class="input-icon-addon">
-              <i class="ti ti-search"></i>
-            </span>
-          </div>
+          <form id="profile-search-form" action="/profile-review" method="get">
+            <div class="input-icon">
+              <input class="form-control" id="profile-search" name="q" type="text" value="{{ search_query or '' }}" placeholder="Search customer..." autocomplete="off" />
+              <span class="input-icon-addon">
+                <i class="ti ti-search"></i>
+              </span>
+            </div>
+          </form>
           <div class="dropdown-menu w-100" id="profile-suggest" style="max-height: 320px; overflow: auto;"></div>
         </div>
       </div>
@@ -815,24 +817,118 @@
   {% endif %}
 </div>
 {% else %}
-<div class="empty">
-  <div class="empty-icon"><i class="ti ti-user-search"></i></div>
-  <p class="empty-title">Search or Choose account below to review</p>
-  <p class="empty-subtitle text-muted">Start typing at least 2 characters to see suggestions.</p>
-</div>
-
-<div class="row justify-content-center mt-4 d-none" id="profile-top10-wrap">
-  <div class="col-12 col-lg-8 col-xl-7">
-    <div class="card">
-      <div class="card-header">
-        <h3 class="card-title mb-0" id="profile-top10-title">TOP10 - Critical Connections (Last 24h)</h3>
-      </div>
-      <div class="list-group list-group-flush" id="profile-top10-list">
-        <div class="p-3 text-muted">Loading…</div>
+  {% if search_query %}
+  <div class="row justify-content-center mt-4">
+    <div class="col-12 col-xl-9">
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h3 class="card-title mb-1">Search Results</h3>
+            <div class="text-muted small">
+              {% if search_state == "results" %}
+                {{ search_result_count }} match{% if search_result_count != 1 %}es{% endif %}
+                across {{ search_account_count }} account{% if search_account_count != 1 %}s{% endif %}
+                for "{{ search_query }}"
+              {% elif search_state == "too_short" %}
+                Enter at least 2 characters to search customer data.
+              {% else %}
+                No customer matched "{{ search_query }}".
+              {% endif %}
+            </div>
+          </div>
+        </div>
+        {% if search_state == "results" and search_results %}
+        <div class="list-group list-group-flush">
+          {% for item in search_results %}
+          <a class="list-group-item list-group-item-action" href="{{ item.href }}">
+            <div class="d-flex align-items-start gap-3">
+              <span class="text-muted mt-1">
+                <i class="{% if item.sources|length > 1 %}ti ti-layers{% elif "surveillance" in item.sources %}ti ti-binoculars{% elif "offline" in item.sources %}ti ti-user-off{% elif "optical" in item.sources %}ti ti-sun{% elif "accounts_ping" in item.sources %}ti ti-wifi{% elif "usage" in item.sources %}ti ti-chart-bar{% else %}ti ti-user{% endif %}"></i>
+              </span>
+              <div class="flex-fill min-w-0">
+                <div class="d-flex align-items-center gap-2 flex-wrap">
+                  <div class="fw-semibold text-body">{{ item.highlight_name }}</div>
+                  {% set status = (item.meta.status or '')|lower %}
+                  {% if status in ["down", "issue"] %}
+                    <span class="badge bg-red-lt">Critical</span>
+                  {% elif status == "monitor" %}
+                    <span class="badge bg-yellow-lt">Monitor</span>
+                  {% elif status == "tracking" %}
+                    <span class="badge bg-yellow-lt">Tracking</span>
+                  {% elif status in ["up", "stable"] %}
+                    <span class="badge bg-green-lt">Stable</span>
+                  {% endif %}
+                  {% if "surveillance" in item.sources %}
+                    <span class="badge bg-orange-lt text-orange">Surveillance</span>
+                  {% endif %}
+                  {% if "offline" in item.sources %}
+                    <span class="badge bg-red-lt text-red">Offline</span>
+                  {% endif %}
+                  {% if "optical" in item.sources %}
+                    <span class="badge bg-azure-lt text-azure">Optical</span>
+                  {% endif %}
+                  {% if "accounts_ping" in item.sources %}
+                    <span class="badge bg-indigo-lt text-indigo">ACC-Ping</span>
+                  {% endif %}
+                  {% if "usage" in item.sources %}
+                    <span class="badge bg-teal-lt text-teal">Usage</span>
+                  {% endif %}
+                </div>
+                <div class="text-muted small mt-1 d-flex flex-wrap gap-2">
+                  {% if item.pppoe %}
+                    <span>{{ item.highlight_pppoe }}</span>
+                  {% endif %}
+                  {% if item.ip %}
+                    <span>{{ item.highlight_ip }}</span>
+                  {% endif %}
+                  {% if item.device_id %}
+                    <span>{{ item.highlight_device_id }}</span>
+                  {% endif %}
+                </div>
+                {% if item.last_seen_label %}
+                <div class="text-muted small mt-2">Last seen: {{ item.last_seen_label }}</div>
+                {% endif %}
+              </div>
+              <span class="text-muted mt-1"><i class="ti ti-chevron-right"></i></span>
+            </div>
+          </a>
+          {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty py-5">
+          <div class="empty-icon"><i class="ti ti-search-off"></i></div>
+          {% if search_state == "too_short" %}
+          <p class="empty-title">Search needs more characters</p>
+          <p class="empty-subtitle text-muted">Type at least 2 characters, then press Enter to open the full result list.</p>
+          {% else %}
+          <p class="empty-title">No matching customer found</p>
+          <p class="empty-subtitle text-muted">Try another PPPoE, IP address, device ID, or account name.</p>
+          {% endif %}
+        </div>
+        {% endif %}
       </div>
     </div>
   </div>
-</div>
+  {% else %}
+  <div class="empty">
+    <div class="empty-icon"><i class="ti ti-user-search"></i></div>
+    <p class="empty-title">Search or Choose account below to review</p>
+    <p class="empty-subtitle text-muted">Start typing at least 2 characters to see suggestions.</p>
+  </div>
+
+  <div class="row justify-content-center mt-4 d-none" id="profile-top10-wrap">
+    <div class="col-12 col-lg-8 col-xl-7">
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title mb-0" id="profile-top10-title">TOP10 - Critical Connections (Last 24h)</h3>
+        </div>
+        <div class="list-group list-group-flush" id="profile-top10-list">
+          <div class="p-3 text-muted">Loading…</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
 {% endif %}
 
 <div id="profile-loading-overlay" class="d-none position-fixed top-0 start-0 w-100 h-100" style="z-index: 1080; background: rgba(255, 255, 255, 0.86);">
@@ -846,6 +942,7 @@
 <script>
   document.addEventListener("DOMContentLoaded", () => {
     const profile = {{ profile | tojson }};
+    const searchForm = document.getElementById("profile-search-form");
     const searchInput = document.getElementById("profile-search");
     const suggestMenu = document.getElementById("profile-suggest");
     const top10Wrap = document.getElementById("profile-top10-wrap");
@@ -1087,10 +1184,25 @@
         if (event.key === "Escape") {
           closeSuggest();
         }
-        if (event.key === "Enter" && lastItems.length) {
-          event.preventDefault();
-          navigateTo(lastItems[0]);
+      });
+    }
+
+    if (searchForm) {
+      searchForm.addEventListener("submit", () => {
+        if (pendingTimer) {
+          window.clearTimeout(pendingTimer);
+          pendingTimer = null;
         }
+        const q = (searchInput?.value || "").trim();
+        if (searchInput) searchInput.value = q;
+        closeSuggest();
+        hideTop10();
+        showProfileLoadingOverlay(
+          q ? "Searching customers..." : "Loading profile review...",
+          q
+            ? "Matching PPPoE, IP, device ID, and account activity."
+            : "Refreshing the customer search page."
+        );
       });
     }
 
