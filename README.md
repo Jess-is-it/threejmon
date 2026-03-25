@@ -23,6 +23,21 @@ Options:
 - `THREEJ_APP_USER`: service user (default `threejnotif`)
 - `THREEJ_PORT`: host port (default `8000`)
 
+## One-line update (existing server)
+
+Use this only on a server where ThreeJ Notifier is already installed:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Jess-is-it/threejmon/master/update.sh | sudo bash
+```
+
+Optional update overrides:
+- `THREEJ_INSTALL_DIR`: existing install directory (default `/opt/threejnotif`)
+- `THREEJ_BRANCH`: branch to update (default current branch, fallback `master`)
+- `THREEJ_REPO_URL`: temporary fetch/pull source, useful for public HTTPS updates or repo URL changes
+- `THREEJ_GIT_USER`: local Linux user whose Git/SSH config should be used for fetch/pull
+- `THREEJ_SKIP_REBUILD=1`: update the repo only and skip `docker compose up -d --build`
+
 ## One-line install (private GitHub repo + deploy key)
 
 Use this on a fresh server. It generates a deploy key, pauses for you to add it in GitHub, then installs:

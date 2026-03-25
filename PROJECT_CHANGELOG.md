@@ -38,6 +38,30 @@ Use this file to record every meaningful system change in reverse-chronological 
 
 ## Entries
 
+## 2026-03-25 06:30 UTC — Added dedicated one-line updater for existing servers
+- Type: feature
+- Scope: Deployment tooling / update workflow / project docs
+- Summary:
+  - Added a dedicated `update.sh` script for already-installed servers so operators can pull the latest branch and rebuild without re-running the fresh-install logic.
+  - Made the updater stop on tracked local changes, support branch and repo URL overrides, and allow Git fetches to run under a specified local user when SSH-based remotes are in use.
+  - Documented the standard update flow and the new one-line update command in the repository docs.
+- Files:
+  - `update.sh`
+  - `README.md`
+  - `PROJECT_DESCRIPTION.md`
+  - `PROJECT_CHANGELOG.md`
+- DB/Config Impact:
+  - Schema: none
+  - Settings/State keys: none
+- Runtime Impact:
+  - Existing servers can now be updated with a single raw-script command without hitting the install script's fresh-server checks.
+- Validation:
+  - `bash -n /opt/threejnotif/update.sh`
+  - `git -C /opt/threejnotif diff --check -- update.sh README.md PROJECT_DESCRIPTION.md PROJECT_CHANGELOG.md`
+  - `THREEJ_INSTALL_DIR=/tmp/threej-update-test THREEJ_GIT_USER=root THREEJ_REPO_URL=https://github.com/Jess-is-it/threejmon.git THREEJ_SKIP_REBUILD=1 bash /opt/threejnotif/update.sh`
+- Rollback:
+  - Revert the files listed above.
+
 ## 2026-03-13 07:59 UTC — Added MikroTik router source mode to Accounts Ping
 - Type: feature
 - Scope: Accounts Ping / shared MikroTik routers / surveillance compatibility / project docs

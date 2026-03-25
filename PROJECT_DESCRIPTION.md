@@ -59,6 +59,23 @@ docker compose ps
 docker logs --tail 200 threejnotif-threejnotif-1
 ```
 
+### Standard update commands
+
+```bash
+cd /opt/threejnotif
+git fetch origin
+git pull --ff-only origin master
+docker compose up -d --build
+```
+
+### One-line update command
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Jess-is-it/threejmon/master/update.sh | sudo bash
+```
+
+Use the installer only for fresh servers. Existing installs should use the update flow above so the repo is pulled in place and the current data directory is preserved.
+
 ---
 
 ## 4) Tech Stack
