@@ -14,6 +14,7 @@ import shutil
 import smtplib
 import secrets
 import ssl
+import tempfile
 import time
 import subprocess
 import threading
@@ -31,6 +32,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
+from starlette.background import BackgroundTask
 
 from .db import (
     count_auth_users,
@@ -6965,6 +6967,41 @@ async def wan_stability(days: int = 1, hours: int | None = None, live: bool = Fa
     return JSONResponse({"live": bool(live), "days": days, "rows": payload})
 
 
+def _is_postgres_database_url(db_url: str) -> bool:
+    raw = (db_url or "").strip().lower()
+    return raw.startswith("postgres://") or raw.startswith("postgresql://")
+
+
+def _parse_postgres_database_url(db_url: str):
+    raw = (db_url or "").strip()
+    if not _is_postgres_database_url(raw):
+        return None
+    parsed = urllib.parse.urlparse(raw)
+    dbname = urllib.parse.unquote((parsed.path or "").lstrip("/"))
+    username = urllib.parse.unquote(parsed.username or "")
+    password = urllib.parse.unquote(parsed.password or "")
+    host = parsed.hostname or "127.0.0.1"
+    port = str(parsed.port or 5432)
+    if not dbname or not username:
+        return None
+    query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+    return {
+        "dbname": dbname,
+        "username": username,
+        "password": password,
+        "host": host,
+        "port": port,
+        "query": query,
+    }
+
+
+def _cleanup_temp_file(path: str):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
 @app.get("/settings/export")
 async def export_settings_route():
     payload = export_settings()
@@ -7009,12 +7046,83 @@ async def import_settings_route(request: Request):
 
 @app.get("/settings/db/export")
 async def export_db_route():
-    db_url = (os.environ.get("THREEJ_DATABASE_URL") or "").strip().lower()
-    if db_url.startswith("postgres://") or db_url.startswith("postgresql://"):
-        return Response(
-            content=b"Database export is not available in the UI when using Postgres. Use pg_dump instead.",
-            media_type="text/plain",
-            status_code=501,
+    db_url = (os.environ.get("THREEJ_DATABASE_URL") or "").strip()
+    if _is_postgres_database_url(db_url):
+        pg_details = _parse_postgres_database_url(db_url)
+        if not pg_details:
+            return Response(
+                content=b"Database export failed: invalid Postgres connection settings.",
+                media_type="text/plain",
+                status_code=500,
+            )
+        pg_dump_path = shutil.which("pg_dump")
+        if not pg_dump_path:
+            return Response(
+                content=b"Database export failed: pg_dump is not available in the application container.",
+                media_type="text/plain",
+                status_code=500,
+            )
+        timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        temp_handle = tempfile.NamedTemporaryFile(
+            prefix=f"threejnotif-db-{timestamp}-",
+            suffix=".dump",
+            delete=False,
+        )
+        temp_path = temp_handle.name
+        temp_handle.close()
+        cmd = [
+            pg_dump_path,
+            "--format=custom",
+            "--compress=6",
+            "--no-owner",
+            "--no-privileges",
+            "--file",
+            temp_path,
+            "--host",
+            pg_details["host"],
+            "--port",
+            str(pg_details["port"]),
+            "--username",
+            pg_details["username"],
+            "--dbname",
+            pg_details["dbname"],
+        ]
+        env = os.environ.copy()
+        if pg_details.get("password"):
+            env["PGPASSWORD"] = pg_details["password"]
+        sslmode_values = pg_details.get("query", {}).get("sslmode") or []
+        if sslmode_values and str(sslmode_values[0] or "").strip():
+            env["PGSSLMODE"] = str(sslmode_values[0]).strip()
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
+                timeout=1800,
+            )
+        except subprocess.TimeoutExpired:
+            _cleanup_temp_file(temp_path)
+            return Response(
+                content=b"Database export failed: pg_dump timed out.",
+                media_type="text/plain",
+                status_code=504,
+            )
+        if result.returncode != 0 or not os.path.exists(temp_path):
+            _cleanup_temp_file(temp_path)
+            message = (result.stderr or result.stdout or "pg_dump failed").strip()
+            return Response(
+                content=f"Database export failed: {message}".encode("utf-8", errors="replace"),
+                media_type="text/plain",
+                status_code=500,
+            )
+        return FileResponse(
+            temp_path,
+            media_type="application/octet-stream",
+            filename=f"threejnotif-db-{timestamp}.dump",
+            background=BackgroundTask(_cleanup_temp_file, temp_path),
         )
     db_path = os.environ.get("THREEJ_DB_PATH", "/data/threejnotif.db")
     if not os.path.exists(db_path):
@@ -7031,8 +7139,8 @@ async def import_db_route(request: Request):
     form = await request.form()
     uploaded = form.get("db_file")
     message = ""
-    db_url = (os.environ.get("THREEJ_DATABASE_URL") or "").strip().lower()
-    if db_url.startswith("postgres://") or db_url.startswith("postgresql://"):
+    db_url = (os.environ.get("THREEJ_DATABASE_URL") or "").strip()
+    if _is_postgres_database_url(db_url):
         message = "Database restore is not available in the UI when using Postgres. Use psql/pg_restore instead."
         return render_system_settings_response(request, message, active_tab="backup", routers_tab="cores")
     db_path = os.environ.get("THREEJ_DB_PATH", "/data/threejnotif.db")

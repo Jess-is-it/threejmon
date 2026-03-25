@@ -1032,7 +1032,7 @@
           <a href="/settings/export">Download settings backup</a>
         </div>
         <form method="post" action="/settings/import" enctype="multipart/form-data">
-          <label class="form-label">Restore from JSON file <span class="info" data-tip="Import a settings backup JSON (configuration only; runtime history is excluded). Includes WAN Ping, Usage, Offline, Optical, and System settings.">i</span></label>
+          <label class="form-label">Restore from JSON file <span class="info" data-tip="Import a configuration backup JSON. Includes feature settings, router definitions, access users/roles, and branding logo assets. Runtime history and monitoring data are excluded.">i</span></label>
           <input class="form-control" type="file" name="settings_file" accept="application/json" />
           <div class="mt-3">
             <button type="submit" class="btn btn-primary">Import Settings</button>
@@ -1050,7 +1050,7 @@
           <a href="/settings/db/export">Download database backup</a>
         </div>
         <form method="post" action="/settings/db/import" enctype="multipart/form-data">
-          <label class="form-label">Restore database <span class="info" data-tip="If running Postgres, use pg_dump/psql instead of uploading a SQLite .db file.">i</span></label>
+          <label class="form-label">Restore database <span class="info" data-tip="The download contains the full current database. SQLite restores can be uploaded here. If running Postgres, use psql/pg_restore for restore.">i</span></label>
           <input class="form-control" type="file" name="db_file" accept=".db,application/octet-stream" />
           <div class="mt-3">
             <button type="submit" class="btn btn-primary">Import Database</button>

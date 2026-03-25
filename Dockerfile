@@ -13,6 +13,7 @@ RUN apt-get update \
         apt-transport-https \
         iputils-ping \
         openssh-client \
+        postgresql-client \
     && curl -fsSL https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | bash \
     && apt-get install -y --no-install-recommends speedtest \
     && rm -rf /var/lib/apt/lists/*

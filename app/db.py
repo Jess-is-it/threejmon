@@ -2078,6 +2078,318 @@ def fetch_all_state():
         conn.close()
 
 
+def export_auth_config():
+    conn = get_conn()
+    try:
+        permissions_rows = conn.execute(
+            """
+            SELECT id, code, label, description, created_at
+            FROM auth_permissions
+            ORDER BY id ASC, lower(code) ASC
+            """
+        ).fetchall()
+        role_rows = conn.execute(
+            """
+            SELECT id, name, description, is_builtin, created_at, updated_at
+            FROM auth_roles
+            ORDER BY id ASC, lower(name) ASC
+            """
+        ).fetchall()
+        role_permission_rows = conn.execute(
+            """
+            SELECT rp.role_id, p.code
+            FROM auth_role_permissions rp
+            JOIN auth_permissions p ON p.id = rp.permission_id
+            ORDER BY rp.role_id ASC, lower(p.code) ASC
+            """
+        ).fetchall()
+        user_rows = conn.execute(
+            """
+            SELECT
+                u.id,
+                u.username,
+                u.email,
+                u.full_name,
+                u.role_id,
+                r.name AS role_name,
+                u.password_hash,
+                u.password_salt,
+                u.must_change_password,
+                u.is_active,
+                u.last_login_at,
+                u.created_at,
+                u.updated_at
+            FROM auth_users u
+            LEFT JOIN auth_roles r ON r.id = u.role_id
+            ORDER BY u.id ASC, lower(u.username) ASC
+            """
+        ).fetchall()
+
+        permissions = []
+        for row in permissions_rows or []:
+            permissions.append(
+                {
+                    "id": int(_row_get(row, "id", 0) or 0),
+                    "code": str(_row_get(row, "code", "") or "").strip(),
+                    "label": str(_row_get(row, "label", "") or "").strip(),
+                    "description": str(_row_get(row, "description", "") or "").strip(),
+                    "created_at": str(_row_get(row, "created_at", "") or "").strip(),
+                }
+            )
+
+        role_permissions = {}
+        for row in role_permission_rows or []:
+            try:
+                role_id = int(_row_get(row, "role_id", 0) or 0)
+            except Exception:
+                role_id = 0
+            code = str(_row_get(row, "code", "") or "").strip()
+            if role_id <= 0 or not code:
+                continue
+            role_permissions.setdefault(role_id, []).append(code)
+
+        roles = []
+        for row in role_rows or []:
+            try:
+                role_id = int(_row_get(row, "id", 0) or 0)
+            except Exception:
+                role_id = 0
+            roles.append(
+                {
+                    "id": role_id,
+                    "name": str(_row_get(row, "name", "") or "").strip(),
+                    "description": str(_row_get(row, "description", "") or "").strip(),
+                    "is_builtin": 1 if int(_row_get(row, "is_builtin", 0) or 0) == 1 else 0,
+                    "created_at": str(_row_get(row, "created_at", "") or "").strip(),
+                    "updated_at": str(_row_get(row, "updated_at", "") or "").strip(),
+                    "permission_codes": sorted(role_permissions.get(role_id, []), key=lambda value: value.lower()),
+                }
+            )
+
+        users = []
+        for row in user_rows or []:
+            users.append(
+                {
+                    "id": int(_row_get(row, "id", 0) or 0),
+                    "username": str(_row_get(row, "username", "") or "").strip(),
+                    "email": str(_row_get(row, "email", "") or "").strip(),
+                    "full_name": str(_row_get(row, "full_name", "") or "").strip(),
+                    "role_id": int(_row_get(row, "role_id", 0) or 0),
+                    "role_name": str(_row_get(row, "role_name", "") or "").strip(),
+                    "password_hash": str(_row_get(row, "password_hash", "") or "").strip(),
+                    "password_salt": str(_row_get(row, "password_salt", "") or "").strip(),
+                    "must_change_password": 1 if int(_row_get(row, "must_change_password", 0) or 0) == 1 else 0,
+                    "is_active": 1 if int(_row_get(row, "is_active", 0) or 0) == 1 else 0,
+                    "last_login_at": str(_row_get(row, "last_login_at", "") or "").strip(),
+                    "created_at": str(_row_get(row, "created_at", "") or "").strip(),
+                    "updated_at": str(_row_get(row, "updated_at", "") or "").strip(),
+                }
+            )
+        return {"permissions": permissions, "roles": roles, "users": users}
+    finally:
+        conn.close()
+
+
+def _reset_identity_sequence(conn, table_name, column_name="id"):
+    if not _use_postgres():
+        return
+    table_name = str(table_name or "").strip()
+    column_name = str(column_name or "").strip()
+    if table_name not in {"auth_permissions", "auth_roles", "auth_users"}:
+        return
+    if column_name != "id":
+        return
+    row = conn.execute(f"SELECT COALESCE(MAX({column_name}), 0) AS max_id FROM {table_name}").fetchone()
+    try:
+        max_id = int(_row_get(row, "max_id", 0) or 0)
+    except Exception:
+        max_id = 0
+    if max_id > 0:
+        conn.execute(
+            f"SELECT setval(pg_get_serial_sequence('{table_name}', '{column_name}'), {max_id}, true)"
+        )
+    else:
+        conn.execute(
+            f"SELECT setval(pg_get_serial_sequence('{table_name}', '{column_name}'), 1, false)"
+        )
+
+
+def replace_auth_config(data):
+    if not isinstance(data, dict):
+        raise ValueError("auth payload must be an object")
+    permissions_data = data.get("permissions")
+    roles_data = data.get("roles")
+    users_data = data.get("users")
+    if not isinstance(permissions_data, list) or not isinstance(roles_data, list) or not isinstance(users_data, list):
+        raise ValueError("auth payload must include permissions, roles, and users lists")
+
+    now = utc_now_iso()
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM auth_sessions")
+            conn.execute("DELETE FROM auth_users")
+            conn.execute("DELETE FROM auth_role_permissions")
+            conn.execute("DELETE FROM auth_roles")
+            conn.execute("DELETE FROM auth_permissions")
+
+            permission_code_to_id = {}
+            seen_permission_codes = set()
+            next_permission_id = 1
+            for item in permissions_data:
+                if not isinstance(item, dict):
+                    continue
+                code = str(item.get("code", "") or "").strip()
+                code_key = code.lower()
+                if not code or code_key in seen_permission_codes:
+                    continue
+                seen_permission_codes.add(code_key)
+                try:
+                    permission_id = int(item.get("id") or 0)
+                except Exception:
+                    permission_id = 0
+                if permission_id <= 0:
+                    permission_id = next_permission_id
+                next_permission_id = max(next_permission_id, permission_id + 1)
+                label = str(item.get("label", "") or "").strip() or code
+                description = str(item.get("description", "") or "").strip()
+                created_at = str(item.get("created_at", "") or "").strip() or now
+                conn.execute(
+                    """
+                    INSERT INTO auth_permissions (id, code, label, description, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (permission_id, code, label, description, created_at),
+                )
+                permission_code_to_id[code_key] = permission_id
+
+            role_name_to_id = {}
+            seen_role_names = set()
+            next_role_id = 1
+            for item in roles_data:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name", "") or "").strip().lower()
+                if not name or name in seen_role_names:
+                    continue
+                seen_role_names.add(name)
+                try:
+                    role_id = int(item.get("id") or 0)
+                except Exception:
+                    role_id = 0
+                if role_id <= 0:
+                    role_id = next_role_id
+                next_role_id = max(next_role_id, role_id + 1)
+                description = str(item.get("description", "") or "").strip()
+                is_builtin = 1 if int(item.get("is_builtin", 0) or 0) == 1 else 0
+                created_at = str(item.get("created_at", "") or "").strip() or now
+                updated_at = str(item.get("updated_at", "") or "").strip() or created_at
+                conn.execute(
+                    """
+                    INSERT INTO auth_roles (id, name, description, is_builtin, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (role_id, name, description, is_builtin, created_at, updated_at),
+                )
+                role_name_to_id[name] = role_id
+
+                seen_role_permission_codes = set()
+                for code in item.get("permission_codes") or []:
+                    permission_code = str(code or "").strip()
+                    permission_key = permission_code.lower()
+                    permission_id = permission_code_to_id.get(permission_key)
+                    if permission_id is None or permission_key in seen_role_permission_codes:
+                        continue
+                    seen_role_permission_codes.add(permission_key)
+                    conn.execute(
+                        """
+                        INSERT INTO auth_role_permissions (role_id, permission_id)
+                        VALUES (?, ?)
+                        """,
+                        (role_id, permission_id),
+                    )
+
+            seen_usernames = set()
+            next_user_id = 1
+            for item in users_data:
+                if not isinstance(item, dict):
+                    continue
+                username = str(item.get("username", "") or "").strip()
+                username_key = username.lower()
+                if not username or username_key in seen_usernames:
+                    continue
+                seen_usernames.add(username_key)
+                try:
+                    user_id = int(item.get("id") or 0)
+                except Exception:
+                    user_id = 0
+                if user_id <= 0:
+                    user_id = next_user_id
+                next_user_id = max(next_user_id, user_id + 1)
+
+                try:
+                    role_id = int(item.get("role_id") or 0)
+                except Exception:
+                    role_id = 0
+                if role_id <= 0 or role_id not in role_name_to_id.values():
+                    role_name = str(item.get("role_name", "") or "").strip().lower()
+                    role_id = role_name_to_id.get(role_name, 0)
+                if role_id <= 0:
+                    raise ValueError(f"Role not found for user '{username}'.")
+
+                password_hash = str(item.get("password_hash", "") or "").strip()
+                password_salt = str(item.get("password_salt", "") or "").strip()
+                if not password_hash or not password_salt:
+                    raise ValueError(f"Password hash is missing for user '{username}'.")
+                email = str(item.get("email", "") or "").strip().lower()
+                full_name = str(item.get("full_name", "") or "").strip()
+                must_change_password = 1 if int(item.get("must_change_password", 0) or 0) == 1 else 0
+                is_active = 1 if int(item.get("is_active", 0) or 0) == 1 else 0
+                last_login_at = str(item.get("last_login_at", "") or "").strip()
+                created_at = str(item.get("created_at", "") or "").strip() or now
+                updated_at = str(item.get("updated_at", "") or "").strip() or created_at
+                conn.execute(
+                    """
+                    INSERT INTO auth_users (
+                        id,
+                        username,
+                        email,
+                        full_name,
+                        role_id,
+                        password_hash,
+                        password_salt,
+                        must_change_password,
+                        is_active,
+                        last_login_at,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        user_id,
+                        username,
+                        email,
+                        full_name,
+                        role_id,
+                        password_hash,
+                        password_salt,
+                        must_change_password,
+                        is_active,
+                        last_login_at,
+                        created_at,
+                        updated_at,
+                    ),
+                )
+
+            _reset_identity_sequence(conn, "auth_permissions")
+            _reset_identity_sequence(conn, "auth_roles")
+            _reset_identity_sequence(conn, "auth_users")
+            _seed_auth_defaults(conn)
+    finally:
+        conn.close()
+
+
 def _parse_iso_utc(value):
     text = (value or "").strip()
     if not text:
