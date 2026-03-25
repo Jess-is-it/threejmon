@@ -13238,6 +13238,114 @@ async def surveillance_mark_new_seen(request: Request):
     return _json_no_store({"ok": True, "seen_ids": seen_ids, "seen_at": utc_now_iso()})
 
 
+def _surv_float_or_none(value):
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _surv_optical_threshold_dbm(settings):
+    try:
+        return float((settings.get("stability") or {}).get("optical_rx_min_dbm", -24.0) or -24.0)
+    except Exception:
+        return -24.0
+
+
+def _surv_empty_optical_payload(optical_device_id="", threshold_dbm=-24.0):
+    return {
+        "device_id": (optical_device_id or "").strip(),
+        "samples": 0,
+        "latest_rx": None,
+        "latest_tx": None,
+        "avg_rx": None,
+        "worst_rx": None,
+        "best_rx": None,
+        "last_sample_at_iso": "",
+        "last_sample_at_ph": "n/a",
+        "rx_threshold_dbm": float(threshold_dbm),
+        "status": "na",
+        "status_label": "No Data",
+        "series": [],
+        "stats": {
+            "optical_sample_count": 0,
+            "latest_optical_rx_dbm": None,
+            "latest_optical_tx_dbm": None,
+            "avg_optical_rx_dbm": None,
+            "worst_optical_rx_dbm": None,
+            "best_optical_rx_dbm": None,
+        },
+    }
+
+
+def _surv_optical_payload_from_rows(optical_device_id, optical_rows, since_dt, until_dt, threshold_dbm=-24.0):
+    payload = _surv_empty_optical_payload(optical_device_id=optical_device_id, threshold_dbm=threshold_dbm)
+    if not isinstance(since_dt, datetime) or not isinstance(until_dt, datetime):
+        return payload
+    if until_dt < since_dt:
+        until_dt = since_dt
+
+    rx_values = []
+    rx_sum = 0.0
+    rx_count = 0
+    for item in optical_rows or []:
+        if not isinstance(item, dict):
+            continue
+        ts = (item.get("timestamp") or "").strip()
+        dt = _parse_iso_z(ts)
+        if not ts or not isinstance(dt, datetime):
+            continue
+        if dt < since_dt or dt > until_dt:
+            continue
+        rx_val = _surv_float_or_none(item.get("rx"))
+        tx_val = _surv_float_or_none(item.get("tx"))
+        if rx_val is not None:
+            rx_values.append(rx_val)
+            rx_sum += rx_val
+            rx_count += 1
+        payload["series"].append({"ts": ts, "rx": rx_val, "tx": tx_val})
+
+    payload["samples"] = len(payload["series"])
+    latest_row = payload["series"][-1] if payload["series"] else {}
+    latest_rx = _surv_float_or_none(latest_row.get("rx")) if latest_row else None
+    latest_tx = _surv_float_or_none(latest_row.get("tx")) if latest_row else None
+    avg_rx = (rx_sum / rx_count) if rx_count else None
+    worst_rx = min(rx_values) if rx_values else None
+    best_rx = max(rx_values) if rx_values else None
+    status = "na"
+    status_label = "No Data"
+    if latest_rx is not None:
+        if latest_rx >= float(threshold_dbm):
+            status = "pass"
+            status_label = "Pass"
+        else:
+            status = "fail"
+            status_label = "Below Goal"
+
+    payload.update(
+        {
+            "latest_rx": latest_rx,
+            "latest_tx": latest_tx,
+            "avg_rx": avg_rx,
+            "worst_rx": worst_rx,
+            "best_rx": best_rx,
+            "last_sample_at_iso": (latest_row.get("ts") or "").strip() if latest_row else "",
+            "last_sample_at_ph": format_ts_ph(latest_row.get("ts")) if latest_row and latest_row.get("ts") else "n/a",
+            "status": status,
+            "status_label": status_label,
+            "stats": {
+                "optical_sample_count": int(payload["samples"]),
+                "latest_optical_rx_dbm": latest_rx,
+                "latest_optical_tx_dbm": latest_tx,
+                "avg_optical_rx_dbm": avg_rx,
+                "worst_optical_rx_dbm": worst_rx,
+                "best_optical_rx_dbm": best_rx,
+            },
+        }
+    )
+    return payload
+
+
 @app.get("/surveillance/series", response_class=JSONResponse)
 async def surveillance_series(pppoe: str, window: str = "24", stage: str = "under"):
     pppoe = (pppoe or "").strip()
@@ -13328,6 +13436,12 @@ async def surveillance_series(pppoe: str, window: str = "24", stage: str = "unde
         return merged
 
     series = _merge_rows(rows)
+    optical_threshold_dbm = _surv_optical_threshold_dbm(settings)
+    optical_latest_map = get_latest_optical_by_pppoe([pppoe]) if pppoe else {}
+    optical_latest = optical_latest_map.get(pppoe) if isinstance(optical_latest_map, dict) else {}
+    optical_device_id = (optical_latest.get("device_id") or "").strip() if isinstance(optical_latest, dict) else ""
+    optical_rows = get_optical_results_for_device_since(optical_device_id, since_iso) if optical_device_id else []
+    optical_payload = _surv_optical_payload_from_rows(optical_device_id, optical_rows, since_dt, until_dt, optical_threshold_dbm)
     return JSONResponse(
         {
             "pppoe": pppoe,
@@ -13339,6 +13453,7 @@ async def surveillance_series(pppoe: str, window: str = "24", stage: str = "unde
             "anchor_since": anchor_iso,
             "anchor_source": anchor_source,
             "series": series,
+            "optical": optical_payload,
         }
     )
 
@@ -13467,52 +13582,12 @@ async def surveillance_inspect_activity(pppoe: str, stage: str = "under"):
     stats["longest_down_streak_seconds"] = int(round(longest_down_streak))
     stats["last_sample_ts"] = merged_series[-1].get("ts") if merged_series else ""
 
-    optical_threshold_dbm = -24.0
-    try:
-        optical_threshold_dbm = float((settings.get("stability") or {}).get("optical_rx_min_dbm", -24.0) or -24.0)
-    except Exception:
-        optical_threshold_dbm = -24.0
-
+    optical_threshold_dbm = _surv_optical_threshold_dbm(settings)
     optical_latest_map = get_latest_optical_by_pppoe([pppoe]) if pppoe else {}
     optical_latest = optical_latest_map.get(pppoe) if isinstance(optical_latest_map, dict) else {}
     optical_device_id = (optical_latest.get("device_id") or "").strip() if isinstance(optical_latest, dict) else ""
     optical_rows = get_optical_results_for_device_since(optical_device_id, since_iso) if optical_device_id else []
-    optical_filtered = []
-    optical_rx_values = []
-    optical_series = []
-    for item in optical_rows:
-        ts = (item.get("timestamp") or "").strip()
-        dt = _parse_iso_z(ts)
-        if not ts or not isinstance(dt, datetime):
-            continue
-        if dt < since_dt or dt > until_dt:
-            continue
-        optical_filtered.append(item)
-        rx_val = _to_float(item.get("rx"))
-        tx_val = _to_float(item.get("tx"))
-        if rx_val is not None:
-            optical_rx_values.append(rx_val)
-        optical_series.append(
-            {
-                "ts": ts,
-                "rx": rx_val,
-                "tx": tx_val,
-            }
-        )
-    optical_sample_total = len(optical_filtered)
-    optical_latest_row = optical_filtered[-1] if optical_filtered else {}
-    optical_latest_rx = _to_float(optical_latest_row.get("rx")) if optical_latest_row else None
-    optical_latest_tx = _to_float(optical_latest_row.get("tx")) if optical_latest_row else None
-    optical_worst_rx = min(optical_rx_values) if optical_rx_values else None
-    optical_status = "na"
-    optical_status_label = "No Data"
-    if optical_latest_rx is not None:
-        if optical_latest_rx >= optical_threshold_dbm:
-            optical_status = "pass"
-            optical_status_label = "Pass"
-        else:
-            optical_status = "fail"
-            optical_status_label = "Below Goal"
+    optical_payload = _surv_optical_payload_from_rows(optical_device_id, optical_rows, since_dt, until_dt, optical_threshold_dbm)
 
     return _json_no_store(
         {
@@ -13527,19 +13602,7 @@ async def surveillance_inspect_activity(pppoe: str, stage: str = "under"):
             "anchor_source": "first_added",
             "series": merged_series,
             "stats": stats,
-            "optical": {
-                "device_id": optical_device_id,
-                "samples": optical_sample_total,
-                "latest_rx": optical_latest_rx,
-                "latest_tx": optical_latest_tx,
-                "worst_rx": optical_worst_rx,
-                "last_sample_at_iso": (optical_latest_row.get("timestamp") or "").strip() if optical_latest_row else "",
-                "last_sample_at_ph": format_ts_ph(optical_latest_row.get("timestamp")) if optical_latest_row else "n/a",
-                "rx_threshold_dbm": optical_threshold_dbm,
-                "status": optical_status,
-                "status_label": optical_status_label,
-                "series": optical_series,
-            },
+            "optical": optical_payload,
         }
     )
 
@@ -13940,6 +14003,12 @@ async def surveillance_series_range(pppoe: str, since: str, until: str, stage: s
                 cur[k] = b if bv > av else a
     if cur is not None:
         series.append(cur)
+    optical_threshold_dbm = _surv_optical_threshold_dbm(settings)
+    optical_latest_map = get_latest_optical_by_pppoe([pppoe]) if pppoe else {}
+    optical_latest = optical_latest_map.get(pppoe) if isinstance(optical_latest_map, dict) else {}
+    optical_device_id = (optical_latest.get("device_id") or "").strip() if isinstance(optical_latest, dict) else ""
+    optical_rows = get_optical_results_for_device_since(optical_device_id, since) if optical_device_id else []
+    optical_payload = _surv_optical_payload_from_rows(optical_device_id, optical_rows, since_dt, until_dt, optical_threshold_dbm)
     return JSONResponse(
         {
             "pppoe": pppoe,
@@ -13949,6 +14018,7 @@ async def surveillance_series_range(pppoe: str, since: str, until: str, stage: s
             "anchor_since": anchor_iso,
             "anchor_source": anchor_source,
             "series": series,
+            "optical": optical_payload,
         }
     )
 
@@ -14005,6 +14075,11 @@ async def surveillance_timeline(pppoe: str, stage: str = "under", until: str = "
         return dt_local.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
     account_ids = _accounts_ping_account_ids_for_pppoe(pppoe)
+    optical_threshold_dbm = _surv_optical_threshold_dbm(settings)
+    optical_latest_map = get_latest_optical_by_pppoe([pppoe]) if pppoe else {}
+    optical_latest = optical_latest_map.get(pppoe) if isinstance(optical_latest_map, dict) else {}
+    optical_device_id = (optical_latest.get("device_id") or "").strip() if isinstance(optical_latest, dict) else ""
+    optical_rows = get_optical_results_for_device_since(optical_device_id, anchor_iso) if optical_device_id else []
 
     day_items = []
 
@@ -14016,6 +14091,13 @@ async def surveillance_timeline(pppoe: str, stage: str = "under", until: str = "
         to_utc_iso(now_local + timedelta(minutes=1)),
     )
     total_stats = _surv_rollup_points_and_stats(total_rollups, bucket_seconds=60)["stats"]
+    total_optical = _surv_optical_payload_from_rows(optical_device_id, optical_rows, anchor_dt, timeline_until_dt, optical_threshold_dbm)
+    total_stats.update(total_optical.get("stats") or {})
+
+    def _local_to_utc_naive(dt_local):
+        if not isinstance(dt_local, datetime):
+            return anchor_dt
+        return dt_local.astimezone(timezone.utc).replace(tzinfo=None, microsecond=0)
 
     for idx in range(1, total_days + 1):
         day_date = start_day + timedelta(days=idx - 1)
@@ -14035,11 +14117,20 @@ async def surveillance_timeline(pppoe: str, stage: str = "under", until: str = "
 
         series = []
         stats = None
+        optical_payload = _surv_empty_optical_payload(optical_device_id=optical_device_id, threshold_dbm=optical_threshold_dbm)
         if kind != "future":
             rollups = _accounts_ping_rollup_rows_for_account_ids(account_ids, to_utc_iso(query_start_local), to_utc_iso(query_until_local))
             payload = _surv_rollup_points_and_stats(rollups, bucket_seconds=60)
-            stats = payload["stats"]
+            stats = dict(payload["stats"] or {})
             series = _surv_downsample_points(payload["points"], max_points=96)
+            optical_payload = _surv_optical_payload_from_rows(
+                optical_device_id,
+                optical_rows,
+                _local_to_utc_naive(query_start_local),
+                _local_to_utc_naive(query_until_local),
+                optical_threshold_dbm,
+            )
+            stats.update(optical_payload.get("stats") or {})
 
         hours_so_far = None
         if kind == "today":
@@ -14058,6 +14149,7 @@ async def surveillance_timeline(pppoe: str, stage: str = "under", until: str = "
                 "until_iso": to_utc_iso(until_local),
                 "series": [{"ts": p["ts"], "loss": p["loss"], "avg_ms": p["avg_ms"]} for p in series],
                 "stats": stats,
+                "optical": optical_payload,
             }
         )
 
@@ -14075,6 +14167,7 @@ async def surveillance_timeline(pppoe: str, stage: str = "under", until: str = "
             "total_days": total_days,
             "days": day_items,
             "total": total_stats,
+            "optical_total": total_optical,
         }
     )
 

@@ -538,6 +538,10 @@
 			                  <div class="mt-3">
 			                    <div id="surv-under-chart" style="height: 300px;"></div>
 			                    <div class="text-muted small mt-2">Latency and loss history based on raw ping results for the selected window.</div>
+                          <div class="mt-3">
+                            <div id="surv-under-optical-chart" style="height: 220px;"></div>
+                            <div class="text-muted small mt-2">Optical RX history for the selected window.</div>
+                          </div>
 			                    <div class="text-muted small mt-1" data-surv-range-label="under"></div>
 				                  <div class="mt-3" data-surv-timeline-wrap="under">
 				                    <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
@@ -1104,6 +1108,10 @@
                   <div class="mt-3">
                     <div id="surv-observe-chart" style="height: 300px;"></div>
                     <div class="text-muted small mt-2">Latency and loss history based on raw ping results for the selected window.</div>
+                    <div class="mt-3">
+                      <div id="surv-observe-optical-chart" style="height: 220px;"></div>
+                      <div class="text-muted small mt-2">Optical RX history for the selected window.</div>
+                    </div>
                     <div class="text-muted small mt-1" data-surv-range-label="observe"></div>
                     <div class="card mt-3">
                       <div class="card-header py-2 bg-light">
@@ -1694,6 +1702,10 @@
 			                  <div class="mt-3">
 			                  <div id="surv-level2-chart" style="height: 300px;"></div>
 			                  <div class="text-muted small mt-2">Latency and loss history based on raw ping results for the selected window.</div>
+                        <div class="mt-3">
+                          <div id="surv-level2-optical-chart" style="height: 220px;"></div>
+                          <div class="text-muted small mt-2">Optical RX history for the selected window.</div>
+                        </div>
 			                  <div class="text-muted small mt-1" data-surv-range-label="level2"></div>
 				                  <div class="mt-3" data-surv-timeline-wrap="level2">
 				                    <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
@@ -4781,13 +4793,230 @@
 	      });
 	    };
 
-		    const renderChart = async (chartEl, pppoe, windowKey, chartsState, stageKey = "under") => {
-		      if (!chartEl) return;
-		      chartEl.innerHTML = "<div class='text-muted'>Loading…</div>";
-		      if (chartsState.chart) {
-		        try { chartsState.chart.destroy(); } catch (e) {}
-		        chartsState.chart = null;
-		      }
+        const parsePingSeriesPoints = (series) => (series || []).map((row) => {
+          const ts = row && row.ts ? Date.parse(String(row.ts)) : NaN;
+          if (!Number.isFinite(ts)) return null;
+          return {
+            x: ts,
+            loss: row.loss === null || row.loss === undefined ? null : Number(row.loss),
+            avg_ms: row.avg_ms === null || row.avg_ms === undefined ? null : Number(row.avg_ms),
+          };
+        }).filter(Boolean);
+
+        const parseOpticalSeriesPoints = (series) => (series || []).map((row) => {
+          const ts = row && row.ts ? Date.parse(String(row.ts)) : NaN;
+          if (!Number.isFinite(ts)) return null;
+          const rx = row.rx === null || row.rx === undefined ? null : Number(row.rx);
+          return {
+            x: ts,
+            rx: Number.isFinite(rx) ? rx : null,
+          };
+        }).filter(Boolean);
+
+        const buildOpticalAxis = (series, { showLabels = false, opposite = false } = {}) => {
+          const values = (series || []).map((point) => Number(point.y)).filter((value) => Number.isFinite(value));
+          let min = -30;
+          let max = -10;
+          if (values.length) {
+            min = Math.floor(Math.min(...values) - 1);
+            max = Math.ceil(Math.max(...values) + 1);
+            if ((max - min) < 4) {
+              min -= 2;
+              max += 2;
+            }
+          }
+          return {
+            seriesName: "Optical RX (dBm)",
+            opposite: !!opposite,
+            show: !!showLabels,
+            min,
+            max,
+            tickAmount: 4,
+            title: showLabels ? { text: "dBm" } : { text: "" },
+            labels: showLabels
+              ? { formatter: (v) => { const n = Number(v); return Number.isFinite(n) ? n.toFixed(1) : ""; } }
+              : { show: false },
+            axisBorder: { show: !!showLabels },
+            axisTicks: { show: !!showLabels },
+          };
+        };
+
+        const setChartMessage = (el, text, { height = null, small = false } = {}) => {
+          if (!el) return;
+          el.innerHTML = "";
+          const msg = document.createElement("div");
+          msg.className = small ? "text-muted small" : "text-muted";
+          if (height) {
+            msg.style.height = `${height}px`;
+            msg.classList.add("d-flex", "align-items-center", "justify-content-center", "text-center");
+          }
+          msg.textContent = text;
+          el.appendChild(msg);
+        };
+
+        const createLatencyLossChart = (el, pingSeries, { height = 300, sparkline = false } = {}) => {
+          if (!el || !window.ApexCharts) return null;
+          const pingPoints = parsePingSeriesPoints(pingSeries);
+          if (!pingPoints.length) return null;
+
+          const latency = pingPoints.map((point) => ({ x: point.x, y: point.avg_ms }));
+          const loss = pingPoints.map((point) => ({ x: point.x, y: point.loss }));
+          const options = sparkline
+            ? {
+                chart: { type: "line", height: height, sparkline: { enabled: true }, animations: { enabled: false } },
+                stroke: { width: 2 },
+                markers: { size: 0 },
+                series: [
+                  { name: "Latency (ms)", data: latency },
+                  { name: "Loss (%)", data: loss },
+                ],
+                colors: ["#206bc4", "#d63939"],
+                tooltip: { enabled: false },
+              }
+            : {
+                chart: { type: "line", height: height, toolbar: { show: false }, zoom: { enabled: false } },
+                stroke: { width: 2 },
+                markers: { size: 0 },
+                series: [
+                  { name: "Latency (ms)", data: latency },
+                  { name: "Loss (%)", data: loss },
+                ],
+                colors: ["#206bc4", "#d63939"],
+                xaxis: { type: "datetime" },
+                yaxis: [
+                  {
+                    title: { text: "ms" },
+                    tickAmount: 4,
+                    labels: { formatter: (v) => { const n = Number(v); return Number.isFinite(n) ? n.toFixed(1) : ""; } },
+                  },
+                  {
+                    opposite: true,
+                    min: 0,
+                    max: 100,
+                    tickAmount: 5,
+                    title: { text: "%" },
+                    labels: { formatter: (v) => { const n = Number(v); return Number.isFinite(n) ? n.toFixed(0) : ""; } },
+                  },
+                ],
+                tooltip: {
+                  shared: true,
+                  intersect: false,
+                  x: { formatter: (value) => formatTsPHT(value) },
+                },
+                grid: { strokeDashArray: 4 },
+                legend: { position: "top" },
+              };
+          const chart = new window.ApexCharts(el, options);
+          chart.render();
+          return chart;
+        };
+
+        const createOpticalRxChart = (el, opticalSeries, { height = 220, sparkline = false } = {}) => {
+          if (!el || !window.ApexCharts) return null;
+          const opticalPoints = parseOpticalSeriesPoints(opticalSeries);
+          if (!opticalPoints.length) return null;
+
+          const optical = opticalPoints.map((point) => ({ x: point.x, y: point.rx }));
+          const values = optical.map((point) => Number(point.y)).filter((value) => Number.isFinite(value));
+          const fallbackMin = Number.isFinite(window.opticalChartMin) ? Number(window.opticalChartMin) : -35;
+          const fallbackMax = Number.isFinite(window.opticalChartMax) ? Number(window.opticalChartMax) : -10;
+          let min = fallbackMin;
+          let max = fallbackMax;
+          if (values.length) {
+            min = Math.floor(Math.min(...values) - 1);
+            max = Math.ceil(Math.max(...values) + 1);
+            if ((max - min) < 4) {
+              min -= 2;
+              max += 2;
+            }
+          }
+          const options = sparkline
+            ? {
+                chart: { type: "line", height: height, sparkline: { enabled: true }, animations: { enabled: false } },
+                stroke: { width: 2 },
+                markers: { size: 0 },
+                series: [{ name: "Optical RX (dBm)", data: optical }],
+                colors: ["#f59f00"],
+                tooltip: { enabled: false },
+              }
+            : {
+                chart: { type: "line", height: height, toolbar: { show: false }, zoom: { enabled: false } },
+                stroke: { width: 2 },
+                markers: { size: 0 },
+                series: [{ name: "Optical RX (dBm)", data: optical }],
+                colors: ["#f59f00"],
+                xaxis: { type: "datetime" },
+                yaxis: {
+                  min: min,
+                  max: max,
+                  tickAmount: 5,
+                  title: { text: "dBm" },
+                  labels: { formatter: (value) => `${Number(value).toFixed(1)} dBm` },
+                },
+                tooltip: {
+                  shared: true,
+                  intersect: false,
+                  x: { formatter: (value) => formatTsPHT(value) },
+                  y: {
+                    formatter: (value) => {
+                      if (value === null || value === undefined || Number.isNaN(Number(value))) return "n/a";
+                      return `${Number(value).toFixed(2)} dBm`;
+                    },
+                  },
+                },
+                grid: { strokeDashArray: 4 },
+                legend: { position: "top" },
+              };
+          const chart = new window.ApexCharts(el, options);
+          chart.render();
+          return chart;
+        };
+
+        const destroySplitCharts = (chartsState, chartEl = null, opticalChartEl = null) => {
+          if (chartsState.chart) {
+            try { chartsState.chart.destroy(); } catch (e) {}
+            chartsState.chart = null;
+          }
+          if (chartsState.opticalChart) {
+            try { chartsState.opticalChart.destroy(); } catch (e) {}
+            chartsState.opticalChart = null;
+          }
+          if (chartEl) chartEl.innerHTML = "";
+          if (opticalChartEl) opticalChartEl.innerHTML = "";
+        };
+
+        const renderChartsFromPayload = (chartEl, opticalChartEl, payload, chartsState, { chartHeight = 300, opticalHeight = 220 } = {}) => {
+          if (chartEl) {
+            try {
+              chartEl.innerHTML = "";
+              chartsState.chart = createLatencyLossChart(chartEl, payload.series || [], { height: chartHeight });
+            } catch (err) {
+              chartsState.chart = null;
+              if (window.console && console.error) console.error("surveillance latency chart init failed", err);
+            }
+            if (!chartsState.chart) {
+              setChartMessage(chartEl, "No latency/loss data available.", { height: chartHeight });
+            }
+          }
+          if (opticalChartEl) {
+            try {
+              opticalChartEl.innerHTML = "";
+              chartsState.opticalChart = createOpticalRxChart(opticalChartEl, ((payload.optical || {}).series || []), { height: opticalHeight });
+            } catch (err) {
+              chartsState.opticalChart = null;
+              if (window.console && console.error) console.error("surveillance optical chart init failed", err);
+            }
+            if (!chartsState.opticalChart) {
+              setChartMessage(opticalChartEl, "No optical RX data available.", { height: opticalHeight });
+            }
+          }
+        };
+
+		    const renderChart = async (chartEl, opticalChartEl, pppoe, windowKey, chartsState, stageKey = "under") => {
+		      if (!chartEl && !opticalChartEl) return;
+          destroySplitCharts(chartsState);
+          if (chartEl) setChartMessage(chartEl, "Loading...", { height: 300 });
+          if (opticalChartEl) setChartMessage(opticalChartEl, "Loading...", { height: 220 });
 		      try {
 		        if (!window.ApexCharts) throw new Error("ApexCharts not loaded");
 		        const key = normalizeWindowKey(windowKey);
@@ -4805,65 +5034,19 @@
 		          window_key: String(payload.window_key || key),
 		        };
 		        setRangeLabel(chartsState.key || "", sinceIso, untilIso);
-		        const points = (payload.series || []).map((row) => {
-		          const ts = row.ts ? Date.parse(String(row.ts)) : NaN;
-		          if (!Number.isFinite(ts)) return null;
-		          return {
-		            x: ts,
-		            loss: row.loss === null || row.loss === undefined ? null : Number(row.loss),
-		            avg_ms: row.avg_ms === null || row.avg_ms === undefined ? null : Number(row.avg_ms),
-		          };
-		        }).filter(Boolean);
-		        if (!points.length) throw new Error("no data");
-		        const latency = points.map((p) => ({ x: p.x, y: p.avg_ms }));
-		        const loss = points.map((p) => ({ x: p.x, y: p.loss }));
-		        chartEl.innerHTML = "";
-		        chartsState.chart = new window.ApexCharts(chartEl, {
-		          chart: { type: "line", height: 300, toolbar: { show: false }, zoom: { enabled: false } },
-		          stroke: { width: 2 },
-		          markers: { size: 0 },
-		          series: [
-		            { name: "Latency (ms)", data: latency },
-		            { name: "Loss (%)", data: loss },
-		          ],
-		          colors: ["#206bc4", "#d63939"],
-		          xaxis: { type: "datetime" },
-		          yaxis: [
-		            {
-		              title: { text: "ms" },
-		              tickAmount: 4,
-			              labels: { formatter: (v) => { const n = Number(v); return Number.isFinite(n) ? n.toFixed(1) : ""; } },
-		            },
-		            {
-		              opposite: true,
-		              min: 0,
-		              max: 100,
-		              tickAmount: 5,
-		              title: { text: "%" },
-			              labels: { formatter: (v) => { const n = Number(v); return Number.isFinite(n) ? n.toFixed(0) : ""; } },
-		            },
-		          ],
-		          tooltip: {
-		            shared: true,
-		            intersect: false,
-		            x: { formatter: (value) => formatTsPHT(value) },
-		          },
-		          grid: { strokeDashArray: 4 },
-		          legend: { position: "top" },
-		        });
-		        chartsState.chart.render();
+            renderChartsFromPayload(chartEl, opticalChartEl, payload, chartsState, { chartHeight: 300, opticalHeight: 220 });
 		      } catch (err) {
-		        chartEl.innerHTML = "<div class='text-muted'>No data available.</div>";
+            if (window.console && console.error) console.error("surveillance latency chart render failed", err);
+            if (chartEl) setChartMessage(chartEl, "No latency/loss data available.", { height: 300 });
+            if (opticalChartEl) setChartMessage(opticalChartEl, "No optical RX data available.", { height: 220 });
 		      }
 		    };
 
-			    const renderChartRange = async (chartEl, pppoe, sinceIso, untilIso, chartsState, stageKey = "under") => {
-	      if (!chartEl) return;
-	      chartEl.innerHTML = "<div class='text-muted'>Loading…</div>";
-	      if (chartsState.chart) {
-	        try { chartsState.chart.destroy(); } catch (e) {}
-	        chartsState.chart = null;
-	      }
+			    const renderChartRange = async (chartEl, opticalChartEl, pppoe, sinceIso, untilIso, chartsState, stageKey = "under") => {
+	      if (!chartEl && !opticalChartEl) return;
+          destroySplitCharts(chartsState);
+          if (chartEl) setChartMessage(chartEl, "Loading...", { height: 300 });
+          if (opticalChartEl) setChartMessage(opticalChartEl, "Loading...", { height: 220 });
 		      try {
 		        if (!window.ApexCharts) throw new Error("ApexCharts not loaded");
 		        setRangeLabel(chartsState.key || "", sinceIso, untilIso);
@@ -4877,55 +5060,11 @@
 		          stage: String(stageKey || "under"),
 		          window_key: "timeline_day",
 		        };
-	        const points = (payload.series || []).map((row) => {
-	          const ts = row.ts ? Date.parse(String(row.ts)) : NaN;
-	          if (!Number.isFinite(ts)) return null;
-	          return {
-	            x: ts,
-	            loss: row.loss === null || row.loss === undefined ? null : Number(row.loss),
-	            avg_ms: row.avg_ms === null || row.avg_ms === undefined ? null : Number(row.avg_ms),
-	          };
-	        }).filter(Boolean);
-	        if (!points.length) throw new Error("no data");
-	        const latency = points.map((p) => ({ x: p.x, y: p.avg_ms }));
-	        const loss = points.map((p) => ({ x: p.x, y: p.loss }));
-	        chartEl.innerHTML = "";
-		        chartsState.chart = new window.ApexCharts(chartEl, {
-		          chart: { type: "line", height: 300, toolbar: { show: false }, zoom: { enabled: false } },
-		          stroke: { width: 2 },
-		          markers: { size: 0 },
-	          series: [
-	            { name: "Latency (ms)", data: latency },
-	            { name: "Loss (%)", data: loss },
-	          ],
-	          colors: ["#206bc4", "#d63939"],
-		          xaxis: { type: "datetime" },
-		          yaxis: [
-		            {
-		              title: { text: "ms" },
-		              tickAmount: 4,
-			              labels: { formatter: (v) => { const n = Number(v); return Number.isFinite(n) ? n.toFixed(1) : ""; } },
-		            },
-		            {
-		              opposite: true,
-		              min: 0,
-		              max: 100,
-		              tickAmount: 5,
-		              title: { text: "%" },
-			              labels: { formatter: (v) => { const n = Number(v); return Number.isFinite(n) ? n.toFixed(0) : ""; } },
-		            },
-		          ],
-		          tooltip: {
-		            shared: true,
-		            intersect: false,
-		            x: { formatter: (value) => formatTsPHT(value) },
-	          },
-	          grid: { strokeDashArray: 4 },
-	          legend: { position: "top" },
-	        });
-	        chartsState.chart.render();
+          renderChartsFromPayload(chartEl, opticalChartEl, payload, chartsState, { chartHeight: 300, opticalHeight: 220 });
 	      } catch (err) {
-	        chartEl.innerHTML = "<div class='text-muted'>No data available.</div>";
+          if (window.console && console.error) console.error("surveillance latency chart range render failed", err);
+          if (chartEl) setChartMessage(chartEl, "No latency/loss data available.", { height: 300 });
+          if (opticalChartEl) setChartMessage(opticalChartEl, "No optical RX data available.", { height: 220 });
 	      }
 		    };
 
@@ -4941,20 +5080,26 @@
 			      return formatDuration(seconds);
 			    };
 
-				    const computeHealthScore = (stats) => {
+				    const computeHealthScore = (stats, thresholds = null) => {
 				      if (!stats) return null;
 				      const uptime = Number.isFinite(stats.uptime_pct) ? Number(stats.uptime_pct) : 0;
 				      const loss = Number.isFinite(stats.avg_loss_pct) ? Number(stats.avg_loss_pct) : 0;
 				      const latency = Number.isFinite(stats.avg_latency_ms) ? Number(stats.avg_latency_ms) : 0;
 				      const downtimeSeconds = Number.isFinite(stats.downtime_seconds) ? Number(stats.downtime_seconds) : Number(stats.loss100_seconds || 0);
 				      const downtimeHours = downtimeSeconds / 3600.0;
-				      // Higher score is healthier. Heavily penalize 100% loss time.
-				      return uptime - (loss * 1.5) - (Math.min(latency, 200) / 10.0) - (downtimeHours * 5.0);
+              const opticalGoal = asNumberOrNull((thresholds || {}).optical_rx_min_dbm);
+              const opticalLatest = Number.isFinite(stats.latest_optical_rx_dbm) ? Number(stats.latest_optical_rx_dbm) : null;
+              const opticalWorst = Number.isFinite(stats.worst_optical_rx_dbm) ? Number(stats.worst_optical_rx_dbm) : opticalLatest;
+              let score = uptime - (loss * 1.5) - (Math.min(latency, 200) / 10.0) - (downtimeHours * 5.0);
+              if (opticalGoal !== null && opticalWorst !== null && opticalWorst < opticalGoal) {
+                score -= Math.min(Math.abs(opticalGoal - opticalWorst) * 8.0, 25.0);
+              }
+				      return score;
 				    };
 
-			    const trendForStats = (prev, cur) => {
-			      const a = computeHealthScore(prev);
-			      const b = computeHealthScore(cur);
+			    const trendForStats = (prev, cur, thresholds = null) => {
+			      const a = computeHealthScore(prev, thresholds);
+			      const b = computeHealthScore(cur, thresholds);
 			      if (a === null || b === null) return "flat";
 			      const diff = b - a;
 			      if (diff > 1.0) return "up";
@@ -5009,11 +5154,14 @@
 			      const thrLossEvents = asNumberOrNull(thr.loss_event_max_count);
 			      const thrLatency = asNumberOrNull(thr.latency_max_ms);
 			      const thrUptime = asNumberOrNull(thr.uptime_threshold_pct);
+            const thrOptical = asNumberOrNull(thr.optical_rx_min_dbm);
+            const requireOptical = !!thr.require_optical;
 
 			      const lossTimeSec = asNumberOrNull(stats?.downtime_seconds);
 			      const lossEvents = asNumberOrNull(stats?.loss_events);
 			      const latency = asNumberOrNull(stats?.avg_latency_ms);
 			      const uptime = asNumberOrNull(stats?.uptime_pct);
+            const opticalRx = asNumberOrNull(stats?.latest_optical_rx_dbm);
 			      const lossTimeState =
 			        lossTimeSec === null
 			          ? "na"
@@ -5024,6 +5172,10 @@
 			          : (thrLossEvents !== null && lossEvents <= thrLossEvents ? "pass" : "warn");
 			      const latencyState = latency === null ? "na" : (thrLatency !== null && latency <= thrLatency ? "pass" : "warn");
 			      const uptimeState = uptime === null ? "na" : (thrUptime !== null && uptime >= thrUptime ? "pass" : "warn");
+            const opticalState =
+              opticalRx === null
+                ? (requireOptical ? "warn" : "na")
+                : (thrOptical !== null && opticalRx >= thrOptical ? "pass" : "warn");
 
 			      const makeKpi = (label, valueText, state, helpText) => {
 			        const col = document.createElement("div");
@@ -5054,12 +5206,14 @@
 			      const lossEventsTxt = lossEvents === null ? "—" : `${Math.round(lossEvents)}`;
 			      const latencyTxt = latency === null ? "—" : `${latency.toFixed(1)}ms`;
 			      const uptimeTxt = uptime === null ? "—" : `${uptime.toFixed(1)}%`;
+            const opticalTxt = opticalRx === null ? "—" : `${opticalRx.toFixed(2)} dBm`;
 
 				      return [
 				        makeKpi("Loss Time", lossTimeTxt, lossTimeState, thrLossMinutes !== null ? `Goal: ≤ ${thrLossMinutes}m` : ""),
 				        makeKpi("Loss Events", lossEventsTxt, lossEventsState, thrLossEvents !== null ? `Goal: ≤ ${Math.round(thrLossEvents)} events` : ""),
 				        makeKpi("Latency", latencyTxt, latencyState, thrLatency !== null ? `Goal: ≤ ${thrLatency}ms` : ""),
 				        makeKpi("Uptime", uptimeTxt, uptimeState, thrUptime !== null ? `Goal: ≥ ${thrUptime}%` : ""),
+                makeKpi("Optical RX", opticalTxt, opticalState, thrOptical !== null ? `Goal: ≥ ${thrOptical} dBm` : ""),
 				      ];
 				    };
 
@@ -5070,39 +5224,24 @@
 				      const lossEvents = Number.isFinite(stats.loss_events) ? `${Math.round(stats.loss_events)} events` : "n/a events";
 				      const down = formatFullLossTime(downtimeSeconds);
 				      const latency = Number.isFinite(stats.avg_latency_ms) ? `${stats.avg_latency_ms.toFixed(1)}ms avg` : "n/a avg";
+              const opticalLatest = Number.isFinite(stats.latest_optical_rx_dbm) ? `${stats.latest_optical_rx_dbm.toFixed(2)}dBm latest` : "n/a latest";
+              const opticalWorst = Number.isFinite(stats.worst_optical_rx_dbm) ? `${stats.worst_optical_rx_dbm.toFixed(2)}dBm worst` : "";
+              const optical = `RX ${opticalLatest}${opticalWorst ? ` / ${opticalWorst}` : ""}`;
 				      const up = Number.isFinite(stats.uptime_pct) ? `${stats.uptime_pct.toFixed(1)}% uptime` : "n/a uptime";
-				      return `${lossAvg} · Loss time ${down} · ${lossEvents} · ${latency} · ${up}`;
+				      return `${lossAvg} · Loss time ${down} · ${lossEvents} · ${latency} · ${optical} · ${up}`;
 				    };
 
 			    const renderMiniChart = (el, series, height = 70) => {
 			      if (!el || !window.ApexCharts) return null;
-			      const points = (series || []).map((row) => {
-			        const ts = row.ts ? Date.parse(String(row.ts)) : NaN;
-			        if (!Number.isFinite(ts)) return null;
-		        return {
-		          x: ts,
-		          loss: row.loss === null || row.loss === undefined ? null : Number(row.loss),
-		          avg_ms: row.avg_ms === null || row.avg_ms === undefined ? null : Number(row.avg_ms),
-		        };
-		      }).filter(Boolean);
-			      const latency = points.map((p) => ({ x: p.x, y: p.avg_ms }));
-			      const loss = points.map((p) => ({ x: p.x, y: p.loss }));
-			      const chart = new window.ApexCharts(el, {
-			        chart: { type: "line", height: height, sparkline: { enabled: true }, animations: { enabled: false } },
-			        stroke: { width: 2 },
-			        markers: { size: 0 },
-			        series: [
-			          { name: "Latency (ms)", data: latency },
-		          { name: "Loss (%)", data: loss },
-		        ],
-		        colors: ["#206bc4", "#d63939"],
-		        tooltip: { enabled: false },
-		      });
-		      chart.render();
-			      return chart;
+            return createLatencyLossChart(el, series, { height: height, sparkline: true });
 			    };
 
-			    const renderTimelineCards = (containerEl, key, pppoe, payload, chartEl, windowBtn, chartsState, opts = {}) => {
+			    const renderOpticalMiniChart = (el, opticalSeries, height = 64) => {
+			      if (!el || !window.ApexCharts) return null;
+            return createOpticalRxChart(el, opticalSeries, { height: height, sparkline: true });
+			    };
+
+			    const renderTimelineCards = (containerEl, key, pppoe, payload, chartEl, opticalChartEl, windowBtn, chartsState, opts = {}) => {
 			      if (!containerEl) return;
 			      const days = payload.days || [];
 			      const miniHeight = Number.isFinite(opts.miniHeight) ? opts.miniHeight : 70;
@@ -5173,7 +5312,7 @@
 			        const availableDays = (days || []).filter((d) => d && d.kind !== "future" && d.stats);
 			        const last = availableDays.length ? availableDays[availableDays.length - 1] : null;
 			        const prev = availableDays.length > 1 ? availableDays[availableDays.length - 2] : null;
-			        const overallTrend = prev && last ? trendForStats(prev.stats, last.stats) : "flat";
+			        const overallTrend = prev && last ? trendForStats(prev.stats, last.stats, chartsState.thresholds) : "flat";
 
 			        const wrap = document.createElement("div");
 			        wrap.className = "card card-sm";
@@ -5224,17 +5363,50 @@
 				            actions.appendChild(b);
 				          } else {
 				            const prevDay = (days || []).find((d) => Number(d.index) === idx - 1 && d && d.stats);
-				            const trend = (prevDay && prevDay.stats && day.stats) ? trendForStats(prevDay.stats, day.stats) : "flat";
+				            const trend = (prevDay && prevDay.stats && day.stats) ? trendForStats(prevDay.stats, day.stats, chartsState.thresholds) : "flat";
 				            actions.appendChild(makeTrendBadge(trend));
 				          }
 				        }
 
-			        const chartWrap = document.createElement("div");
-			        chartWrap.className = "mt-1";
-			        const chartElMini = document.createElement("div");
-			        chartElMini.style.height = `${miniHeight}px`;
-			        chartWrap.appendChild(chartElMini);
-			        body.appendChild(chartWrap);
+              if (kind !== "future") {
+                const pingLabel = document.createElement("div");
+                pingLabel.className = "text-muted text-uppercase small mt-2";
+                pingLabel.textContent = "Latency / Ping";
+                body.appendChild(pingLabel);
+
+                const pingChartWrap = document.createElement("div");
+                pingChartWrap.className = "mt-1";
+                const pingChartElMini = document.createElement("div");
+                pingChartElMini.style.height = `${miniHeight}px`;
+                pingChartWrap.appendChild(pingChartElMini);
+                body.appendChild(pingChartWrap);
+
+                const opticalLabel = document.createElement("div");
+                opticalLabel.className = "text-muted text-uppercase small mt-2";
+                opticalLabel.textContent = "Optical RX";
+                body.appendChild(opticalLabel);
+
+                const opticalChartWrap = document.createElement("div");
+                opticalChartWrap.className = "mt-1";
+                const opticalChartElMini = document.createElement("div");
+                opticalChartElMini.style.height = `${miniHeight}px`;
+                opticalChartWrap.appendChild(opticalChartElMini);
+                body.appendChild(opticalChartWrap);
+
+                const pingChart = renderMiniChart(pingChartElMini, day.series || [], miniHeight);
+                if (pingChart) {
+                  chartsList.push(pingChart);
+                } else {
+                  setChartMessage(pingChartElMini, "No latency/loss data.", { height: miniHeight, small: true });
+                }
+
+                const opticalChart = renderOpticalMiniChart(opticalChartElMini, ((day.optical || {}).series || []), miniHeight);
+                if (opticalChart) {
+                  chartsList.push(opticalChart);
+                } else {
+                  setChartMessage(opticalChartElMini, "No optical RX data.", { height: miniHeight, small: true });
+                }
+              }
 
 			        const statsEl = document.createElement("div");
 			        statsEl.className = "text-muted small mt-1";
@@ -5245,11 +5417,6 @@
 				        }
 			        body.appendChild(statsEl);
 
-			        if (kind !== "future") {
-			          const c = renderMiniChart(chartElMini, day.series || [], miniHeight);
-			          if (c) chartsList.push(c);
-			        }
-
 				        if (kind !== "future" && enableDaySelect) {
 				          card.style.cursor = "pointer";
 				          card.addEventListener("click", async () => {
@@ -5257,7 +5424,7 @@
 				            setActiveCard(idx);
 				            setWindowLabel(windowBtn, `${day.label} · ${dateLabel}`);
 				            setTimelineOverride(key, windowBtn, true);
-				            await renderChartRange(chartEl, pppoe, day.start_iso, day.until_iso, chartsState, key);
+				            await renderChartRange(chartEl, opticalChartEl, pppoe, day.start_iso, day.until_iso, chartsState, key);
 				          });
 				        }
 
@@ -5267,7 +5434,7 @@
 			      setActiveCard(selectedDay);
 			    };
 
-					    const renderTimeline = async (timelineEl, key, pppoe, chartEl, windowBtn, chartsState, panelEl = null) => {
+					    const renderTimeline = async (timelineEl, key, pppoe, chartEl, opticalChartEl, windowBtn, chartsState, panelEl = null) => {
 					      if (!timelineEl) return;
 					      destroyMiniCharts(chartsState);
 					      timelineEl.innerHTML = "<div class='text-muted small'>Loading…</div>";
@@ -5290,8 +5457,8 @@
 	                  if (panelEl) windowKey = applyWindowAvailability(panelEl, windowKey);
 	                  setStoredWindowKey(windowKey);
 					          setWindowLabel(windowBtn, windowKey);
-					          await renderChart(chartEl, pppoe, windowKey, chartsState, key);
-					          await renderTimeline(timelineEl, key, pppoe, chartEl, windowBtn, chartsState, panelEl);
+					          await renderChart(chartEl, opticalChartEl, pppoe, windowKey, chartsState, key);
+					          await renderTimeline(timelineEl, key, pppoe, chartEl, opticalChartEl, windowBtn, chartsState, panelEl);
 					        };
 				        renderTimelineCards(
 				          timelineEl,
@@ -5299,6 +5466,7 @@
 				          pppoe,
 				          payload,
 				          chartEl,
+                  opticalChartEl,
 				          windowBtn,
 				          chartsState,
 				          { miniHeight: 70, chartsList: chartsState.miniCharts, enableDaySelect: true, selectedDay: active, totalEl: totalEl, onClear: onClear }
@@ -5404,6 +5572,7 @@
 					            pppoe,
 					            payload,
 					            null,
+                      null,
 					            null,
 					            chartsState,
 					            { miniHeight: 64, chartsList: chartsState.prevMiniCharts, enableDaySelect: false, selectedDay: NaN, totalEl: cycleTotalEl, onClear: null }
@@ -5432,11 +5601,13 @@
 	      if (!tableView || !splitView || !list || !panel || !fullTable) return;
 
 				      const chartIds = { under: "surv-under-chart", level2: "surv-level2-chart", observe: "surv-observe-chart" };
+              const opticalChartIds = { under: "surv-under-optical-chart", level2: "surv-level2-optical-chart", observe: "surv-observe-optical-chart" };
 				      const chartEl = document.getElementById(chartIds[key] || "surv-under-chart");
+              const opticalChartEl = document.getElementById(opticalChartIds[key] || "surv-under-optical-chart");
 				      const windowBtn = document.querySelector(`[data-surv-window-btn="${key}"]`);
 				      const timelineEl = splitView.querySelector(`[data-surv-timeline="${key}"]`);
 				      const prevTimelineEl = splitView.querySelector(`[data-surv-prev-timeline="${key}"]`);
-					      const chartsState = { chart: null, miniCharts: [], prevMiniCharts: [], key: key, timelineSelected: null, thresholds: null, lastWindow: null };
+					      const chartsState = { chart: null, opticalChart: null, miniCharts: [], prevMiniCharts: [], key: key, timelineSelected: null, thresholds: null, lastWindow: null };
 				      if (key === "under") window.__survChartsUnder = chartsState;
 				      if (key === "level2") window.__survChartsLevel2 = chartsState;
 				      if (key === "observe") window.__survChartsObserve = chartsState;
@@ -5446,11 +5617,7 @@
 	      };
 
 	      const destroyChart = () => {
-	        if (chartsState.chart) {
-	          try { chartsState.chart.destroy(); } catch (e) {}
-	          chartsState.chart = null;
-	        }
-	        if (chartEl) chartEl.innerHTML = "";
+          destroySplitCharts(chartsState, chartEl, opticalChartEl);
 	      };
 
 			      const applySelection = async (rowEl, { scrollIntoView } = {}) => {
@@ -5614,14 +5781,16 @@
 			            latency_max_ms: asNumberOrNull(panel.getAttribute("data-thr-latency")),
 			            loss_max_minutes: asNumberOrNull(panel.getAttribute("data-thr-loss-minutes")),
 			            loss_event_max_count: asNumberOrNull(panel.getAttribute("data-thr-loss-events")),
+                    optical_rx_min_dbm: asNumberOrNull(panel.getAttribute("data-thr-optical")),
+                    require_optical: panel.getAttribute("data-require-optical") === "1",
 			          };
 			        }
 				        let windowKey = getDefaultWindowKey(panel);
               windowKey = applyWindowAvailability(panel, windowKey);
 				        setStoredWindowKey(windowKey);
 				        setWindowLabel(windowBtn, windowKey);
-				        await renderChart(chartEl, pppoe, windowKey, chartsState, key);
-				        await renderTimeline(timelineEl, key, pppoe, chartEl, windowBtn, chartsState, panel);
+				        await renderChart(chartEl, opticalChartEl, pppoe, windowKey, chartsState, key);
+				        await renderTimeline(timelineEl, key, pppoe, chartEl, opticalChartEl, windowBtn, chartsState, panel);
 				        await renderPreviousTimeline(prevTimelineEl, key, pppoe, chartsState, panel);
 			      };
 
@@ -6168,8 +6337,8 @@
 				          setWindowLabel(windowBtn, windowKey);
 				          const selected = list.querySelector("tr.surv-row.table-active") || list.querySelector("tr.surv-row");
 				          if (!selected) return;
-				          await renderChart(chartEl, selected.getAttribute("data-pppoe") || "", windowKey, chartsState, key);
-				          await renderTimeline(timelineEl, key, selected.getAttribute("data-pppoe") || "", chartEl, windowBtn, chartsState, panel);
+				          await renderChart(chartEl, opticalChartEl, selected.getAttribute("data-pppoe") || "", windowKey, chartsState, key);
+				          await renderTimeline(timelineEl, key, selected.getAttribute("data-pppoe") || "", chartEl, opticalChartEl, windowBtn, chartsState, panel);
 				        });
 				      });
 
