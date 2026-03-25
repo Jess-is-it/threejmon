@@ -203,7 +203,7 @@ jobs_manager = JobsManager()
 _cpu_sample = {"total": None, "idle": None, "at": 0.0, "pct": 0.0}
 _dashboard_kpis_cache_lock = threading.Lock()
 _dashboard_kpis_cache = {"at": 0.0, "data": None}
-_DASHBOARD_KPI_CACHE_SECONDS = 20
+_DASHBOARD_KPI_CACHE_SECONDS = 120
 _surveillance_checker_cache_lock = threading.Lock()
 _surveillance_checker_cache = {"at": 0.0, "key": None, "data": {}, "refreshing": False}
 _surveillance_checker_compute_lock = threading.Lock()
@@ -5666,7 +5666,7 @@ def _build_dashboard_kpis(job_status):
         tx_real_min = float(classification.get("tx_realistic_min_dbm", -10.0) or -10.0)
         tx_real_max = float(classification.get("tx_realistic_max_dbm", 10.0) or 10.0)
         since_iso = (now - timedelta(hours=48)).replace(microsecond=0).isoformat() + "Z"
-        latest = get_optical_latest_results_since(since_iso)
+        latest = get_optical_latest_results_since(since_iso, apply_tx_fallback=False)
         issue_rx_count = 0
         issue_tx_count = 0
         priority_count = 0

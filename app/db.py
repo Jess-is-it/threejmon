@@ -3603,7 +3603,7 @@ def get_accounts_ping_window_stats_by_ip(account_ids, since_iso):
         conn.close()
 
 
-def get_optical_latest_results_since(since_iso):
+def get_optical_latest_results_since(since_iso, apply_tx_fallback=True):
     rows = []
     conn = get_conn()
     try:
@@ -3635,7 +3635,9 @@ def get_optical_latest_results_since(since_iso):
                 (since_iso,),
             ).fetchall()
             rows = [dict(row) for row in rows]
-        return _apply_optical_tx_fallback(rows)
+        if apply_tx_fallback:
+            return _apply_optical_tx_fallback(rows)
+        return rows
     finally:
         conn.close()
 
