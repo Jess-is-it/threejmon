@@ -32,6 +32,8 @@ AUTH_DEFAULT_PERMISSIONS = [
     {"code": "optical.edit", "label": "Optical Edit", "description": "Edit optical settings and run checks."},
     {"code": "accounts_ping.view", "label": "Accounts Ping View", "description": "View Accounts Ping page and data."},
     {"code": "accounts_ping.edit", "label": "Accounts Ping Edit", "description": "Edit Accounts Ping settings and actions."},
+    {"code": "accounts_missing.view", "label": "Accounts Missing View", "description": "View Accounts Missing page and missing-account tracking."},
+    {"code": "accounts_missing.edit", "label": "Accounts Missing Edit", "description": "Edit Accounts Missing settings and actions."},
     {"code": "usage.view", "label": "Usage View", "description": "View Usage page and usage status."},
     {"code": "usage.edit", "label": "Usage Edit", "description": "Edit Usage settings and collectors."},
     {"code": "offline.view", "label": "Offline View", "description": "View Offline page and history."},
@@ -92,6 +94,15 @@ AUTH_DEFAULT_PERMISSIONS = [
     {"code": "accounts_ping.settings.danger.run", "label": "Accounts Ping · Settings · Danger", "description": "Run accounts ping destructive format actions."},
     {"code": "accounts_ping.action.test_source.run", "label": "Accounts Ping · Test Data Source", "description": "Run Accounts Ping source and connectivity test actions."},
     {"code": "accounts_ping.action.run_now.run", "label": "Accounts Ping · Run Now", "description": "Run accounts ping collection manually."},
+    {"code": "accounts_missing.tab.status.view", "label": "Accounts Missing · Status Tab", "description": "View accounts missing status tab and table."},
+    {"code": "accounts_missing.tab.settings.view", "label": "Accounts Missing · Settings Tab", "description": "View accounts missing settings tab."},
+    {"code": "accounts_missing.table.details.view", "label": "Accounts Missing · View Account Data", "description": "View the account data modal in Accounts Missing."},
+    {"code": "accounts_missing.action.delete.run", "label": "Accounts Missing · Delete Account Data", "description": "Permanently delete account data across all modules from Accounts Missing."},
+    {"code": "accounts_missing.action.bulk.edit", "label": "Accounts Missing · Bulk Delete", "description": "Use multi-select bulk deletion in Accounts Missing."},
+    {"code": "accounts_missing.action.test_source.run", "label": "Accounts Missing · Test Data Source", "description": "Run Accounts Missing router source connectivity test actions."},
+    {"code": "accounts_missing.settings.general.edit", "label": "Accounts Missing · Settings · General", "description": "Edit Accounts Missing general settings."},
+    {"code": "accounts_missing.settings.source.edit", "label": "Accounts Missing · Settings · Source", "description": "Edit Accounts Missing MikroTik router source settings."},
+    {"code": "accounts_missing.settings.auto_delete.edit", "label": "Accounts Missing · Settings · Auto Delete", "description": "Edit Accounts Missing automatic deletion settings."},
     {"code": "usage.tab.status.view", "label": "Usage · Status Tab", "description": "View usage status tab."},
     {"code": "usage.tab.settings.view", "label": "Usage · Settings Tab", "description": "View usage settings tab."},
     {"code": "usage.status.issues.view", "label": "Usage · Issues Tab", "description": "View usage issues table."},
@@ -1470,6 +1481,18 @@ def clear_offline_history():
         conn.close()
 
 
+def delete_offline_history_for_pppoe(pppoe):
+    pppoe = (pppoe or "").strip()
+    if not pppoe:
+        return
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM offline_history WHERE LOWER(pppoe) = LOWER(?)", (pppoe,))
+    finally:
+        conn.close()
+
+
 def get_json(table, key, default):
     conn = get_conn()
     try:
@@ -1906,6 +1929,42 @@ def get_surveillance_session_by_id(session_id):
             (session_id,),
         ).fetchone()
         return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_recent_surveillance_sessions_for_pppoe(pppoe, limit=10):
+    pppoe = (pppoe or "").strip()
+    limit = max(min(int(limit or 10), 100), 1)
+    if not pppoe:
+        return []
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, pppoe, source, started_at, ended_at, end_reason, end_note,
+                   under_seconds, level2_seconds, observe_seconds,
+                   observed_count, last_state, last_ip, updated_at
+            FROM surveillance_sessions
+            WHERE LOWER(pppoe) = LOWER(?)
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (pppoe, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def delete_surveillance_sessions_for_pppoe(pppoe):
+    pppoe = (pppoe or "").strip()
+    if not pppoe:
+        return
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM surveillance_sessions WHERE LOWER(pppoe) = LOWER(?)", (pppoe,))
     finally:
         conn.close()
 
@@ -3233,6 +3292,27 @@ def delete_auth_audit_logs_by_action_prefix(prefix):
         conn.close()
 
 
+def delete_auth_audit_logs_for_pppoe(pppoe):
+    pppoe = (pppoe or "").strip().lower()
+    if not pppoe:
+        return
+    pattern = f"%{pppoe}%"
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute(
+                """
+                DELETE FROM auth_audit_logs
+                WHERE LOWER(COALESCE(resource, '')) = ?
+                   OR LOWER(COALESCE(resource, '')) LIKE ?
+                   OR LOWER(COALESCE(details, '')) LIKE ?
+                """,
+                (pppoe, pattern, pattern),
+            )
+    finally:
+        conn.close()
+
+
 def insert_accounts_ping_result(
     account_id,
     name,
@@ -3370,6 +3450,51 @@ def delete_accounts_ping_rollups_older_than(cutoff_iso):
     try:
         with conn:
             conn.execute("DELETE FROM accounts_ping_rollups WHERE bucket_ts < ?", (cutoff_iso,))
+    finally:
+        conn.close()
+
+
+def delete_accounts_ping_results_for_pppoe(pppoe, account_ids=None):
+    pppoe = (pppoe or "").strip()
+    account_ids = [str(item).strip() for item in (account_ids or []) if str(item).strip()]
+    if not pppoe and not account_ids:
+        return
+    conn = get_conn()
+    try:
+        with conn:
+            clauses = []
+            params = []
+            if pppoe:
+                clauses.append("LOWER(COALESCE(name, '')) = LOWER(?)")
+                params.append(pppoe)
+            if account_ids:
+                if _use_postgres():
+                    clauses.append("account_id = ANY(?)")
+                    params.append(list(account_ids))
+                else:
+                    placeholders = ",".join("?" for _ in account_ids)
+                    clauses.append(f"account_id IN ({placeholders})")
+                    params.extend(account_ids)
+            conn.execute(
+                f"DELETE FROM accounts_ping_results WHERE {' OR '.join(clauses)}",
+                params,
+            )
+    finally:
+        conn.close()
+
+
+def delete_accounts_ping_rollups_for_account_ids(account_ids):
+    account_ids = [str(item).strip() for item in (account_ids or []) if str(item).strip()]
+    if not account_ids:
+        return
+    conn = get_conn()
+    try:
+        with conn:
+            if _use_postgres():
+                conn.execute("DELETE FROM accounts_ping_rollups WHERE account_id = ANY(?)", (list(account_ids),))
+            else:
+                placeholders = ",".join("?" for _ in account_ids)
+                conn.execute(f"DELETE FROM accounts_ping_rollups WHERE account_id IN ({placeholders})", account_ids)
     finally:
         conn.close()
 
@@ -4115,6 +4240,51 @@ def get_optical_rx_series_for_devices_since(device_ids, since_iso):
         conn.close()
 
 
+def get_optical_series_for_devices_since(device_ids, since_iso):
+    if not device_ids:
+        return {}
+    conn = get_conn()
+    try:
+        if _use_postgres():
+            rows = conn.execute(
+                """
+                SELECT device_id, timestamp, rx, tx
+                FROM optical_results
+                WHERE timestamp >= ? AND device_id = ANY(?)
+                ORDER BY device_id ASC, timestamp ASC
+                """,
+                (since_iso, list(device_ids)),
+            ).fetchall()
+        else:
+            placeholders = ",".join("?" for _ in device_ids)
+            rows = conn.execute(
+                f"""
+                SELECT device_id, timestamp, rx, tx
+                FROM optical_results
+                WHERE timestamp >= ? AND device_id IN ({placeholders})
+                ORDER BY device_id ASC, timestamp ASC
+                """,
+                [since_iso] + list(device_ids),
+            ).fetchall()
+        out = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                row = dict(row)
+            device_id = (row.get("device_id") or "").strip()
+            if not device_id:
+                continue
+            out.setdefault(device_id, []).append(
+                {
+                    "timestamp": row.get("timestamp"),
+                    "rx": row.get("rx"),
+                    "tx": row.get("tx"),
+                }
+            )
+        return out
+    finally:
+        conn.close()
+
+
 def insert_wan_history_row(
     wan_id,
     status,
@@ -4454,6 +4624,45 @@ def clear_optical_results():
         conn.close()
 
 
+def delete_optical_results_for_pppoe(pppoe):
+    pppoe = (pppoe or "").strip()
+    if not pppoe:
+        return
+    conn = get_conn()
+    try:
+        with conn:
+            device_rows = conn.execute(
+                "SELECT DISTINCT device_id FROM optical_results WHERE LOWER(COALESCE(pppoe, '')) = LOWER(?)",
+                (pppoe,),
+            ).fetchall()
+            device_ids = [str(_row_get(row, "device_id", "") or "").strip() for row in (device_rows or [])]
+            device_ids = [item for item in device_ids if item]
+            if device_ids:
+                if _use_postgres():
+                    conn.execute(
+                        """
+                        DELETE FROM optical_results
+                        WHERE LOWER(COALESCE(pppoe, '')) = LOWER(?)
+                           OR device_id = ANY(?)
+                        """,
+                        (pppoe, list(device_ids)),
+                    )
+                else:
+                    placeholders = ",".join("?" for _ in device_ids)
+                    conn.execute(
+                        f"""
+                        DELETE FROM optical_results
+                        WHERE LOWER(COALESCE(pppoe, '')) = LOWER(?)
+                           OR device_id IN ({placeholders})
+                        """,
+                        [pppoe] + device_ids,
+                    )
+            else:
+                conn.execute("DELETE FROM optical_results WHERE LOWER(COALESCE(pppoe, '')) = LOWER(?)", (pppoe,))
+    finally:
+        conn.close()
+
+
 def insert_pppoe_usage_sample(
     timestamp,
     router_id,
@@ -4510,6 +4719,18 @@ def clear_pppoe_usage_samples():
     try:
         with conn:
             conn.execute("DELETE FROM pppoe_usage_samples")
+    finally:
+        conn.close()
+
+
+def delete_pppoe_usage_samples_for_pppoe(pppoe):
+    pppoe = (pppoe or "").strip()
+    if not pppoe:
+        return
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM pppoe_usage_samples WHERE LOWER(pppoe) = LOWER(?)", (pppoe,))
     finally:
         conn.close()
 
@@ -4586,6 +4807,42 @@ def get_pppoe_usage_series_since(router_id, pppoe, since_iso):
                 (pppoe, since_iso),
             ).fetchall()
         return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_latest_pppoe_usage_snapshot(pppoe, router_id=""):
+    pppoe = (pppoe or "").strip()
+    router_id = (router_id or "").strip()
+    if not pppoe:
+        return None
+    conn = get_conn()
+    try:
+        if router_id:
+            row = conn.execute(
+                """
+                SELECT timestamp, router_id, router_name, pppoe, address, session_id, uptime,
+                       bytes_in, bytes_out, host_count, rx_bps, tx_bps
+                FROM pppoe_usage_samples
+                WHERE router_id = ? AND LOWER(pppoe) = LOWER(?)
+                ORDER BY timestamp DESC
+                LIMIT 1
+                """,
+                (router_id, pppoe),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """
+                SELECT timestamp, router_id, router_name, pppoe, address, session_id, uptime,
+                       bytes_in, bytes_out, host_count, rx_bps, tx_bps
+                FROM pppoe_usage_samples
+                WHERE LOWER(pppoe) = LOWER(?)
+                ORDER BY timestamp DESC
+                LIMIT 1
+                """,
+                (pppoe,),
+            ).fetchone()
+        return dict(row) if row else None
     finally:
         conn.close()
 

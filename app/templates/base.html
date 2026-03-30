@@ -10,6 +10,45 @@
   <link rel="stylesheet" href="/static/tabler/css/tabler.min.css" />
   <link rel="stylesheet" href="/static/tabler/css/tabler-icons.min.css" />
   <link rel="stylesheet" href="/static/style.css?v=tabler7" />
+  <style>
+    .input-icon[data-search-clearable] .search-addon-btn {
+      border: 0;
+      background: transparent;
+      color: var(--tblr-muted);
+      cursor: default;
+      pointer-events: auto;
+      transition: color .15s ease, opacity .15s ease;
+    }
+
+    .input-icon[data-search-clearable] .search-addon-btn:disabled {
+      opacity: .8;
+    }
+
+    .input-icon[data-search-clearable][data-has-value="1"] .search-addon-btn {
+      color: var(--tblr-red);
+      cursor: pointer;
+    }
+
+    .input-icon[data-search-clearable][data-has-value="1"] .search-addon-btn:hover,
+    .input-icon[data-search-clearable][data-has-value="1"] .search-addon-btn:focus-visible {
+      color: var(--tblr-red);
+      outline: 0;
+    }
+
+    .nav-link.threej-search-hit-tab {
+      background: color-mix(in srgb, var(--tblr-warning) 10%, transparent);
+      box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--tblr-warning) 55%, transparent);
+      font-weight: 600;
+    }
+
+    .nav-link.active.threej-search-hit-tab {
+      background: color-mix(in srgb, var(--tblr-warning) 16%, var(--tblr-bg-surface) 84%);
+    }
+
+    .nav-link.threej-search-hit-tab .badge {
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tblr-warning) 45%, transparent);
+    }
+  </style>
 </head>
 <body class="layout-fluid">
   <div class="page">
@@ -70,11 +109,21 @@
                 </a>
               </li>
             {% endif %}
+            {% if not auth_enabled or has_perm('accounts_missing.view') %}
+              <li class="nav-item">
+                <a class="nav-link" href="/settings/accounts-missing">
+                  <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-user-x"></i></span>
+                  <span class="nav-link-title">Missing Secrets</span>
+                  <span class="badge bg-yellow-lt text-yellow ms-auto d-none" id="nav-missing-secrets-new-badge">0</span>
+                </a>
+              </li>
+            {% endif %}
             {% if not auth_enabled or has_perm('usage.view') %}
               <li class="nav-item">
                 <a class="nav-link" href="/settings/usage">
                   <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-chart-bar"></i></span>
                   <span class="nav-link-title">Usage</span>
+                  <span class="badge bg-orange-lt text-orange ms-auto d-none" id="nav-usage-new-badge">0</span>
                 </a>
               </li>
             {% endif %}
@@ -428,47 +477,59 @@
 	  </script>
   <script>
     (() => {
-      const offlineBadge = document.getElementById("nav-offline-new-badge");
-      const surveillanceBadge = document.getElementById("nav-surveillance-new-badge");
-      if (!offlineBadge && !surveillanceBadge) return;
+      const initClearableSearch = (root = document) => {
+        root.querySelectorAll(".input-icon[data-search-clearable]").forEach((wrap) => {
+          const input = wrap.querySelector("input");
+          const button = wrap.querySelector("[data-search-clear-btn]");
+          const icon = button ? button.querySelector("i") : null;
+          if (!input || !button || !icon) return;
 
-      const offlineSeenKey = "threej_nav_offline_seen_v1";
-      const pathname = String(window.location.pathname || "");
-      const onOfflinePage = pathname.startsWith("/settings/offline") || pathname === "/offline" || pathname.startsWith("/offline/");
+          const sync = () => {
+            const hasValue = String(input.value || "").length > 0;
+            wrap.setAttribute("data-has-value", hasValue ? "1" : "0");
+            button.disabled = !hasValue;
+            button.setAttribute("aria-label", hasValue ? "Clear search" : "Search");
+            icon.classList.toggle("ti-search", !hasValue);
+            icon.classList.toggle("ti-x", hasValue);
+          };
 
-      const loadSeen = (key) => {
-        try {
-          const raw = localStorage.getItem(key);
-          if (raw === null) return null;
-          const parsed = JSON.parse(raw);
-          return Array.isArray(parsed) ? parsed.map((item) => String(item || "").trim()).filter(Boolean) : [];
-        } catch {
-          return null;
-        }
-      };
+          if (wrap.dataset.searchClearBound !== "1") {
+            wrap.dataset.searchClearBound = "1";
+            button.addEventListener("click", (event) => {
+              event.preventDefault();
+              if (button.disabled) return;
+              input.value = "";
+              sync();
+              input.focus();
+              input.dispatchEvent(new Event("input", { bubbles: true }));
+              input.dispatchEvent(new Event("change", { bubbles: true }));
+            });
+            input.addEventListener("input", sync);
+            input.addEventListener("change", sync);
+            input.addEventListener("keyup", sync);
+          }
 
-      const saveSeen = (key, ids) => {
-        try {
-          localStorage.setItem(key, JSON.stringify(Array.from(new Set((ids || []).map((item) => String(item || "").trim()).filter(Boolean)))));
-        } catch {}
-      };
-
-      const reconcileSeen = (currentIds, previousSeen, markCurrentSeen) => {
-        const current = Array.from(new Set((currentIds || []).map((item) => String(item || "").trim()).filter(Boolean)));
-        if (previousSeen === null) {
-          return { current, seen: current };
-        }
-        const currentSet = new Set(current);
-        const nextSeen = new Set();
-        (previousSeen || []).forEach((item) => {
-          const value = String(item || "").trim();
-          if (value && currentSet.has(value)) nextSeen.add(value);
+          sync();
         });
-        if (markCurrentSeen) {
-          current.forEach((item) => nextSeen.add(item));
-        }
-        return { current, seen: Array.from(nextSeen) };
       };
+
+      window.ThreeJUi = window.ThreeJUi || {};
+      window.ThreeJUi.initClearableSearch = initClearableSearch;
+
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", () => initClearableSearch());
+      } else {
+        initClearableSearch();
+      }
+    })();
+  </script>
+  <script>
+    (() => {
+      const offlineBadge = document.getElementById("nav-offline-new-badge");
+      const usageBadge = document.getElementById("nav-usage-new-badge");
+      const surveillanceBadge = document.getElementById("nav-surveillance-new-badge");
+      const missingSecretsBadge = document.getElementById("nav-missing-secrets-new-badge");
+      if (!offlineBadge && !usageBadge && !surveillanceBadge && !missingSecretsBadge) return;
 
       const renderBadge = (badgeEl, count) => {
         if (!badgeEl) return;
@@ -489,16 +550,23 @@
           const data = await res.json();
 
           if (offlineBadge) {
-            const currentIds = Array.isArray(data?.offline?.current_ids) ? data.offline.current_ids : [];
-            const state = reconcileSeen(currentIds, loadSeen(offlineSeenKey), onOfflinePage);
-            const seenSet = new Set(state.seen);
-            saveSeen(offlineSeenKey, state.seen);
-            renderBadge(offlineBadge, state.current.filter((item) => !seenSet.has(item)).length);
+            const serverNewCount = Number(data?.offline?.new_count || 0);
+            renderBadge(offlineBadge, Number.isFinite(serverNewCount) ? serverNewCount : 0);
+          }
+
+          if (usageBadge) {
+            const serverNewCount = Number(data?.usage?.new_count || 0);
+            renderBadge(usageBadge, Number.isFinite(serverNewCount) ? serverNewCount : 0);
           }
 
           if (surveillanceBadge) {
             const serverNewCount = Number(data?.surveillance?.new_count || 0);
             renderBadge(surveillanceBadge, Number.isFinite(serverNewCount) ? serverNewCount : 0);
+          }
+
+          if (missingSecretsBadge) {
+            const serverNewCount = Number(data?.accounts_missing?.new_count || 0);
+            renderBadge(missingSecretsBadge, Number.isFinite(serverNewCount) ? serverNewCount : 0);
           }
         } catch (_err) {
           // ignore nav badge refresh failures

@@ -380,6 +380,21 @@ ACCOUNTS_PING_DEFAULTS = {
     },
 }
 
+ACCOUNTS_MISSING_DEFAULTS = {
+    "enabled": False,
+    "source": {
+        "refresh_minutes": 15,
+        "mikrotik": {
+            "router_enabled": {},
+            "timeout_seconds": 5,
+        },
+    },
+    "auto_delete": {
+        "enabled": False,
+        "days": 30,
+    },
+}
+
 USAGE_DEFAULTS = {
     "enabled": False,
     "mikrotik": {

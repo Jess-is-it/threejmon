@@ -219,6 +219,8 @@
 		            <span class="badge bg-blue-lt">Total: {{ optical_status.total }}</span>
 		            <span class="badge bg-red-lt">Issues: {{ optical_status.issue_total }}</span>
 		            <span class="badge bg-green-lt">Stable: {{ optical_status.stable_total }}</span>
+                <span class="badge bg-secondary-lt">Offline: {{ optical_status.offline_total }}</span>
+                <span class="badge bg-orange-lt text-orange">ACS-LOS: {{ optical_status.acs_los_total }}</span>
                 {% set optical_limit_param = 'all' if optical_status.pagination.limit == 0 else optical_status.pagination.limit %}
                 <div class="dropdown">
                   <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" id="optical-limit-button">Show: {{ optical_status.pagination.limit_label }}</button>
@@ -255,26 +257,34 @@
 	          </div>
 	        </div>
 
-	        <ul class="nav nav-tabs" data-bs-toggle="tabs">
+          {% set optical_preferred_tab = optical_status.preferred_tab or 'issues' %}
+          {% set optical_has_query = (optical_status.query or '')|trim %}
+	        <ul class="nav nav-tabs" data-bs-toggle="tabs" id="optical-status-tabs">
 	          <li class="nav-item">
-	            <a href="#optical-issues" class="nav-link active" data-bs-toggle="tab">Connection Issues</a>
+	            <a href="#optical-issues" class="nav-link {% if optical_preferred_tab == 'issues' %}active{% endif %}{% if optical_has_query and optical_status.issue_total %} threej-search-hit-tab{% endif %}" data-bs-toggle="tab">Connection Issues <span class="badge bg-red-lt ms-1">{{ optical_status.issue_total }}</span></a>
 	          </li>
 	          <li class="nav-item">
-	            <a href="#optical-stable" class="nav-link" data-bs-toggle="tab">Stable Connections</a>
+	            <a href="#optical-stable" class="nav-link {% if optical_preferred_tab == 'stable' %}active{% endif %}{% if optical_has_query and optical_status.stable_total %} threej-search-hit-tab{% endif %}" data-bs-toggle="tab">Stable Connections <span class="badge bg-green-lt ms-1">{{ optical_status.stable_total }}</span></a>
+	          </li>
+            <li class="nav-item">
+              <a href="#optical-offline" class="nav-link {% if optical_preferred_tab == 'offline' %}active{% endif %}{% if optical_has_query and optical_status.offline_total %} threej-search-hit-tab{% endif %}" data-bs-toggle="tab">Offline <span class="badge bg-secondary-lt ms-1">{{ optical_status.offline_total }}</span></a>
+            </li>
+            <li class="nav-item">
+              <a href="#optical-acs-los" class="nav-link {% if optical_preferred_tab == 'acs_los' %}active{% endif %}{% if optical_has_query and optical_status.acs_los_total %} threej-search-hit-tab{% endif %}" data-bs-toggle="tab">ACS-LOS <span class="badge bg-orange-lt text-orange ms-1">{{ optical_status.acs_los_total }}</span></a>
 	          </li>
           <li class="nav-item ms-auto">
             <div class="px-2 py-2">
-              <div class="input-icon">
+              <div class="input-icon" data-search-clearable>
 	                <input class="form-control form-control-sm" id="optical-status-search" type="text" placeholder="Search" autocomplete="off" value="{{ optical_status.query or '' }}" />
-                <span class="input-icon-addon">
+                <button type="button" class="input-icon-addon search-addon-btn" data-search-clear-btn aria-label="Search">
                   <i class="ti ti-search"></i>
-                </span>
+                </button>
               </div>
             </div>
           </li>
         </ul>
         <div class="tab-content pt-3">
-		          <div class="tab-pane active" id="optical-issues">
+		          <div class="tab-pane {% if optical_preferred_tab == 'issues' %}active{% endif %}" id="optical-issues">
 	            <div class="rto-table-shell">
 	              <div class="rto-table-wrap optical-status-table-wrap" id="optical-issues-table">
 	              <table class="table table-vcenter rto-table optical-status-table">
@@ -295,7 +305,7 @@
                 <tbody>
                   {% for row in optical_status.issue_rows %}
                     {% set surv_status = surveillance_index.get(row.name) %}
-                    <tr{% if surv_status == 'under' %} class="table-warning"{% elif surv_status == 'level2' %} class="table-danger"{% endif %}>
+                    <tr{% if surv_status == 'under' %} class="table-warning"{% elif surv_status == 'level2' %} class="table-danger"{% elif surv_status == 'observe' %} class="table-primary"{% endif %}>
                       <td class="op-col-customer op-priority-0">{{ optical_customer_label(row.name, row.device_url) }}</td>
                       <td class="op-col-ip op-priority-2"><span class="optical-status-cell-truncate" title="{{ row.ip or 'n/a' }}">{{ row.ip or 'n/a' }}</span></td>
                       <td class="op-col-status op-priority-1">
@@ -348,20 +358,25 @@
                       <td class="op-col-samples op-priority-7">{{ row.samples }}</td>
                       <td class="op-col-last-check op-priority-5"><span class="optical-status-cell-truncate" title="{{ row.last_check or 'n/a' }}">{{ row.last_check or 'n/a' }}</span></td>
                       <td class="op-col-trend op-priority-6">
-                        {% if row.spark_points_window %}
+                        {% if row.spark_segments_window or row.device_id %}
                           <button type="button"
                                   class="btn btn-link p-0 optical-spark-btn"
                                   data-name="{{ row.name }}"
                                   data-device-id="{{ row.device_id }}"
                                   data-status="{{ row.status }}"
-                                  data-points="{{ row.spark_points_window_large }}"
-                                  data-width="640"
-                                  data-height="200"
+                                  data-status-label="{{ row.status_label }}"
+                                  data-status-note="{{ row.status_note }}"
                                   data-bs-toggle="modal"
                                   data-bs-target="#optical-spark-modal">
-                            <svg class="rto-sparkline" width="120" height="30" viewBox="0 0 120 30" preserveAspectRatio="none">
-                              <polyline points="{{ row.spark_points_window }}" fill="none" stroke="{% if row.status == 'issue' %}#d63939{% else %}#f59f00{% endif %}" stroke-width="2"></polyline>
-                            </svg>
+                            {% if row.spark_segments_window %}
+                              <svg class="rto-sparkline" width="120" height="30" viewBox="0 0 120 30" preserveAspectRatio="none">
+                                {% for segment in row.spark_segments_window %}
+                                  <polyline points="{{ segment }}" fill="none" stroke="{% if row.status == 'issue' %}#d63939{% else %}#f59f00{% endif %}" stroke-width="2"></polyline>
+                                {% endfor %}
+                              </svg>
+                            {% else %}
+                              <span class="text-muted small">View</span>
+                            {% endif %}
                           </button>
                         {% else %}
                           <span class="text-muted small">n/a</span>
@@ -388,6 +403,10 @@
                               </a>
                             {% elif surv_status == 'level2' %}
                               <a class="badge bg-red-lt text-red header-icon-badge" href="/surveillance?tab=level2&focus={{ row.name|urlencode }}" title="Needs Manual Fix" aria-label="Needs Manual Fix">
+                                <i class="ti ti-binoculars"></i>
+                              </a>
+                            {% elif surv_status == 'observe' %}
+                              <a class="badge bg-blue-lt text-blue header-icon-badge" href="/surveillance?tab=observe&focus={{ row.name|urlencode }}" title="Post-Fix Observation" aria-label="Post-Fix Observation">
                                 <i class="ti ti-binoculars"></i>
                               </a>
                             {% else %}
@@ -425,10 +444,10 @@
                     <span class="text-muted small">Page {{ meta.page }} of {{ meta.pages }}</span>
                     <ul class="pagination pagination-sm mb-0">
                       <li class="page-item {% if not meta.has_prev %}disabled{% endif %}">
-	                        <a class="page-link" href="/settings/optical?window={{ optical_status.window_hours }}&limit={{ optical_limit_param }}&issues_page={{ prev_page }}&stable_page={{ optical_status.pagination.stable.page }}&issues_sort={{ optical_status.sort.issues.key }}&issues_dir={{ optical_status.sort.issues.dir }}&stable_sort={{ optical_status.sort.stable.key }}&stable_dir={{ optical_status.sort.stable.dir }}&q={{ optical_status.query|urlencode }}#optical-issues">Prev</a>
+	                        <a class="page-link" href="/settings/optical?window={{ optical_status.window_hours }}&limit={{ optical_limit_param }}&issues_page={{ prev_page }}&stable_page={{ optical_status.pagination.stable.page }}&offline_page={{ optical_status.pagination.offline.page }}&acs_los_page={{ optical_status.pagination.acs_los.page }}&issues_sort={{ optical_status.sort.issues.key }}&issues_dir={{ optical_status.sort.issues.dir }}&stable_sort={{ optical_status.sort.stable.key }}&stable_dir={{ optical_status.sort.stable.dir }}&offline_sort={{ optical_status.sort.offline.key }}&offline_dir={{ optical_status.sort.offline.dir }}&acs_los_sort={{ optical_status.sort.acs_los.key }}&acs_los_dir={{ optical_status.sort.acs_los.dir }}&q={{ optical_status.query|urlencode }}#optical-issues">Prev</a>
                       </li>
                       <li class="page-item {% if not meta.has_next %}disabled{% endif %}">
-	                        <a class="page-link" href="/settings/optical?window={{ optical_status.window_hours }}&limit={{ optical_limit_param }}&issues_page={{ next_page }}&stable_page={{ optical_status.pagination.stable.page }}&issues_sort={{ optical_status.sort.issues.key }}&issues_dir={{ optical_status.sort.issues.dir }}&stable_sort={{ optical_status.sort.stable.key }}&stable_dir={{ optical_status.sort.stable.dir }}&q={{ optical_status.query|urlencode }}#optical-issues">Next</a>
+	                        <a class="page-link" href="/settings/optical?window={{ optical_status.window_hours }}&limit={{ optical_limit_param }}&issues_page={{ next_page }}&stable_page={{ optical_status.pagination.stable.page }}&offline_page={{ optical_status.pagination.offline.page }}&acs_los_page={{ optical_status.pagination.acs_los.page }}&issues_sort={{ optical_status.sort.issues.key }}&issues_dir={{ optical_status.sort.issues.dir }}&stable_sort={{ optical_status.sort.stable.key }}&stable_dir={{ optical_status.sort.stable.dir }}&offline_sort={{ optical_status.sort.offline.key }}&offline_dir={{ optical_status.sort.offline.dir }}&acs_los_sort={{ optical_status.sort.acs_los.key }}&acs_los_dir={{ optical_status.sort.acs_los.dir }}&q={{ optical_status.query|urlencode }}#optical-issues">Next</a>
                       </li>
                     </ul>
                   </div>
@@ -436,7 +455,7 @@
               </div>
 		          </div>
 
-	          <div class="tab-pane" id="optical-stable">
+	          <div class="tab-pane {% if optical_preferred_tab == 'stable' %}active{% endif %}" id="optical-stable">
 	            <div class="rto-table-shell">
 	              <div class="rto-table-wrap optical-status-table-wrap" id="optical-stable-table">
 	              <table class="table table-vcenter rto-table optical-status-table">
@@ -456,7 +475,7 @@
                 <tbody>
                   {% for row in optical_status.stable_rows %}
                     {% set surv_status = surveillance_index.get(row.name) %}
-                    <tr{% if surv_status == 'under' %} class="table-warning"{% elif surv_status == 'level2' %} class="table-danger"{% endif %}>
+                    <tr{% if surv_status == 'under' %} class="table-warning"{% elif surv_status == 'level2' %} class="table-danger"{% elif surv_status == 'observe' %} class="table-primary"{% endif %}>
                       <td class="op-col-customer op-priority-0">{{ optical_customer_label(row.name, row.device_url) }}</td>
 	                      <td class="op-col-ip op-priority-2"><span class="optical-status-cell-truncate" title="{{ row.ip or 'n/a' }}">{{ row.ip or 'n/a' }}</span></td>
 	                      <td class="op-col-status op-priority-1">
@@ -509,20 +528,25 @@
                       <td class="op-col-samples op-priority-7">{{ row.samples }}</td>
                       <td class="op-col-last-check op-priority-5"><span class="optical-status-cell-truncate" title="{{ row.last_check or 'n/a' }}">{{ row.last_check or 'n/a' }}</span></td>
 	                      <td class="op-col-trend op-priority-6">
-	                        {% if row.spark_points_window %}
+	                        {% if row.spark_segments_window or row.device_id %}
 	                          <button type="button"
 	                                  class="btn btn-link p-0 optical-spark-btn"
 	                                  data-name="{{ row.name }}"
 	                                  data-device-id="{{ row.device_id }}"
 	                                  data-status="{{ row.status }}"
-	                                  data-points="{{ row.spark_points_window_large }}"
-	                                  data-width="640"
-	                                  data-height="200"
+                                    data-status-label="{{ row.status_label }}"
+                                    data-status-note="{{ row.status_note }}"
 	                                  data-bs-toggle="modal"
 	                                  data-bs-target="#optical-spark-modal">
-	                            <svg class="rto-sparkline" width="120" height="30" viewBox="0 0 120 30" preserveAspectRatio="none">
-	                              <polyline points="{{ row.spark_points_window }}" fill="none" stroke="{% if row.status == 'stable' %}#2fb344{% else %}#f59f00{% endif %}" stroke-width="2"></polyline>
-	                            </svg>
+                              {% if row.spark_segments_window %}
+	                              <svg class="rto-sparkline" width="120" height="30" viewBox="0 0 120 30" preserveAspectRatio="none">
+	                                {% for segment in row.spark_segments_window %}
+	                                  <polyline points="{{ segment }}" fill="none" stroke="{% if row.status == 'stable' %}#2fb344{% else %}#f59f00{% endif %}" stroke-width="2"></polyline>
+	                                {% endfor %}
+	                              </svg>
+                              {% else %}
+                                <span class="text-muted small">View</span>
+                              {% endif %}
 	                          </button>
 	                        {% else %}
 	                          <span class="text-muted small">n/a</span>
@@ -547,6 +571,10 @@
                               </a>
                             {% elif surv_status == 'level2' %}
                               <a class="badge bg-red-lt text-red header-icon-badge" href="/surveillance?tab=level2&focus={{ row.name|urlencode }}" title="Needs Manual Fix" aria-label="Needs Manual Fix">
+                                <i class="ti ti-binoculars"></i>
+                              </a>
+                            {% elif surv_status == 'observe' %}
+                              <a class="badge bg-blue-lt text-blue header-icon-badge" href="/surveillance?tab=observe&focus={{ row.name|urlencode }}" title="Post-Fix Observation" aria-label="Post-Fix Observation">
                                 <i class="ti ti-binoculars"></i>
                               </a>
                             {% else %}
@@ -584,16 +612,268 @@
                     <span class="text-muted small">Page {{ meta.page }} of {{ meta.pages }}</span>
                     <ul class="pagination pagination-sm mb-0">
                       <li class="page-item {% if not meta.has_prev %}disabled{% endif %}">
-	                        <a class="page-link" href="/settings/optical?window={{ optical_status.window_hours }}&limit={{ optical_limit_param }}&issues_page={{ optical_status.pagination.issues.page }}&stable_page={{ prev_page }}&issues_sort={{ optical_status.sort.issues.key }}&issues_dir={{ optical_status.sort.issues.dir }}&stable_sort={{ optical_status.sort.stable.key }}&stable_dir={{ optical_status.sort.stable.dir }}&q={{ optical_status.query|urlencode }}#optical-stable">Prev</a>
+	                        <a class="page-link" href="/settings/optical?window={{ optical_status.window_hours }}&limit={{ optical_limit_param }}&issues_page={{ optical_status.pagination.issues.page }}&stable_page={{ prev_page }}&offline_page={{ optical_status.pagination.offline.page }}&acs_los_page={{ optical_status.pagination.acs_los.page }}&issues_sort={{ optical_status.sort.issues.key }}&issues_dir={{ optical_status.sort.issues.dir }}&stable_sort={{ optical_status.sort.stable.key }}&stable_dir={{ optical_status.sort.stable.dir }}&offline_sort={{ optical_status.sort.offline.key }}&offline_dir={{ optical_status.sort.offline.dir }}&acs_los_sort={{ optical_status.sort.acs_los.key }}&acs_los_dir={{ optical_status.sort.acs_los.dir }}&q={{ optical_status.query|urlencode }}#optical-stable">Prev</a>
                       </li>
                       <li class="page-item {% if not meta.has_next %}disabled{% endif %}">
-	                        <a class="page-link" href="/settings/optical?window={{ optical_status.window_hours }}&limit={{ optical_limit_param }}&issues_page={{ optical_status.pagination.issues.page }}&stable_page={{ next_page }}&issues_sort={{ optical_status.sort.issues.key }}&issues_dir={{ optical_status.sort.issues.dir }}&stable_sort={{ optical_status.sort.stable.key }}&stable_dir={{ optical_status.sort.stable.dir }}&q={{ optical_status.query|urlencode }}#optical-stable">Next</a>
+	                        <a class="page-link" href="/settings/optical?window={{ optical_status.window_hours }}&limit={{ optical_limit_param }}&issues_page={{ optical_status.pagination.issues.page }}&stable_page={{ next_page }}&offline_page={{ optical_status.pagination.offline.page }}&acs_los_page={{ optical_status.pagination.acs_los.page }}&issues_sort={{ optical_status.sort.issues.key }}&issues_dir={{ optical_status.sort.issues.dir }}&stable_sort={{ optical_status.sort.stable.key }}&stable_dir={{ optical_status.sort.stable.dir }}&offline_sort={{ optical_status.sort.offline.key }}&offline_dir={{ optical_status.sort.offline.dir }}&acs_los_sort={{ optical_status.sort.acs_los.key }}&acs_los_dir={{ optical_status.sort.acs_los.dir }}&q={{ optical_status.query|urlencode }}#optical-stable">Next</a>
                       </li>
                     </ul>
                   </div>
                 {% endif %}
-              </div>
+	              </div>
 	          </div>
+
+          <div class="tab-pane {% if optical_preferred_tab == 'offline' %}active{% endif %}" id="optical-offline">
+            <div class="rto-table-shell">
+              <div class="rto-table-wrap optical-status-table-wrap" id="optical-offline-table">
+                <table class="table table-vcenter rto-table optical-status-table">
+                  <thead>
+                    <tr>
+                      <th class="rto-tip rto-sort op-col-customer op-priority-0" data-sort-key="customer" aria-sort="none" title="Subscriber name detected from GenieACS (PPPoE username or device label)." data-tip="Subscriber name detected from GenieACS (PPPoE username or device label).">Customer <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-tip rto-sort op-col-ip op-priority-2" data-sort-key="ip" aria-sort="none" title="Last IP address reported by GenieACS." data-tip="Last IP address reported by GenieACS.">IPv4 <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-tip rto-sort op-col-status op-priority-1" data-sort-key="status" aria-sort="none" title="Current ACS connectivity status." data-tip="Current ACS connectivity status.">Status <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-tip rto-sort op-col-rx op-priority-3" data-sort-key="rx" aria-sort="none" title="Last stored RX power reading in dBm." data-tip="Last stored RX power reading in dBm.">RX (dBm) <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-tip rto-sort op-col-tx op-priority-4" data-sort-key="tx" aria-sort="none" title="Last stored TX power reading in dBm." data-tip="Last stored TX power reading in dBm.">TX (dBm) <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-tip rto-sort op-col-samples op-priority-7" data-sort-key="samples" aria-sort="none" title="Number of samples in the current window." data-tip="Number of samples in the current window.">Samples <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-tip rto-sort op-col-last-check op-priority-5" data-sort-key="last_check_at" aria-sort="none" title="Timestamp of the most recent stored optical reading." data-tip="Timestamp of the most recent stored optical reading.">Last Check <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-tip rto-trend-header op-col-trend op-priority-6" title="RX power trend for the current window." data-tip="RX power trend for the current window. Click to expand.">{{ optical_status.window_label }} Trend</th>
+                      <th class="rto-tip rto-sort op-col-reason op-priority-8" data-sort-key="reason" aria-sort="none" title="Why this account is listed under Offline." data-tip="Why this account is listed under Offline.">Reason <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="text-end op-col-actions op-priority-0">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for row in optical_status.offline_rows %}
+                      {% set surv_status = surveillance_index.get(row.name) %}
+                      <tr{% if surv_status == 'under' %} class="table-warning"{% elif surv_status == 'level2' %} class="table-danger"{% elif surv_status == 'observe' %} class="table-primary"{% endif %}>
+                        <td class="op-col-customer op-priority-0">{{ optical_customer_label(row.name, row.device_url) }}</td>
+                        <td class="op-col-ip op-priority-2"><span class="optical-status-cell-truncate" title="{{ row.ip or 'n/a' }}">{{ row.ip or 'n/a' }}</span></td>
+                        <td class="op-col-status op-priority-1">
+                          <span class="badge bg-secondary-lt">Offline</span>
+                        </td>
+                        <td class="op-col-rx op-priority-3">{{ "%.2f"|format(row.rx) if row.rx is not none else 'n/a' }}</td>
+                        <td class="op-col-tx op-priority-4">
+                          {% if row.tx_invalid or row.tx_missing %}
+                            {% set tx_raw = row.tx_raw if row.tx_raw is not none else 'n/a' %}
+                            <div class="dropdown">
+                              <button type="button" class="btn btn-icon optical-missing-btn" data-bs-toggle="dropdown" aria-label="Missing TX">
+                                <i class="ti ti-alert-circle"></i>
+                              </button>
+                              <div class="dropdown-menu dropdown-menu-end p-2 text-wrap" style="min-width: 240px;">
+                                <div class="small text-muted mb-1">Missing/Unrealistic TX</div>
+                                <div class="small">{{ row.tx_reason }}</div>
+                                <div class="small text-muted mt-1">Raw value: {{ tx_raw }}</div>
+                              </div>
+                            </div>
+                          {% else %}
+                            {{ "%.2f"|format(row.tx) if row.tx is not none else 'n/a' }}
+                          {% endif %}
+                        </td>
+                        <td class="op-col-samples op-priority-7">{{ row.samples }}</td>
+                        <td class="op-col-last-check op-priority-5"><span class="optical-status-cell-truncate" title="{{ row.last_check or 'n/a' }}">{{ row.last_check or 'n/a' }}</span></td>
+                        <td class="op-col-trend op-priority-6">
+                        {% if row.spark_segments_window or row.device_id %}
+                          <button type="button"
+                                  class="btn btn-link p-0 optical-spark-btn"
+                                  data-name="{{ row.name }}"
+                                  data-device-id="{{ row.device_id }}"
+                                  data-status="{{ row.status }}"
+                                  data-status-label="{{ row.status_label }}"
+                                  data-status-note="{{ row.status_note }}"
+                                  data-bs-toggle="modal"
+                                  data-bs-target="#optical-spark-modal">
+                            {% if row.spark_segments_window %}
+                              <svg class="rto-sparkline" width="120" height="30" viewBox="0 0 120 30" preserveAspectRatio="none">
+                                {% for segment in row.spark_segments_window %}
+                                  <polyline points="{{ segment }}" fill="none" stroke="#6c757d" stroke-width="2"></polyline>
+                                {% endfor %}
+                              </svg>
+                            {% else %}
+                              <span class="text-muted small">View</span>
+                            {% endif %}
+                          </button>
+                        {% else %}
+                          <span class="text-muted small">n/a</span>
+                          {% endif %}
+                        </td>
+                        {% set reason_text = row.reasons|join(', ') %}
+                        <td class="op-col-reason op-priority-8"><span class="optical-status-cell-truncate" title="{{ reason_text }}">{{ reason_text }}</span></td>
+                        <td class="text-end op-col-actions op-priority-0">
+                          <div class="d-inline-flex align-items-center justify-content-end gap-1 op-actions">
+                            {% if can_profile_review %}
+                              <a class="badge bg-azure-lt text-azure header-icon-badge"
+                                 href="/profile-review?pppoe={{ row.name|urlencode }}{% if row.ip %}&ip={{ row.ip|urlencode }}{% endif %}{% if row.device_id %}&device_id={{ row.device_id|urlencode }}{% endif %}"
+                                 target="_blank"
+                                 rel="noopener"
+                                 title="Profile Review"
+                                 aria-label="Profile Review">
+                                <i class="ti ti-user"></i>
+                              </a>
+                            {% endif %}
+                          </div>
+                        </td>
+                      </tr>
+                    {% else %}
+                      <tr>
+                        <td colspan="10" class="text-muted">No offline optical accounts found.</td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+              <div class="rto-resize-handle" data-target="optical-offline-table"></div>
+            </div>
+            {% set meta = optical_status.pagination.offline %}
+            <div class="d-flex flex-wrap align-items-center justify-content-between mt-2 gap-2">
+              <div class="text-muted small">Showing {{ meta.start }}–{{ meta.end }} of {{ meta.total }}</div>
+              {% if meta.pages > 1 %}
+                {% set prev_page = meta.page - 1 if meta.page > 1 else 1 %}
+                {% set next_page = meta.page + 1 if meta.page < meta.pages else meta.pages %}
+                <div class="d-flex align-items-center gap-2">
+                  <span class="text-muted small">Page {{ meta.page }} of {{ meta.pages }}</span>
+                  <ul class="pagination pagination-sm mb-0">
+                    <li class="page-item {% if not meta.has_prev %}disabled{% endif %}">
+                      <a class="page-link" href="/settings/optical?window={{ optical_status.window_hours }}&limit={{ optical_limit_param }}&issues_page={{ optical_status.pagination.issues.page }}&stable_page={{ optical_status.pagination.stable.page }}&offline_page={{ prev_page }}&acs_los_page={{ optical_status.pagination.acs_los.page }}&issues_sort={{ optical_status.sort.issues.key }}&issues_dir={{ optical_status.sort.issues.dir }}&stable_sort={{ optical_status.sort.stable.key }}&stable_dir={{ optical_status.sort.stable.dir }}&offline_sort={{ optical_status.sort.offline.key }}&offline_dir={{ optical_status.sort.offline.dir }}&acs_los_sort={{ optical_status.sort.acs_los.key }}&acs_los_dir={{ optical_status.sort.acs_los.dir }}&q={{ optical_status.query|urlencode }}#optical-offline">Prev</a>
+                    </li>
+                    <li class="page-item {% if not meta.has_next %}disabled{% endif %}">
+                      <a class="page-link" href="/settings/optical?window={{ optical_status.window_hours }}&limit={{ optical_limit_param }}&issues_page={{ optical_status.pagination.issues.page }}&stable_page={{ optical_status.pagination.stable.page }}&offline_page={{ next_page }}&acs_los_page={{ optical_status.pagination.acs_los.page }}&issues_sort={{ optical_status.sort.issues.key }}&issues_dir={{ optical_status.sort.issues.dir }}&stable_sort={{ optical_status.sort.stable.key }}&stable_dir={{ optical_status.sort.stable.dir }}&offline_sort={{ optical_status.sort.offline.key }}&offline_dir={{ optical_status.sort.offline.dir }}&acs_los_sort={{ optical_status.sort.acs_los.key }}&acs_los_dir={{ optical_status.sort.acs_los.dir }}&q={{ optical_status.query|urlencode }}#optical-offline">Next</a>
+                    </li>
+                  </ul>
+                </div>
+              {% endif %}
+            </div>
+          </div>
+
+          <div class="tab-pane {% if optical_preferred_tab == 'acs_los' %}active{% endif %}" id="optical-acs-los">
+            <div class="rto-table-shell">
+              <div class="rto-table-wrap optical-status-table-wrap" id="optical-acs-los-table">
+                <table class="table table-vcenter rto-table optical-status-table">
+                  <thead>
+                    <tr>
+                      <th class="rto-tip rto-sort op-col-customer op-priority-0" data-sort-key="customer" aria-sort="none" title="Subscriber name detected from GenieACS (PPPoE username or device label)." data-tip="Subscriber name detected from GenieACS (PPPoE username or device label).">Customer <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-tip rto-sort op-col-ip op-priority-2" data-sort-key="ip" aria-sort="none" title="IP address reported by GenieACS." data-tip="IP address reported by GenieACS.">IPv4 <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-tip rto-sort op-col-status op-priority-1" data-sort-key="status" aria-sort="none" title="Current ACS loss-of-signal style status." data-tip="Current ACS loss-of-signal style status.">Status <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-tip rto-sort op-col-rx op-priority-3" data-sort-key="rx" aria-sort="none" title="Latest RX power reading in dBm." data-tip="Latest RX power reading in dBm.">RX (dBm) <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-tip rto-sort op-col-tx op-priority-4" data-sort-key="tx" aria-sort="none" title="Latest TX power reading in dBm." data-tip="Latest TX power reading in dBm.">TX (dBm) <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-tip rto-sort op-col-samples op-priority-7" data-sort-key="samples" aria-sort="none" title="Number of samples in the current window." data-tip="Number of samples in the current window.">Samples <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-tip rto-sort op-col-last-check op-priority-5" data-sort-key="last_check_at" aria-sort="none" title="Timestamp of the most recent optical reading." data-tip="Timestamp of the most recent optical reading.">Last Check <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-tip rto-trend-header op-col-trend op-priority-6" title="RX power trend for the current window." data-tip="RX power trend for the current window. Click to expand.">{{ optical_status.window_label }} Trend</th>
+                      <th class="rto-tip rto-sort op-col-reason op-priority-8" data-sort-key="reason" aria-sort="none" title="Why this account is listed under ACS-LOS." data-tip="Why this account is listed under ACS-LOS.">Reason <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="text-end op-col-actions op-priority-0">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for row in optical_status.acs_los_rows %}
+                      {% set surv_status = surveillance_index.get(row.name) %}
+                      <tr{% if surv_status == 'under' %} class="table-warning"{% elif surv_status == 'level2' %} class="table-danger"{% elif surv_status == 'observe' %} class="table-primary"{% endif %}>
+                        <td class="op-col-customer op-priority-0">{{ optical_customer_label(row.name, row.device_url) }}</td>
+                        <td class="op-col-ip op-priority-2"><span class="optical-status-cell-truncate" title="{{ row.ip or 'n/a' }}">{{ row.ip or 'n/a' }}</span></td>
+                        <td class="op-col-status op-priority-1">
+                          <span class="badge bg-orange-lt text-orange">ACS-LOS</span>
+                        </td>
+                        <td class="op-col-rx op-priority-3">
+                          {% set rx_raw = row.rx_raw if row.rx_raw is not none else 'n/a' %}
+                          <div class="dropdown">
+                            <button type="button" class="btn btn-icon optical-missing-btn" data-bs-toggle="dropdown" aria-label="Missing RX">
+                              <i class="ti ti-alert-circle"></i>
+                            </button>
+                            <div class="dropdown-menu dropdown-menu-end p-2 text-wrap" style="min-width: 240px;">
+                              <div class="small text-muted mb-1">Missing/Unrealistic RX</div>
+                              <div class="small">{{ row.rx_reason }}</div>
+                              <div class="small text-muted mt-1">Raw value: {{ rx_raw }}</div>
+                            </div>
+                          </div>
+                        </td>
+                        <td class="op-col-tx op-priority-4">
+                          {% if row.tx_invalid or row.tx_missing %}
+                            {% set tx_raw = row.tx_raw if row.tx_raw is not none else 'n/a' %}
+                            <div class="dropdown">
+                              <button type="button" class="btn btn-icon optical-missing-btn" data-bs-toggle="dropdown" aria-label="Missing TX">
+                                <i class="ti ti-alert-circle"></i>
+                              </button>
+                              <div class="dropdown-menu dropdown-menu-end p-2 text-wrap" style="min-width: 240px;">
+                                <div class="small text-muted mb-1">Missing/Unrealistic TX</div>
+                                <div class="small">{{ row.tx_reason }}</div>
+                                <div class="small text-muted mt-1">Raw value: {{ tx_raw }}</div>
+                              </div>
+                            </div>
+                          {% else %}
+                            {{ "%.2f"|format(row.tx) if row.tx is not none else 'n/a' }}
+                          {% endif %}
+                        </td>
+                        <td class="op-col-samples op-priority-7">{{ row.samples }}</td>
+                        <td class="op-col-last-check op-priority-5"><span class="optical-status-cell-truncate" title="{{ row.last_check or 'n/a' }}">{{ row.last_check or 'n/a' }}</span></td>
+                        <td class="op-col-trend op-priority-6">
+                        {% if row.spark_segments_window or row.device_id %}
+                          <button type="button"
+                                  class="btn btn-link p-0 optical-spark-btn"
+                                  data-name="{{ row.name }}"
+                                  data-device-id="{{ row.device_id }}"
+                                  data-status="{{ row.status }}"
+                                  data-status-label="{{ row.status_label }}"
+                                  data-status-note="{{ row.status_note }}"
+                                  data-bs-toggle="modal"
+                                  data-bs-target="#optical-spark-modal">
+                              {% if row.spark_segments_window %}
+                                <svg class="rto-sparkline" width="120" height="30" viewBox="0 0 120 30" preserveAspectRatio="none">
+                                  {% for segment in row.spark_segments_window %}
+                                    <polyline points="{{ segment }}" fill="none" stroke="#f59f00" stroke-width="2"></polyline>
+                                  {% endfor %}
+                                </svg>
+                              {% else %}
+                                <span class="text-muted small">View</span>
+                              {% endif %}
+                          </button>
+                        {% else %}
+                          <span class="text-muted small">n/a</span>
+                          {% endif %}
+                        </td>
+                        {% set reason_text = row.reasons|join(', ') %}
+                        <td class="op-col-reason op-priority-8"><span class="optical-status-cell-truncate" title="{{ reason_text }}">{{ reason_text }}</span></td>
+                        <td class="text-end op-col-actions op-priority-0">
+                          <div class="d-inline-flex align-items-center justify-content-end gap-1 op-actions">
+                            {% if can_profile_review %}
+                              <a class="badge bg-azure-lt text-azure header-icon-badge"
+                                 href="/profile-review?pppoe={{ row.name|urlencode }}{% if row.ip %}&ip={{ row.ip|urlencode }}{% endif %}{% if row.device_id %}&device_id={{ row.device_id|urlencode }}{% endif %}"
+                                 target="_blank"
+                                 rel="noopener"
+                                 title="Profile Review"
+                                 aria-label="Profile Review">
+                                <i class="ti ti-user"></i>
+                              </a>
+                            {% endif %}
+                          </div>
+                        </td>
+                      </tr>
+                    {% else %}
+                      <tr>
+                        <td colspan="10" class="text-muted">No ACS-LOS accounts found in this window.</td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+              <div class="rto-resize-handle" data-target="optical-acs-los-table"></div>
+            </div>
+            {% set meta = optical_status.pagination.acs_los %}
+            <div class="d-flex flex-wrap align-items-center justify-content-between mt-2 gap-2">
+              <div class="text-muted small">Showing {{ meta.start }}–{{ meta.end }} of {{ meta.total }}</div>
+              {% if meta.pages > 1 %}
+                {% set prev_page = meta.page - 1 if meta.page > 1 else 1 %}
+                {% set next_page = meta.page + 1 if meta.page < meta.pages else meta.pages %}
+                <div class="d-flex align-items-center gap-2">
+                  <span class="text-muted small">Page {{ meta.page }} of {{ meta.pages }}</span>
+                  <ul class="pagination pagination-sm mb-0">
+                    <li class="page-item {% if not meta.has_prev %}disabled{% endif %}">
+                      <a class="page-link" href="/settings/optical?window={{ optical_status.window_hours }}&limit={{ optical_limit_param }}&issues_page={{ optical_status.pagination.issues.page }}&stable_page={{ optical_status.pagination.stable.page }}&offline_page={{ optical_status.pagination.offline.page }}&acs_los_page={{ prev_page }}&issues_sort={{ optical_status.sort.issues.key }}&issues_dir={{ optical_status.sort.issues.dir }}&stable_sort={{ optical_status.sort.stable.key }}&stable_dir={{ optical_status.sort.stable.dir }}&offline_sort={{ optical_status.sort.offline.key }}&offline_dir={{ optical_status.sort.offline.dir }}&acs_los_sort={{ optical_status.sort.acs_los.key }}&acs_los_dir={{ optical_status.sort.acs_los.dir }}&q={{ optical_status.query|urlencode }}#optical-acs-los">Prev</a>
+                    </li>
+                    <li class="page-item {% if not meta.has_next %}disabled{% endif %}">
+                      <a class="page-link" href="/settings/optical?window={{ optical_status.window_hours }}&limit={{ optical_limit_param }}&issues_page={{ optical_status.pagination.issues.page }}&stable_page={{ optical_status.pagination.stable.page }}&offline_page={{ optical_status.pagination.offline.page }}&acs_los_page={{ next_page }}&issues_sort={{ optical_status.sort.issues.key }}&issues_dir={{ optical_status.sort.issues.dir }}&stable_sort={{ optical_status.sort.stable.key }}&stable_dir={{ optical_status.sort.stable.dir }}&offline_sort={{ optical_status.sort.offline.key }}&offline_dir={{ optical_status.sort.offline.dir }}&acs_los_sort={{ optical_status.sort.acs_los.key }}&acs_los_dir={{ optical_status.sort.acs_los.dir }}&q={{ optical_status.query|urlencode }}#optical-acs-los">Next</a>
+                    </li>
+                  </ul>
+                </div>
+              {% endif %}
+            </div>
+          </div>
 	        </div>
 	      </div>
 
@@ -863,6 +1143,10 @@
         <button type="button" class="btn-close ms-2" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <div class="modal-body">
+        <div class="d-flex align-items-center gap-2 flex-wrap mb-2">
+          <span class="badge bg-secondary-lt" id="optical-spark-status-badge">Status</span>
+          <span class="text-muted small" id="optical-spark-status-note"></span>
+        </div>
         <div id="optical-spark-modal-chart" class="rto-spark-modal-chart"></div>
         <div class="text-muted small mt-2">RX/TX history for the selected window.</div>
       </div>
@@ -872,10 +1156,17 @@
 
 <script>
 	  document.addEventListener("DOMContentLoaded", () => {
-    const tabLinks = document.querySelectorAll('a[data-bs-toggle="tab"]');
+    const tabLinks = document.querySelectorAll('#optical-status-tabs a[data-bs-toggle="tab"]');
     const tabKey = "optical_status_active_tab";
+    const hasSearchQuery = {{ "true" if optical_status.query else "false" }};
+    const preferredStatusHash = "#optical-{{ optical_status.preferred_tab or 'issues' }}";
     const storedTab = localStorage.getItem(tabKey);
-    if (window.location.hash) {
+    if (hasSearchQuery && !window.location.hash) {
+      const target = document.querySelector(`#optical-status-tabs a[href="${preferredStatusHash}"]`);
+      if (target && window.bootstrap?.Tab) {
+        new window.bootstrap.Tab(target).show();
+      }
+    } else if (window.location.hash) {
       const target = document.querySelector(`a[href="${window.location.hash}"]`);
       if (target && window.bootstrap?.Tab) {
         new window.bootstrap.Tab(target).show();
@@ -965,6 +1256,8 @@
 		        url.searchParams.set("window", currentWindow);
             url.searchParams.set("issues_page", "1");
             url.searchParams.set("stable_page", "1");
+            url.searchParams.set("offline_page", "1");
+            url.searchParams.set("acs_los_page", "1");
 		        const tabHash = localStorage.getItem(tabKey) || window.location.hash;
 		        if (tabHash) {
 		          url.hash = tabHash;
@@ -990,6 +1283,8 @@
           url.searchParams.set("limit", limit);
           url.searchParams.set("issues_page", "1");
           url.searchParams.set("stable_page", "1");
+          url.searchParams.set("offline_page", "1");
+          url.searchParams.set("acs_los_page", "1");
           const tabHash = localStorage.getItem(tabKey) || window.location.hash;
           if (tabHash) {
             url.hash = tabHash;
@@ -1042,6 +1337,8 @@
 
       setupServerSort("optical-issues-table", "issues", "#optical-issues");
       setupServerSort("optical-stable-table", "stable", "#optical-stable");
+      setupServerSort("optical-offline-table", "offline", "#optical-offline");
+      setupServerSort("optical-acs-los-table", "acs_los", "#optical-acs-los");
 
 		    const opticalSearch = document.getElementById("optical-status-search");
 		    if (opticalSearch) {
@@ -1057,8 +1354,14 @@
             else url.searchParams.delete("q");
             url.searchParams.set("issues_page", "1");
             url.searchParams.set("stable_page", "1");
-            const tabHash = localStorage.getItem(tabKey) || window.location.hash;
-            if (tabHash) url.hash = tabHash;
+            url.searchParams.set("offline_page", "1");
+            url.searchParams.set("acs_los_page", "1");
+            if (q) {
+              url.hash = "";
+            } else {
+              const tabHash = localStorage.getItem(tabKey) || window.location.hash;
+              if (tabHash) url.hash = tabHash;
+            }
             navigateWithLoading(url, q ? "Searching optical results..." : "Loading optical results...");
 		      };
           opticalSearch.addEventListener("input", () => {
@@ -1076,6 +1379,8 @@
 
 	    const modalTitle = document.getElementById("optical-spark-title");
     const modalChart = document.getElementById("optical-spark-modal-chart");
+    const modalStatusBadge = document.getElementById("optical-spark-status-badge");
+    const modalStatusNote = document.getElementById("optical-spark-status-note");
 	    const modalWindowButton = document.getElementById("optical-modal-window-button");
 	    const modalWindowOptions = document.querySelectorAll(".optical-modal-window-option");
 	    let modalChartInstance = null;
@@ -1083,6 +1388,8 @@
 	    const modalEl = document.getElementById("optical-spark-modal");
 	    let modalDeviceId = "";
 	    let modalStatus = "stable";
+      let modalStatusLabel = "Stable";
+      let modalStatusDetail = "";
 	    let modalName = "Optical";
 	    let modalHours = 24;
 	    if (modalEl && modalEl.parentElement !== document.body) {
@@ -1113,6 +1420,59 @@
         }
         return dt.toLocaleDateString("en-US", { month: "short", day: "2-digit" });
       };
+      const modalStatusDefaults = (status) => {
+        if (status === "offline") {
+          return {
+            label: "Offline",
+            note: "TR-069 is currently offline. The chart shows the last stored optical samples and a cut after the last online point.",
+          };
+        }
+        if (status === "acs_los") {
+          return {
+            label: "ACS-LOS",
+            note: "TR-069 is online, but RX is missing or unrealistic.",
+          };
+        }
+        if (status === "issue") {
+          return {
+            label: "Issue",
+            note: "Optical thresholds are currently breached.",
+          };
+        }
+        if (status === "monitor") {
+          return {
+            label: "Monitor",
+            note: "Optical readings are below stable range but not yet an issue.",
+          };
+        }
+        return {
+          label: "Stable",
+          note: "Optical readings are currently within stable range.",
+        };
+      };
+      const renderModalStatus = () => {
+        const defaults = modalStatusDefaults(modalStatus);
+        const label = modalStatusLabel || defaults.label;
+        const note = modalStatusDetail || defaults.note;
+        if (modalStatusBadge) {
+          modalStatusBadge.textContent = label;
+          modalStatusBadge.className = "badge";
+          if (modalStatus === "offline") {
+            modalStatusBadge.classList.add("bg-secondary-lt");
+          } else if (modalStatus === "acs_los") {
+            modalStatusBadge.classList.add("bg-orange-lt", "text-orange");
+          } else if (modalStatus === "issue") {
+            modalStatusBadge.classList.add("bg-red-lt");
+          } else if (modalStatus === "monitor") {
+            modalStatusBadge.classList.add("bg-yellow-lt");
+          } else {
+            modalStatusBadge.classList.add("bg-green-lt");
+          }
+        }
+        if (modalStatusNote) {
+          modalStatusNote.textContent = note;
+        }
+      };
 
 	    const renderModalWhenVisible = () => {
 	      if (!modalDeviceId) return;
@@ -1129,7 +1489,7 @@
 	    };
 
 	    const renderModalChart = async (name, deviceId, status, hours) => {
-	      const colorMap = { stable: "#2fb344", issue: "#d63939", monitor: "#f59f00" };
+	      const colorMap = { stable: "#2fb344", issue: "#d63939", monitor: "#f59f00", offline: "#6c757d", acs_los: "#f59f00" };
 	      const stroke = colorMap[status] || "#2fb344";
         const numericHours = Number(hours || 24);
 	      const label = hours >= 24 ? `${Math.floor(hours / 24)}D` : `${hours}H`;
@@ -1137,6 +1497,7 @@
       if (modalWindowButton) {
         modalWindowButton.textContent = `Filter: ${label}`;
       }
+      renderModalStatus();
 	      if (modalChartInstance) {
 	        modalChartInstance.destroy();
 	        modalChartInstance = null;
@@ -1187,6 +1548,14 @@
           const windowStartMs = nowMs - (numericHours * 3600 * 1000);
           const windowEndMs = nowMs;
           const chartPoints = [...points].sort((a, b) => a.x - b.x);
+          if (status === "offline" && chartPoints.length && chartPoints[chartPoints.length - 1].x < windowEndMs) {
+            chartPoints.push({
+              x: windowEndMs,
+              rx: null,
+              tx: null,
+              tx_raw: null,
+            });
+          }
 	        const rxSeries = chartPoints.map((item) => ({ x: item.x, y: item.rx }));
 	        const txSeries = chartPoints.map((item) => ({ x: item.x, y: item.tx }));
 	        modalChart.innerHTML = "";
@@ -1284,6 +1653,8 @@
 	      btn.addEventListener("click", () => {
 	        modalDeviceId = btn.dataset.deviceId || "";
 	        modalStatus = btn.dataset.status || "stable";
+          modalStatusLabel = btn.dataset.statusLabel || "";
+          modalStatusDetail = btn.dataset.statusNote || "";
 	        modalName = btn.dataset.name || "Optical";
 	        modalHours = Number(currentWindow || "24");
 	        renderModalWhenVisible();

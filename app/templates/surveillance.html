@@ -31,13 +31,13 @@
     {% endif %}
 	    <ul class="nav nav-tabs" data-bs-toggle="tabs">
 	      <li class="nav-item">
-	        <a href="#surv-under" class="nav-link {% if active_tab == 'under' %}active{% endif %}" data-bs-toggle="tab">Active Monitoring</a>
+	        <a href="#surv-under" class="nav-link {% if active_tab == 'under' %}active{% endif %}" data-bs-toggle="tab">Active Monitoring <span class="badge bg-yellow-lt text-yellow ms-2">{{ under_rows|length }}</span></a>
 	      </li>
 	      <li class="nav-item">
-	        <a href="#surv-level2" class="nav-link {% if active_tab == 'level2' %}active{% endif %}" data-bs-toggle="tab">Needs Manual Fix</a>
+	        <a href="#surv-level2" class="nav-link {% if active_tab == 'level2' %}active{% endif %}" data-bs-toggle="tab">Needs Manual Fix <span class="badge bg-red-lt text-red ms-2">{{ level2_rows|length }}</span></a>
 	      </li>
 	      <li class="nav-item">
-	        <a href="#surv-observe" class="nav-link {% if active_tab == 'observe' %}active{% endif %}" data-bs-toggle="tab">Post-Fix Observation</a>
+	        <a href="#surv-observe" class="nav-link {% if active_tab == 'observe' %}active{% endif %}" data-bs-toggle="tab">Post-Fix Observation <span class="badge bg-blue-lt text-blue ms-2">{{ observation_rows|length }}</span></a>
 	      </li>
 	      <li class="nav-item">
 	        <a href="#surv-history" class="nav-link {% if active_tab == 'history' %}active{% endif %}" data-bs-toggle="tab">History</a>
@@ -75,9 +75,9 @@
 			            <button type="button" class="btn btn-outline-warning btn-sm d-none" disabled data-surv-bulk-false-btn="under" title="Mark selected accounts as false">
 			              <i class="ti ti-circle-x me-1"></i>Mark as False
 			            </button>
-			            <div class="input-icon">
+			            <div class="input-icon" data-search-clearable>
 			              <input class="form-control form-control-sm" type="text" placeholder="Search PPPoE / IP" data-surv-search="under" autocomplete="off" />
-		              <span class="input-icon-addon"><i class="ti ti-search"></i></span>
+		              <button type="button" class="input-icon-addon search-addon-btn" data-search-clear-btn aria-label="Search"><i class="ti ti-search"></i></button>
 		            </div>
 		            <a class="btn btn-outline-secondary btn-sm" href="/surveillance?tab=under">Refresh</a>
                 {{ ai_status_button(under_ai_panel) }}
@@ -691,10 +691,10 @@
               <button type="button" class="btn btn-outline-blue btn-sm d-none" disabled data-surv-bulk-recovered-btn="observe" title="Mark selected accounts as fully recovered">
                 <i class="ti ti-circle-check me-1"></i>Mark as Fully Recovered
               </button>
-	            <div class="input-icon">
+	            <div class="input-icon" data-search-clearable>
 	              <input class="form-control form-control-sm" type="text" data-surv-search="observe" placeholder="Search PPPoE / IP" autocomplete="off" />
-	              <span class="input-icon-addon"><i class="ti ti-search"></i></span>
-            </div>
+	              <button type="button" class="input-icon-addon search-addon-btn" data-search-clear-btn aria-label="Search"><i class="ti ti-search"></i></button>
+	            </div>
             <a class="btn btn-outline-secondary btn-sm" href="/surveillance?tab=observe">Refresh</a>
             {{ ai_status_button(observe_ai_panel) }}
           </div>
@@ -1285,10 +1285,10 @@
 		            <button type="button" class="btn btn-outline-success btn-sm d-none" disabled data-surv-bulk-fixed-btn="level2" title="Mark selected accounts as fixed">
 		              <i class="ti ti-check me-1"></i>Account Fixed
 		            </button>
-		            <div class="input-icon">
+		            <div class="input-icon" data-search-clearable>
 		              <input class="form-control form-control-sm" type="text" placeholder="Search PPPoE / IP" data-surv-search="level2" autocomplete="off" />
-	              <span class="input-icon-addon"><i class="ti ti-search"></i></span>
-	            </div>
+		              <button type="button" class="input-icon-addon search-addon-btn" data-search-clear-btn aria-label="Search"><i class="ti ti-search"></i></button>
+		            </div>
 		            <a class="btn btn-outline-secondary btn-sm" href="/surveillance?tab=level2">Refresh</a>
                 {{ ai_status_button(level2_ai_panel) }}
 		          </div>
@@ -1846,9 +1846,9 @@
                   <option value="recovered" {% if history_action == 'recovered' %}selected{% endif %}>Fully Recovered</option>
                   <option value="all" {% if history_action == 'all' %}selected{% endif %}>All Session Actions</option>
                 </select>
-		            <div class="input-icon">
+		            <div class="input-icon" data-search-clearable>
 		              <input class="form-control form-control-sm" id="surv-history-search" type="text" placeholder="Search PPPoE" autocomplete="off" value="{{ history_query or '' }}" />
-		              <span class="input-icon-addon"><i class="ti ti-search"></i></span>
+		              <button type="button" class="input-icon-addon search-addon-btn" data-search-clear-btn aria-label="Search"><i class="ti ti-search"></i></button>
 		            </div>
 		            <a class="btn btn-outline-secondary btn-sm" href="/surveillance?tab=history{% if history_action and history_action != 'all' %}&action={{ history_action|urlencode }}{% endif %}{% if history_query %}&q={{ history_query|urlencode }}{% endif %}#surv-history">Refresh</a>
 		          </div>
@@ -1971,9 +1971,9 @@
 	            </div>
 	          </div>
 	          <div class="d-flex align-items-center gap-2">
-	            <div class="input-icon">
+	            <div class="input-icon" data-search-clearable>
 	              <input class="form-control form-control-sm" id="surv-logs-search" type="text" placeholder="Search user/action/account/remarks" autocomplete="off" value="{{ surveillance_logs_query or '' }}" />
-	              <span class="input-icon-addon"><i class="ti ti-search"></i></span>
+	              <button type="button" class="input-icon-addon search-addon-btn" data-search-clear-btn aria-label="Search"><i class="ti ti-search"></i></button>
 	            </div>
 	            <a class="btn btn-outline-secondary btn-sm" href="/surveillance?tab=logs{% if surveillance_logs_query %}&logs_q={{ surveillance_logs_query|urlencode }}{% endif %}#surv-logs">Refresh</a>
 	          </div>
@@ -2789,7 +2789,6 @@
 			      // ignore
 			    }
 			    const tabs = document.querySelectorAll('#surv-under, #surv-observe, #surv-level2, #surv-history, #surv-logs, #surv-settings');
-			    const links = document.querySelectorAll('a[data-bs-toggle="tab"]');
           const surveillanceTabMap = {
             "#surv-under": "under",
             "#surv-observe": "observe",
@@ -2798,8 +2797,105 @@
             "#surv-logs": "logs",
             "#surv-settings": "settings",
           };
+          const links = Array.from(document.querySelectorAll('a[data-bs-toggle="tab"]')).filter((link) => {
+            const href = link.getAttribute("href") || "";
+            return Boolean(surveillanceTabMap[href]);
+          });
           const serverBackedTabs = new Set(["history", "logs"]);
+          const stageTabOrder = ["under", "level2", "observe"];
+          const stageTabLinks = {
+            under: document.querySelector('a[href="#surv-under"]'),
+            level2: document.querySelector('a[href="#surv-level2"]'),
+            observe: document.querySelector('a[href="#surv-observe"]'),
+          };
+          const topTabPanes = {
+            under: document.getElementById("surv-under"),
+            level2: document.getElementById("surv-level2"),
+            observe: document.getElementById("surv-observe"),
+            history: document.getElementById("surv-history"),
+            logs: document.getElementById("surv-logs"),
+            settings: document.getElementById("surv-settings"),
+          };
+          const surveillanceSearchState = {
+            query: "",
+            pendingFocus: false,
+            panes: new Map(),
+          };
           const tabNameFromHref = (href) => surveillanceTabMap[href || ""] || "";
+          const activateSurveillanceTopTabFallback = (tab) => {
+            if (!topTabPanes[tab]) return;
+            Object.entries(surveillanceTabMap).forEach(([href, key]) => {
+              const link = links.find((item) => (item.getAttribute("href") || "") === href);
+              const pane = topTabPanes[key];
+              const isActive = key === tab;
+              if (link) link.classList.toggle("active", isActive);
+              if (pane) {
+                pane.classList.toggle("active", isActive);
+                pane.classList.toggle("show", isActive);
+              }
+            });
+            setSettingsSaveBar(tab);
+            if (tab === "observe") collapseObservePreFixTimeline();
+            if (!serverBackedTabs.has(tab)) {
+              history.replaceState(null, "", buildTopTabUrl(tab).toString());
+            }
+          };
+          const showSurveillanceTopTab = (tab) => {
+            const href = Object.entries(surveillanceTabMap).find(([, value]) => value === tab)?.[0] || "";
+            if (!href) return;
+            const target = links.find((link) => (link.getAttribute("href") || "") === href);
+            if (target && window.bootstrap?.Tab) {
+              try {
+                new window.bootstrap.Tab(target).show();
+              } catch (_err) {
+                // fall through to manual activation below
+              }
+            }
+            if (!(target && target.classList.contains("active"))) {
+              activateSurveillanceTopTabFallback(tab);
+            }
+          };
+          const currentStageTab = () => {
+            return stageTabOrder.find((key) => stageTabLinks[key] && stageTabLinks[key].classList.contains("active")) || "";
+          };
+          const updateStageTabSearchHits = (query, matchCounts) => {
+            const hasQuery = Boolean((query || "").trim());
+            stageTabOrder.forEach((key) => {
+              const link = stageTabLinks[key];
+              if (!link) return;
+              const hasMatch = Number(matchCounts?.[key] || 0) > 0;
+              link.classList.toggle("threej-search-hit-tab", hasQuery && hasMatch);
+            });
+          };
+          const syncSurveillanceStageSearch = () => {
+            const rawQuery = String(surveillanceSearchState.query || "");
+            const normalizedQuery = rawQuery.trim().toLowerCase();
+            if (normalizedQuery && surveillanceSearchState.pendingFocus) {
+              stageTabOrder.forEach((key) => {
+                const pane = surveillanceSearchState.panes.get(key);
+                if (pane?.closeSplit) pane.closeSplit();
+              });
+            }
+            const matchCounts = {};
+            stageTabOrder.forEach((key) => {
+              const pane = surveillanceSearchState.panes.get(key);
+              if (!pane) {
+                matchCounts[key] = 0;
+                return;
+              }
+              if (pane.search && pane.search.value !== rawQuery) {
+                pane.search.value = rawQuery;
+              }
+              matchCounts[key] = Number(pane.applySearch(rawQuery) || 0);
+            });
+            updateStageTabSearchHits(normalizedQuery, matchCounts);
+            const matchedStages = stageTabOrder.filter((key) => Number(matchCounts[key] || 0) > 0);
+            const current = currentStageTab();
+            if (normalizedQuery && matchedStages.length && (surveillanceSearchState.pendingFocus || !matchedStages.includes(current))) {
+              showSurveillanceTopTab(matchedStages[0]);
+            }
+            surveillanceSearchState.pendingFocus = false;
+          };
           const buildTopTabUrl = (tab) => {
             const url = new URL(window.location.href);
             url.searchParams.set("tab", tab);
@@ -5616,6 +5712,22 @@
 	        return !!(target && target.closest && target.closest("a,button,input,select,textarea,form,label"));
 	      };
 
+        const applySearchFilter = (rawQuery = surveillanceSearchState.query) => {
+          const q = (rawQuery || "").trim().toLowerCase();
+          let visibleCount = 0;
+          fullTable.querySelectorAll("tr.surv-row-full").forEach((tr) => {
+            const hay = `${tr.getAttribute("data-pppoe") || ""} ${tr.getAttribute("data-ip") || ""}`.toLowerCase();
+            const isVisible = !q || hay.includes(q);
+            tr.style.display = isVisible ? "" : "none";
+            if (isVisible) visibleCount += 1;
+          });
+          list.querySelectorAll("tr.surv-row").forEach((tr) => {
+            const hay = `${tr.getAttribute("data-pppoe") || ""} ${tr.getAttribute("data-ip") || ""}`.toLowerCase();
+            tr.style.display = !q || hay.includes(q) ? "" : "none";
+          });
+          return visibleCount;
+        };
+
 	      const destroyChart = () => {
           destroySplitCharts(chartsState, chartEl, opticalChartEl);
 	      };
@@ -6117,8 +6229,18 @@
 	          if (prevTimelineEl) prevTimelineEl.innerHTML = "";
 	          const prevTotalEl = splitView.querySelector(`[data-surv-prev-timeline-total="${key}"]`);
 	          if (prevTotalEl) prevTotalEl.innerHTML = "";
-			        destroyChart();
+		        destroyChart();
 		      };
+
+          surveillanceSearchState.panes.set(key, {
+            search,
+            applySearch: applySearchFilter,
+            closeSplit,
+          });
+          if (search && search.value !== surveillanceSearchState.query) {
+            search.value = surveillanceSearchState.query;
+          }
+          applySearchFilter(surveillanceSearchState.query);
 
 	      document.querySelectorAll(`[data-surv-close="${key}"]`).forEach((btn) => {
 	        btn.addEventListener("click", (event) => {
@@ -6153,15 +6275,9 @@
 
 		      if (search) {
 		        search.addEventListener("input", () => {
-		          const q = (search.value || "").trim().toLowerCase();
-		          fullTable.querySelectorAll("tr.surv-row-full").forEach((tr) => {
-		            const hay = `${tr.getAttribute("data-pppoe") || ""} ${tr.getAttribute("data-ip") || ""}`.toLowerCase();
-		            tr.style.display = !q || hay.includes(q) ? "" : "none";
-		          });
-		          list.querySelectorAll("tr.surv-row").forEach((tr) => {
-		            const hay = `${tr.getAttribute("data-pppoe") || ""} ${tr.getAttribute("data-ip") || ""}`.toLowerCase();
-		            tr.style.display = !q || hay.includes(q) ? "" : "none";
-		          });
+              surveillanceSearchState.query = search.value || "";
+              surveillanceSearchState.pendingFocus = true;
+              syncSurveillanceStageSearch();
 		        });
 		      }
 
@@ -6457,6 +6573,7 @@
     initPane("under");
     initPane("level2");
     initPane("observe");
+    syncSurveillanceStageSearch();
     initTableSort("under");
     initTableSort("level2");
     initTableSort("observe");

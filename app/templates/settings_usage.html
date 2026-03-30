@@ -217,20 +217,20 @@
 
 		        <ul class="nav nav-tabs" data-bs-toggle="tabs">
 		          <li class="nav-item">
-		            <a href="#usage-issues" class="nav-link active" data-bs-toggle="tab">Usage Issues</a>
+		            <a href="#usage-issues" class="nav-link active" data-bs-toggle="tab">Usage Issues <span class="badge bg-secondary-lt text-secondary ms-2" id="usage-issues-tab-count">{{ usage_counts.issues if usage_counts is defined else 0 }}</span></a>
 		          </li>
 			          <li class="nav-item">
-			            <a href="#usage-stable" class="nav-link" data-bs-toggle="tab">Stable Usage</a>
+			            <a href="#usage-stable" class="nav-link" data-bs-toggle="tab">Stable Usage <span class="badge bg-secondary-lt text-secondary ms-2" id="usage-stable-tab-count">{{ usage_counts.stable if usage_counts is defined else 0 }}</span></a>
 			          </li>
 		            <li class="nav-item ms-auto">
 		              <div class="px-2 py-2">
                     <div class="d-flex align-items-center gap-2">
                       <div id="usage-router-kpis" class="usage-router-kpis d-flex flex-nowrap gap-1 overflow-auto"></div>
-                      <div class="input-icon">
+                      <div class="input-icon" data-search-clearable>
                         <input class="form-control form-control-sm" id="usage-status-search" type="text" placeholder="Search" autocomplete="off" />
-                        <span class="input-icon-addon">
+                        <button type="button" class="input-icon-addon search-addon-btn" data-search-clear-btn aria-label="Search">
                           <i class="ti ti-search"></i>
-                        </span>
+                        </button>
                       </div>
                     </div>
 	              </div>
@@ -682,6 +682,9 @@
     const escMap = { "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" };
     const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => escMap[c] || c);
     const canProfileReview = {% if can_profile_review %}true{% else %}false{% endif %};
+    const usageNewAckDelayMs = Math.max(Number({{ usage_new_view_seconds|default(10)|int }}) || 10, 1) * 1000;
+    const statusPaneEl = document.getElementById("usage-status");
+    const issuesPaneEl = document.getElementById("usage-issues");
 
     const fmtBytes = (value) => {
       const num = Number(value);
@@ -718,6 +721,8 @@
 
 	    const issuesCount = document.getElementById("usage-issues-count");
 	    const stableCount = document.getElementById("usage-stable-count");
+    const issuesTabCount = document.getElementById("usage-issues-tab-count");
+    const stableTabCount = document.getElementById("usage-stable-tab-count");
 	    const peakBadge = document.getElementById("usage-peak-badge");
 	    const lastCheck = document.getElementById("usage-last-check");
 	    const genieRefresh = document.getElementById("usage-genieacs-refresh");
@@ -742,6 +747,8 @@
 
 		    let issuesData = [];
 		    let stableData = [];
+    let usageNewSeenTimer = null;
+    let usageNewSeenInFlight = false;
 
     const trendCache = new Map();
     const trendKeepMinutes = 60; // keep last 60 minutes in-memory for sparklines
@@ -1062,6 +1069,82 @@
 	        .join("");
 	    }
 
+    function collectVisibleUsageNewEntryIds() {
+      const ids = [];
+      const seen = new Set();
+      if (!issuesBody) return ids;
+      issuesBody.querySelectorAll('[data-usage-entry-id][data-usage-new-entry="1"]').forEach((rowEl) => {
+        const entryId = String(rowEl.getAttribute("data-usage-entry-id") || "").trim();
+        if (!entryId || seen.has(entryId)) return;
+        seen.add(entryId);
+        ids.push(entryId);
+      });
+      return ids;
+    }
+
+    function clearUsageNewMarkers(entryIds) {
+      const idSet = new Set((entryIds || []).map((item) => String(item || "").trim()).filter(Boolean));
+      if (!idSet.size || !issuesBody) return;
+      issuesBody.querySelectorAll("[data-usage-entry-id]").forEach((rowEl) => {
+        const entryId = String(rowEl.getAttribute("data-usage-entry-id") || "").trim();
+        if (!idSet.has(entryId)) return;
+        rowEl.setAttribute("data-usage-new-entry", "0");
+        rowEl.classList.remove("usage-new-entry");
+        rowEl.querySelectorAll("[data-usage-new-badge]").forEach((badgeEl) => badgeEl.remove());
+      });
+    }
+
+    function isUsageIssuesTabActive() {
+      return !!(
+        statusPaneEl
+        && statusPaneEl.classList.contains("active")
+        && issuesPaneEl
+        && issuesPaneEl.classList.contains("active")
+      );
+    }
+
+    async function acknowledgeUsageNewEntries() {
+      if (usageNewSeenInFlight) return;
+      const entryIds = collectVisibleUsageNewEntryIds();
+      if (!entryIds.length) return;
+      usageNewSeenInFlight = true;
+      try {
+        const res = await fetch("/usage/mark_new_seen", {
+          method: "POST",
+          headers: {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+          },
+          cache: "no-store",
+          body: JSON.stringify({ entry_ids: entryIds }),
+        });
+        if (!res.ok) return;
+        const payload = await res.json();
+        clearUsageNewMarkers(Array.isArray(payload?.seen_ids) ? payload.seen_ids : entryIds);
+      } catch (_err) {
+        // ignore acknowledgement failures; the next refresh can retry
+      } finally {
+        usageNewSeenInFlight = false;
+      }
+    }
+
+    function scheduleUsageNewSeenAck() {
+      if (usageNewSeenTimer) {
+        window.clearTimeout(usageNewSeenTimer);
+        usageNewSeenTimer = null;
+      }
+      if (!isUsageIssuesTabActive()) return;
+      if (!collectVisibleUsageNewEntryIds().length) return;
+      usageNewSeenTimer = window.setTimeout(() => {
+        usageNewSeenTimer = null;
+        if (document.visibilityState && document.visibilityState !== "visible") {
+          scheduleUsageNewSeenAck();
+          return;
+        }
+        acknowledgeUsageNewEntries();
+      }, usageNewAckDelayMs);
+    }
+
 	    function renderActiveRow(row) {
 	      const names = Array.isArray(row.hostnames) ? row.hostnames : [];
 	      const hostCount = Number(row.host_count || 0);
@@ -1133,11 +1216,13 @@
              </svg>
 	           </button>`
         : `<span class="text-muted small">n/a</span>`;
-      const profileAction = renderProfileReviewAction({ pppoe: row.pppoe, address: row.address });
+	      const profileAction = renderProfileReviewAction({ pppoe: row.pppoe, address: row.address });
+      const entryId = String(row.entry_id || "").trim();
+      const newBadge = row.is_new ? '<span class="badge bg-yellow-lt text-yellow ms-2" data-usage-new-badge title="New Usage issue for your view">New</span>' : "";
 
       return `
-        <tr>
-          <td class="us-col-pppoe us-priority-0"><span class="usage-status-label" title="${esc(row.pppoe)}">${esc(row.pppoe)}</span></td>
+        <tr class="${row.is_new ? "usage-new-entry" : ""}" data-usage-entry-id="${esc(entryId)}" data-usage-new-entry="${row.is_new ? "1" : "0"}">
+          <td class="us-col-pppoe us-priority-0"><span class="usage-status-label" title="${esc(row.pppoe)}">${esc(row.pppoe)}</span>${newBadge}</td>
           <td class="us-col-router us-priority-1"><span class="usage-status-cell-truncate" title="${esc(row.router_name || row.router_id || "")}">${esc(row.router_name || row.router_id || "")}</span></td>
           <td class="text-end us-col-dl-rate us-priority-2">${esc(fmtBps(row.dl_bps))}</td>
           <td class="text-end us-col-ul-rate us-priority-3">${esc(fmtBps(row.ul_bps))}</td>
@@ -1160,6 +1245,8 @@
 	        const counts = data.counts || {};
 	        issuesCount.textContent = `Issues: ${counts.issues || 0}`;
 	        stableCount.textContent = `Stable: ${counts.stable || 0}`;
+        if (issuesTabCount) issuesTabCount.textContent = String(counts.issues || 0);
+        if (stableTabCount) stableTabCount.textContent = String(counts.stable || 0);
 
         const peak = data.peak || {};
         const peakText = `${peak.start || "--"}–${peak.end || "--"}${peak.in_peak ? " (NOW)" : ""}`;
@@ -1182,15 +1269,81 @@
 	      }
 	    }
 
-	    function renderAllTables() {
-	      const issues = applyLimit(sortRows(filterRows(issuesData, "issues"), "issues"));
-	      const stable = applyLimit(sortRows(filterRows(stableData, "stable"), "stable"));
+    const usageStatusHashes = ["#usage-issues", "#usage-stable"];
+    const usageStatusPanes = {
+      "#usage-issues": document.getElementById("usage-issues"),
+      "#usage-stable": document.getElementById("usage-stable"),
+    };
+
+    function applyUsageStatusTabState(hash) {
+      if (!usageStatusHashes.includes(hash)) return;
+      usageStatusHashes.forEach((href) => {
+        const link = document.querySelector(`#usage-status a[href="${href}"]`);
+        const pane = usageStatusPanes[href];
+        const isActive = href === hash;
+        if (link) link.classList.toggle("active", isActive);
+        if (pane) {
+          pane.classList.toggle("active", isActive);
+          pane.classList.toggle("show", isActive);
+        }
+      });
+      localStorage.setItem(statusTabKey, hash);
+      history.replaceState(null, "", hash);
+      scheduleUsageNewSeenAck();
+    }
+
+    function showUsageStatusTab(hash) {
+      if (!usageStatusHashes.includes(hash)) return;
+      const target = document.querySelector(`#usage-status a[href="${hash}"]`);
+      if (target && window.bootstrap?.Tab) {
+        try {
+          new window.bootstrap.Tab(target).show();
+        } catch (_err) {
+          // fall through to manual activation below
+        }
+      }
+      if (!(target && target.classList.contains("active"))) {
+        applyUsageStatusTabState(hash);
+      }
+    }
+
+    function syncUsageSearchTabs(matchCounts, forceFocus = false) {
+      const hasSearch = Boolean((searchQuery || "").trim());
+      const order = ["#usage-issues", "#usage-stable"];
+      order.forEach((hash) => {
+        const link = document.querySelector(`#usage-status a[href="${hash}"]`);
+        if (!link) return;
+        const key = hash === "#usage-stable" ? "stable" : "issues";
+        const hasMatch = Number(matchCounts?.[key] || 0) > 0;
+        link.classList.toggle("threej-search-hit-tab", hasSearch && hasMatch);
+      });
+      if (!hasSearch) return;
+      const matched = order.filter((hash) => {
+        const key = hash === "#usage-stable" ? "stable" : "issues";
+        return Number(matchCounts?.[key] || 0) > 0;
+      });
+      const activeLink = usageStatusHashes
+        .map((hash) => document.querySelector(`#usage-status a[href="${hash}"]`))
+        .find((link) => link && link.classList.contains("active"));
+      const activeHash = activeLink ? (activeLink.getAttribute("href") || "") : "";
+      if (matched.length && (forceFocus || !matched.includes(activeHash))) {
+        showUsageStatusTab(matched[0]);
+      }
+    }
+
+	    function renderAllTables(forceSearchFocus = false) {
+	      const filteredIssues = sortRows(filterRows(issuesData, "issues"), "issues");
+	      const filteredStable = sortRows(filterRows(stableData, "stable"), "stable");
+        syncUsageSearchTabs({ issues: filteredIssues.length, stable: filteredStable.length }, forceSearchFocus);
+	      const issues = applyLimit(filteredIssues);
+	      const stable = applyLimit(filteredStable);
 
 	      issuesBody.innerHTML = issues.length ? issues.map(renderActiveRow).join("") : '<tr><td colspan="10" class="text-muted">No usage issues detected yet.</td></tr>';
 	      stableBody.innerHTML = stable.length ? stable.map(renderActiveRow).join("") : '<tr><td colspan="10" class="text-muted">No stable usage rows yet.</td></tr>';
 
 	      initDeviceClickcards();
 	      updateSortIndicators();
+        scheduleUsageNewSeenAck();
 	    }
 
     const hoverCard = document.createElement("div");
@@ -1298,14 +1451,13 @@
     });
 
     // Persist active status sub-tab (Issues/Stable/Offline).
-    const statusTabs = document.querySelectorAll('#usage-status ul.nav-tabs a[data-bs-toggle="tab"]');
+    const statusTabs = Array.from(document.querySelectorAll('#usage-status ul.nav-tabs a[data-bs-toggle="tab"]'))
+      .filter((link) => usageStatusHashes.includes(link.getAttribute("href") || ""));
     if (window.location.hash) {
-      const target = document.querySelector(`#usage-status a[href="${window.location.hash}"]`);
-      if (target && window.bootstrap?.Tab) new window.bootstrap.Tab(target).show();
+      showUsageStatusTab(window.location.hash);
     } else {
       const stored = localStorage.getItem(statusTabKey);
-      const target = stored ? document.querySelector(`#usage-status a[href="${stored}"]`) : null;
-      if (target && window.bootstrap?.Tab) new window.bootstrap.Tab(target).show();
+      if (stored) showUsageStatusTab(stored);
     }
     statusTabs.forEach((link) => {
       link.addEventListener("shown.bs.tab", (event) => {
@@ -1314,7 +1466,24 @@
           localStorage.setItem(statusTabKey, href);
           history.replaceState(null, "", href);
         }
+        scheduleUsageNewSeenAck();
       });
+      link.addEventListener("hide.bs.tab", () => {
+        if (usageNewSeenTimer) {
+          window.clearTimeout(usageNewSeenTimer);
+          usageNewSeenTimer = null;
+        }
+      });
+    });
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        scheduleUsageNewSeenAck();
+        return;
+      }
+      if (usageNewSeenTimer) {
+        window.clearTimeout(usageNewSeenTimer);
+        usageNewSeenTimer = null;
+      }
     });
 
     // Sorting via header click (client-side).
@@ -1510,7 +1679,7 @@
       const apply = () => {
         searchQuery = (searchInput.value || "").trim();
         saveJson(searchStateKey, searchQuery);
-        renderAllTables();
+        renderAllTables(true);
       };
       searchInput.addEventListener("input", () => {
         if (timer) clearTimeout(timer);

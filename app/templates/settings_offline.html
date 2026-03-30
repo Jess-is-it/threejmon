@@ -212,11 +212,11 @@
           </li>
           <li class="nav-item ms-auto">
             <div class="px-2 py-2">
-              <div class="input-icon">
+              <div class="input-icon" data-search-clearable>
                 <input class="form-control form-control-sm" id="offline-status-search" type="text" placeholder="Search" autocomplete="off" />
-                <span class="input-icon-addon">
+                <button type="button" class="input-icon-addon search-addon-btn" data-search-clear-btn aria-label="Search">
                   <i class="ti ti-search"></i>
-                </span>
+                </button>
               </div>
             </div>
           </li>
@@ -576,9 +576,9 @@
                         <div class="dropdown-item offline-radius-accounts-limit-row" data-limit="5000">5000</div>
                       </div>
                     </div>
-                    <div class="input-icon">
+                    <div class="input-icon" data-search-clearable>
                       <input class="form-control form-control-sm" id="offline-radius-accounts-search" type="text" placeholder="Search" autocomplete="off" />
-                      <span class="input-icon-addon"><i class="ti ti-search"></i></span>
+                      <button type="button" class="input-icon-addon search-addon-btn" data-search-clear-btn aria-label="Search"><i class="ti ti-search"></i></button>
                     </div>
                   </div>
                 </div>
@@ -697,7 +697,9 @@
     const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => escMap[c] || c);
     const canProfileReview = {% if can_profile_review %}true{% else %}false{% endif %};
     const initialOfflineRules = {{ offline_rules|default([])|tojson }};
+    const offlineNewAckDelayMs = Math.max(Number({{ offline_new_view_seconds|default(10)|int }}) || 10, 1) * 1000;
 
+    const statusPaneEl = document.getElementById("offline-status");
     const currentBody = document.getElementById("offline-current-body");
     const historyBody = document.getElementById("offline-history-body");
     const currentPane = document.getElementById("offline-current-pane");
@@ -751,6 +753,8 @@
     let radiusAccountsLastFetchAt = 0;
     let radiusAccountsFetching = false;
     let activeStatusView = { type: currentRules.length ? "rule" : "history", ruleId: currentRules.length ? String(currentRules[0].id || "") : "" };
+    let offlineNewSeenTimer = null;
+    let offlineNewSeenInFlight = false;
 
     const radiusAccountsSearchKey = "offline_radius_accounts_search_v1";
     const radiusAccountsStatusKey = "offline_radius_accounts_status_v1";
@@ -957,7 +961,18 @@
     function rowMatchesSearch(row) {
       const q = (searchQuery || "").trim().toLowerCase();
       if (!q) return true;
-      const hay = [row?.pppoe, row?.router_name, row?.router_id, row?.profile, row?.last_logged_out, row?.radius_status];
+      const hay = [
+        row?.pppoe,
+        row?.router_name,
+        row?.router_id,
+        row?.profile,
+        row?.last_logged_out,
+        row?.radius_status,
+        row?.mode,
+        row?.offline_started,
+        row?.offline_ended,
+        row?.duration,
+      ];
       return hay
         .filter((x) => x !== null && x !== undefined)
         .map((x) => String(x).toLowerCase())
@@ -1002,15 +1017,88 @@
         .join("");
     }
 
+    function collectVisibleOfflineNewEntryIds() {
+      const ids = [];
+      const seen = new Set();
+      if (!currentBody) return ids;
+      currentBody.querySelectorAll('[data-offline-entry-id][data-offline-new-entry="1"]').forEach((rowEl) => {
+        const entryId = String(rowEl.getAttribute("data-offline-entry-id") || "").trim();
+        if (!entryId || seen.has(entryId)) return;
+        seen.add(entryId);
+        ids.push(entryId);
+      });
+      return ids;
+    }
+
+    function clearOfflineNewMarkers(entryIds) {
+      const idSet = new Set((entryIds || []).map((item) => String(item || "").trim()).filter(Boolean));
+      if (!idSet.size || !currentBody) return;
+      currentBody.querySelectorAll("[data-offline-entry-id]").forEach((rowEl) => {
+        const entryId = String(rowEl.getAttribute("data-offline-entry-id") || "").trim();
+        if (!idSet.has(entryId)) return;
+        rowEl.setAttribute("data-offline-new-entry", "0");
+        rowEl.classList.remove("offline-new-entry");
+        rowEl.querySelectorAll("[data-offline-new-badge]").forEach((badgeEl) => badgeEl.remove());
+      });
+    }
+
+    function isOfflineStatusRuleViewActive() {
+      return !!(statusPaneEl && statusPaneEl.classList.contains("active") && activeStatusView.type === "rule");
+    }
+
+    async function acknowledgeOfflineNewEntries() {
+      if (offlineNewSeenInFlight) return;
+      const entryIds = collectVisibleOfflineNewEntryIds();
+      if (!entryIds.length) return;
+      offlineNewSeenInFlight = true;
+      try {
+        const res = await fetch("/offline/mark_new_seen", {
+          method: "POST",
+          headers: {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+          },
+          cache: "no-store",
+          body: JSON.stringify({ entry_ids: entryIds }),
+        });
+        if (!res.ok) return;
+        const payload = await res.json();
+        clearOfflineNewMarkers(Array.isArray(payload?.seen_ids) ? payload.seen_ids : entryIds);
+      } catch (_err) {
+        // ignore acknowledgement failures; the next refresh can retry
+      } finally {
+        offlineNewSeenInFlight = false;
+      }
+    }
+
+    function scheduleOfflineNewSeenAck() {
+      if (offlineNewSeenTimer) {
+        window.clearTimeout(offlineNewSeenTimer);
+        offlineNewSeenTimer = null;
+      }
+      if (!isOfflineStatusRuleViewActive()) return;
+      if (!collectVisibleOfflineNewEntryIds().length) return;
+      offlineNewSeenTimer = window.setTimeout(() => {
+        offlineNewSeenTimer = null;
+        if (document.visibilityState && document.visibilityState !== "visible") {
+          scheduleOfflineNewSeenAck();
+          return;
+        }
+        acknowledgeOfflineNewEntries();
+      }, offlineNewAckDelayMs);
+    }
+
     function renderCurrentRow(row) {
       const disabled = row.disabled ? '<span class="badge bg-secondary-lt">Yes</span>' : '<span class="badge bg-green-lt">No</span>';
       const status = String(row.radius_status || "").trim();
       const statusCell = status ? `<span class="badge bg-secondary-lt">${esc(status)}</span>` : '<span class="text-muted small">—</span>';
       const since = row.offline_since ? esc(row.offline_since) : "—";
       const profileAction = renderProfileReviewAction({ pppoe: row.pppoe });
+      const entryId = String(row.entry_id || "").trim();
+      const newBadge = row.is_new ? '<span class="badge bg-yellow-lt text-yellow ms-2" data-offline-new-badge title="New Offline account for your view">New</span>' : "";
       return `
-        <tr>
-          <td class="fw-semibold off-col-pppoe off-priority-0"><span class="offline-status-label" title="${esc(row.pppoe || "")}">${esc(row.pppoe || "")}</span></td>
+        <tr class="${row.is_new ? "offline-new-entry" : ""}" data-offline-entry-id="${esc(entryId)}" data-offline-new-entry="${row.is_new ? "1" : "0"}">
+          <td class="fw-semibold off-col-pppoe off-priority-0"><span class="offline-status-label" title="${esc(row.pppoe || "")}">${esc(row.pppoe || "")}</span>${newBadge}</td>
           <td class="text-muted off-col-router off-priority-2"><span class="offline-status-cell-truncate" title="${esc(row.router_name || row.router_id || "")}">${esc(row.router_name || row.router_id || "")}</span></td>
           <td class="off-col-status off-priority-1">${statusCell}</td>
           <td class="off-col-disabled off-priority-6">${row.disabled === undefined ? '<span class="text-muted small">—</span>' : disabled}</td>
@@ -1039,15 +1127,54 @@
       `;
     }
 
-    function renderAllTables() {
-      const currentRows = getCurrentRows();
+    function syncOfflineSearchTabs(filteredByRule, filteredHistoryRows, forceFocus = false) {
+      const hasSearch = Boolean((searchQuery || "").trim());
+      let firstMatch = null;
+      const matchedViews = [];
+      if (statusTabs) {
+        statusTabs.querySelectorAll("[data-offline-view]").forEach((link) => {
+          const viewType = String(link.getAttribute("data-offline-view") || "").trim();
+          const ruleId = String(link.getAttribute("data-offline-rule") || "").trim();
+          const viewKey = viewType === "rule" ? `rule:${ruleId}` : "history";
+          let count = 0;
+          if (viewType === "rule") {
+            count = Array.isArray(filteredByRule?.[ruleId]) ? filteredByRule[ruleId].length : 0;
+          } else if (viewType === "history") {
+            count = Array.isArray(filteredHistoryRows) ? filteredHistoryRows.length : 0;
+          }
+          const hasMatch = count > 0;
+          link.classList.toggle("threej-search-hit-tab", hasSearch && hasMatch);
+          if (!firstMatch && hasMatch) {
+            firstMatch = viewType === "rule" ? { type: "rule", ruleId } : { type: "history", ruleId: "" };
+          }
+          if (hasMatch) matchedViews.push(viewKey);
+        });
+      }
+      if (!hasSearch || !firstMatch) return;
+      const currentViewKey = activeStatusView.type === "rule" ? `rule:${String(activeStatusView.ruleId || "")}` : "history";
+      if (forceFocus || !matchedViews.includes(currentViewKey)) {
+        activeStatusView = firstMatch;
+      }
+    }
+
+    function renderAllTables(forceSearchFocus = false) {
+      const filteredByRule = {};
+      currentRules.forEach((rule) => {
+        const ruleId = String(rule?.id || "").trim();
+        const rows = currentRowsByRule?.[ruleId];
+        filteredByRule[ruleId] = sortRows(filterRows(Array.isArray(rows) ? rows : []), "current");
+      });
+      const filteredHistory = sortRows(filterRows(historyData), "history");
+      syncOfflineSearchTabs(filteredByRule, filteredHistory, forceSearchFocus);
+      ensureActiveStatusView();
       const activeRule = getActiveRule();
+      const currentRows = activeRule ? (filteredByRule[String(activeRule.id || "").trim()] || []) : [];
       if (currentBody) {
-        const filtered = applyLimit(sortRows(filterRows(currentRows), "current"));
+        const filtered = applyLimit(currentRows);
         currentBody.innerHTML = filtered.length ? filtered.map(renderCurrentRow).join("") : '<tr><td colspan="8" class="text-muted">No offline accounts found.</td></tr>';
       }
       if (historyBody) {
-        const filtered = applyLimit(sortRows(filterRows(historyData), "history"));
+        const filtered = applyLimit(filteredHistory);
         historyBody.innerHTML = filtered.length ? filtered.map(renderHistoryRow).join("") : '<tr><td colspan="7" class="text-muted">No history yet.</td></tr>';
       }
       if (countEl) {
@@ -1062,6 +1189,7 @@
       updateStatusTabState();
       renderRadiusAccountsTable();
       updateSortIndicators();
+      scheduleOfflineNewSeenAck();
     }
 
     function formatDurationShort(seconds) {
@@ -1322,7 +1450,7 @@
       let timer = null;
       const apply = () => {
         saveJson(searchStateKey, searchQuery);
-        renderAllTables();
+        renderAllTables(true);
       };
       searchInput.addEventListener("input", () => {
         searchQuery = searchInput.value || "";
@@ -1456,6 +1584,25 @@
 
     document.querySelectorAll('a[data-bs-toggle="tab"][href="#offline-radius-accounts"]').forEach((tab) => {
       tab.addEventListener("shown.bs.tab", () => refreshRadiusAccounts(true));
+    });
+    document.querySelectorAll('a[data-bs-toggle="tab"]').forEach((tab) => {
+      tab.addEventListener("shown.bs.tab", () => scheduleOfflineNewSeenAck());
+      tab.addEventListener("hide.bs.tab", () => {
+        if (offlineNewSeenTimer) {
+          window.clearTimeout(offlineNewSeenTimer);
+          offlineNewSeenTimer = null;
+        }
+      });
+    });
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        scheduleOfflineNewSeenAck();
+        return;
+      }
+      if (offlineNewSeenTimer) {
+        window.clearTimeout(offlineNewSeenTimer);
+        offlineNewSeenTimer = null;
+      }
     });
 
     // Resize table (vertical) like Optical/Usage.

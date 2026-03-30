@@ -38,6 +38,11 @@ from .accounts_ping_sources import (
     build_accounts_ping_source_devices,
     normalize_accounts_ping_source_mode,
 )
+from .accounts_missing_support import (
+    auto_delete_accounts_missing_entries,
+    normalize_accounts_missing_settings,
+    reconcile_accounts_missing_state,
+)
 from .notifiers import optical as optical_notifier
 from .notifiers import wan_ping as wan_ping_notifier
 from .notifiers import offline as offline_notifier
@@ -45,6 +50,7 @@ from .notifiers import usage as usage_notifier
 from .notifiers.telegram import TelegramError, get_updates, send_telegram
 from .offline_rules import enabled_offline_tracking_rules
 from .settings_defaults import (
+    ACCOUNTS_MISSING_DEFAULTS,
     ACCOUNTS_PING_DEFAULTS,
     OFFLINE_DEFAULTS,
     OPTICAL_DEFAULTS,
@@ -168,6 +174,7 @@ class JobsManager:
             "Telegram",
             "WAN Ping",
             "Accounts Ping",
+            "Missing Secrets",
             "Under Surveillance",
             "Usage",
             "Offline",
@@ -180,6 +187,7 @@ class JobsManager:
             threading.Thread(target=self._telegram_loop, daemon=True),
             threading.Thread(target=self._wan_ping_loop, daemon=True),
             threading.Thread(target=self._accounts_ping_loop, daemon=True),
+            threading.Thread(target=self._accounts_missing_loop, daemon=True),
             threading.Thread(target=self._usage_loop, daemon=True),
             threading.Thread(target=self._offline_loop, daemon=True),
         ]
@@ -230,6 +238,7 @@ class JobsManager:
                 if due_daily:
                     _safe_update_job_status("optical", last_run_at=utc_now_iso())
                     optical_notifier.run(cfg, send_alerts=True)
+                    state = get_state("optical_state", state)
                     state["last_run_date"] = current_date(daily_cfg).isoformat()
                     state["last_run_at"] = now.replace(microsecond=0).isoformat() + "Z"
                     save_state("optical_state", state)
@@ -237,6 +246,7 @@ class JobsManager:
                 elif due_interval:
                     _safe_update_job_status("optical", last_run_at=utc_now_iso())
                     optical_notifier.run(cfg, send_alerts=False)
+                    state = get_state("optical_state", state)
                     state["last_run_at"] = now.replace(microsecond=0).isoformat() + "Z"
                     save_state("optical_state", state)
                     _safe_update_job_status("optical", last_success_at=utc_now_iso(), last_error="", last_error_at="")
@@ -1105,6 +1115,63 @@ class JobsManager:
                     add_feature_cpu("Under Surveillance", surveillance_cpu_seconds)
 
             time_module.sleep(1)
+
+    def _accounts_missing_loop(self):
+        while not self.stop_event.is_set():
+            cfg = normalize_accounts_missing_settings(get_settings("accounts_missing", ACCOUNTS_MISSING_DEFAULTS))
+            auto_delete_cfg = cfg.get("auto_delete") if isinstance(cfg.get("auto_delete"), dict) else {}
+            if not cfg.get("enabled") and not bool(auto_delete_cfg.get("enabled")):
+                time_module.sleep(10)
+                continue
+
+            loop_cpu_start = time_module.thread_time()
+            try:
+                state = get_state("accounts_missing_state", {})
+                try:
+                    refresh_minutes = max(int((cfg.get("source") or {}).get("refresh_minutes", 15) or 15), 1)
+                except Exception:
+                    refresh_minutes = 15
+                now = datetime.utcnow()
+                last_check_at = str((state or {}).get("last_check_at") or "").strip()
+                last_check_dt = datetime.fromisoformat(last_check_at.replace("Z", "")) if last_check_at else None
+                due = not last_check_dt or (last_check_dt + timedelta(minutes=refresh_minutes) <= now)
+                if not due:
+                    time_module.sleep(5)
+                    continue
+
+                _safe_update_job_status("accounts_missing", last_run_at=utc_now_iso())
+                wan_settings = get_settings("wan_ping", WAN_PING_DEFAULTS)
+                next_state = reconcile_accounts_missing_state(
+                    cfg,
+                    previous_state=state,
+                    wan_settings=wan_settings,
+                    now=now,
+                )
+                deleted_pppoes = []
+                if bool(next_state.get("validation_active")):
+                    next_state, deleted_pppoes = auto_delete_accounts_missing_entries(next_state, cfg, now=now)
+                    if deleted_pppoes:
+                        next_state["last_auto_delete_at"] = utc_now_iso()
+                        for pppoe in deleted_pppoes:
+                            _safe_insert_system_audit(
+                                "accounts_missing.auto_deleted",
+                                resource=pppoe,
+                                details=f"Deleted after missing threshold of {int(auto_delete_cfg.get('days', 30) or 30)} day(s).",
+                            )
+                save_state("accounts_missing_state", next_state)
+                paused_reason = str(next_state.get("validation_paused_reason") or "").strip()
+                _safe_update_job_status(
+                    "accounts_missing",
+                    last_success_at=utc_now_iso(),
+                    last_error=paused_reason,
+                    last_error_at=utc_now_iso() if paused_reason else "",
+                )
+            except Exception as exc:
+                _safe_update_job_status("accounts_missing", last_error=str(exc), last_error_at=utc_now_iso())
+            finally:
+                add_feature_cpu("Missing Secrets", max(time_module.thread_time() - loop_cpu_start, 0.0))
+
+            time_module.sleep(5)
 
     def _telegram_loop(self):
         executor = ThreadPoolExecutor(max_workers=2)

@@ -277,27 +277,29 @@
           </div>
         </div>
 
-        <ul class="nav nav-tabs" data-bs-toggle="tabs">
+        {% set accounts_ping_preferred_tab = accounts_ping_status.preferred_tab or 'issues' %}
+        {% set accounts_ping_has_query = (accounts_ping_status.query or '')|trim %}
+        <ul class="nav nav-tabs" data-bs-toggle="tabs" id="accounts-ping-status-tabs">
           <li class="nav-item">
-            <a href="#accounts-ping-issues" class="nav-link active" data-bs-toggle="tab">Connection Issues</a>
+            <a href="#accounts-ping-issues" class="nav-link {% if accounts_ping_preferred_tab == 'issues' %}active{% endif %}{% if accounts_ping_has_query and accounts_ping_status.issue_total %} threej-search-hit-tab{% endif %}" data-bs-toggle="tab">Connection Issues <span class="badge bg-secondary-lt text-secondary ms-2">{{ accounts_ping_status.issue_total }}</span></a>
           </li>
           <li class="nav-item">
-            <a href="#accounts-ping-stable" class="nav-link" data-bs-toggle="tab">Stable Connections</a>
+            <a href="#accounts-ping-stable" class="nav-link {% if accounts_ping_preferred_tab == 'stable' %}active{% endif %}{% if accounts_ping_has_query and accounts_ping_status.stable_total %} threej-search-hit-tab{% endif %}" data-bs-toggle="tab">Stable Connections <span class="badge bg-secondary-lt text-secondary ms-2">{{ accounts_ping_status.stable_total }}</span></a>
           </li>
           <li class="nav-item ms-auto">
             <div class="px-2 py-2">
-              <div class="input-icon">
+              <div class="input-icon" data-search-clearable>
 	                <input class="form-control form-control-sm" id="accounts-ping-search" type="text" placeholder="Search" autocomplete="off" value="{{ accounts_ping_status.query or '' }}" />
-                <span class="input-icon-addon">
+                <button type="button" class="input-icon-addon search-addon-btn" data-search-clear-btn aria-label="Search">
                   <i class="ti ti-search"></i>
-                </span>
+                </button>
               </div>
             </div>
           </li>
         </ul>
 
         <div class="tab-content pt-3">
-	          <div class="tab-pane active" id="accounts-ping-issues">
+	          <div class="tab-pane {% if accounts_ping_preferred_tab == 'issues' %}active{% endif %}" id="accounts-ping-issues">
 	            <div class="table-responsive accounts-ping-status-table-wrap">
 	              <table class="table table-vcenter rto-table accounts-ping-status-table">
 	                <thead>
@@ -321,7 +323,7 @@
 	                  {% for row in accounts_ping_status.issue_rows %}
 				                    {% set surv_key = (row.name or '') %}
                         {% set surv_status = surveillance_index.get(surv_key) %}
-					                    <tr class="accounts-ping-row{% if surv_status == 'under' %} table-warning{% elif surv_status == 'level2' %} table-danger{% endif %}" data-search="{{ (row.name ~ ' ' ~ (row.router_name or '') ~ ' ' ~ row.ip)|lower }}">
+					                    <tr class="accounts-ping-row{% if surv_status == 'under' %} table-warning{% elif surv_status == 'level2' %} table-danger{% elif surv_status == 'observe' %} table-primary{% endif %}" data-search="{{ (row.name ~ ' ' ~ (row.router_name or '') ~ ' ' ~ row.ip)|lower }}">
 		                      <td class="ap-col-customer ap-priority-0">{{ accounts_ping_label(row.name, row.router_name) }}</td>
                       <td class="ap-col-ip ap-priority-2">{{ row.ip }}</td>
                       <td class="ap-col-status ap-priority-1">
@@ -377,6 +379,10 @@
 			                              <a class="badge bg-red-lt text-red header-icon-badge" href="/surveillance?tab=level2&focus={{ row.name|urlencode }}" title="Needs Manual Fix" aria-label="Needs Manual Fix">
 			                                <i class="ti ti-binoculars"></i>
 			                              </a>
+			                            {% elif surv_status == 'observe' %}
+			                              <a class="badge bg-blue-lt text-blue header-icon-badge" href="/surveillance?tab=observe&focus={{ row.name|urlencode }}" title="Post-Fix Observation" aria-label="Post-Fix Observation">
+			                                <i class="ti ti-binoculars"></i>
+			                              </a>
 			                            {% else %}
 			                              <button type="button"
 			                                      class="badge bg-blue-lt text-blue header-icon-badge border-0 surveillance-add-btn"
@@ -421,7 +427,7 @@
               </div>
 	          </div>
 
-	          <div class="tab-pane" id="accounts-ping-stable">
+	          <div class="tab-pane {% if accounts_ping_preferred_tab == 'stable' %}active{% endif %}" id="accounts-ping-stable">
 	            <div class="table-responsive accounts-ping-status-table-wrap">
 	              <table class="table table-vcenter rto-table accounts-ping-status-table">
 	                <thead>
@@ -442,7 +448,7 @@
 		                  {% for row in accounts_ping_status.stable_rows %}
 				                    {% set surv_key = (row.name or '') %}
                         {% set surv_status = surveillance_index.get(surv_key) %}
-					                    <tr class="accounts-ping-row{% if surv_status == 'under' %} table-warning{% elif surv_status == 'level2' %} table-danger{% endif %}" data-search="{{ (row.name ~ ' ' ~ (row.router_name or '') ~ ' ' ~ row.ip)|lower }}">
+					                    <tr class="accounts-ping-row{% if surv_status == 'under' %} table-warning{% elif surv_status == 'level2' %} table-danger{% elif surv_status == 'observe' %} table-primary{% endif %}" data-search="{{ (row.name ~ ' ' ~ (row.router_name or '') ~ ' ' ~ row.ip)|lower }}">
 		                      <td class="ap-col-customer ap-priority-0">{{ accounts_ping_label(row.name, row.router_name) }}</td>
                       <td class="ap-col-ip ap-priority-2">{{ row.ip }}</td>
 	                      <td class="ap-col-status ap-priority-1">
@@ -494,6 +500,10 @@
 				                              </a>
 				                            {% elif surv_status == 'level2' %}
 				                              <a class="badge bg-red-lt text-red header-icon-badge" href="/surveillance?tab=level2&focus={{ row.name|urlencode }}" title="Needs Manual Fix" aria-label="Needs Manual Fix">
+				                                <i class="ti ti-binoculars"></i>
+				                              </a>
+				                            {% elif surv_status == 'observe' %}
+				                              <a class="badge bg-blue-lt text-blue header-icon-badge" href="/surveillance?tab=observe&focus={{ row.name|urlencode }}" title="Post-Fix Observation" aria-label="Post-Fix Observation">
 				                                <i class="ti ti-binoculars"></i>
 				                              </a>
 				                            {% else %}
@@ -914,10 +924,17 @@
       if (sourceModeInput) sourceModeInput.addEventListener("change", syncSourceModeUi);
       syncSourceModeUi();
 
-      const tabLinks = document.querySelectorAll('a[data-bs-toggle="tab"]');
+      const tabLinks = document.querySelectorAll('#accounts-ping-status-tabs a[data-bs-toggle="tab"]');
       const tabKey = "accounts_ping_active_tab";
+      const hasSearchQuery = {{ "true" if accounts_ping_status.query else "false" }};
+      const preferredStatusHash = "#accounts-ping-{{ accounts_ping_status.preferred_tab or 'issues' }}";
       const storedTab = localStorage.getItem(tabKey);
-      if (window.location.hash) {
+      if (hasSearchQuery && !window.location.hash) {
+        const target = document.querySelector(`#accounts-ping-status-tabs a[href="${preferredStatusHash}"]`);
+        if (target && window.bootstrap?.Tab) {
+          new window.bootstrap.Tab(target).show();
+        }
+      } else if (window.location.hash) {
         const target = document.querySelector(`a[href="${window.location.hash}"]`);
         if (target && window.bootstrap?.Tab) {
           new window.bootstrap.Tab(target).show();
@@ -1008,8 +1025,12 @@
 	          else url.searchParams.delete("q");
 	          url.searchParams.set("issues_page", "1");
 	          url.searchParams.set("stable_page", "1");
-	          const tabHash = localStorage.getItem(tabKey) || window.location.hash;
-	          if (tabHash) url.hash = tabHash;
+	          if (q) {
+	            url.hash = "";
+	          } else {
+	            const tabHash = localStorage.getItem(tabKey) || window.location.hash;
+	            if (tabHash) url.hash = tabHash;
+	          }
 	          navigateWithLoading(url, q ? "Searching Accounts Ping results..." : "Loading Accounts Ping results...");
 	        };
 	        searchEl.addEventListener("input", () => {

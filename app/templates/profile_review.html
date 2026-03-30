@@ -5,7 +5,6 @@
   <span class="badge bg-cyan-lt text-cyan header-icon-badge"><i class="ti ti-user-search"></i></span>
 {% endblock %}
 {% block content %}
-
 <div class="card mb-3">
   <div class="card-body">
     <div class="row align-items-center g-3">
@@ -55,15 +54,7 @@
                 <span class="badge bg-orange-lt text-orange"><i class="ti ti-flag me-1"></i>Candidate for Surveillance</span>
               {% endif %}
               {% for src in profile.sources %}
-                {% if src == "optical" %}
-                  <span class="badge bg-azure-lt text-azure"><i class="ti ti-sun me-1"></i>Optical</span>
-                {% elif src == "accounts_ping" %}
-                  <span class="badge bg-indigo-lt text-indigo"><i class="ti ti-wifi me-1"></i>ACC-Ping</span>
-                {% elif src == "usage" %}
-                  <span class="badge bg-teal-lt text-teal"><i class="ti ti-chart-bar me-1"></i>Usage</span>
-                {% elif src == "offline" %}
-                  <span class="badge bg-red-lt text-red"><i class="ti ti-user-off me-1"></i>Offline</span>
-                {% elif src == "surveillance" %}
+                {% if src == "surveillance" %}
                   <span class="badge bg-orange-lt text-orange"><i class="ti ti-binoculars me-1"></i>Surveillance</span>
                 {% endif %}
               {% endfor %}
@@ -113,6 +104,10 @@
                 <a class="btn btn-outline-danger btn-sm" href="/surveillance?tab=level2&focus={{ surv_pppoe|urlencode }}" title="Needs Manual Fix" aria-label="Needs Manual Fix">
                   <i class="ti ti-binoculars me-1"></i>Needs Manual Fix
                 </a>
+              {% elif surv_status == 'observe' %}
+                <a class="btn btn-outline-primary btn-sm" href="/surveillance?tab=observe&focus={{ surv_pppoe|urlencode }}" title="Post-Fix Observation" aria-label="Post-Fix Observation">
+                  <i class="ti ti-binoculars me-1"></i>Post-Fix Observation
+                </a>
               {% else %}
                 <button type="button"
                         class="btn btn-outline-secondary btn-sm surveillance-add-btn"
@@ -147,6 +142,22 @@
           <div class="alert alert-{% if profile.overview.state == 'critical' %}danger{% elif profile.overview.state == 'monitor' %}warning{% elif profile.overview.state == 'stable' %}success{% else %}secondary{% endif %} mt-3 mb-0">
             <div class="fw-semibold mb-1">Recommendation</div>
             <div>{{ profile.overview.recommendation }}</div>
+          </div>
+        {% endif %}
+        {% if can_any_panel and profile.status_cards %}
+          <div class="d-flex flex-wrap gap-2 mt-2">
+            {% for item in profile.status_cards %}
+              {% set show_item = (item.key == "offline" and can_core_details) or (item.key == "accounts_ping" and can_accounts_ping) or (item.key == "optical" and can_optical) or (item.key == "usage" and can_usage) %}
+              {% if show_item %}
+                <span class="badge bg-{{ item.tone or 'secondary' }}-lt text-{{ item.tone or 'secondary' }} py-2 px-3"
+                      data-bs-toggle="tooltip"
+                      data-bs-placement="top"
+                      title="{{ item.tooltip or item.hint or item.value }}">
+                  <i class="{{ item.icon or 'ti ti-activity' }} me-1"></i>
+                  {{ item.title }}: {{ item.value }}{% if item.key == "offline" and item.hint %} · {{ item.hint }}{% endif %}
+                </span>
+              {% endif %}
+            {% endfor %}
           </div>
         {% endif %}
       </div>
@@ -232,6 +243,8 @@
           {% if profile.surveillance and profile.surveillance.active %}
             {% if profile.surveillance.status == "level2" %}
               <span class="badge bg-red-lt ms-auto"><i class="ti ti-alert-circle me-1"></i>Needs Manual Fix</span>
+            {% elif profile.surveillance.status == "observe" %}
+              <span class="badge bg-blue-lt text-blue ms-auto"><i class="ti ti-check me-1"></i>Post-Fix Observation</span>
             {% else %}
               <span class="badge bg-yellow-lt ms-auto"><i class="ti ti-binoculars me-1"></i>Active</span>
             {% endif %}
@@ -341,6 +354,8 @@
             <span class="badge bg-red-lt ms-auto"><i class="ti ti-alert-circle me-1"></i>Offline</span>
           {% elif profile.offline and profile.offline.status == "tracking" %}
             <span class="badge bg-yellow-lt ms-auto"><i class="ti ti-clock me-1"></i>Tracking</span>
+          {% elif profile.offline and profile.offline.status == "source_missing" %}
+            <span class="badge bg-red-lt ms-auto"><i class="ti ti-alert-circle me-1"></i>Source Missing</span>
           {% elif profile.offline and profile.offline.status == "online" %}
             <span class="badge bg-green-lt ms-auto"><i class="ti ti-check me-1"></i>Online</span>
           {% elif profile.offline and profile.offline.status == "disabled" %}
@@ -362,11 +377,11 @@
               </div>
               <div class="col-6">
                 <div class="text-muted small">Offline Since</div>
-                <div class="fw-semibold">{{ profile.offline.offline_since or "n/a" }}</div>
+                <div class="fw-semibold">{{ profile.offline.status == "source_missing" and (profile.offline.source_missing_since or "n/a") or (profile.offline.offline_since or "n/a") }}</div>
               </div>
               <div class="col-6">
                 <div class="text-muted small">Offline For</div>
-                <div class="fw-semibold">{{ profile.offline.offline_for or "n/a" }}</div>
+                <div class="fw-semibold">{{ profile.offline.status == "source_missing" and "n/a" or (profile.offline.offline_for or "n/a") }}</div>
               </div>
               <div class="col-6">
                 <div class="text-muted small">Threshold</div>
@@ -439,6 +454,8 @@
           {% if profile.surveillance and profile.surveillance.active %}
             {% if inspect_surv_status == "level2" %}
               <span class="badge bg-red-lt text-red ms-auto"><i class="ti ti-alert-circle me-1"></i>Needs Manual Fix Baseline</span>
+            {% elif inspect_surv_status == "observe" %}
+              <span class="badge bg-blue-lt text-blue ms-auto"><i class="ti ti-check me-1"></i>Post-Fix Observation Baseline</span>
             {% else %}
               <span class="badge bg-indigo-lt text-indigo ms-auto"><i class="ti ti-binoculars me-1"></i>Pre-Surveillance Baseline</span>
             {% endif %}
@@ -742,7 +759,11 @@
       <div class="card-header">
         <h3 class="card-title"><i class="ti ti-sun me-2"></i>Optical</h3>
         {% if profile.optical %}
-          {% if profile.optical.status == "issue" %}
+          {% if not profile.optical.current_available %}
+            <span class="badge bg-secondary-lt ms-auto">Offline</span>
+          {% elif profile.optical.rx_invalid %}
+            <span class="badge bg-red-lt ms-auto"><i class="ti ti-alert-circle me-1"></i>ACS-LOS</span>
+          {% elif profile.optical.status == "issue" %}
             <span class="badge bg-red-lt ms-auto"><i class="ti ti-alert-circle me-1"></i>Issue</span>
           {% elif profile.optical.status == "stable" %}
             <span class="badge bg-green-lt ms-auto"><i class="ti ti-check me-1"></i>Stable</span>
@@ -755,6 +776,11 @@
       </div>
       <div class="card-body">
         {% if profile.optical %}
+          {% if not profile.optical.current_available %}
+          <div class="alert alert-secondary py-2 mb-3">
+            No current TR-069 optical result for this account. Historical data is still shown below, and the chart will stop where the device went offline.
+          </div>
+          {% endif %}
           <div class="row g-2 mb-3">
             <div class="col-6 col-md-3">
               <div class="text-muted small">RX</div>
@@ -878,6 +904,9 @@
                   {% if item.pppoe %}
                     <span>{{ item.highlight_pppoe }}</span>
                   {% endif %}
+                  {% if item.router_name %}
+                    <span>Router: {{ item.highlight_router_name }}</span>
+                  {% endif %}
                   {% if item.ip %}
                     <span>{{ item.highlight_ip }}</span>
                   {% endif %}
@@ -986,6 +1015,7 @@
       if (item?.pppoe) params.set("pppoe", item.pppoe);
       if (item?.ip) params.set("ip", item.ip);
       if (item?.device_id) params.set("device_id", item.device_id);
+      if (item?.router_id) params.set("router_id", item.router_id);
       return `/profile-review?${params.toString()}`;
     };
 
@@ -1102,7 +1132,7 @@
               <span class="text-muted"><i class="${iconFor(item.sources)}"></i></span>
               <div class="flex-fill">
                 <div class="fw-semibold">${item.name || "Customer"}</div>
-                <div class="text-muted small">${[item.pppoe, item.ip, item.device_id].filter(Boolean).join(" · ")}</div>
+                <div class="text-muted small">${[item.pppoe, item.router_name ? `Router: ${item.router_name}` : "", item.ip, item.device_id].filter(Boolean).join(" · ")}</div>
               </div>
               <div class="d-flex gap-1 align-items-center flex-wrap justify-content-end">
                 ${statusBadgeHtml(item)}
@@ -1136,7 +1166,7 @@
             <span class="text-muted"><i class="${iconFor(item.sources)}"></i></span>
             <div class="flex-fill">
               <div class="fw-semibold">${item.name || "Customer"}</div>
-              <div class="text-muted small">${[item.pppoe, item.ip, item.device_id].filter(Boolean).join(" · ")}</div>
+              <div class="text-muted small">${[item.pppoe, item.router_name ? `Router: ${item.router_name}` : "", item.ip, item.device_id].filter(Boolean).join(" · ")}</div>
             </div>
             <div class="d-flex gap-1">
               ${statusBadgeHtml(item)}
