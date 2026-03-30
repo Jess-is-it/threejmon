@@ -601,12 +601,13 @@
                                   <th style="min-width: 170px;">Time</th>
                                   <th style="min-width: 130px;">From</th>
                                   <th style="min-width: 130px;">To</th>
+                                  <th style="min-width: 150px;">Updated By</th>
                                   <th>Reason</th>
                                 </tr>
                               </thead>
                               <tbody data-surv-transition-history="under">
                                 <tr>
-                                  <td colspan="4" class="text-muted small">No movement history yet.</td>
+                                  <td colspan="5" class="text-muted small">No movement history yet.</td>
                                 </tr>
                               </tbody>
                             </table>
@@ -1195,12 +1196,13 @@
                               <th style="min-width: 170px;">Time</th>
                               <th style="min-width: 130px;">From</th>
                               <th style="min-width: 130px;">To</th>
+                              <th style="min-width: 150px;">Updated By</th>
                               <th>Reason</th>
                             </tr>
                           </thead>
                           <tbody data-surv-transition-history="observe">
                             <tr>
-                              <td colspan="4" class="text-muted small">No movement history yet.</td>
+                              <td colspan="5" class="text-muted small">No movement history yet.</td>
                             </tr>
                           </tbody>
                         </table>
@@ -1764,12 +1766,13 @@
                                   <th style="min-width: 170px;">Time</th>
                                   <th style="min-width: 130px;">From</th>
                                   <th style="min-width: 130px;">To</th>
+                                  <th style="min-width: 150px;">Updated By</th>
                                   <th>Reason</th>
                                 </tr>
                               </thead>
                               <tbody data-surv-transition-history="level2">
                                 <tr>
-                                  <td colspan="4" class="text-muted small">No movement history yet.</td>
+                                  <td colspan="5" class="text-muted small">No movement history yet.</td>
                                 </tr>
                               </tbody>
                             </table>
@@ -4185,7 +4188,7 @@
           return bv - av;
         });
       if (!items.length) {
-        tbody.innerHTML = `<tr><td colspan="4" class="text-muted small">No movement history yet.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="5" class="text-muted small">No movement history yet.</td></tr>`;
         return;
       }
       tbody.innerHTML = items.map((item) => {
@@ -4194,11 +4197,13 @@
         const toKey = String(item.to || "").trim().toLowerCase();
         const fromText = SURV_STAGE_LABELS[fromKey] || "—";
         const toText = SURV_STAGE_LABELS[toKey] || "—";
+        const actorText = String(item.actor || "").trim() || "System";
         const reasonText = String(item.reason || "").trim() || "No reason provided.";
         return `<tr>
           <td class="small text-muted">${escapeHtmlMini(tsText)}</td>
           <td class="small">${escapeHtmlMini(fromText)}</td>
           <td class="small">${escapeHtmlMini(toText)}</td>
+          <td class="small">${escapeHtmlMini(actorText)}</td>
           <td class="small">${escapeHtmlMini(reasonText)}</td>
         </tr>`;
       }).join("");

@@ -4142,13 +4142,20 @@ def _apply_optical_tx_fallback(rows, fallback_since_iso=None):
     materialized = [dict(row) for row in (rows or []) if row]
     if not materialized:
         return materialized
-    device_ids = []
+    missing_tx_device_ids = []
+    seen_missing = set()
     for row in materialized:
         device_id = (row.get("device_id") or "").strip()
-        if device_id:
-            device_ids.append(device_id)
+        if not device_id or row.get("tx") is not None or device_id in seen_missing:
+            continue
+        seen_missing.add(device_id)
+        missing_tx_device_ids.append(device_id)
+    if not missing_tx_device_ids:
+        for row in materialized:
+            row["tx_fallback_used"] = False
+        return materialized
     fallback_map = get_latest_non_null_optical_tx_for_devices(
-        device_ids,
+        missing_tx_device_ids,
         since_iso=fallback_since_iso or _optical_tx_fallback_since_iso(),
     )
     out = []

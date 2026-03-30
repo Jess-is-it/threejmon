@@ -198,6 +198,15 @@
           </div>
         </div>
 
+        <div class="alert alert-info mt-3" id="offline-bucket-note">
+          <div class="d-flex align-items-start">
+            <span class="me-2"><i class="ti ti-info-circle"></i></span>
+            <div data-offline-bucket-note-body>
+              Each offline account appears in one duration tab only. It moves to the next duration bucket as offline time grows, and anything beyond the longest configured duration stays in the longest tab.
+            </div>
+          </div>
+        </div>
+
         <ul class="nav nav-tabs" id="offline-status-tabs">
           {% for rule in offline_rules %}
           <li class="nav-item">
@@ -704,6 +713,8 @@
     const historyBody = document.getElementById("offline-history-body");
     const currentPane = document.getElementById("offline-current-pane");
     const historyPane = document.getElementById("offline-history-pane");
+    const currentTableWrap = document.getElementById("offline-current-table");
+    const historyTableWrap = document.getElementById("offline-history-table");
     const activeCountEl = document.getElementById("offline-active-count");
     const countEl = document.getElementById("offline-count");
     const historyCountEl = document.getElementById("offline-history-count");
@@ -711,6 +722,8 @@
     const modeEl = document.getElementById("offline-mode");
     const minEl = document.getElementById("offline-min");
     const statusTabs = document.getElementById("offline-status-tabs");
+    const bucketNoteEl = document.getElementById("offline-bucket-note");
+    const bucketNoteBodyEl = bucketNoteEl ? bucketNoteEl.querySelector("[data-offline-bucket-note-body]") : null;
 
     const searchInput = document.getElementById("offline-status-search");
     const limitButton = document.getElementById("offline-limit-button");
@@ -755,6 +768,8 @@
     let activeStatusView = { type: currentRules.length ? "rule" : "history", ruleId: currentRules.length ? String(currentRules[0].id || "") : "" };
     let offlineNewSeenTimer = null;
     let offlineNewSeenInFlight = false;
+    let offlineNewSeenDueAt = 0;
+    let offlineNewSeenSignature = "";
 
     const radiusAccountsSearchKey = "offline_radius_accounts_search_v1";
     const radiusAccountsStatusKey = "offline_radius_accounts_status_v1";
@@ -824,6 +839,21 @@
       });
     }
 
+    function updateOfflineBucketNote() {
+      if (!bucketNoteBodyEl) return;
+      if (!Array.isArray(currentRules) || !currentRules.length) {
+        bucketNoteBodyEl.textContent = "Each offline account appears in one duration tab only. It moves to the next duration bucket as offline time grows.";
+        return;
+      }
+      const longestRule = currentRules.reduce((best, rule) => {
+        const bestMinutes = Number(best?.minutes || 0);
+        const ruleMinutes = Number(rule?.minutes || 0);
+        return ruleMinutes >= bestMinutes ? rule : best;
+      }, currentRules[0]);
+      const longestLabel = String(longestRule?.tab_label || ruleTabLabel(longestRule?.value || 0, longestRule?.unit || "day")).trim() || "the longest tab";
+      bucketNoteBodyEl.textContent = `Each offline account appears in one duration tab only. It moves to the next duration bucket as offline time grows. If it stays offline longer than all configured tabs, it remains in ${longestLabel} until you add a longer duration tab.`;
+    }
+
     function ensureActiveStatusView() {
       if (activeStatusView.type === "rule") {
         const activeRule = getActiveRule();
@@ -884,11 +914,16 @@
 
     function sortRows(rows, tableKey) {
       const s = getSort(tableKey);
-      if (!s.key || !s.dir) return rows;
       const dir = s.dir === "desc" ? -1 : 1;
       const key = s.key;
       const withIndex = rows.map((row, idx) => ({ row, idx }));
       withIndex.sort((a, b) => {
+        if (tableKey === "current") {
+          const aNew = a.row?.is_new ? 1 : 0;
+          const bNew = b.row?.is_new ? 1 : 0;
+          if (aNew !== bNew) return bNew - aNew;
+        }
+        if (!key || !s.dir) return a.idx - b.idx;
         const av = a.row?.[key];
         const bv = b.row?.[key];
         const aNull = av === null || av === undefined || av === "";
@@ -1037,9 +1072,11 @@
         const entryId = String(rowEl.getAttribute("data-offline-entry-id") || "").trim();
         if (!idSet.has(entryId)) return;
         rowEl.setAttribute("data-offline-new-entry", "0");
-        rowEl.classList.remove("offline-new-entry");
+        rowEl.classList.remove("table-warning", "offline-new-entry");
         rowEl.querySelectorAll("[data-offline-new-badge]").forEach((badgeEl) => badgeEl.remove());
       });
+      offlineNewSeenSignature = "";
+      offlineNewSeenDueAt = 0;
     }
 
     function isOfflineStatusRuleViewActive() {
@@ -1051,6 +1088,7 @@
       const entryIds = collectVisibleOfflineNewEntryIds();
       if (!entryIds.length) return;
       offlineNewSeenInFlight = true;
+      offlineNewSeenDueAt = 0;
       try {
         const res = await fetch("/offline/mark_new_seen", {
           method: "POST",
@@ -1072,20 +1110,47 @@
     }
 
     function scheduleOfflineNewSeenAck() {
+      const reset = () => {
+        if (offlineNewSeenTimer) {
+          window.clearTimeout(offlineNewSeenTimer);
+          offlineNewSeenTimer = null;
+        }
+        offlineNewSeenSignature = "";
+        offlineNewSeenDueAt = 0;
+      };
+      if (!isOfflineStatusRuleViewActive()) {
+        reset();
+        return;
+      }
+      const entryIds = collectVisibleOfflineNewEntryIds();
+      if (!entryIds.length) {
+        reset();
+        return;
+      }
+      const signature = entryIds.join("|");
+      const now = Date.now();
+      if (offlineNewSeenTimer && offlineNewSeenSignature === signature && offlineNewSeenDueAt > now) {
+        return;
+      }
       if (offlineNewSeenTimer) {
         window.clearTimeout(offlineNewSeenTimer);
         offlineNewSeenTimer = null;
       }
-      if (!isOfflineStatusRuleViewActive()) return;
-      if (!collectVisibleOfflineNewEntryIds().length) return;
+      if (offlineNewSeenSignature !== signature || offlineNewSeenDueAt <= now) {
+        offlineNewSeenSignature = signature;
+        offlineNewSeenDueAt = now + offlineNewAckDelayMs;
+      }
+      const delayMs = Math.max(offlineNewSeenDueAt - now, 0);
       offlineNewSeenTimer = window.setTimeout(() => {
         offlineNewSeenTimer = null;
         if (document.visibilityState && document.visibilityState !== "visible") {
+          offlineNewSeenSignature = "";
+          offlineNewSeenDueAt = 0;
           scheduleOfflineNewSeenAck();
           return;
         }
         acknowledgeOfflineNewEntries();
-      }, offlineNewAckDelayMs);
+      }, delayMs);
     }
 
     function renderCurrentRow(row) {
@@ -1097,7 +1162,7 @@
       const entryId = String(row.entry_id || "").trim();
       const newBadge = row.is_new ? '<span class="badge bg-yellow-lt text-yellow ms-2" data-offline-new-badge title="New Offline account for your view">New</span>' : "";
       return `
-        <tr class="${row.is_new ? "offline-new-entry" : ""}" data-offline-entry-id="${esc(entryId)}" data-offline-new-entry="${row.is_new ? "1" : "0"}">
+        <tr class="${row.is_new ? "table-warning offline-new-entry" : ""}" data-offline-entry-id="${esc(entryId)}" data-offline-new-entry="${row.is_new ? "1" : "0"}">
           <td class="fw-semibold off-col-pppoe off-priority-0"><span class="offline-status-label" title="${esc(row.pppoe || "")}">${esc(row.pppoe || "")}</span>${newBadge}</td>
           <td class="text-muted off-col-router off-priority-2"><span class="offline-status-cell-truncate" title="${esc(row.router_name || row.router_id || "")}">${esc(row.router_name || row.router_id || "")}</span></td>
           <td class="off-col-status off-priority-1">${statusCell}</td>
@@ -1158,6 +1223,10 @@
     }
 
     function renderAllTables(forceSearchFocus = false) {
+      const currentScrollTop = currentTableWrap ? currentTableWrap.scrollTop : 0;
+      const currentScrollLeft = currentTableWrap ? currentTableWrap.scrollLeft : 0;
+      const historyScrollTop = historyTableWrap ? historyTableWrap.scrollTop : 0;
+      const historyScrollLeft = historyTableWrap ? historyTableWrap.scrollLeft : 0;
       const filteredByRule = {};
       currentRules.forEach((rule) => {
         const ruleId = String(rule?.id || "").trim();
@@ -1187,9 +1256,18 @@
       }
       updateStatusTabBadges();
       updateStatusTabState();
+      updateOfflineBucketNote();
       renderRadiusAccountsTable();
       updateSortIndicators();
       scheduleOfflineNewSeenAck();
+      if (currentTableWrap) {
+        currentTableWrap.scrollTop = currentScrollTop;
+        currentTableWrap.scrollLeft = currentScrollLeft;
+      }
+      if (historyTableWrap) {
+        historyTableWrap.scrollTop = historyScrollTop;
+        historyTableWrap.scrollLeft = historyScrollLeft;
+      }
     }
 
     function formatDurationShort(seconds) {
@@ -1592,6 +1670,8 @@
           window.clearTimeout(offlineNewSeenTimer);
           offlineNewSeenTimer = null;
         }
+        offlineNewSeenSignature = "";
+        offlineNewSeenDueAt = 0;
       });
     });
     document.addEventListener("visibilitychange", () => {
@@ -1603,6 +1683,8 @@
         window.clearTimeout(offlineNewSeenTimer);
         offlineNewSeenTimer = null;
       }
+      offlineNewSeenSignature = "";
+      offlineNewSeenDueAt = 0;
     });
 
     // Resize table (vertical) like Optical/Usage.

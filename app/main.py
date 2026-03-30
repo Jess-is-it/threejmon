@@ -225,6 +225,10 @@ _SURVEILLANCE_CHECKER_CACHE_SECONDS = 300
 _surveillance_optical_cache_lock = threading.Lock()
 _surveillance_optical_cache = {"at": 0.0, "key": None, "data": {}}
 _SURVEILLANCE_OPTICAL_CACHE_SECONDS = 120
+_optical_status_cache_lock = threading.Lock()
+_optical_status_cache = {}
+_OPTICAL_STATUS_CACHE_SECONDS = 30
+_OPTICAL_STATUS_CACHE_MAX_ENTRIES = 16
 _surveillance_new_seen_lock = threading.Lock()
 _SURVEILLANCE_NEW_SEEN_STATE_KEY = "surveillance_new_seen_by_user_v1"
 _SURVEILLANCE_NEW_VIEW_SECONDS = 10
@@ -2123,6 +2127,10 @@ async def startup_event():
         try:
             job_status = {item["job_name"]: dict(item) for item in get_job_status()}
             _get_dashboard_kpis_cached(job_status, force=True)
+        except Exception:
+            pass
+        try:
+            _prewarm_optical_status_cache()
         except Exception:
             pass
 
@@ -4342,13 +4350,10 @@ def _build_offline_rule_views(offline_state, offline_settings):
         ),
     )
 
-    rows_by_rule = {}
-    payload_rules = []
+    rule_defs = []
     for idx, rule in enumerate(rules, start=1):
         threshold_minutes = int(rule.get("minutes", 0) or 0)
-        rule_rows = [dict(row) for row in all_rows if int(row.get("offline_duration_seconds", 0) or 0) >= threshold_minutes * 60]
-        rows_by_rule[rule.get("id")] = rule_rows
-        payload_rules.append(
+        rule_defs.append(
             {
                 "id": rule.get("id"),
                 "label": rule.get("label"),
@@ -4357,6 +4362,44 @@ def _build_offline_rule_views(offline_state, offline_settings):
                 "unit": rule.get("unit"),
                 "minutes": threshold_minutes,
                 "position": int(rule.get("position", idx) or idx),
+            }
+        )
+
+    rows_by_rule = {str(rule.get("id") or ""): [] for rule in rule_defs if str(rule.get("id") or "").strip()}
+    for row in all_rows:
+        if not isinstance(row, dict):
+            continue
+        duration_seconds = int(row.get("offline_duration_seconds", 0) or 0)
+        best_rule = None
+        best_minutes = -1
+        for rule in rule_defs:
+            rule_id = str(rule.get("id") or "").strip()
+            threshold_minutes = int(rule.get("minutes", 0) or 0)
+            if not rule_id:
+                continue
+            if duration_seconds < threshold_minutes * 60:
+                continue
+            if threshold_minutes >= best_minutes:
+                best_rule = rule
+                best_minutes = threshold_minutes
+        if best_rule:
+            rows_by_rule[str(best_rule.get("id") or "")].append(dict(row))
+
+    payload_rules = []
+    for rule in rule_defs:
+        rule_id = str(rule.get("id") or "").strip()
+        if not rule_id:
+            continue
+        rule_rows = rows_by_rule.get(rule_id, [])
+        payload_rules.append(
+            {
+                "id": rule_id,
+                "label": rule.get("label"),
+                "tab_label": rule.get("tab_label"),
+                "value": int(rule.get("value", 0) or 0),
+                "unit": rule.get("unit"),
+                "minutes": int(rule.get("minutes", 0) or 0),
+                "position": int(rule.get("position", 0) or 0),
                 "count": len(rule_rows),
             }
         )
@@ -7500,6 +7543,7 @@ async def offline_summary(request: Request):
         if str(rule_id).strip()
     }
     annotated_payload_rows = _annotate_rows(payload_rows)
+    total_offline_count = len(current_ids)
     return JSONResponse(
         {
             "updated_at": utc_now_iso(),
@@ -7508,7 +7552,7 @@ async def offline_summary(request: Request):
             "new": {"ids": new_ids, "count": len(new_ids)},
             "counts": {
                 "active": int(state.get("active_accounts") or 0),
-                "offline": len(annotated_payload_rows),
+                "offline": total_offline_count,
             },
             "rows": annotated_payload_rows,
             "rules": rules,
@@ -7848,7 +7892,7 @@ async def import_db_route(request: Request):
 OPTICAL_WINDOW_OPTIONS = WAN_STATUS_WINDOW_OPTIONS
 
 
-def build_optical_status(
+def _build_optical_status_uncached(
     settings,
     window_hours=24,
     limit=50,
@@ -8312,6 +8356,157 @@ def build_optical_status(
         },
         "chart": {"min_dbm": chart_min, "max_dbm": chart_max},
     }
+
+
+def _optical_status_cache_key(
+    settings,
+    window_hours,
+    limit,
+    issues_page,
+    stable_page,
+    offline_page,
+    acs_los_page,
+    issues_sort,
+    issues_dir,
+    stable_sort,
+    stable_dir,
+    offline_sort,
+    offline_dir,
+    acs_los_sort,
+    acs_los_dir,
+    query,
+):
+    payload = {
+        "settings": settings,
+        "window_hours": int(window_hours or 24),
+        "limit": int(limit or 0),
+        "issues_page": int(issues_page or 1),
+        "stable_page": int(stable_page or 1),
+        "offline_page": int(offline_page or 1),
+        "acs_los_page": int(acs_los_page or 1),
+        "issues_sort": str(issues_sort or ""),
+        "issues_dir": str(issues_dir or ""),
+        "stable_sort": str(stable_sort or ""),
+        "stable_dir": str(stable_dir or ""),
+        "offline_sort": str(offline_sort or ""),
+        "offline_dir": str(offline_dir or ""),
+        "acs_los_sort": str(acs_los_sort or ""),
+        "acs_los_dir": str(acs_los_dir or ""),
+        "query": str(query or ""),
+    }
+    try:
+        blob = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    except Exception:
+        blob = repr(payload)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _prune_optical_status_cache_locked(now_mono=None):
+    now_mono = float(now_mono or time.monotonic())
+    stale_before = now_mono - max(float(_OPTICAL_STATUS_CACHE_SECONDS) * 4.0, 60.0)
+    stale_keys = [
+        key
+        for key, entry in _optical_status_cache.items()
+        if float((entry or {}).get("at") or 0.0) < stale_before and not bool((entry or {}).get("refreshing"))
+    ]
+    for key in stale_keys:
+        _optical_status_cache.pop(key, None)
+    if len(_optical_status_cache) <= int(_OPTICAL_STATUS_CACHE_MAX_ENTRIES):
+        return
+    drop_keys = sorted(
+        _optical_status_cache,
+        key=lambda key: float((_optical_status_cache.get(key) or {}).get("at") or 0.0),
+    )[: max(len(_optical_status_cache) - int(_OPTICAL_STATUS_CACHE_MAX_ENTRIES), 0)]
+    for key in drop_keys:
+        if bool((_optical_status_cache.get(key) or {}).get("refreshing")):
+            continue
+        _optical_status_cache.pop(key, None)
+
+
+def _refresh_optical_status_cache(cache_key, kwargs):
+    try:
+        fresh = _build_optical_status_uncached(**kwargs)
+    except Exception:
+        with _optical_status_cache_lock:
+            entry = _optical_status_cache.get(cache_key)
+            if isinstance(entry, dict):
+                entry["refreshing"] = False
+        return
+    with _optical_status_cache_lock:
+        _optical_status_cache[cache_key] = {
+            "at": time.monotonic(),
+            "data": copy.deepcopy(fresh),
+            "refreshing": False,
+        }
+        _prune_optical_status_cache_locked()
+
+
+def build_optical_status(
+    settings,
+    window_hours=24,
+    limit=50,
+    issues_page=1,
+    stable_page=1,
+    offline_page=1,
+    acs_los_page=1,
+    issues_sort="",
+    issues_dir="",
+    stable_sort="",
+    stable_dir="",
+    offline_sort="",
+    offline_dir="",
+    acs_los_sort="",
+    acs_los_dir="",
+    query="",
+):
+    kwargs = {
+        "settings": copy.deepcopy(settings),
+        "window_hours": window_hours,
+        "limit": limit,
+        "issues_page": issues_page,
+        "stable_page": stable_page,
+        "offline_page": offline_page,
+        "acs_los_page": acs_los_page,
+        "issues_sort": issues_sort,
+        "issues_dir": issues_dir,
+        "stable_sort": stable_sort,
+        "stable_dir": stable_dir,
+        "offline_sort": offline_sort,
+        "offline_dir": offline_dir,
+        "acs_los_sort": acs_los_sort,
+        "acs_los_dir": acs_los_dir,
+        "query": query,
+    }
+    cache_key = _optical_status_cache_key(**kwargs)
+    now_mono = time.monotonic()
+    with _optical_status_cache_lock:
+        entry = _optical_status_cache.get(cache_key)
+        if isinstance(entry, dict) and entry.get("data") is not None:
+            age = now_mono - float(entry.get("at") or 0.0)
+            if age < float(_OPTICAL_STATUS_CACHE_SECONDS):
+                return copy.deepcopy(entry.get("data"))
+            if not bool(entry.get("refreshing")):
+                entry["refreshing"] = True
+                threading.Thread(
+                    target=_refresh_optical_status_cache,
+                    args=(cache_key, kwargs),
+                    daemon=True,
+                ).start()
+            return copy.deepcopy(entry.get("data"))
+    fresh = _build_optical_status_uncached(**kwargs)
+    with _optical_status_cache_lock:
+        _optical_status_cache[cache_key] = {
+            "at": time.monotonic(),
+            "data": copy.deepcopy(fresh),
+            "refreshing": False,
+        }
+        _prune_optical_status_cache_locked()
+    return fresh
+
+
+def _prewarm_optical_status_cache():
+    settings = get_settings("optical", OPTICAL_DEFAULTS)
+    build_optical_status(settings, window_hours=24, limit=50)
 
 
 @app.get("/settings/optical", response_class=HTMLResponse)
@@ -14520,7 +14715,7 @@ def _normalize_surveillance_stage_history(raw_items):
         to_stage = (item.get("to") or item.get("to_stage") or "").strip().lower()
         reason = (item.get("reason") or item.get("note") or "").strip()
         action = (item.get("action") or "").strip().lower()
-        actor = (item.get("actor") or "admin").strip().lower() or "admin"
+        actor = (item.get("actor") or "admin").strip() or "admin"
         out.append(
             {
                 "ts": ts,
@@ -14528,7 +14723,7 @@ def _normalize_surveillance_stage_history(raw_items):
                 "to": to_stage,
                 "reason": reason[:500],
                 "action": action[:64],
-                "actor": actor[:32],
+                "actor": actor[:120],
             }
         )
     if len(out) > 250:
@@ -14547,7 +14742,7 @@ def _append_surveillance_stage_history(entry, from_stage, to_stage, reason="", a
             "to": (to_stage or "").strip().lower(),
             "reason": (reason or "").strip()[:500],
             "action": (action or "").strip().lower()[:64],
-            "actor": (actor or "admin").strip().lower()[:32] or "admin",
+            "actor": (actor or "admin").strip()[:120] or "admin",
         }
     )
     entry["stage_history"] = _normalize_surveillance_stage_history(history)
