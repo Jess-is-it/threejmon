@@ -164,6 +164,10 @@ from .usage_logic import build_usage_summary_data as build_usage_summary_data_sh
 BASE_DIR = Path(__file__).resolve().parent
 PH_TZ = ZoneInfo("Asia/Manila")
 DATA_DIR = Path("/data")
+SYSTEM_UPDATE_STATUS_PATH = DATA_DIR / "system_update_status.json"
+SYSTEM_UPDATE_LOG_PATH = DATA_DIR / "system_update.log"
+SYSTEM_UPDATE_CHECK_LIMIT = 20
+SYSTEM_UPDATE_LOG_TAIL_BYTES = 16384
 
 SYSTEM_DEFAULTS = {
     "branding": {
@@ -489,6 +493,8 @@ AUTH_PERMISSION_DEPENDENCIES = {
     "system.routers.mikrotik.edit": ["system.routers.mikrotik.view"],
     "system.routers.cores.edit": ["system.routers.cores.view"],
     "system.routers.isp.edit": ["system.routers.isp.view"],
+    "system.update.check.run": ["system.tab.update.view"],
+    "system.update.run": ["system.tab.update.view", "system.update.check.run"],
     "surveillance.settings.danger.run": ["surveillance.view", "surveillance.edit", "system.view", "system.tab.danger.view"],
     "optical.settings.danger.run": ["optical.view", "optical.edit", "system.view", "system.tab.danger.view"],
     "accounts_ping.settings.danger.run": ["accounts_ping.view", "accounts_ping.edit", "system.view", "system.tab.danger.view"],
@@ -572,6 +578,7 @@ AUTH_ROLE_EDITOR_HIDDEN_CODES = {
     "system.tab.general.view",
     "system.tab.routers.view",
     "system.tab.access.view",
+    "system.tab.update.view",
     "system.tab.danger.view",
     "system.access.audit.view",
     "system.access.audit.retention.edit",
@@ -621,6 +628,7 @@ AUTH_UI_PERMISSION_REPLACEMENTS = {
     "system.tab.general.view": [],
     "system.tab.routers.view": [],
     "system.tab.access.view": [],
+    "system.tab.update.view": [],
     "system.tab.danger.view": [],
 }
 AUTH_UI_PERMISSION_REPLACEMENTS_LOWER = {
@@ -663,6 +671,9 @@ AUTH_PERMISSION_COMPAT_GRANTS = {
     "system.routers.cores.edit": ["system.edit"],
     "system.routers.isp.view": ["system.edit"],
     "system.routers.isp.edit": ["system.edit"],
+    "system.tab.update.view": ["system.edit"],
+    "system.update.check.run": ["system.edit"],
+    "system.update.run": ["system.edit"],
     "surveillance.settings.danger.run": ["settings.danger"],
     "optical.settings.danger.run": ["settings.danger"],
     "accounts_ping.settings.danger.run": ["settings.danger"],
@@ -1525,6 +1536,12 @@ def _auth_permission_for_route(path: str, method: str):
         return "system.backup.import_export.run"
     if path in ("/settings/import", "/settings/db/import"):
         return "system.backup.import_export.run"
+    if path == "/settings/system/update/status":
+        return "system.tab.update.view"
+    if path == "/settings/system/update/check":
+        return "system.update.check.run"
+    if path == "/settings/system/update/start":
+        return "system.update.run"
 
     if path == "/settings/system/auth/settings" or path == "/settings/system/auth/test-email":
         return "system.access.auth.edit"
@@ -3291,7 +3308,7 @@ def run_host_command(script, timeout_seconds=60):
         docker_path = shutil.which("docker")
     if docker_path:
         command = (
-            f"{docker_path} run --rm --privileged --pid=host "
+            f"{docker_path} run --rm --privileged --pid=host --network host "
             "-v /:/host "
             "ubuntu bash -c "
             f"\"chroot /host bash -c {shlex.quote(script)}\""
@@ -3332,11 +3349,13 @@ def run_host_command(script, timeout_seconds=60):
             "-c",
             f"chroot /host bash -c {shlex.quote(script)} 2>&1",
         ],
+        "Tty": True,
         "HostConfig": {
             "Privileged": True,
             "Binds": ["/:/host"],
             "AutoRemove": False,
             "PidMode": "host",
+            "NetworkMode": "host",
         },
     }
     create_cmd = [
@@ -3391,6 +3410,17 @@ def run_host_command(script, timeout_seconds=60):
             status = json.loads(waited.stdout).get("StatusCode", 1)
         except json.JSONDecodeError:
             status = 1
+    logs_cmd = [
+        "curl",
+        "-sS",
+        "--unix-socket",
+        sock,
+        f"http://localhost/containers/{container_id}/logs?stdout=1&stderr=1",
+    ]
+    logged = run_cmd(logs_cmd, timeout_seconds=timeout_seconds)
+    logs_output = ""
+    if logged and logged.returncode == 0:
+        logs_output = (logged.stdout or "").strip()
 
     delete_cmd = [
         "curl",
@@ -3404,8 +3434,510 @@ def run_host_command(script, timeout_seconds=60):
     run_cmd(delete_cmd)
 
     if status != 0:
-        return False, f"Host command failed: container exit {status}"
-    return True, "Host command completed."
+        detail = logs_output or f"container exit {status}"
+        return False, f"Host command failed: {detail}"
+    return True, logs_output
+
+
+def _system_update_host_repo() -> str:
+    return (os.environ.get("THREEJ_HOST_REPO") or "/opt/threejnotif").strip() or "/opt/threejnotif"
+
+
+def _system_update_normalize_remote_url(remote_url: str) -> str:
+    url = str(remote_url or "").strip()
+    if not url:
+        return ""
+    lowered = url.lower()
+    if lowered.startswith("http://") or lowered.startswith("https://"):
+        return url
+    if url.startswith("git@") and ":" in url:
+        host_part, path_part = url[4:].split(":", 1)
+        host_part = host_part.strip()
+        path_part = path_part.strip().lstrip("/")
+        if host_part and path_part:
+            return f"https://{host_part}/{path_part}"
+    if lowered.startswith("ssh://"):
+        parsed = urllib.parse.urlparse(url)
+        host_part = (parsed.hostname or "").strip()
+        path_part = (parsed.path or "").strip().lstrip("/")
+        if host_part and path_part:
+            return f"https://{host_part}/{path_part}"
+    return url
+
+
+def _system_update_preferred_source(remote_url: str = "") -> str:
+    override = str(os.environ.get("THREEJ_REPO_URL") or "").strip()
+    if override:
+        return override
+    normalized = _system_update_normalize_remote_url(remote_url)
+    return normalized or str(remote_url or "").strip() or "origin"
+
+
+def _default_system_update_status():
+    return {
+        "status": "idle",
+        "phase": "idle",
+        "message": "",
+        "step_index": 0,
+        "step_total": 5,
+        "percent": 0,
+        "started_at": "",
+        "updated_at": "",
+        "branch": "",
+        "old_commit": "",
+        "new_commit": "",
+        "remote_url": "",
+        "trigger": "",
+        "runner_id": "",
+        "error": "",
+    }
+
+
+def _normalize_system_update_status(payload):
+    raw = payload if isinstance(payload, dict) else {}
+    out = dict(_default_system_update_status())
+    status = str(raw.get("status") or out["status"]).strip().lower()
+    if status not in {"idle", "queued", "running", "done", "failed"}:
+        status = "idle"
+    out["status"] = status
+    phase = str(raw.get("phase") or out["phase"]).strip().lower() or status
+    out["phase"] = phase
+    for key in ("message", "started_at", "updated_at", "branch", "old_commit", "new_commit", "remote_url", "trigger", "runner_id", "error"):
+        out[key] = str(raw.get(key) or "").strip()
+    try:
+        out["step_total"] = max(int(raw.get("step_total") or out["step_total"]), 1)
+    except Exception:
+        out["step_total"] = _default_system_update_status()["step_total"]
+    try:
+        out["step_index"] = max(min(int(raw.get("step_index") or 0), out["step_total"]), 0)
+    except Exception:
+        out["step_index"] = 0
+    try:
+        percent = int(raw.get("percent") or 0)
+    except Exception:
+        percent = 0
+    if percent <= 0 and out["step_total"] > 0:
+        percent = int((out["step_index"] / out["step_total"]) * 100)
+    out["percent"] = max(0, min(percent, 100))
+    out["is_running"] = out["status"] in {"queued", "running"}
+    return out
+
+
+def _read_system_update_status():
+    try:
+        if SYSTEM_UPDATE_STATUS_PATH.is_file():
+            return _normalize_system_update_status(json.loads(SYSTEM_UPDATE_STATUS_PATH.read_text(encoding="utf-8")))
+    except Exception:
+        pass
+    return _normalize_system_update_status({})
+
+
+def _write_system_update_status(payload):
+    status = _normalize_system_update_status(payload)
+    try:
+        SYSTEM_UPDATE_STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = SYSTEM_UPDATE_STATUS_PATH.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(status, ensure_ascii=True, indent=2), encoding="utf-8")
+        tmp_path.replace(SYSTEM_UPDATE_STATUS_PATH)
+    except Exception:
+        pass
+    return status
+
+
+def _read_system_update_log_tail(max_bytes: int = SYSTEM_UPDATE_LOG_TAIL_BYTES) -> str:
+    try:
+        if not SYSTEM_UPDATE_LOG_PATH.is_file():
+            return ""
+        size = SYSTEM_UPDATE_LOG_PATH.stat().st_size
+        with open(SYSTEM_UPDATE_LOG_PATH, "rb") as handle:
+            if size > max_bytes:
+                handle.seek(-max_bytes, os.SEEK_END)
+            return handle.read().decode("utf-8", errors="replace").strip()
+    except Exception:
+        return ""
+
+
+def _system_update_status_payload(include_log: bool = True):
+    status = _read_system_update_status()
+    if include_log:
+        status["log_tail"] = _read_system_update_log_tail()
+    return status
+
+
+def _system_update_parse_check_output(output: str):
+    info = {
+        "repo_path": _system_update_host_repo(),
+        "branch": "",
+        "remote_url": "",
+        "origin_url": "",
+        "source_url": "",
+        "current": {"full": "", "short": "", "date": ""},
+        "latest": {"full": "", "short": "", "date": ""},
+        "ahead": 0,
+        "behind": 0,
+        "has_update": False,
+        "is_dirty": False,
+        "dirty_files": [],
+        "commits": [],
+    }
+    text = str(output or "")
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = line.split("\x1f")
+        if not parts:
+            continue
+        tag = parts[0]
+        if tag == "META" and len(parts) >= 3:
+            key = parts[1]
+            value = parts[2]
+            if key == "branch":
+                info["branch"] = value
+            elif key == "remote_url":
+                info["remote_url"] = value
+            elif key == "origin_url":
+                info["origin_url"] = value
+            elif key == "source_url":
+                info["source_url"] = value
+            elif key == "local_full":
+                info["current"]["full"] = value
+            elif key == "local_short":
+                info["current"]["short"] = value
+            elif key == "local_date":
+                info["current"]["date"] = value
+            elif key == "remote_full":
+                info["latest"]["full"] = value
+            elif key == "remote_short":
+                info["latest"]["short"] = value
+            elif key == "remote_date":
+                info["latest"]["date"] = value
+            elif key == "ahead":
+                try:
+                    info["ahead"] = max(int(value or 0), 0)
+                except Exception:
+                    info["ahead"] = 0
+            elif key == "behind":
+                try:
+                    info["behind"] = max(int(value or 0), 0)
+                except Exception:
+                    info["behind"] = 0
+            elif key == "dirty":
+                info["is_dirty"] = str(value or "").strip() == "1"
+        elif tag == "DIRTY" and len(parts) >= 2:
+            entry = parts[1].strip()
+            if entry:
+                info["dirty_files"].append(entry)
+        elif tag == "COMMIT" and len(parts) >= 6:
+            info["commits"].append(
+                {
+                    "full": parts[1].strip(),
+                    "short": parts[2].strip(),
+                    "date": parts[3].strip(),
+                    "author": parts[4].strip(),
+                    "subject": parts[5].strip(),
+                }
+            )
+    info["has_update"] = info["behind"] > 0 and bool(info["latest"]["full"])
+    return info
+
+
+def _system_update_check_remote():
+    repo = _system_update_host_repo()
+    limit = SYSTEM_UPDATE_CHECK_LIMIT
+    script = f"""
+set -eu
+REPO={shlex.quote(repo)}
+OVERRIDE_SOURCE={shlex.quote(str(os.environ.get("THREEJ_REPO_URL") or "").strip())}
+CHECK_REF=refs/threejmon-system-update/check
+APP_USER=${{THREEJ_APP_USER:-threejnotif}}
+GIT_USER=${{THREEJ_GIT_USER:-$APP_USER}}
+if ! id "$GIT_USER" >/dev/null 2>&1; then
+  GIT_USER=root
+  GIT_HOME=/root
+else
+  GIT_HOME=$(getent passwd "$GIT_USER" | cut -d: -f6)
+  if [ -z "$GIT_HOME" ] || [ ! -d "$GIT_HOME" ]; then
+    GIT_USER=root
+    GIT_HOME=/root
+  elif [ "$GIT_USER" != "root" ]; then
+    if command -v runuser >/dev/null 2>&1; then
+      if ! runuser -u "$GIT_USER" -- test -w "$REPO/.git"; then
+        GIT_USER=root
+        GIT_HOME=/root
+      fi
+    elif [ ! -w "$REPO/.git" ]; then
+      GIT_USER=root
+      GIT_HOME=/root
+    fi
+  fi
+fi
+git_repo() {{
+  if [ "$GIT_USER" = "root" ]; then
+    git -c safe.directory="$REPO" -C "$REPO" "$@"
+    return
+  fi
+  if command -v runuser >/dev/null 2>&1; then
+    runuser -u "$GIT_USER" -- env HOME="$GIT_HOME" USER="$GIT_USER" LOGNAME="$GIT_USER" git -c safe.directory="$REPO" -C "$REPO" "$@"
+    return
+  fi
+  su -s /bin/bash "$GIT_USER" -c "HOME=$(printf '%q' "$GIT_HOME") USER=$(printf '%q' "$GIT_USER") LOGNAME=$(printf '%q' "$GIT_USER") git -c safe.directory=$(printf '%q' "$REPO") -C $(printf '%q' "$REPO") $*"
+}}
+normalize_source_url() {{
+  local raw
+  raw=${{1:-}}
+  case "$raw" in
+    http://*|https://*)
+      printf '%s' "$raw"
+      return
+      ;;
+    git@*:* )
+      local host path
+      host=${{raw#git@}}
+      host=${{host%%:*}}
+      path=${{raw#*:}}
+      path=${{path#/}}
+      if [ -n "$host" ] && [ -n "$path" ]; then
+        printf 'https://%s/%s' "$host" "$path"
+        return
+      fi
+      ;;
+    ssh://*)
+      local rest host path
+      rest=${{raw#ssh://}}
+      host=${{rest%%/*}}
+      host=${{host#*@}}
+      path=${{rest#*/}}
+      path=${{path#/}}
+      if [ -n "$host" ] && [ -n "$path" ] && [ "$rest" != "$path" ]; then
+        printf 'https://%s/%s' "$host" "$path"
+        return
+      fi
+      ;;
+  esac
+  printf '%s' "$raw"
+}}
+branch=$(git_repo rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+if [ -z "$branch" ] || [ "$branch" = "HEAD" ]; then
+  branch=master
+fi
+origin_url=$(git_repo remote get-url origin 2>/dev/null || true)
+source_url="$OVERRIDE_SOURCE"
+if [ -z "$source_url" ]; then
+  source_url=$(normalize_source_url "$origin_url")
+fi
+if [ -z "$source_url" ]; then
+  source_url=origin
+fi
+git_repo fetch "$source_url" "$branch:$CHECK_REF"
+remote_ref="$CHECK_REF"
+local_full=$(git_repo rev-parse HEAD)
+local_short=$(git_repo rev-parse --short HEAD)
+local_date=$(git_repo log -1 --format=%cs HEAD)
+remote_full=$(git_repo rev-parse "$remote_ref")
+remote_short=$(git_repo rev-parse --short "$remote_ref")
+remote_date=$(git_repo log -1 --format=%cs "$remote_ref")
+ahead=$(git_repo rev-list --count "$remote_ref"..HEAD)
+behind=$(git_repo rev-list --count HEAD.."$remote_ref")
+dirty=0
+dirty_lines=$(git_repo status --short --untracked-files=no || true)
+if [ -n "$dirty_lines" ]; then
+  dirty=1
+fi
+printf 'META\\x1fbranch\\x1f%s\\n' "$branch"
+printf 'META\\x1fremote_url\\x1f%s\\n' "$source_url"
+printf 'META\\x1forigin_url\\x1f%s\\n' "$origin_url"
+printf 'META\\x1fsource_url\\x1f%s\\n' "$source_url"
+printf 'META\\x1flocal_full\\x1f%s\\n' "$local_full"
+printf 'META\\x1flocal_short\\x1f%s\\n' "$local_short"
+printf 'META\\x1flocal_date\\x1f%s\\n' "$local_date"
+printf 'META\\x1fremote_full\\x1f%s\\n' "$remote_full"
+printf 'META\\x1fremote_short\\x1f%s\\n' "$remote_short"
+printf 'META\\x1fremote_date\\x1f%s\\n' "$remote_date"
+printf 'META\\x1fahead\\x1f%s\\n' "$ahead"
+printf 'META\\x1fbehind\\x1f%s\\n' "$behind"
+printf 'META\\x1fdirty\\x1f%s\\n' "$dirty"
+if [ -n "$dirty_lines" ]; then
+  printf '%s\\n' "$dirty_lines" | head -n 20 | while IFS= read -r line; do
+    printf 'DIRTY\\x1f%s\\n' "$line"
+  done
+fi
+git_repo log --date=short --pretty=format:'COMMIT%x1f%H%x1f%h%x1f%cs%x1f%an%x1f%s' HEAD.."$remote_ref" | head -n {limit}
+"""
+    ok, output = run_host_command(script, timeout_seconds=120)
+    if not ok:
+        return False, str(output or "").strip() or "Unable to check updates."
+    try:
+        return True, _system_update_parse_check_output(output)
+    except Exception as exc:
+        return False, f"Failed to parse update check output: {exc}"
+
+
+def _system_update_docker_path() -> str:
+    for candidate in ("/usr/bin/docker", "/usr/local/bin/docker"):
+        if os.path.exists(candidate):
+            return candidate
+    return shutil.which("docker") or ""
+
+
+def _start_system_update_runner(check_info: dict):
+    docker_path = _system_update_docker_path()
+    host_repo = _system_update_host_repo()
+    host_status_file = f"{host_repo.rstrip('/')}/data/system_update_status.json"
+    host_log_file = f"{host_repo.rstrip('/')}/data/system_update.log"
+    branch = str((check_info or {}).get("branch") or "").strip() or "master"
+    source_url = _system_update_preferred_source(
+        str((check_info or {}).get("source_url") or (check_info or {}).get("remote_url") or "")
+    )
+    queued = _write_system_update_status(
+        {
+            "status": "queued",
+            "phase": "queued",
+            "message": "Update queued.",
+            "step_index": 0,
+            "step_total": 5,
+            "percent": 0,
+            "started_at": utc_now_iso(),
+            "updated_at": utc_now_iso(),
+            "branch": branch,
+            "old_commit": ((check_info or {}).get("current") or {}).get("full") or "",
+            "new_commit": ((check_info or {}).get("latest") or {}).get("full") or "",
+            "remote_url": source_url or (check_info or {}).get("remote_url") or "",
+            "trigger": "system-ui",
+            "runner_id": "",
+            "error": "",
+        }
+    )
+    try:
+        SYSTEM_UPDATE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        SYSTEM_UPDATE_LOG_PATH.write_text("", encoding="utf-8")
+    except Exception:
+        pass
+    host_script = (
+        f"mkdir -p {shlex.quote(os.path.dirname(host_status_file))} && "
+        f": > {shlex.quote(host_log_file)} && "
+        f"cd {shlex.quote(host_repo)} && "
+        f"env THREEJ_STATUS_FILE={shlex.quote(host_status_file)} "
+        f"THREEJ_UPDATE_TRIGGER=system-ui "
+        f"THREEJ_BRANCH={shlex.quote(branch)} "
+        f"THREEJ_REPO_URL={shlex.quote(source_url)} "
+        f"{shlex.quote(host_repo.rstrip('/') + '/update.sh')} >> {shlex.quote(host_log_file)} 2>&1"
+    )
+    runner_id = ""
+    if docker_path:
+        outer_command = (
+            f"{shlex.quote(docker_path)} run -d --rm --privileged --pid=host --network host "
+            f"-v /:/host ubuntu bash -lc "
+            f"{shlex.quote(f'chroot /host /bin/bash -lc {shlex.quote(host_script)}')}"
+        )
+        result = subprocess.run(
+            ["/bin/sh", "-c", outer_command],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+        if result.returncode != 0:
+            raise RuntimeError((result.stderr or result.stdout or "Failed to start updater container.").strip())
+        runner_id = (result.stdout or "").strip()
+    else:
+        sock = "/var/run/docker.sock"
+        if not os.path.exists(sock):
+            raise RuntimeError("docker is not available inside the application container.")
+        if not shutil.which("curl"):
+            raise RuntimeError("curl is required to start the updater container.")
+
+        def _curl_cmd(args: list[str], timeout_seconds: int = 30):
+            return subprocess.run(
+                args,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout_seconds,
+            )
+
+        pull_cmd = [
+            "curl",
+            "-sS",
+            "--unix-socket",
+            sock,
+            "-X",
+            "POST",
+            "http://localhost/images/create?fromImage=ubuntu&tag=latest",
+        ]
+        pulled = _curl_cmd(pull_cmd, timeout_seconds=120)
+        if pulled.returncode != 0:
+            raise RuntimeError((pulled.stderr or pulled.stdout or "Unable to pull ubuntu image.").strip())
+
+        payload = {
+            "Image": "ubuntu",
+            "Cmd": [
+                "bash",
+                "-lc",
+                f"chroot /host /bin/bash -lc {shlex.quote(host_script)}",
+            ],
+            "HostConfig": {
+                "Privileged": True,
+                "Binds": ["/:/host"],
+                "AutoRemove": True,
+                "PidMode": "host",
+                "NetworkMode": "host",
+            },
+        }
+        create_cmd = [
+            "curl",
+            "-sS",
+            "--unix-socket",
+            sock,
+            "-H",
+            "Content-Type: application/json",
+            "-X",
+            "POST",
+            "-d",
+            json.dumps(payload),
+            "http://localhost/containers/create",
+        ]
+        created = _curl_cmd(create_cmd, timeout_seconds=120)
+        if created.returncode != 0:
+            raise RuntimeError((created.stderr or created.stdout or "Unable to create updater container.").strip())
+        try:
+            runner_id = str((json.loads(created.stdout or "{}") or {}).get("Id") or "").strip()
+        except Exception as exc:
+            raise RuntimeError(f"Unable to parse updater container id: {exc}") from exc
+        if not runner_id:
+            raise RuntimeError((created.stdout or "Unable to create updater container.").strip())
+        start_cmd = [
+            "curl",
+            "-sS",
+            "--unix-socket",
+            sock,
+            "-X",
+            "POST",
+            f"http://localhost/containers/{runner_id}/start",
+        ]
+        started = _curl_cmd(start_cmd, timeout_seconds=120)
+        if started.returncode != 0:
+            delete_cmd = [
+                "curl",
+                "-sS",
+                "--unix-socket",
+                sock,
+                "-X",
+                "DELETE",
+                f"http://localhost/containers/{runner_id}?force=1",
+            ]
+            try:
+                _curl_cmd(delete_cmd)
+            except Exception:
+                pass
+            raise RuntimeError((started.stderr or started.stdout or "Unable to start updater container.").strip())
+    if runner_id:
+        queued["runner_id"] = runner_id
+        queued["updated_at"] = utc_now_iso()
+        _write_system_update_status(queued)
+    return queued
 
 
 def normalize_pulsewatch_settings(settings):
@@ -7328,6 +7860,86 @@ async def import_db_route(request: Request):
         except Exception as exc:
             message = f"Database restore failed: {exc}"
     return render_system_settings_response(request, message, active_tab="backup", routers_tab="cores")
+
+
+@app.get("/settings/system/update/status", response_class=JSONResponse)
+async def system_update_status_route():
+    return _json_no_store({"ok": True, "status": _system_update_status_payload(include_log=True)})
+
+
+@app.get("/settings/system/update/check", response_class=JSONResponse)
+async def system_update_check_route():
+    ok, payload = _system_update_check_remote()
+    if not ok:
+        return _json_no_store(
+            {
+                "ok": False,
+                "error": str(payload or "").strip() or "Unable to check for updates.",
+                "status": _system_update_status_payload(include_log=True),
+            },
+            status_code=500,
+        )
+    return _json_no_store({"ok": True, "check": payload, "status": _system_update_status_payload(include_log=True)})
+
+
+@app.post("/settings/system/update/start", response_class=JSONResponse)
+async def system_update_start_route(request: Request):
+    form = await request.form()
+    ok, password_error = _system_danger_verify_password(request, form.get("confirm_password") or "")
+    if not ok:
+        return _json_no_store({"ok": False, "error": password_error}, status_code=400)
+
+    current_status = _system_update_status_payload(include_log=False)
+    if current_status.get("is_running"):
+        return _json_no_store(
+            {"ok": False, "error": "An update is already running.", "status": current_status},
+            status_code=409,
+        )
+
+    check_ok, check_payload = _system_update_check_remote()
+    if not check_ok:
+        return _json_no_store(
+            {"ok": False, "error": str(check_payload or "").strip() or "Unable to check for updates."},
+            status_code=500,
+        )
+    if check_payload.get("is_dirty"):
+        return _json_no_store(
+            {
+                "ok": False,
+                "error": "Tracked local changes were found in the install directory. Commit or stash them before updating.",
+                "check": check_payload,
+            },
+            status_code=409,
+        )
+    if not check_payload.get("has_update"):
+        return _json_no_store(
+            {
+                "ok": False,
+                "error": "The system is already up to date.",
+                "check": check_payload,
+            },
+            status_code=400,
+        )
+
+    try:
+        queued_status = _start_system_update_runner(check_payload)
+    except Exception as exc:
+        return _json_no_store({"ok": False, "error": f"Failed to start update: {exc}"}, status_code=500)
+
+    _auth_log_event(
+        request,
+        action="system.update.started",
+        resource="/settings/system/update/start",
+        details=f"branch={check_payload.get('branch') or 'master'};from={(check_payload.get('current') or {}).get('short') or ''};to={(check_payload.get('latest') or {}).get('short') or ''}",
+    )
+    return _json_no_store(
+        {
+            "ok": True,
+            "message": "System update started.",
+            "check": check_payload,
+            "status": queued_status,
+        }
+    )
 
 
 OPTICAL_WINDOW_OPTIONS = WAN_STATUS_WINDOW_OPTIONS
@@ -18322,6 +18934,17 @@ def _system_danger_capabilities(request: Request):
     return caps
 
 
+def _system_update_capabilities(request: Request):
+    can_view = _auth_request_has_permission(request, "system.tab.update.view")
+    can_check = _auth_request_has_permission(request, "system.update.check.run")
+    can_run = _auth_request_has_permission(request, "system.update.run")
+    return {
+        "can_view_update_tab": bool(can_view or can_check or can_run),
+        "can_check_system_update": bool(can_check or can_run),
+        "can_run_system_update": bool(can_run),
+    }
+
+
 def _build_system_danger_groups(caps: dict):
     groups = []
     for group in _SYSTEM_DANGER_GROUPS:
@@ -18483,6 +19106,7 @@ def _system_settings_caps(request: Request):
         "can_manage_import_export": _allow("system.backup.import_export.run"),
     }
     caps.update(_system_danger_capabilities(request))
+    caps.update(_system_update_capabilities(request))
     caps["can_view_general_tab"] = caps["can_view_system_branding"] or caps["can_view_system_telegram"]
     caps["can_view_routers_tab"] = (
         caps["can_view_system_router_cores"]
@@ -18503,7 +19127,7 @@ def _normalize_system_settings_tabs(active_tab: str, routers_tab: str, access_ta
     routers_tab = (routers_tab or "cores").strip().lower()
     access_tab = (access_tab or "auth").strip().lower()
 
-    if active_tab not in {"general", "routers", "access", "backup", "danger"}:
+    if active_tab not in {"general", "routers", "access", "update", "backup", "danger"}:
         active_tab = "general"
     if routers_tab not in {"cores", "mikrotik-routers", "isps"}:
         routers_tab = "cores"
@@ -18517,6 +19141,8 @@ def _normalize_system_settings_tabs(active_tab: str, routers_tab: str, access_ta
         allowed_main_tabs.append("routers")
     if caps.get("can_view_access_tab"):
         allowed_main_tabs.append("access")
+    if caps.get("can_view_update_tab"):
+        allowed_main_tabs.append("update")
     if caps.get("can_manage_import_export"):
         allowed_main_tabs.append("backup")
     if caps.get("can_view_danger_tab"):
@@ -18579,6 +19205,7 @@ def render_system_settings_response(
         system_meta = dict(_SYSTEM_DANGER_ACTIONS.get("uninstall") or {})
         system_meta["action"] = "uninstall"
         danger_system_actions.append(system_meta)
+    system_update_status = _system_update_status_payload(include_log=False) if caps.get("can_view_update_tab") else _normalize_system_update_status({})
     system_settings = normalize_system_settings(get_settings("system", SYSTEM_DEFAULTS))
     auth_settings = system_settings.get("auth") if isinstance(system_settings.get("auth"), dict) else {}
     pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
@@ -18727,6 +19354,8 @@ def render_system_settings_response(
                 "danger_bulk_actions": danger_bulk_actions,
                 "danger_system_actions": danger_system_actions,
                 "danger_requires_password": _system_danger_requires_password(request),
+                "system_update_status": system_update_status,
+                "system_update_requires_password": _system_danger_requires_password(request),
                 **caps,
             },
         ),

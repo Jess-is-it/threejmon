@@ -8,12 +8,86 @@ REPO_URL=${THREEJ_REPO_URL:-}
 GIT_USER=${THREEJ_GIT_USER:-${SUDO_USER:-$APP_USER}}
 SKIP_REBUILD=${THREEJ_SKIP_REBUILD:-0}
 FORCE_REBUILD=${THREEJ_FORCE_REBUILD:-0}
+STATUS_FILE=${THREEJ_STATUS_FILE:-${INSTALL_DIR}/data/system_update_status.json}
+UPDATE_TRIGGER=${THREEJ_UPDATE_TRIGGER:-manual}
+STATUS_TOTAL_STEPS=5
+STATUS_CURRENT_STEP=0
+STATUS_PHASE=queued
+STATUS_STARTED_AT=""
+STATUS_UPDATED_AT=""
+STATUS_BRANCH=""
+STATUS_OLD_COMMIT=""
+STATUS_NEW_COMMIT=""
+STATUS_REMOTE_URL=""
+STATUS_ERROR=""
 
 log() {
   printf "%s\n" "$*"
 }
 
+json_escape() {
+  printf '%s' "${1:-}" | tr '\r\n' ' ' | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+iso_now() {
+  date -u +"%Y-%m-%dT%H:%M:%SZ"
+}
+
+status_percent() {
+  local step total
+  step=${1:-0}
+  total=${2:-1}
+  if [ "${total}" -le 0 ]; then
+    total=1
+  fi
+  printf '%s' "$(( step * 100 / total ))"
+}
+
+write_status() {
+  mkdir -p "$(dirname "${STATUS_FILE}")"
+  STATUS_UPDATED_AT=$(iso_now)
+  if [ -z "${STATUS_STARTED_AT}" ]; then
+    STATUS_STARTED_AT="${STATUS_UPDATED_AT}"
+  fi
+  local status phase message runner_id
+  status=${1:-running}
+  phase=${2:-${STATUS_PHASE}}
+  message=${3:-}
+  runner_id=${THREEJ_UPDATE_RUNNER_ID:-}
+  if [ -z "${runner_id}" ] && [ -f "${STATUS_FILE}" ]; then
+    runner_id=$(sed -n 's/.*"runner_id":[[:space:]]*"\([^"]*\)".*/\1/p' "${STATUS_FILE}" | head -n 1)
+  fi
+  cat > "${STATUS_FILE}.tmp" <<EOF
+{
+  "status": "$(json_escape "${status}")",
+  "phase": "$(json_escape "${phase}")",
+  "message": "$(json_escape "${message}")",
+  "step_index": ${STATUS_CURRENT_STEP:-0},
+  "step_total": ${STATUS_TOTAL_STEPS},
+  "percent": $(status_percent "${STATUS_CURRENT_STEP:-0}" "${STATUS_TOTAL_STEPS}"),
+  "started_at": "$(json_escape "${STATUS_STARTED_AT}")",
+  "updated_at": "$(json_escape "${STATUS_UPDATED_AT}")",
+  "branch": "$(json_escape "${STATUS_BRANCH}")",
+  "old_commit": "$(json_escape "${STATUS_OLD_COMMIT}")",
+  "new_commit": "$(json_escape "${STATUS_NEW_COMMIT}")",
+  "remote_url": "$(json_escape "${STATUS_REMOTE_URL}")",
+  "trigger": "$(json_escape "${UPDATE_TRIGGER}")",
+  "runner_id": "$(json_escape "${runner_id}")",
+  "error": "$(json_escape "${STATUS_ERROR}")"
+}
+EOF
+  mv "${STATUS_FILE}.tmp" "${STATUS_FILE}"
+}
+
+set_phase() {
+  STATUS_CURRENT_STEP=${1:-0}
+  STATUS_PHASE=${2:-running}
+  write_status "running" "${STATUS_PHASE}" "${3:-}"
+}
+
 fail() {
+  STATUS_ERROR=${1:-Update failed.}
+  write_status "failed" "${STATUS_PHASE}" "${STATUS_ERROR}"
   log "$*"
   exit 1
 }
@@ -84,12 +158,14 @@ git_repo() {
 
 detect_branch() {
   if [ -n "${BRANCH}" ]; then
+    STATUS_BRANCH=${BRANCH}
     return
   fi
   BRANCH=$(git_repo rev-parse --abbrev-ref HEAD 2>/dev/null || true)
   if [ -z "${BRANCH}" ] || [ "${BRANCH}" = "HEAD" ]; then
     BRANCH=master
   fi
+  STATUS_BRANCH=${BRANCH}
 }
 
 ensure_clean_repo() {
@@ -116,26 +192,34 @@ run_update() {
     source_ref="${REPO_URL}"
     log "Using override repo URL: ${REPO_URL}"
   fi
+  STATUS_REMOTE_URL=${source_ref}
 
   old_commit=$(git_repo rev-parse HEAD)
+  STATUS_OLD_COMMIT=${old_commit}
+  set_phase 1 "fetching" "Fetching latest ${BRANCH}..."
   log "Fetching ${BRANCH}..."
   git_repo fetch "${source_ref}" "${BRANCH}"
+  set_phase 2 "pulling" "Pulling latest ${BRANCH}..."
   log "Pulling latest ${BRANCH}..."
   git_repo pull --ff-only "${source_ref}" "${BRANCH}"
   new_commit=$(git_repo rev-parse HEAD)
+  STATUS_NEW_COMMIT=${new_commit}
 
   write_version_file
 
   if [ "${SKIP_REBUILD}" = "1" ]; then
+    set_phase 5 "done" "Repository updated. Rebuild skipped."
     log "Repository updated to $(git_repo rev-parse --short HEAD). Rebuild skipped by THREEJ_SKIP_REBUILD=1."
     return
   fi
 
   if [ "${old_commit}" = "${new_commit}" ] && [ "${FORCE_REBUILD}" != "1" ]; then
+    set_phase 5 "done" "Already up to date. Rebuild skipped."
     log "Already up to date at $(git_repo rev-parse --short HEAD). Skipping rebuild."
     return
   fi
 
+  set_phase 3 "rebuilding" "Rebuilding services..."
   log "Rebuilding services..."
   cd "${INSTALL_DIR}"
   mkdir -p data
@@ -145,6 +229,8 @@ run_update() {
   export THREEJ_VERSION THREEJ_VERSION_DATE
   export BUILDX_NO_DEFAULT_ATTESTATIONS=1
   docker compose up -d --build
+  set_phase 4 "health_check" "Waiting for the updated service to come back..."
+  set_phase 5 "done" "Update complete."
   log "Update complete at ${THREEJ_VERSION}."
 }
 
@@ -154,6 +240,8 @@ main() {
   ensure_repo
   resolve_git_user
   detect_branch
+  STATUS_STARTED_AT=$(iso_now)
+  write_status "queued" "queued" "Update queued."
   ensure_clean_repo
   run_update
 }

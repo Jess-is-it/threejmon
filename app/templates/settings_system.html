@@ -25,6 +25,11 @@
       <a href="#sys-access" class="nav-link {% if active_tab == 'access' %}active{% endif %}" data-bs-toggle="tab">Access</a>
     </li>
   {% endif %}
+  {% if can_view_update_tab %}
+    <li class="nav-item">
+      <a href="#sys-update" class="nav-link {% if active_tab == 'update' %}active{% endif %}" data-bs-toggle="tab">System Update</a>
+    </li>
+  {% endif %}
   {% if can_manage_import_export %}
     <li class="nav-item">
       <a href="#sys-backup" class="nav-link {% if active_tab == 'backup' %}active{% endif %}" data-bs-toggle="tab">Backup</a>
@@ -37,7 +42,7 @@
   {% endif %}
 </ul>
 
-{% if not can_view_general_tab and not can_view_routers_tab and not can_view_access_tab and not can_manage_import_export and not can_view_danger_tab %}
+{% if not can_view_general_tab and not can_view_routers_tab and not can_view_access_tab and not can_view_update_tab and not can_manage_import_export and not can_view_danger_tab %}
   <div class="alert alert-warning">Your role can open System Settings, but no system sections are assigned yet.</div>
 {% endif %}
 
@@ -1003,6 +1008,168 @@
     {% endif %}
   </div>
 
+  {% if can_view_update_tab %}
+  <div class="tab-pane {% if active_tab == 'update' %}active{% endif %}" id="sys-update">
+    <div class="alert alert-info">
+      <div class="d-flex align-items-start">
+        <span class="me-2"><i class="ti ti-refresh"></i></span>
+        <div>
+          <div class="fw-semibold">In-app system updates</div>
+          <div class="small text-muted mt-1">
+            This tab checks the tracked Git branch on the server, shows the latest pending commits, and runs the existing one-line updater from the host. During rebuild, the page may temporarily lose connection while services restart.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row g-4">
+      <div class="col-12 col-xl-5">
+        <div class="card mb-4">
+          <div class="card-header d-flex align-items-center">
+            <h3 class="card-title mb-0">Updater Status</h3>
+            <div class="ms-auto d-flex gap-2 flex-wrap">
+              {% if can_check_system_update %}
+              <button type="button" class="btn btn-outline-primary btn-sm" id="system-update-check-btn">
+                <i class="ti ti-refresh me-1"></i>Check for Updates
+              </button>
+              {% endif %}
+              {% if can_run_system_update %}
+              <button type="button" class="btn btn-primary btn-sm" id="system-update-open-btn" disabled>
+                <i class="ti ti-cloud-download me-1"></i>Update Now
+              </button>
+              {% endif %}
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="d-flex align-items-center justify-content-between gap-3 flex-wrap">
+              <div>
+                <div class="text-muted small">Current updater state</div>
+                <div class="fw-semibold" id="system-update-status-label">Loading status...</div>
+              </div>
+              <span class="badge" id="system-update-status-badge">Idle</span>
+            </div>
+
+            <div class="progress mt-3" style="height: 0.75rem;">
+              <div
+                class="progress-bar"
+                id="system-update-progress-bar"
+                role="progressbar"
+                style="width: {{ system_update_status.percent or 0 }}%;"
+                aria-valuemin="0"
+                aria-valuemax="100"
+              ></div>
+            </div>
+            <div class="text-muted small mt-2" id="system-update-progress-text">No update is running.</div>
+
+            <div class="row g-3 mt-1">
+              <div class="col-12 col-sm-6">
+                <div class="text-muted small">Branch</div>
+                <div class="fw-semibold" id="system-update-branch">{{ system_update_status.branch or 'n/a' }}</div>
+              </div>
+              <div class="col-12 col-sm-6">
+                <div class="text-muted small">Runner</div>
+                <div class="fw-semibold text-break" id="system-update-runner">{{ system_update_status.runner_id or 'n/a' }}</div>
+              </div>
+              <div class="col-12 col-sm-6">
+                <div class="text-muted small">Started</div>
+                <div id="system-update-started">{{ system_update_status.started_at or 'n/a' }}</div>
+              </div>
+              <div class="col-12 col-sm-6">
+                <div class="text-muted small">Last update</div>
+                <div id="system-update-updated">{{ system_update_status.updated_at or 'n/a' }}</div>
+              </div>
+              <div class="col-12">
+                <div class="text-muted small">Message</div>
+                <div id="system-update-message">{{ system_update_status.message or 'Check for updates to load the latest remote commits.' }}</div>
+              </div>
+            </div>
+
+            {% if system_update_requires_password %}
+            <div class="alert alert-warning mt-3 mb-0 py-2">
+              Re-enter your password before starting an in-app update.
+            </div>
+            {% endif %}
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title mb-0">Live Update Log</h3>
+          </div>
+          <div class="card-body">
+            <pre class="system-update-log" id="system-update-log">{{ system_update_status.log_tail or 'No update log yet.' }}</pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-12 col-xl-7">
+        <div class="card h-100">
+          <div class="card-header">
+            <h3 class="card-title mb-0">Latest Remote Changes</h3>
+          </div>
+          <div class="card-body">
+            <div id="system-update-check-error" class="alert alert-danger d-none mb-3"></div>
+            <div id="system-update-empty" class="text-muted">
+              {% if can_check_system_update %}
+                Click <span class="fw-semibold">Check for Updates</span> to fetch the latest commits from the tracked branch.
+              {% else %}
+                You can view current updater status here, but your role cannot run update checks.
+              {% endif %}
+            </div>
+            <div id="system-update-summary" class="d-none">
+              <div class="row g-3 mb-3">
+                <div class="col-12 col-lg-6">
+                  <div class="border rounded p-3 h-100">
+                    <div class="text-muted small">Installed</div>
+                    <div class="fw-semibold" id="system-update-current-version">n/a</div>
+                    <div class="text-muted small mt-1" id="system-update-current-date"></div>
+                  </div>
+                </div>
+                <div class="col-12 col-lg-6">
+                  <div class="border rounded p-3 h-100">
+                    <div class="text-muted small">Latest Remote</div>
+                    <div class="fw-semibold" id="system-update-latest-version">n/a</div>
+                    <div class="text-muted small mt-1" id="system-update-latest-date"></div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="d-flex flex-wrap gap-2 mb-3">
+                <span class="badge bg-secondary-lt text-secondary" id="system-update-remote-url">origin</span>
+                <span class="badge bg-blue-lt text-blue" id="system-update-commit-count">0 pending commit(s)</span>
+                <span class="badge bg-yellow-lt text-yellow d-none" id="system-update-dirty-badge">Tracked local changes found</span>
+                <span class="badge bg-green-lt text-green d-none" id="system-update-up-to-date">Already up to date</span>
+              </div>
+
+              <div class="table-responsive">
+                <table class="table table-vcenter">
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Commit</th>
+                      <th>Author</th>
+                      <th>Change</th>
+                    </tr>
+                  </thead>
+                  <tbody id="system-update-commit-body">
+                    <tr>
+                      <td colspan="4" class="text-muted">No remote commits loaded yet.</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="text-muted small d-none" id="system-update-dirty-list-wrap">
+                <div class="fw-semibold mb-1">Tracked local changes blocking update</div>
+                <pre class="system-update-log mb-0" id="system-update-dirty-list"></pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
   {% if can_manage_import_export %}
   <div class="tab-pane {% if active_tab == 'backup' %}active{% endif %}" id="sys-backup">
     <div class="card mb-4">
@@ -1211,6 +1378,74 @@
   </div>
 {% endif %}
 
+{% if can_view_update_tab %}
+  <div class="modal modal-blur fade" id="system-update-modal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+      <form class="modal-content" id="system-update-form">
+        <div class="modal-header">
+          <h5 class="modal-title" id="system-update-modal-title">Start System Update</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div id="system-update-modal-alert" class="alert alert-danger d-none"></div>
+
+          <div id="system-update-confirm-view">
+            <div class="fw-semibold" id="system-update-confirm-label">Check for updates first.</div>
+            <div class="text-muted small mt-1" id="system-update-confirm-summary">
+              The updater will pull the latest tracked branch on this server and run <code>docker compose up -d --build</code>.
+            </div>
+            {% if system_update_requires_password %}
+            <div class="mt-3">
+              <label class="form-label">Confirm Password</label>
+              <input class="form-control" type="password" name="confirm_password" id="system-update-password" autocomplete="current-password" />
+              <div class="text-muted small mt-1">Required before starting an in-app update.</div>
+            </div>
+            {% endif %}
+          </div>
+
+          <div id="system-update-progress-view" class="d-none">
+            <div class="d-flex align-items-center justify-content-between gap-3 flex-wrap">
+              <div>
+                <div class="fw-semibold" id="system-update-modal-status-label">Update running</div>
+                <div class="text-muted small" id="system-update-modal-phase">Preparing updater...</div>
+              </div>
+              <span class="badge" id="system-update-modal-status-badge">Queued</span>
+            </div>
+            <div class="progress mt-3" style="height: 0.8rem;">
+              <div
+                class="progress-bar"
+                id="system-update-modal-progress-bar"
+                role="progressbar"
+                style="width: 0%;"
+                aria-valuemin="0"
+                aria-valuemax="100"
+              ></div>
+            </div>
+            <div class="text-muted small mt-2" id="system-update-modal-progress-text">Waiting for updater output...</div>
+            <div class="row g-3 mt-1">
+              <div class="col-12 col-md-6">
+                <div class="text-muted small">Branch</div>
+                <div id="system-update-modal-branch">n/a</div>
+              </div>
+              <div class="col-12 col-md-6">
+                <div class="text-muted small">Runner</div>
+                <div class="text-break" id="system-update-modal-runner">n/a</div>
+              </div>
+            </div>
+            <pre class="system-update-log mt-3 mb-0" id="system-update-modal-log">No update log yet.</pre>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal" id="system-update-close-btn">Close</button>
+          {% if can_run_system_update %}
+          <button type="submit" class="btn btn-primary" id="system-update-submit-btn">Start Update</button>
+          {% endif %}
+        </div>
+      </form>
+    </div>
+  </div>
+{% endif %}
+
 <style>
   .system-danger-list {
     display: flex;
@@ -1226,6 +1461,20 @@
     border: 1px solid var(--tblr-border-color, #d9dee3);
     border-radius: 10px;
     background: var(--tblr-bg-surface-secondary, #f8f9fb);
+  }
+  .system-update-log {
+    margin: 0;
+    padding: 0.875rem 1rem;
+    border-radius: 10px;
+    background: #0f172a;
+    color: #dbe7ff;
+    min-height: 220px;
+    max-height: 320px;
+    overflow: auto;
+    font-size: 0.8rem;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
   }
   @media (max-width: 767.98px) {
     .system-danger-item {
@@ -1625,6 +1874,378 @@
     toggleWanFields(input.dataset.row);
     input.addEventListener("input", () => toggleWanFields(input.dataset.row));
   });
+
+  const systemUpdateRoot = document.getElementById("sys-update");
+  if (systemUpdateRoot) {
+    const initialUpdateStatus = {{ system_update_status|tojson }};
+    const updateCheckUrl = "/settings/system/update/check";
+    const updateStatusUrl = "/settings/system/update/status";
+    const updateStartUrl = "/settings/system/update/start";
+    const updateTabLink = document.querySelector('a[href="#sys-update"]');
+    const updateCheckBtn = document.getElementById("system-update-check-btn");
+    const updateOpenBtn = document.getElementById("system-update-open-btn");
+    const updateStatusLabel = document.getElementById("system-update-status-label");
+    const updateStatusBadge = document.getElementById("system-update-status-badge");
+    const updateProgressBar = document.getElementById("system-update-progress-bar");
+    const updateProgressText = document.getElementById("system-update-progress-text");
+    const updateBranch = document.getElementById("system-update-branch");
+    const updateRunner = document.getElementById("system-update-runner");
+    const updateStarted = document.getElementById("system-update-started");
+    const updateUpdated = document.getElementById("system-update-updated");
+    const updateMessage = document.getElementById("system-update-message");
+    const updateLog = document.getElementById("system-update-log");
+    const updateEmpty = document.getElementById("system-update-empty");
+    const updateSummary = document.getElementById("system-update-summary");
+    const updateCheckError = document.getElementById("system-update-check-error");
+    const updateCurrentVersion = document.getElementById("system-update-current-version");
+    const updateCurrentDate = document.getElementById("system-update-current-date");
+    const updateLatestVersion = document.getElementById("system-update-latest-version");
+    const updateLatestDate = document.getElementById("system-update-latest-date");
+    const updateRemoteUrl = document.getElementById("system-update-remote-url");
+    const updateCommitCount = document.getElementById("system-update-commit-count");
+    const updateDirtyBadge = document.getElementById("system-update-dirty-badge");
+    const updateUpToDate = document.getElementById("system-update-up-to-date");
+    const updateCommitBody = document.getElementById("system-update-commit-body");
+    const updateDirtyListWrap = document.getElementById("system-update-dirty-list-wrap");
+    const updateDirtyList = document.getElementById("system-update-dirty-list");
+    const updateModalEl = document.getElementById("system-update-modal");
+    const updateModal = updateModalEl && window.bootstrap ? bootstrap.Modal.getOrCreateInstance(updateModalEl) : null;
+    const updateForm = document.getElementById("system-update-form");
+    const updateModalAlert = document.getElementById("system-update-modal-alert");
+    const updateConfirmView = document.getElementById("system-update-confirm-view");
+    const updateProgressView = document.getElementById("system-update-progress-view");
+    const updateConfirmLabel = document.getElementById("system-update-confirm-label");
+    const updateConfirmSummary = document.getElementById("system-update-confirm-summary");
+    const updatePassword = document.getElementById("system-update-password");
+    const updateSubmitBtn = document.getElementById("system-update-submit-btn");
+    const updateCloseBtn = document.getElementById("system-update-close-btn");
+    const updateModalTitle = document.getElementById("system-update-modal-title");
+    const updateModalStatusLabel = document.getElementById("system-update-modal-status-label");
+    const updateModalStatusBadge = document.getElementById("system-update-modal-status-badge");
+    const updateModalPhase = document.getElementById("system-update-modal-phase");
+    const updateModalProgressBar = document.getElementById("system-update-modal-progress-bar");
+    const updateModalProgressText = document.getElementById("system-update-modal-progress-text");
+    const updateModalBranch = document.getElementById("system-update-modal-branch");
+    const updateModalRunner = document.getElementById("system-update-modal-runner");
+    const updateModalLog = document.getElementById("system-update-modal-log");
+
+    let latestCheck = null;
+    let lastStatus = initialUpdateStatus || {};
+    let checkLoaded = false;
+    let statusPollTimer = 0;
+    let pollingWanted = false;
+
+    const escapeHtml = (value) => String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+
+    const updateStatusUi = (status) => {
+      const normalized = status || {};
+      lastStatus = normalized;
+      const state = String(normalized.status || "idle").trim().toLowerCase() || "idle";
+      const phase = String(normalized.phase || state).trim().toLowerCase() || state;
+      const percent = Math.max(0, Math.min(Number(normalized.percent || 0), 100));
+      const stateMap = {
+        idle: { label: "Idle", badge: "bg-secondary-lt text-secondary", bar: "bg-secondary" },
+        queued: { label: "Queued", badge: "bg-azure-lt text-azure", bar: "bg-azure" },
+        running: { label: "Running", badge: "bg-blue-lt text-blue", bar: "bg-blue" },
+        done: { label: "Completed", badge: "bg-green-lt text-green", bar: "bg-green" },
+        failed: { label: "Failed", badge: "bg-red-lt text-red", bar: "bg-red" },
+      };
+      const phaseLabels = {
+        idle: "Idle",
+        queued: "Queued",
+        fetching: "Fetching latest branch",
+        pulling: "Pulling commits",
+        rebuilding: "Rebuilding services",
+        health_check: "Waiting for the updated app",
+        done: "Completed",
+        failed: "Failed",
+      };
+      const stateCfg = stateMap[state] || stateMap.idle;
+      const phaseLabel = phaseLabels[phase] || phase.replace(/_/g, " ");
+      if (updateStatusLabel) updateStatusLabel.textContent = stateCfg.label;
+      if (updateStatusBadge) {
+        updateStatusBadge.className = `badge ${stateCfg.badge}`;
+        updateStatusBadge.textContent = stateCfg.label;
+      }
+      if (updateProgressBar) {
+        updateProgressBar.className = `progress-bar ${stateCfg.bar}`;
+        updateProgressBar.style.width = `${percent}%`;
+        updateProgressBar.setAttribute("aria-valuenow", String(percent));
+      }
+      if (updateProgressText) {
+        updateProgressText.textContent = normalized.message || (state === "idle" ? "No update is running." : phaseLabel);
+      }
+      if (updateBranch) updateBranch.textContent = normalized.branch || "n/a";
+      if (updateRunner) updateRunner.textContent = normalized.runner_id || "n/a";
+      if (updateStarted) updateStarted.textContent = normalized.started_at || "n/a";
+      if (updateUpdated) updateUpdated.textContent = normalized.updated_at || "n/a";
+      if (updateMessage) updateMessage.textContent = normalized.message || "No update is running.";
+      if (updateLog) updateLog.textContent = normalized.log_tail || "No update log yet.";
+
+      if (updateModalStatusLabel) updateModalStatusLabel.textContent = stateCfg.label;
+      if (updateModalPhase) updateModalPhase.textContent = phaseLabel;
+      if (updateModalStatusBadge) {
+        updateModalStatusBadge.className = `badge ${stateCfg.badge}`;
+        updateModalStatusBadge.textContent = stateCfg.label;
+      }
+      if (updateModalProgressBar) {
+        updateModalProgressBar.className = `progress-bar ${stateCfg.bar}`;
+        updateModalProgressBar.style.width = `${percent}%`;
+        updateModalProgressBar.setAttribute("aria-valuenow", String(percent));
+      }
+      if (updateModalProgressText) {
+        updateModalProgressText.textContent = normalized.message || phaseLabel;
+      }
+      if (updateModalBranch) updateModalBranch.textContent = normalized.branch || "n/a";
+      if (updateModalRunner) updateModalRunner.textContent = normalized.runner_id || "n/a";
+      if (updateModalLog) updateModalLog.textContent = normalized.log_tail || "No update log yet.";
+
+      if (updateOpenBtn) {
+        const allowStart = !!latestCheck && !!latestCheck.has_update && !latestCheck.is_dirty && !normalized.is_running;
+        updateOpenBtn.disabled = !allowStart;
+      }
+    };
+
+    const renderCommits = (commits) => {
+      if (!updateCommitBody) return;
+      const rows = Array.isArray(commits) ? commits : [];
+      if (!rows.length) {
+        updateCommitBody.innerHTML = '<tr><td colspan="4" class="text-muted">No pending remote commits.</td></tr>';
+        return;
+      }
+      updateCommitBody.innerHTML = rows.map((item) => `
+        <tr>
+          <td>${escapeHtml(item.date || "n/a")}</td>
+          <td><span class="badge bg-secondary-lt text-secondary">${escapeHtml(item.short || "n/a")}</span></td>
+          <td>${escapeHtml(item.author || "n/a")}</td>
+          <td>${escapeHtml(item.subject || "No commit subject.")}</td>
+        </tr>
+      `).join("");
+    };
+
+    const updateCheckUi = (check) => {
+      latestCheck = check || null;
+      checkLoaded = true;
+      if (updateCheckError) {
+        updateCheckError.classList.add("d-none");
+        updateCheckError.textContent = "";
+      }
+      if (!check) {
+        if (updateOpenBtn) updateOpenBtn.disabled = true;
+        return;
+      }
+      if (updateEmpty) updateEmpty.classList.add("d-none");
+      if (updateSummary) updateSummary.classList.remove("d-none");
+      if (updateCurrentVersion) updateCurrentVersion.textContent = (check.current && check.current.short) || "n/a";
+      if (updateCurrentDate) updateCurrentDate.textContent = (check.current && check.current.date) || "";
+      if (updateLatestVersion) updateLatestVersion.textContent = (check.latest && check.latest.short) || "n/a";
+      if (updateLatestDate) updateLatestDate.textContent = (check.latest && check.latest.date) || "";
+      if (updateRemoteUrl) updateRemoteUrl.textContent = check.remote_url || "origin";
+      if (updateCommitCount) updateCommitCount.textContent = `${Number(check.behind || 0)} pending commit(s)`;
+      if (updateDirtyBadge) updateDirtyBadge.classList.toggle("d-none", !check.is_dirty);
+      if (updateUpToDate) updateUpToDate.classList.toggle("d-none", !!check.has_update || !!check.is_dirty);
+      if (updateDirtyListWrap) updateDirtyListWrap.classList.toggle("d-none", !check.is_dirty);
+      if (updateDirtyList) updateDirtyList.textContent = (check.dirty_files || []).join("\n");
+      renderCommits(check.commits || []);
+      if (updateOpenBtn) {
+        updateOpenBtn.disabled = !(check.has_update && !check.is_dirty && !(lastStatus && lastStatus.is_running));
+      }
+    };
+
+    const setUpdateCheckError = (message) => {
+      if (updateCheckError) {
+        updateCheckError.textContent = message || "Unable to check for updates.";
+        updateCheckError.classList.remove("d-none");
+      }
+    };
+
+    const setModalError = (message) => {
+      if (!updateModalAlert) return;
+      if (message) {
+        updateModalAlert.textContent = message;
+        updateModalAlert.classList.remove("d-none");
+      } else {
+        updateModalAlert.textContent = "";
+        updateModalAlert.classList.add("d-none");
+      }
+    };
+
+    const showUpdateConfirm = () => {
+      if (updateConfirmView) updateConfirmView.classList.remove("d-none");
+      if (updateProgressView) updateProgressView.classList.add("d-none");
+      if (updateSubmitBtn) {
+        updateSubmitBtn.classList.remove("d-none");
+        updateSubmitBtn.disabled = !(latestCheck && latestCheck.has_update && !latestCheck.is_dirty);
+        updateSubmitBtn.textContent = "Start Update";
+      }
+      if (updateCloseBtn) updateCloseBtn.textContent = "Cancel";
+      if (updateModalTitle) updateModalTitle.textContent = "Start System Update";
+      if (updateConfirmLabel) {
+        if (latestCheck && latestCheck.has_update) {
+          updateConfirmLabel.textContent = `Install ${String(latestCheck.behind || 0)} pending commit(s) on ${latestCheck.branch || "master"}?`;
+        } else if (latestCheck && latestCheck.is_dirty) {
+          updateConfirmLabel.textContent = "Update blocked by tracked local changes.";
+        } else {
+          updateConfirmLabel.textContent = "Check for updates first.";
+        }
+      }
+      if (updateConfirmSummary) {
+        if (latestCheck && latestCheck.has_update) {
+          updateConfirmSummary.textContent = `Current ${latestCheck.current?.short || "n/a"} will update to ${latestCheck.latest?.short || "n/a"} on branch ${latestCheck.branch || "master"}. The service will rebuild and restart during this process.`;
+        } else if (latestCheck && latestCheck.is_dirty) {
+          updateConfirmSummary.textContent = "Commit or stash the tracked local changes shown in this tab before running an in-app update.";
+        } else {
+          updateConfirmSummary.textContent = "Load the latest remote commit list first so the updater can confirm what will be installed.";
+        }
+      }
+      if (updatePassword) updatePassword.value = "";
+      setModalError("");
+    };
+
+    const showUpdateProgress = () => {
+      if (updateConfirmView) updateConfirmView.classList.add("d-none");
+      if (updateProgressView) updateProgressView.classList.remove("d-none");
+      if (updateSubmitBtn) updateSubmitBtn.classList.add("d-none");
+      if (updateCloseBtn) updateCloseBtn.textContent = "Close";
+      if (updateModalTitle) updateModalTitle.textContent = "System Update Progress";
+      setModalError("");
+    };
+
+    const scheduleStatusPoll = (delayMs = 2500) => {
+      window.clearTimeout(statusPollTimer);
+      if (!pollingWanted) return;
+      statusPollTimer = window.setTimeout(fetchUpdateStatus, delayMs);
+    };
+
+    const fetchUpdateStatus = async () => {
+      try {
+        const response = await fetch(updateStatusUrl, { cache: "no-store" });
+        const data = await response.json();
+        if (!response.ok || !data?.ok) {
+          throw new Error(String(data?.error || "Status request failed."));
+        }
+        updateStatusUi(data.status || {});
+        pollingWanted = !!(data.status && data.status.is_running);
+        scheduleStatusPoll((data.status && data.status.is_running) ? 2500 : 5000);
+      } catch (error) {
+        if (updateProgressText && pollingWanted) {
+          updateProgressText.textContent = "Waiting for the app to come back while services restart...";
+        }
+        if (updateModalProgressText && pollingWanted) {
+          updateModalProgressText.textContent = "Connection interrupted during restart. Retrying...";
+        }
+        scheduleStatusPoll(3000);
+      }
+    };
+
+    const fetchUpdateCheck = async () => {
+      if (updateCheckBtn) {
+        updateCheckBtn.disabled = true;
+        updateCheckBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>Checking...';
+      }
+      setUpdateCheckError("");
+      try {
+        const response = await fetch(updateCheckUrl, { cache: "no-store" });
+        const data = await response.json();
+        if (!response.ok || !data?.ok) {
+          throw new Error(String(data?.error || "Unable to check for updates."));
+        }
+        updateCheckUi(data.check || {});
+        updateStatusUi(data.status || lastStatus);
+      } catch (error) {
+        updateCheckUi(null);
+        setUpdateCheckError(error instanceof Error ? error.message : "Unable to check for updates.");
+      } finally {
+        if (updateCheckBtn) {
+          updateCheckBtn.disabled = false;
+          updateCheckBtn.innerHTML = '<i class="ti ti-refresh me-1"></i>Check for Updates';
+        }
+      }
+    };
+
+    if (updateCheckBtn) {
+      updateCheckBtn.addEventListener("click", () => {
+        fetchUpdateCheck();
+      });
+    }
+
+    if (updateOpenBtn) {
+      updateOpenBtn.addEventListener("click", async () => {
+        if (!latestCheck && !checkLoaded && updateCheckBtn) {
+          await fetchUpdateCheck();
+        }
+        if (lastStatus && lastStatus.is_running) {
+          showUpdateProgress();
+        } else {
+          showUpdateConfirm();
+        }
+        if (updateModal) updateModal.show();
+      });
+    }
+
+    if (updateForm) {
+      updateForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (!updateSubmitBtn || updateSubmitBtn.classList.contains("d-none")) return;
+        updateSubmitBtn.disabled = true;
+        updateSubmitBtn.textContent = "Starting...";
+        setModalError("");
+        try {
+          const response = await fetch(updateStartUrl, {
+            method: "POST",
+            body: new FormData(updateForm),
+          });
+          const data = await response.json();
+          if (!response.ok || !data?.ok) {
+            throw new Error(String(data?.error || "Unable to start update."));
+          }
+          if (data.check) updateCheckUi(data.check);
+          if (data.status) {
+            updateStatusUi(data.status);
+          }
+          showUpdateProgress();
+          pollingWanted = true;
+          scheduleStatusPoll(1000);
+        } catch (error) {
+          setModalError(error instanceof Error ? error.message : "Unable to start update.");
+        } finally {
+          updateSubmitBtn.disabled = false;
+          updateSubmitBtn.textContent = "Start Update";
+        }
+      });
+    }
+
+    if (updateModalEl) {
+      updateModalEl.addEventListener("hidden.bs.modal", () => {
+        setModalError("");
+      });
+    }
+
+    if (updateTabLink) {
+      updateTabLink.addEventListener("shown.bs.tab", () => {
+        fetchUpdateStatus();
+        if ({{ 'true' if can_check_system_update else 'false' }}) {
+          fetchUpdateCheck();
+        }
+      });
+    }
+
+    updateStatusUi(initialUpdateStatus || {});
+    pollingWanted = !!(initialUpdateStatus && initialUpdateStatus.is_running);
+    if (pollingWanted || {{ 'true' if active_tab == 'update' else 'false' }}) {
+      fetchUpdateStatus();
+      {% if can_check_system_update %}
+      if ({{ 'true' if active_tab == 'update' else 'false' }}) {
+        fetchUpdateCheck();
+      }
+      {% endif %}
+    }
+  }
 
   const systemDangerModal = document.getElementById("system-danger-modal");
   if (systemDangerModal) {
