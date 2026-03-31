@@ -3652,6 +3652,21 @@ OVERRIDE_SOURCE={shlex.quote(str(os.environ.get("THREEJ_REPO_URL") or "").strip(
 CHECK_REF=refs/threejmon-system-update/check
 APP_USER=${{THREEJ_APP_USER:-threejnotif}}
 GIT_USER=${{THREEJ_GIT_USER:-$APP_USER}}
+git_store_writable() {{
+  local user path
+  user=${{1:-}}
+  for path in "$REPO/.git" "$REPO/.git/objects" "$REPO/.git/refs"; do
+    [ -e "$path" ] || continue
+    if command -v runuser >/dev/null 2>&1; then
+      if ! runuser -u "$user" -- test -w "$path"; then
+        return 1
+      fi
+    elif [ ! -w "$path" ]; then
+      return 1
+    fi
+  done
+  return 0
+}}
 if ! id "$GIT_USER" >/dev/null 2>&1; then
   GIT_USER=root
   GIT_HOME=/root
@@ -3661,12 +3676,7 @@ else
     GIT_USER=root
     GIT_HOME=/root
   elif [ "$GIT_USER" != "root" ]; then
-    if command -v runuser >/dev/null 2>&1; then
-      if ! runuser -u "$GIT_USER" -- test -w "$REPO/.git"; then
-        GIT_USER=root
-        GIT_HOME=/root
-      fi
-    elif [ ! -w "$REPO/.git" ]; then
+    if ! git_store_writable "$GIT_USER"; then
       GIT_USER=root
       GIT_HOME=/root
     fi

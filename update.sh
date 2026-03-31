@@ -111,6 +111,21 @@ ensure_repo() {
 }
 
 resolve_git_user() {
+  git_store_writable() {
+    local user=$1
+    local path
+    for path in "${INSTALL_DIR}/.git" "${INSTALL_DIR}/.git/objects" "${INSTALL_DIR}/.git/refs"; do
+      [ -e "${path}" ] || continue
+      if command -v runuser >/dev/null 2>&1; then
+        if ! runuser -u "${user}" -- test -w "${path}"; then
+          return 1
+        fi
+      elif [ ! -w "${path}" ]; then
+        return 1
+      fi
+    done
+    return 0
+  }
   if ! id "${GIT_USER}" >/dev/null 2>&1; then
     GIT_USER=root
     GIT_HOME=/root
@@ -123,12 +138,7 @@ resolve_git_user() {
     return
   fi
   if [ "${GIT_USER}" != "root" ]; then
-    if command -v runuser >/dev/null 2>&1; then
-      if ! runuser -u "${GIT_USER}" -- test -w "${INSTALL_DIR}/.git"; then
-        GIT_USER=root
-        GIT_HOME=/root
-      fi
-    elif [ ! -w "${INSTALL_DIR}/.git" ]; then
+    if ! git_store_writable "${GIT_USER}"; then
       GIT_USER=root
       GIT_HOME=/root
     fi
