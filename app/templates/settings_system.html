@@ -1041,6 +1041,7 @@
             </div>
           </div>
           <div class="card-body">
+            <div class="text-muted small mb-3" id="system-update-action-note">Check for updates to load pending commits.</div>
             <div class="d-flex align-items-center justify-content-between gap-3 flex-wrap">
               <div>
                 <div class="text-muted small">Current updater state</div>
@@ -1894,6 +1895,7 @@
     const updateUpdated = document.getElementById("system-update-updated");
     const updateMessage = document.getElementById("system-update-message");
     const updateLog = document.getElementById("system-update-log");
+    const updateActionNote = document.getElementById("system-update-action-note");
     const updateEmpty = document.getElementById("system-update-empty");
     const updateSummary = document.getElementById("system-update-summary");
     const updateCheckError = document.getElementById("system-update-check-error");
@@ -1941,6 +1943,27 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#39;");
+
+    const refreshUpdateActionNote = () => {
+      if (!updateActionNote) return;
+      let text = "Check for updates to load pending commits.";
+      let className = "text-muted small mb-3";
+      if (lastStatus && lastStatus.is_running) {
+        text = "Update is currently running. Wait for it to finish before starting another update.";
+        className = "text-blue small mb-3";
+      } else if (latestCheck && latestCheck.is_dirty) {
+        text = "Update blocked by tracked local changes listed below.";
+        className = "text-danger small mb-3";
+      } else if (latestCheck && latestCheck.has_update) {
+        text = `Ready to install ${Number(latestCheck.behind || 0)} pending commit(s).`;
+        className = "text-success small mb-3";
+      } else if (latestCheck && !latestCheck.has_update) {
+        text = "The system is already up to date.";
+        className = "text-muted small mb-3";
+      }
+      updateActionNote.className = className;
+      updateActionNote.textContent = text;
+    };
 
     const updateStatusUi = (status) => {
       const normalized = status || {};
@@ -2009,6 +2032,7 @@
         const allowStart = !!latestCheck && !!latestCheck.has_update && !latestCheck.is_dirty && !normalized.is_running;
         updateOpenBtn.disabled = !allowStart;
       }
+      refreshUpdateActionNote();
     };
 
     const renderCommits = (commits) => {
@@ -2055,6 +2079,7 @@
       if (updateOpenBtn) {
         updateOpenBtn.disabled = !(check.has_update && !check.is_dirty && !(lastStatus && lastStatus.is_running));
       }
+      refreshUpdateActionNote();
     };
 
     const setUpdateCheckError = (message) => {

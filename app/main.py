@@ -168,6 +168,7 @@ SYSTEM_UPDATE_STATUS_PATH = DATA_DIR / "system_update_status.json"
 SYSTEM_UPDATE_LOG_PATH = DATA_DIR / "system_update.log"
 SYSTEM_UPDATE_CHECK_LIMIT = 20
 SYSTEM_UPDATE_LOG_TAIL_BYTES = 16384
+SYSTEM_UPDATE_STALE_SECONDS = 1800
 
 SYSTEM_DEFAULTS = {
     "branding": {
@@ -3493,6 +3494,16 @@ def _default_system_update_status():
     }
 
 
+def _parse_system_update_timestamp(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
 def _normalize_system_update_status(payload):
     raw = payload if isinstance(payload, dict) else {}
     out = dict(_default_system_update_status())
@@ -3519,6 +3530,15 @@ def _normalize_system_update_status(payload):
     if percent <= 0 and out["step_total"] > 0:
         percent = int((out["step_index"] / out["step_total"]) * 100)
     out["percent"] = max(0, min(percent, 100))
+    status_ts = _parse_system_update_timestamp(out["updated_at"] or out["started_at"])
+    if out["status"] in {"queued", "running"} and status_ts:
+        age_seconds = max((datetime.now(timezone.utc) - status_ts).total_seconds(), 0.0)
+        if age_seconds > SYSTEM_UPDATE_STALE_SECONDS:
+            out["status"] = "failed"
+            out["phase"] = "failed"
+            out["message"] = "Previous update state became stale. Check for updates again."
+            if not out["error"]:
+                out["error"] = "Updater status became stale."
     out["is_running"] = out["status"] in {"queued", "running"}
     return out
 
