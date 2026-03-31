@@ -1324,6 +1324,19 @@
       return Number.isFinite(ts) ? formatTsPHT(ts) : "n/a";
     };
 
+    const zoomToolbarOptions = {
+      show: true,
+      tools: {
+        download: false,
+        selection: true,
+        zoom: true,
+        zoomin: true,
+        zoomout: true,
+        pan: true,
+        reset: true,
+      },
+    };
+
     const inspectBaseSummary = profile?.surveillance?.active
       ? "Pre-surveillance ACC-Ping behavior before this account entered surveillance."
       : "Recent 7-day ACC-Ping activity baseline for quick network testing and surveillance decisions.";
@@ -1536,7 +1549,13 @@
         const latSeries = points.map((p) => ({ x: p.x, y: p.avg_ms }));
         el.innerHTML = "";
         const chart = new window.ApexCharts(el, {
-          chart: { type: "line", height: 220, toolbar: { show: false }, zoom: { enabled: false }, animations: { enabled: false } },
+          chart: {
+            type: "line",
+            height: 220,
+            toolbar: zoomToolbarOptions,
+            zoom: { enabled: true, type: "x", autoScaleYaxis: true },
+            animations: { enabled: false },
+          },
           series: [
             { name: "Latency (ms)", data: latSeries },
             { name: "Loss (%)", data: lossSeries },
@@ -1544,7 +1563,7 @@
           colors: ["#206bc4", "#d63939"],
           stroke: { width: 2 },
           markers: { size: 0 },
-          xaxis: { type: "datetime", tooltip: { enabled: false } },
+          xaxis: { type: "datetime" },
           yaxis: [
             {
               seriesName: "Latency (ms)",
@@ -1564,6 +1583,9 @@
             shared: true,
             intersect: false,
             followCursor: true,
+            x: {
+              formatter: (value) => formatTsPHT(value),
+            },
             y: {
               formatter: (val, opts) => {
                 const name = opts?.w?.globals?.seriesNames?.[opts.seriesIndex] || "";
@@ -1621,7 +1643,13 @@
         }
         el.innerHTML = "";
         const chart = new window.ApexCharts(el, {
-          chart: { type: "line", height: 220, toolbar: { show: false }, zoom: { enabled: false }, animations: { enabled: false } },
+          chart: {
+            type: "line",
+            height: 220,
+            toolbar: zoomToolbarOptions,
+            zoom: { enabled: true, type: "x", autoScaleYaxis: true },
+            animations: { enabled: false },
+          },
           series: [
             { name: "RX (dBm)", data: rxSeries },
             { name: "TX (dBm)", data: txSeries },
@@ -1629,12 +1657,15 @@
           colors: ["#2fb344", "#206bc4"],
           stroke: { width: 2 },
           markers: { size: 0 },
-          xaxis: { type: "datetime", tooltip: { enabled: false } },
+          xaxis: { type: "datetime" },
           yaxis: { min: chartMin, max: chartMax, tickAmount: 5, labels: { formatter: (val) => `${val.toFixed(1)} dBm` } },
           tooltip: {
             shared: true,
             intersect: false,
             followCursor: true,
+            x: {
+              formatter: (value) => formatTsPHT(value),
+            },
             y: {
               formatter: (val, { seriesIndex, dataPointIndex }) => {
                 const point = points[dataPointIndex];
@@ -1771,7 +1802,13 @@
 	        }
 	        el.innerHTML = "";
 	        const chart = new window.ApexCharts(el, {
-	          chart: { type: "line", height: 260, toolbar: { show: false }, zoom: { enabled: false }, animations: { enabled: false } },
+	          chart: {
+	            type: "line",
+	            height: 260,
+	            toolbar: zoomToolbarOptions,
+	            zoom: { enabled: true, type: "x", autoScaleYaxis: true },
+	            animations: { enabled: false },
+	          },
 	          series: [
 	            { name: "DL", data: dlSeries },
 	            { name: "UL", data: ulSeries },
@@ -1779,12 +1816,15 @@
 	          colors: ["#206bc4", "#2fb344"],
 	          stroke: { width: 2, curve: "smooth" },
 	          markers: { size: 0 },
-	          xaxis: { type: "datetime", min: windowStartMs, max: windowEndMs, tooltip: { enabled: false } },
+	          xaxis: { type: "datetime", min: windowStartMs, max: windowEndMs },
 	          yaxis: { labels: { formatter: (val) => fmtBps(val) } },
 	          tooltip: {
 	            shared: true,
 	            intersect: false,
 	            followCursor: true,
+	            x: {
+	              formatter: (value) => formatTsPHT(value),
+	            },
 	            y: {
 	              formatter: (val, { seriesIndex, dataPointIndex, w }) => {
 	                const formatted = fmtBps(val);
