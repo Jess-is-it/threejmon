@@ -3729,7 +3729,7 @@ fi
 if [ -z "$source_url" ]; then
   source_url=origin
 fi
-git_repo fetch "$source_url" "$branch:$CHECK_REF"
+git_repo fetch --no-write-fetch-head "$source_url" "$branch:$CHECK_REF"
 remote_ref="$CHECK_REF"
 local_full=$(git_repo rev-parse HEAD)
 local_short=$(git_repo rev-parse --short HEAD)
