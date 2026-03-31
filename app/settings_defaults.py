@@ -446,6 +446,8 @@ USAGE_DEFAULTS = {
         "peak_enabled": True,
         "peak_start_ph": "17:30",
         "peak_end_ph": "21:00",
+        # Consider "no usage" when the last N minutes during peak hours have max total bps within the range.
+        "peak_no_usage_minutes": 120,
         "min_connected_devices": 2,
         # Consider "no usage" when (dl+ul) is within this range (inclusive).
         "total_kbps_from": 0,
@@ -468,6 +470,14 @@ USAGE_DEFAULTS = {
         # Persist at most one sample per account per this many seconds (collector still polls for live view).
         "sample_interval_seconds": 60,
         "raw_retention_days": 365,
+    },
+    "modem_reboot": {
+        "enabled": False,
+        "buffer_hours": 32,
+        "retry_count": 5,
+        "retry_delay_minutes": 5,
+        "verify_after_minutes": 5,
+        "history_retention_days": 180,
     },
 }
 

@@ -139,6 +139,20 @@
   }
 </style>
 
+<div id="offline-status-loading" class="d-none position-fixed top-0 start-50 translate-middle-x mt-3 px-3 w-100" style="z-index: 1080;" role="status" aria-live="polite" aria-atomic="true">
+  <div class="card shadow-sm border-primary mx-auto" style="max-width: 28rem;">
+    <div class="card-body py-2 px-3">
+      <div class="d-flex align-items-center gap-3">
+        <div class="spinner-border spinner-border-sm text-blue" role="status" aria-hidden="true"></div>
+        <div class="min-w-0">
+          <div class="fw-semibold" data-loading-label>Loading offline results...</div>
+          <div class="text-muted small">Refreshing the offline status tables.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="card">
   <div class="card-body">
     <ul class="nav nav-tabs" data-bs-toggle="tabs">
@@ -184,6 +198,8 @@
                 <div class="dropdown-item offline-limit-row" data-limit="50">50</div>
                 <div class="dropdown-item offline-limit-row" data-limit="100">100</div>
                 <div class="dropdown-item offline-limit-row" data-limit="200">200</div>
+                <div class="dropdown-item offline-limit-row" data-limit="500">500</div>
+                <div class="dropdown-item offline-limit-row" data-limit="1000">1000</div>
               </div>
             </div>
             <div class="dropdown">
@@ -254,6 +270,13 @@
                 </table>
               </div>
               <div class="rto-resize-handle" data-target="offline-current-table"></div>
+              <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mt-3" id="offline-current-pagination">
+                <div class="text-muted small" id="offline-current-page-info">Page 1 of 1 · 0 total</div>
+                <div class="btn-group btn-group-sm">
+                  <button type="button" class="btn btn-outline-secondary" id="offline-current-prev">Prev</button>
+                  <button type="button" class="btn btn-outline-secondary" id="offline-current-next">Next</button>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -278,6 +301,13 @@
                 </table>
               </div>
               <div class="rto-resize-handle" data-target="offline-history-table"></div>
+              <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mt-3" id="offline-history-pagination">
+                <div class="text-muted small" id="offline-history-page-info">Page 1 of 1 · 0 total</div>
+                <div class="btn-group btn-group-sm">
+                  <button type="button" class="btn btn-outline-secondary" id="offline-history-prev">Prev</button>
+                  <button type="button" class="btn btn-outline-secondary" id="offline-history-next">Next</button>
+                </div>
+              </div>
               <div class="text-muted small mt-2">History shows accounts that stayed offline past the earliest enabled tracking rule and later became active again.</div>
             </div>
           </div>
@@ -717,7 +747,15 @@
     const historyTableWrap = document.getElementById("offline-history-table");
     const activeCountEl = document.getElementById("offline-active-count");
     const countEl = document.getElementById("offline-count");
+    const currentPaginationEl = document.getElementById("offline-current-pagination");
+    const currentPageInfoEl = document.getElementById("offline-current-page-info");
+    const currentPrevBtn = document.getElementById("offline-current-prev");
+    const currentNextBtn = document.getElementById("offline-current-next");
     const historyCountEl = document.getElementById("offline-history-count");
+    const historyPaginationEl = document.getElementById("offline-history-pagination");
+    const historyPageInfoEl = document.getElementById("offline-history-page-info");
+    const historyPrevBtn = document.getElementById("offline-history-prev");
+    const historyNextBtn = document.getElementById("offline-history-next");
     const lastCheckEl = document.getElementById("offline-last-check");
     const modeEl = document.getElementById("offline-mode");
     const minEl = document.getElementById("offline-min");
@@ -743,19 +781,32 @@
     const trackingRuleCountInput = document.getElementById("offline-tracking-rule-count");
     const addTrackingRuleBtn = document.getElementById("offline-add-rule");
     const trackingRuleTemplate = document.getElementById("offline-tracking-rule-template");
+    const loadingBanner = document.getElementById("offline-status-loading");
+    const loadingLabel = loadingBanner ? loadingBanner.querySelector("[data-loading-label]") : null;
 
     const sortStateKey = "offline_sort_state_v1";
     const searchStateKey = "offline_status_search_v1";
     const limitStateKey = "offline_status_limit_v1";
     const routerFilterKey = "offline_status_router_filters_v1";
     const activeStatusViewKey = "offline_status_active_view_v1";
+    const currentPageKey = "offline_current_page_v1";
+    const historyPageKey = "offline_history_page_v1";
 
     const numericKeys = new Set(["duration_seconds", "uptime_sec"]);
     const booleanKeys = new Set(["disabled", "online"]);
 
     let currentRules = Array.isArray(initialOfflineRules) ? initialOfflineRules : [];
     let currentRowsByRule = {};
+    let currentPage = 1;
+    let currentPagination = { page: 1, pages: 1, total: 0, has_prev: false, has_next: false, start: 0, end: 0, limit: 100 };
     let historyData = [];
+    let historyMatchCount = 0;
+    let historyPage = 1;
+    let historyPagination = { page: 1, pages: 1, total: 0, has_prev: false, has_next: false, start: 0, end: 0, limit: 100 };
+    let historyLoaded = false;
+    let historyLoading = false;
+    let historyRefreshSeq = 0;
+    let historyNeedsRefresh = true;
     let radiusAccountsData = [];
     let searchQuery = "";
     let showLimit = 100;
@@ -788,6 +839,76 @@
 
     function saveJson(key, value) {
       try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+    }
+
+    function showLoadingBanner(message = "Loading offline results...") {
+      if (loadingLabel) loadingLabel.textContent = message;
+      if (loadingBanner) loadingBanner.classList.remove("d-none");
+    }
+
+    function hideLoadingBanner() {
+      if (loadingBanner) loadingBanner.classList.add("d-none");
+    }
+
+    function setUrlState() {
+      const url = new URL(window.location.href);
+      const q = (searchQuery || "").trim();
+      if (q) url.searchParams.set("q", q);
+      else url.searchParams.delete("q");
+      url.searchParams.set("limit", String(showLimit));
+      url.searchParams.set("status_page", String(currentPage));
+      url.searchParams.set("history_page", String(historyPage));
+      if (activeStatusView.type === "history") {
+        url.searchParams.set("status_view", "history");
+        url.searchParams.delete("status_rule");
+      } else {
+        url.searchParams.set("status_view", "rule");
+        if (String(activeStatusView.ruleId || "").trim()) url.searchParams.set("status_rule", String(activeStatusView.ruleId || "").trim());
+        else url.searchParams.delete("status_rule");
+      }
+      url.searchParams.delete("router");
+      selectedRouters.forEach((router) => {
+        const value = String(router || "").trim();
+        if (value) url.searchParams.append("router", value);
+      });
+      window.history.replaceState(null, "", url.toString());
+    }
+
+    function paginateClientRows(rows, page, limit) {
+      const total = Array.isArray(rows) ? rows.length : 0;
+      const boundedLimit = Math.max(Number(limit || 100) || 100, 1);
+      const pages = Math.max(Math.ceil(total / boundedLimit), 1);
+      const safePage = Math.min(Math.max(Number(page || 1) || 1, 1), pages);
+      const startIndex = (safePage - 1) * boundedLimit;
+      const endIndex = startIndex + boundedLimit;
+      return {
+        items: (rows || []).slice(startIndex, endIndex),
+        meta: {
+          page: safePage,
+          pages,
+          total,
+          start: total ? startIndex + 1 : 0,
+          end: total ? Math.min(endIndex, total) : 0,
+          has_prev: safePage > 1,
+          has_next: safePage < pages,
+          limit: boundedLimit,
+        },
+      };
+    }
+
+    async function applyStatusNavigation(message, options = {}) {
+      const { refreshSummary = true, refreshHistoryData = true, forceSearchFocus = false, resetScroll = false } = options;
+      showLoadingBanner(message);
+      try {
+        setUrlState();
+        const tasks = [];
+        if (refreshSummary) tasks.push(refresh());
+        if (refreshHistoryData) tasks.push(refreshHistory({ backgroundOnly: activeStatusView.type !== "history", forceSearchFocus, resetScroll }));
+        if (tasks.length) await Promise.all(tasks);
+        else renderAllTables(forceSearchFocus, { resetCurrentScroll: resetScroll, resetHistoryScroll: resetScroll });
+      } finally {
+        hideLoadingBanner();
+      }
     }
 
     function ruleCompactLabel(value, unit) {
@@ -826,6 +947,7 @@
         });
       }
       try { localStorage.setItem(activeStatusViewKey, JSON.stringify(activeStatusView)); } catch {}
+      setUrlState();
     }
 
     function updateStatusTabBadges() {
@@ -888,8 +1010,18 @@
       if (current.key === key) dir = current.dir === "asc" ? "desc" : "asc";
       sortState = { ...sortState, [table]: { key, dir } };
       saveSortState(sortState);
+      if (table === "current") {
+        currentPage = 1;
+        saveJson(currentPageKey, currentPage);
+      }
+      if (table === "history") {
+        historyPage = 1;
+        historyNeedsRefresh = true;
+        saveJson(historyPageKey, historyPage);
+      }
       updateSortIndicators();
-      renderAllTables();
+      setUrlState();
+      renderAllTables(false, { resetCurrentScroll: table === "current" });
     }
 
     function updateSortIndicators() {
@@ -1018,11 +1150,6 @@
       return (rows || []).filter((row) => rowMatchesRouters(row) && rowMatchesSearch(row));
     }
 
-    function applyLimit(rows) {
-      if (!showLimit || showLimit <= 0) return rows;
-      return rows.slice(0, showLimit);
-    }
-
     function uniqueRouters(rows) {
       const set = new Set();
       (rows || []).forEach((row) => {
@@ -1034,7 +1161,10 @@
 
     function renderRouterFilterMenu() {
       if (!filterRouters) return;
-      const routers = uniqueRouters([...flattenCurrentRows(), ...historyData]);
+      const routers = Array.from(new Set([
+        ...selectedRouters,
+        ...uniqueRouters([...flattenCurrentRows(), ...historyData]),
+      ])).sort((a, b) => a.localeCompare(b));
       if (!routers.length) {
         filterRouters.innerHTML = '<div class="text-muted small">No routers yet.</div>';
         return;
@@ -1192,7 +1322,29 @@
       `;
     }
 
-    function syncOfflineSearchTabs(filteredByRule, filteredHistoryRows, forceFocus = false) {
+    function renderCurrentPagination() {
+      if (!currentPaginationEl || !currentPageInfoEl) return;
+      const total = Number(currentPagination?.total || 0);
+      const page = Number(currentPagination?.page || 1);
+      const pages = Number(currentPagination?.pages || 1);
+      currentPageInfoEl.textContent = `Page ${page} of ${pages} · ${total} total`;
+      currentPaginationEl.classList.toggle("d-none", activeStatusView.type !== "rule" || total <= 0);
+      if (currentPrevBtn) currentPrevBtn.disabled = !currentPagination?.has_prev;
+      if (currentNextBtn) currentNextBtn.disabled = !currentPagination?.has_next;
+    }
+
+    function renderHistoryPagination() {
+      if (!historyPaginationEl || !historyPageInfoEl) return;
+      const total = Number(historyPagination?.total || 0);
+      const page = Number(historyPagination?.page || 1);
+      const pages = Number(historyPagination?.pages || 1);
+      historyPageInfoEl.textContent = `Page ${page} of ${pages} · ${total} total`;
+      historyPaginationEl.classList.toggle("d-none", total <= 0);
+      if (historyPrevBtn) historyPrevBtn.disabled = !historyPagination?.has_prev;
+      if (historyNextBtn) historyNextBtn.disabled = !historyPagination?.has_next;
+    }
+
+    function syncOfflineSearchTabs(filteredByRule, historyResultCount, forceFocus = false) {
       const hasSearch = Boolean((searchQuery || "").trim());
       let firstMatch = null;
       const matchedViews = [];
@@ -1205,7 +1357,7 @@
           if (viewType === "rule") {
             count = Array.isArray(filteredByRule?.[ruleId]) ? filteredByRule[ruleId].length : 0;
           } else if (viewType === "history") {
-            count = Array.isArray(filteredHistoryRows) ? filteredHistoryRows.length : 0;
+            count = Math.max(Number(historyResultCount || 0), 0);
           }
           const hasMatch = count > 0;
           link.classList.toggle("threej-search-hit-tab", hasSearch && hasMatch);
@@ -1222,7 +1374,11 @@
       }
     }
 
-    function renderAllTables(forceSearchFocus = false) {
+    function renderAllTables(forceSearchFocus = false, options = {}) {
+      const skipCurrentRender = !!options.skipCurrentRender;
+      const skipHistoryRender = !!options.skipHistoryRender;
+      const resetCurrentScroll = !!options.resetCurrentScroll;
+      const resetHistoryScroll = !!options.resetHistoryScroll;
       const currentScrollTop = currentTableWrap ? currentTableWrap.scrollTop : 0;
       const currentScrollLeft = currentTableWrap ? currentTableWrap.scrollLeft : 0;
       const historyScrollTop = historyTableWrap ? historyTableWrap.scrollTop : 0;
@@ -1233,22 +1389,23 @@
         const rows = currentRowsByRule?.[ruleId];
         filteredByRule[ruleId] = sortRows(filterRows(Array.isArray(rows) ? rows : []), "current");
       });
-      const filteredHistory = sortRows(filterRows(historyData), "history");
-      syncOfflineSearchTabs(filteredByRule, filteredHistory, forceSearchFocus);
+      syncOfflineSearchTabs(filteredByRule, historyMatchCount, forceSearchFocus);
       ensureActiveStatusView();
       const activeRule = getActiveRule();
       const currentRows = activeRule ? (filteredByRule[String(activeRule.id || "").trim()] || []) : [];
-      if (currentBody) {
-        const filtered = applyLimit(currentRows);
-        currentBody.innerHTML = filtered.length ? filtered.map(renderCurrentRow).join("") : '<tr><td colspan="8" class="text-muted">No offline accounts found.</td></tr>';
+      const pagedCurrent = paginateClientRows(currentRows, currentPage, showLimit);
+      currentPagination = pagedCurrent.meta;
+      currentPage = currentPagination.page;
+      saveJson(currentPageKey, currentPage);
+      if (!skipCurrentRender && currentBody) {
+        currentBody.innerHTML = pagedCurrent.items.length ? pagedCurrent.items.map(renderCurrentRow).join("") : '<tr><td colspan="8" class="text-muted">No offline accounts found.</td></tr>';
       }
-      if (historyBody) {
-        const filtered = applyLimit(filteredHistory);
-        historyBody.innerHTML = filtered.length ? filtered.map(renderHistoryRow).join("") : '<tr><td colspan="7" class="text-muted">No history yet.</td></tr>';
+      if (!skipHistoryRender && historyBody) {
+        historyBody.innerHTML = historyData.length ? historyData.map(renderHistoryRow).join("") : '<tr><td colspan="7" class="text-muted">No history yet.</td></tr>';
       }
       if (countEl) {
         if (activeStatusView.type === "history") {
-          countEl.textContent = "History View";
+          countEl.textContent = `History: ${historyMatchCount}`;
         } else {
           const label = String(activeRule?.label || "Offline").trim() || "Offline";
           countEl.textContent = `${label}: ${currentRows.length}`;
@@ -1257,16 +1414,18 @@
       updateStatusTabBadges();
       updateStatusTabState();
       updateOfflineBucketNote();
+      renderCurrentPagination();
+      renderHistoryPagination();
       renderRadiusAccountsTable();
       updateSortIndicators();
       scheduleOfflineNewSeenAck();
-      if (currentTableWrap) {
-        currentTableWrap.scrollTop = currentScrollTop;
-        currentTableWrap.scrollLeft = currentScrollLeft;
+      if (!skipCurrentRender && currentTableWrap) {
+        currentTableWrap.scrollTop = resetCurrentScroll ? 0 : currentScrollTop;
+        currentTableWrap.scrollLeft = resetCurrentScroll ? 0 : currentScrollLeft;
       }
-      if (historyTableWrap) {
-        historyTableWrap.scrollTop = historyScrollTop;
-        historyTableWrap.scrollLeft = historyScrollLeft;
+      if (!skipHistoryRender && historyTableWrap) {
+        historyTableWrap.scrollTop = resetHistoryScroll ? 0 : historyScrollTop;
+        historyTableWrap.scrollLeft = resetHistoryScroll ? 0 : historyScrollLeft;
       }
     }
 
@@ -1350,19 +1509,37 @@
     }
 
     function initFromStorage() {
-      searchQuery = String(loadJson(searchStateKey, "") || "");
-      showLimit = Number(loadJson(limitStateKey, 100));
+      const url = new URL(window.location.href);
+      const urlQuery = String(url.searchParams.get("q") || "").trim();
+      searchQuery = urlQuery || String(loadJson(searchStateKey, "") || "");
+      showLimit = Number(url.searchParams.get("limit") || loadJson(limitStateKey, 100));
       if (!Number.isFinite(showLimit) || showLimit <= 0) showLimit = 100;
-      selectedRouters = loadJson(routerFilterKey, []);
+      const urlRouters = url.searchParams.getAll("router").map((item) => String(item || "").trim()).filter(Boolean);
+      selectedRouters = urlRouters.length ? urlRouters : loadJson(routerFilterKey, []);
       if (!Array.isArray(selectedRouters)) selectedRouters = [];
+      currentPage = Number(url.searchParams.get("status_page") || loadJson(currentPageKey, 1));
+      if (!Number.isFinite(currentPage) || currentPage <= 0) currentPage = 1;
+      historyPage = Number(url.searchParams.get("history_page") || loadJson(historyPageKey, 1));
+      if (!Number.isFinite(historyPage) || historyPage <= 0) historyPage = 1;
       const storedStatusView = loadJson(activeStatusViewKey, activeStatusView);
-      if (storedStatusView && typeof storedStatusView === "object") {
+      const urlStatusView = String(url.searchParams.get("status_view") || "").trim().toLowerCase();
+      const urlStatusRule = String(url.searchParams.get("status_rule") || "").trim();
+      if (urlStatusView === "history") {
+        activeStatusView = { type: "history", ruleId: "" };
+      } else if (urlStatusView === "rule") {
+        activeStatusView = { type: "rule", ruleId: urlStatusRule };
+      } else if (storedStatusView && typeof storedStatusView === "object") {
         activeStatusView = {
           type: String(storedStatusView.type || activeStatusView.type || "rule"),
           ruleId: String(storedStatusView.ruleId || activeStatusView.ruleId || ""),
         };
       }
       if (searchInput) searchInput.value = searchQuery;
+      saveJson(searchStateKey, searchQuery);
+      saveJson(limitStateKey, showLimit);
+      saveJson(routerFilterKey, selectedRouters);
+      saveJson(currentPageKey, currentPage);
+      saveJson(historyPageKey, historyPage);
       updateLimitButton();
       updateFilterButton();
       ensureActiveStatusView();
@@ -1392,23 +1569,75 @@
         }
         ensureActiveStatusView();
         renderRouterFilterMenu();
-        renderAllTables();
+        renderAllTables(false, { skipHistoryRender: true });
       } catch (err) {
         if (currentBody) currentBody.innerHTML = '<tr><td colspan="8" class="text-danger">Failed to load offline summary.</td></tr>';
       }
     }
 
-    async function refreshHistory() {
+    async function refreshHistory(options = {}) {
+      const backgroundOnly = !!options.backgroundOnly;
+      const forceSearchFocus = !!options.forceSearchFocus;
+      const resetScroll = !!options.resetScroll;
+      const fetchLimit = backgroundOnly ? 1 : showLimit;
+      const page = backgroundOnly ? 1 : historyPage;
+      const sort = getSort("history");
+      const params = new URLSearchParams();
+      params.set("days", "30");
+      params.set("limit", String(fetchLimit));
+      params.set("page", String(page));
+      if (searchQuery.trim()) params.set("q", searchQuery.trim());
+      if (sort.key) params.set("sort", sort.key);
+      if (sort.dir) params.set("dir", sort.dir);
+      selectedRouters.forEach((router) => {
+        const value = String(router || "").trim();
+        if (value) params.append("router", value);
+      });
+      const requestSeq = ++historyRefreshSeq;
+      if (!backgroundOnly && historyBody) {
+        historyLoading = true;
+        historyBody.innerHTML = '<tr><td colspan="7" class="text-muted">Loading…</td></tr>';
+      }
       try {
-        const res = await fetch("/offline/history?days=30&limit=500", { headers: { "Accept": "application/json" } });
+        const res = await fetch(`/offline/history?${params.toString()}`, { headers: { "Accept": "application/json" } });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        if (historyCountEl) historyCountEl.textContent = `History: ${data.count || 0}`;
+        if (requestSeq !== historyRefreshSeq) return;
+        historyMatchCount = Math.max(Number(data?.pagination?.total ?? data?.count ?? 0) || 0, 0);
+        if (historyCountEl) historyCountEl.textContent = `History: ${historyMatchCount}`;
+        if (backgroundOnly) {
+          renderAllTables(forceSearchFocus, { skipHistoryRender: true, resetCurrentScroll: resetScroll });
+          if (activeStatusView.type === "history" && (historyNeedsRefresh || !historyLoaded)) {
+            await refreshHistory({ backgroundOnly: false, forceSearchFocus, resetScroll: true });
+          }
+          return;
+        }
         historyData = Array.isArray(data.rows) ? data.rows : [];
+        const meta = data?.pagination && typeof data.pagination === "object" ? data.pagination : {};
+        historyPagination = {
+          page: Number(meta.page || 1) || 1,
+          pages: Math.max(Number(meta.pages || 1) || 1, 1),
+          total: historyMatchCount,
+          has_prev: !!meta.has_prev,
+          has_next: !!meta.has_next,
+          start: Number(meta.start || 0) || 0,
+          end: Number(meta.end || 0) || 0,
+          limit: fetchLimit,
+        };
+        historyPage = historyPagination.page;
+        saveJson(historyPageKey, historyPage);
+        historyLoaded = true;
+        historyNeedsRefresh = false;
         renderRouterFilterMenu();
-        renderAllTables();
+        renderAllTables(forceSearchFocus, { resetCurrentScroll: resetScroll, resetHistoryScroll: resetScroll });
+        if (resetScroll && historyTableWrap) {
+          historyTableWrap.scrollTop = 0;
+          historyTableWrap.scrollLeft = 0;
+        }
       } catch (err) {
-        if (historyBody) historyBody.innerHTML = '<tr><td colspan="7" class="text-danger">Failed to load offline history.</td></tr>';
+        if (!backgroundOnly && historyBody) historyBody.innerHTML = '<tr><td colspan="7" class="text-danger">Failed to load offline history.</td></tr>';
+      } finally {
+        if (!backgroundOnly) historyLoading = false;
       }
     }
 
@@ -1504,6 +1733,12 @@
         const key = (th.dataset.sortKey || "").trim();
         if (!table || !key) return;
         setSort(table, key);
+        if (table === "history") {
+          historyPage = 1;
+          historyNeedsRefresh = true;
+          saveJson(historyPageKey, historyPage);
+          refreshHistory({ backgroundOnly: activeStatusView.type !== "history", resetScroll: true });
+        }
         return;
       }
 
@@ -1514,42 +1749,103 @@
         if (viewType === "history") {
           activeStatusView = { type: "history", ruleId: "" };
         } else if (viewType === "rule") {
+          currentPage = 1;
+          saveJson(currentPageKey, currentPage);
           activeStatusView = {
             type: "rule",
             ruleId: String(statusLink.getAttribute("data-offline-rule") || "").trim(),
           };
         }
         ensureActiveStatusView();
-        renderAllTables();
+        if (activeStatusView.type === "history") {
+          historyNeedsRefresh = true;
+          applyStatusNavigation("Loading offline history...", { refreshSummary: false, refreshHistoryData: true, resetScroll: true });
+        } else {
+          renderAllTables(false, { resetCurrentScroll: true });
+        }
       }
     });
 
     if (searchInput) {
       let timer = null;
-      const apply = () => {
+      const apply = async () => {
+        const q = (searchQuery || "").trim();
+        if (q && q.length < 2) return;
         saveJson(searchStateKey, searchQuery);
-        renderAllTables(true);
+        currentPage = 1;
+        historyPage = 1;
+        historyNeedsRefresh = true;
+        saveJson(currentPageKey, currentPage);
+        saveJson(historyPageKey, historyPage);
+        await applyStatusNavigation(q ? "Searching offline results..." : "Loading offline results...", { forceSearchFocus: true, resetScroll: true });
       };
       searchInput.addEventListener("input", () => {
         searchQuery = searchInput.value || "";
         if (timer) window.clearTimeout(timer);
-        timer = window.setTimeout(apply, 150);
+        timer = window.setTimeout(apply, 350);
+      });
+      searchInput.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        if (timer) window.clearTimeout(timer);
+        apply();
       });
     }
 
     limitRows.forEach((row) => {
-      row.addEventListener("click", () => {
+      row.addEventListener("click", async () => {
         const n = Number(row.dataset.limit || "100");
         if (!Number.isFinite(n) || n <= 0) return;
         showLimit = n;
+        currentPage = 1;
+        historyPage = 1;
+        historyNeedsRefresh = true;
         saveJson(limitStateKey, showLimit);
+        saveJson(currentPageKey, currentPage);
+        saveJson(historyPageKey, historyPage);
         updateLimitButton();
-        renderAllTables();
+        await applyStatusNavigation("Loading offline results...", { resetScroll: true });
       });
     });
+    if (currentPrevBtn) {
+      currentPrevBtn.addEventListener("click", () => {
+        if (!currentPagination?.has_prev) return;
+        currentPage = Math.max(Number(currentPage || 1) - 1, 1);
+        saveJson(currentPageKey, currentPage);
+        setUrlState();
+        renderAllTables(false, { resetCurrentScroll: true, skipHistoryRender: true });
+      });
+    }
+    if (currentNextBtn) {
+      currentNextBtn.addEventListener("click", () => {
+        if (!currentPagination?.has_next) return;
+        currentPage = Math.min(Number(currentPage || 1) + 1, Number(currentPagination?.pages || 1) || 1);
+        saveJson(currentPageKey, currentPage);
+        setUrlState();
+        renderAllTables(false, { resetCurrentScroll: true, skipHistoryRender: true });
+      });
+    }
+    if (historyPrevBtn) {
+      historyPrevBtn.addEventListener("click", async () => {
+        if (!historyPagination?.has_prev || historyLoading) return;
+        historyPage = Math.max(Number(historyPage || 1) - 1, 1);
+        historyNeedsRefresh = true;
+        saveJson(historyPageKey, historyPage);
+        await applyStatusNavigation("Loading offline history...", { refreshSummary: false, refreshHistoryData: true, resetScroll: true });
+      });
+    }
+    if (historyNextBtn) {
+      historyNextBtn.addEventListener("click", async () => {
+        if (!historyPagination?.has_next || historyLoading) return;
+        historyPage = Math.min(Number(historyPage || 1) + 1, Number(historyPagination?.pages || 1) || 1);
+        historyNeedsRefresh = true;
+        saveJson(historyPageKey, historyPage);
+        await applyStatusNavigation("Loading offline history...", { refreshSummary: false, refreshHistoryData: true, resetScroll: true });
+      });
+    }
 
     if (filterRouters) {
-      filterRouters.addEventListener("change", (event) => {
+      filterRouters.addEventListener("change", async (event) => {
         const box = event.target.closest(".offline-router-filter");
         if (!box) return;
         const v = String(box.value || "").trim();
@@ -1558,19 +1854,29 @@
         if (box.checked) next.add(v);
         else next.delete(v);
         selectedRouters = Array.from(next);
+        currentPage = 1;
+        historyPage = 1;
+        historyNeedsRefresh = true;
         saveJson(routerFilterKey, selectedRouters);
+        saveJson(currentPageKey, currentPage);
+        saveJson(historyPageKey, historyPage);
         updateFilterButton();
-        renderAllTables();
+        await applyStatusNavigation("Loading offline results...", { resetScroll: true });
       });
     }
     if (filterClear) {
-      filterClear.addEventListener("click", (event) => {
+      filterClear.addEventListener("click", async (event) => {
         event.preventDefault();
         selectedRouters = [];
+        currentPage = 1;
+        historyPage = 1;
+        historyNeedsRefresh = true;
         saveJson(routerFilterKey, selectedRouters);
+        saveJson(currentPageKey, currentPage);
+        saveJson(historyPageKey, historyPage);
         updateFilterButton();
         renderRouterFilterMenu();
-        renderAllTables();
+        await applyStatusNavigation("Loading offline results...", { resetScroll: true });
       });
     }
 
@@ -1721,16 +2027,17 @@
     reindexTrackingRuleRows();
     renderRouterFilterMenu();
     renderAllTables();
+    refresh();
+    const pollHistory = () => refreshHistory({ backgroundOnly: true });
+    refreshHistory({ backgroundOnly: activeStatusView.type !== "history" });
     if (window.ThreeJPolling?.createTask) {
       window.ThreeJPolling.createTask(refresh, { intervalMs: 5000, resumeDelayMs: 200 });
-      window.ThreeJPolling.createTask(refreshHistory, { intervalMs: 15000, resumeDelayMs: 900 });
+      window.ThreeJPolling.createTask(pollHistory, { intervalMs: 15000, resumeDelayMs: 900 });
       window.ThreeJPolling.createTask(() => refreshRadiusAccounts(false), { intervalMs: 60000, resumeDelayMs: 1800 });
     } else {
-      refresh();
-      refreshHistory();
       refreshRadiusAccounts();
       setInterval(refresh, 5000);
-      setInterval(refreshHistory, 15000);
+      setInterval(pollHistory, 15000);
       setInterval(() => refreshRadiusAccounts(false), 60000);
     }
   });

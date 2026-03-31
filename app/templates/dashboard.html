@@ -43,6 +43,21 @@
   .dashboard-logo-badge{font-size:1rem;padding:.52rem .68rem;border-radius:.72rem;line-height:1}
   .dashboard-attention-card .card-body{padding:1rem}
   .dashboard-side-column{align-self:flex-start}
+  .dashboard-resource-kpi{height:100%;transition:border-color .18s ease, box-shadow .18s ease}
+  .dashboard-resource-kpi:hover,
+  .dashboard-resource-kpi:focus-visible{border-color:rgba(32,107,196,.38)!important;box-shadow:0 .35rem 1rem rgba(32,107,196,.08);outline:0}
+  .dashboard-resource-kpi-label{display:flex;align-items:center;gap:.35rem}
+  .dashboard-resource-kpi-note-icon{font-size:.9rem;color:var(--tblr-muted);flex:0 0 auto}
+  .dashboard-resource-kpi.rto-tip::after{
+    width:min(360px,80vw);
+    max-width:360px;
+    white-space:normal;
+    line-height:1.45;
+    text-align:left;
+    box-shadow:0 .9rem 2rem rgba(15,31,42,.22)
+  }
+  .dashboard-resource-kpi.rto-tip:focus-visible::after,
+  .dashboard-resource-kpi.rto-tip:hover::after{opacity:1}
 </style>
 
 {% set attention_active_items = attention.get('items', []) | selectattr('active') | list %}
@@ -112,28 +127,40 @@
           <div class="card-body">
             <div class="row g-2 mb-3">
               <div class="col-sm-6 col-lg-3">
-                <div class="border rounded p-2">
-                  <div class="text-muted small">Total CPU</div>
+                <div class="border rounded p-2 dashboard-resource-kpi rto-tip" tabindex="0" id="dashboard-cpu-total-card" data-tip="Total CPU shows how busy the server processor is right now. Lower means more breathing room.">
+                  <div class="text-muted small dashboard-resource-kpi-label">
+                    <span>Total CPU</span>
+                    <i class="ti ti-info-circle dashboard-resource-kpi-note-icon" aria-hidden="true"></i>
+                  </div>
                   <div class="fw-semibold" id="dashboard-cpu-total">0%</div>
                   <div class="text-muted small" id="dashboard-cpu-tracked-note">Table accounted: 0%</div>
                   <div class="text-muted small" id="dashboard-cpu-scope">Scope: n/a</div>
                 </div>
               </div>
               <div class="col-sm-6 col-lg-3">
-                <div class="border rounded p-2">
-                  <div class="text-muted small">RAM Pressure</div>
+                <div class="border rounded p-2 dashboard-resource-kpi rto-tip" tabindex="0" id="dashboard-ram-pressure-card" data-tip="RAM Pressure shows how hard the server is working to keep memory available. It is the stress level, not just the amount already in use.">
+                  <div class="text-muted small dashboard-resource-kpi-label">
+                    <span>RAM Pressure</span>
+                    <i class="ti ti-info-circle dashboard-resource-kpi-note-icon" aria-hidden="true"></i>
+                  </div>
                   <div class="fw-semibold" id="dashboard-ram-pressure">0%</div>
                 </div>
               </div>
               <div class="col-sm-6 col-lg-3">
-                <div class="border rounded p-2">
-                  <div class="text-muted small">RAM Allocated</div>
+                <div class="border rounded p-2 dashboard-resource-kpi rto-tip" tabindex="0" id="dashboard-ram-alloc-card" data-tip="RAM Allocated shows how much memory is already claimed by apps and by Linux cache. High allocated memory is not automatically bad. Compare it with RAM Pressure to see whether the server is actually running tight on memory.">
+                  <div class="text-muted small dashboard-resource-kpi-label">
+                    <span>RAM Allocated</span>
+                    <i class="ti ti-info-circle dashboard-resource-kpi-note-icon" aria-hidden="true"></i>
+                  </div>
                   <div class="fw-semibold" id="dashboard-ram-alloc">0%</div>
                 </div>
               </div>
               <div class="col-sm-6 col-lg-3">
-                <div class="border rounded p-2">
-                  <div class="text-muted small" id="dashboard-top-cpu-label">Top Process CPU</div>
+                <div class="border rounded p-2 dashboard-resource-kpi rto-tip" tabindex="0" id="dashboard-top-cpu-card" data-tip="This shows which process is using the most CPU right now. In System mode off, it shows the busiest group instead.">
+                  <div class="text-muted small dashboard-resource-kpi-label" id="dashboard-top-cpu-label-wrap">
+                    <span id="dashboard-top-cpu-label">Top Process CPU</span>
+                    <i class="ti ti-info-circle dashboard-resource-kpi-note-icon" aria-hidden="true"></i>
+                  </div>
                   <div class="fw-semibold" id="dashboard-top-proc-cpu">n/a</div>
                 </div>
               </div>
@@ -231,6 +258,10 @@
     const ramAllocEl = document.getElementById("dashboard-ram-alloc");
     const topProcCpuEl = document.getElementById("dashboard-top-proc-cpu");
     const topCpuLabelEl = document.getElementById("dashboard-top-cpu-label");
+    const cpuTotalCardEl = document.getElementById("dashboard-cpu-total-card");
+    const ramPressureCardEl = document.getElementById("dashboard-ram-pressure-card");
+    const ramAllocCardEl = document.getElementById("dashboard-ram-alloc-card");
+    const topCpuCardEl = document.getElementById("dashboard-top-cpu-card");
     const cpuTrackedNoteEl = document.getElementById("dashboard-cpu-tracked-note");
     const cpuScopeEl = document.getElementById("dashboard-cpu-scope");
     const featureUsageEl = document.getElementById("dashboard-feature-usage");
@@ -308,21 +339,53 @@
       return `${n >= 0.1 ? n.toFixed(1) : n.toFixed(2)}%`;
     };
 
+    const kbToGiB = (kb) => {
+      const n = Number(kb ?? 0);
+      if (!Number.isFinite(n) || n <= 0) return "n/a";
+      return (n / 1024 / 1024).toFixed(2);
+    };
+
+    const setTip = (el, text) => {
+      if (!el) return;
+      const note = String(text || "").trim();
+      el.setAttribute("data-tip", note);
+      el.setAttribute("aria-label", note);
+    };
+
     const render = (data) => {
       if (!hasResourcesPanel) return;
       const systemModeEnabled = !!systemModeToggleEl.checked;
       const hostCpu = Number(data.cpu_pct ?? 0);
       const trackedCpu = Number(data.cpu_tracked_pct ?? hostCpu);
+      const ramPressure = Number(data.ram_pressure_pct ?? data.ram_pct ?? 0);
+      const ramAllocated = Number(data.ram_used_incl_cache_pct ?? 0);
+      const totalGiB = kbToGiB(data.ram_total_kb);
+      const availGiB = kbToGiB(data.ram_available_kb);
+      const cachedGiB = kbToGiB(data.ram_cached_kb);
+      const freeGiB = kbToGiB(data.ram_free_kb);
       if (cpuTotalEl) cpuTotalEl.textContent = `${hostCpu.toFixed(1)}%`;
       if (cpuTrackedNoteEl) cpuTrackedNoteEl.textContent = `Table accounted: ${trackedCpu.toFixed(1)}%`;
       if (cpuScopeEl) cpuScopeEl.textContent = `Scope: ${String(data.cpu_scope || "n/a")}`;
-      if (ramPressureEl) ramPressureEl.textContent = `${Number(data.ram_pressure_pct ?? data.ram_pct ?? 0).toFixed(1)}%`;
-      if (ramAllocEl) ramAllocEl.textContent = `${Number(data.ram_used_incl_cache_pct ?? 0).toFixed(1)}%`;
+      if (ramPressureEl) ramPressureEl.textContent = `${ramPressure.toFixed(1)}%`;
+      if (ramAllocEl) ramAllocEl.textContent = `${ramAllocated.toFixed(1)}%`;
 
       const processes = Array.isArray(data.top_processes) ? data.top_processes : [];
       const features = Array.isArray(data.feature_usage) ? data.feature_usage : [];
       const summary = Array.isArray(data.threej_summary) ? data.threej_summary : [];
       renderTableHead(systemModeEnabled);
+
+      setTip(
+        cpuTotalCardEl,
+        `Total CPU shows how busy the server processor is right now. Think of it as the server's current work level. Current CPU load: ${hostCpu.toFixed(1)}%. The table below is accounting for ${trackedCpu.toFixed(1)}% of that load across tracked ${systemModeEnabled ? "processes" : "groups"}. Scope: ${String(data.cpu_scope || "n/a")}.`
+      );
+      setTip(
+        ramPressureCardEl,
+        `RAM Pressure shows how hard the server is working to keep memory available. Think of this as memory stress, not just memory usage. Current pressure: ${ramPressure.toFixed(1)}%. Available memory right now: ${availGiB} GiB out of ${totalGiB} GiB total. This can stay moderate even when RAM Allocated is high, because Linux can release cached memory when needed.`
+      );
+      setTip(
+        ramAllocCardEl,
+        `RAM Allocated shows how much memory is already claimed right now by the system, running apps, and Linux cache used to speed up file access. Current allocated memory: ${ramAllocated.toFixed(1)}%. Total RAM: ${totalGiB} GiB. Available now: ${availGiB} GiB. Cached: ${cachedGiB} GiB. Free: ${freeGiB} GiB. The difference from RAM Pressure is simple: RAM Allocated asks "How much memory is occupied?" while RAM Pressure asks "Is the server actually struggling to keep memory available?" High Allocated by itself is not automatically a problem. If Allocated is high but Pressure stays comfortable, the server still has breathing room. If both stay high, the server is getting tight on RAM.`
+      );
 
       if (systemModeEnabled) {
         if (!processes.length) {
@@ -340,6 +403,10 @@
           `).join("");
           const topCpu = Number(processes[0]?.cpu_pct ?? 0);
           if (topProcCpuEl) topProcCpuEl.textContent = `${topCpu.toFixed(1)}%`;
+          setTip(
+            topCpuCardEl,
+            `This shows the single busiest process right now. Current top process: ${String(processes[0]?.name || "n/a")} (${String(processes[0]?.feature || "n/a")}) at ${topCpu.toFixed(1)}% CPU.`
+          );
         }
         if (features.length) {
           featureUsageEl.innerHTML = features.map((item) => `
@@ -363,6 +430,10 @@
           `).join("");
           const topCpu = Number(summary[0]?.cpu_pct ?? 0);
           if (topProcCpuEl) topProcCpuEl.textContent = `${topCpu.toFixed(1)}%`;
+          setTip(
+            topCpuCardEl,
+            `This shows the busiest CPU group right now. Current top group: ${String(summary[0]?.name || "n/a")} at ${topCpu.toFixed(1)}% CPU. Use System mode to switch back to individual processes.`
+          );
         }
         featureUsageEl.innerHTML = summary.length
           ? summary.map((item) => `

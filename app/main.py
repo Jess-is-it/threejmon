@@ -41,9 +41,12 @@ from .db import (
     clear_offline_history,
     clear_optical_results,
     clear_pppoe_usage_samples,
+    clear_usage_modem_reboot_history,
     clear_surveillance_audit_logs,
     clear_surveillance_history,
     clear_wan_history,
+    count_offline_history_since,
+    count_usage_modem_reboot_history,
     create_auth_permission,
     create_auth_role,
     create_auth_session,
@@ -78,9 +81,12 @@ from .db import (
     get_latest_optical_device_for_ip,
     get_latest_optical_identity,
     get_offline_history_for_pppoe,
+    get_offline_history_page_since,
     get_latest_pppoe_usage_snapshot,
     get_recent_surveillance_sessions_for_pppoe,
     get_surveillance_fixed_cycles_map,
+    list_surveillance_audit_logs_for_pppoe,
+    list_surveillance_cycle_sessions,
     get_surveillance_session_by_id,
     get_optical_latest_results_since,
     get_optical_results_for_device_since,
@@ -94,6 +100,7 @@ from .db import (
     get_recent_optical_readings,
     init_db,
     insert_auth_audit_log,
+    list_usage_modem_reboot_history,
     list_auth_audit_logs,
     list_auth_permissions,
     list_auth_roles,
@@ -152,6 +159,7 @@ from .settings_defaults import (
     WAN_SUMMARY_DEFAULTS,
 )
 from .settings_store import export_settings, get_settings, get_state, import_settings, save_settings, save_state
+from .usage_logic import build_usage_summary_data as build_usage_summary_data_shared, normalize_usage_modem_reboot_settings
 
 BASE_DIR = Path(__file__).resolve().parent
 PH_TZ = ZoneInfo("Asia/Manila")
@@ -495,6 +503,8 @@ AUTH_PERMISSION_DEPENDENCIES = {
     "accounts_missing.settings.source.edit": ["accounts_missing.view", "accounts_missing.edit"],
     "accounts_missing.settings.auto_delete.edit": ["accounts_missing.view", "accounts_missing.edit"],
     "usage.settings.danger.run": ["usage.view", "usage.edit", "system.view", "system.tab.danger.view"],
+    "usage.status.reboot_history.view": ["usage.view"],
+    "usage.settings.modem_reboot.edit": ["usage.view", "usage.edit"],
     "offline.settings.danger.run": ["offline.view", "offline.edit", "system.view", "system.tab.danger.view"],
     "wan.settings.danger.run": ["wan.view", "wan.edit", "system.view", "system.tab.danger.view"],
     "system.danger.uninstall.run": ["system.view", "system.tab.danger.view"],
@@ -657,6 +667,8 @@ AUTH_PERMISSION_COMPAT_GRANTS = {
     "optical.settings.danger.run": ["settings.danger"],
     "accounts_ping.settings.danger.run": ["settings.danger"],
     "usage.settings.danger.run": ["settings.danger"],
+    "usage.status.reboot_history.view": ["usage.view"],
+    "usage.settings.modem_reboot.edit": ["usage.edit"],
     "offline.settings.danger.run": ["settings.danger"],
     "wan.settings.danger.run": ["settings.danger"],
     "system.danger.uninstall.run": ["settings.danger"],
@@ -3256,533 +3268,6 @@ async def browser_logo():
     return FileResponse(logo_path, media_type=media_type)
 
 
-def get_interface_options():
-    base_dir = "/host_sys_class_net"
-    if not os.path.isdir(base_dir):
-        base_dir = "/sys/class/net"
-    try:
-        names = sorted(os.listdir(base_dir))
-    except OSError:
-        return []
-    filtered = []
-    for name in names:
-        if name == "lo":
-            continue
-        if name.startswith(("br-", "docker", "veth", "tun", "tap", "ifb")):
-            continue
-        filtered.append(name)
-    return filtered
-
-
-def compute_pulsewatch_interface_map(settings):
-    pulsewatch = settings.get("pulsewatch", {})
-    cores = pulsewatch.get("mikrotik", {}).get("cores", [])
-    isps = pulsewatch.get("isps", [])
-    presets = pulsewatch.get("list_presets", [])
-    interface_map = {}
-    if presets:
-        for preset in presets:
-            core_id = preset.get("core_id")
-            raw_ip = (preset.get("address") or "").strip()
-            if not core_id or not raw_ip:
-                continue
-            core = next((item for item in cores if item.get("id") == core_id), None)
-            if not core:
-                continue
-            iface = (core.get("interface") or "").strip()
-            if not iface:
-                continue
-            prefix = str(core.get("prefix") or "24").strip()
-            addr = raw_ip if "/" in raw_ip else f"{raw_ip}/{prefix}"
-            interface_map.setdefault(iface, set()).add(addr)
-    else:
-        for isp in isps:
-            sources = isp.get("sources") or {}
-            for core in cores:
-                core_id = core.get("id")
-                iface = (core.get("interface") or "").strip()
-                if not core_id or not iface:
-                    continue
-                raw_ip = (sources.get(core_id) or "").strip()
-                if not raw_ip:
-                    continue
-                prefix = str(core.get("prefix") or "24").strip()
-                addr = raw_ip if "/" in raw_ip else f"{raw_ip}/{prefix}"
-                interface_map.setdefault(iface, set()).add(addr)
-    return interface_map
-
-
-def build_pulsewatch_netplan(settings):
-    host_dir = "/host_netplan"
-    if not os.path.isdir(host_dir):
-        return None, "Host netplan directory is not mounted.", {}, []
-    interface_map = compute_pulsewatch_interface_map(settings)
-    pulsewatch = settings.get("pulsewatch", {})
-    cores = pulsewatch.get("mikrotik", {}).get("cores", [])
-    presets = pulsewatch.get("list_presets", [])
-    isps = pulsewatch.get("isps", [])
-    core_tables = {core.get("id"): 200 + idx for idx, core in enumerate(cores, start=1) if core.get("id")}
-    core_addrs = {}
-    if presets:
-        for preset in presets:
-            core_id = preset.get("core_id")
-            raw_ip = (preset.get("address") or "").strip()
-            if not core_id or not raw_ip:
-                continue
-            core = next((item for item in cores if item.get("id") == core_id), None)
-            if not core:
-                continue
-            prefix = str(core.get("prefix") or "24").strip()
-            addr = raw_ip if "/" in raw_ip else f"{raw_ip}/{prefix}"
-            core_addrs.setdefault(core_id, set()).add(addr)
-    else:
-        for isp in isps:
-            sources = isp.get("sources") or {}
-            for core in cores:
-                core_id = core.get("id")
-                if not core_id:
-                    continue
-                raw_ip = (sources.get(core_id) or "").strip()
-                if not raw_ip:
-                    continue
-                prefix = str(core.get("prefix") or "24").strip()
-                addr = raw_ip if "/" in raw_ip else f"{raw_ip}/{prefix}"
-                core_addrs.setdefault(core_id, set()).add(addr)
-    route_specs = []
-    for core in cores:
-        core_id = core.get("id")
-        iface = (core.get("interface") or "").strip()
-        gateway = (core.get("gateway") or "").strip()
-        table = core_tables.get(core_id)
-        sources = sorted(core_addrs.get(core_id, []))
-        if not core_id or not iface or not gateway or not table or not sources:
-            continue
-        route_specs.append(
-            {
-                "core_id": core_id,
-                "iface": iface,
-                "gateway": gateway,
-                "table": table,
-                "sources": sources,
-            }
-        )
-    path = os.path.join(host_dir, "90-threejnotif-pulsewatch.yaml")
-    if not interface_map:
-        if os.path.exists(path):
-            os.remove(path)
-            return path, "Netplan file removed (no router source IPs configured).", interface_map, []
-        return path, "Netplan unchanged (no router source IPs configured).", interface_map, []
-
-    lines = [
-        "network:",
-        "  version: 2",
-        "  renderer: networkd",
-        "  ethernets:",
-    ]
-    for iface in sorted(interface_map.keys()):
-        lines.append(f"    {iface}:")
-        lines.append("      addresses:")
-        for addr in sorted(interface_map[iface]):
-            lines.append(f"        - {addr}")
-        spec = next((item for item in route_specs if item["iface"] == iface), None)
-        if spec:
-            lines.append("      routes:")
-            lines.append("        - to: 0.0.0.0/0")
-            lines.append(f"          via: {spec['gateway']}")
-            lines.append(f"          table: {spec['table']}")
-            lines.append("      routing-policy:")
-            for addr in spec["sources"]:
-                ip_only = addr.split("/", 1)[0]
-                lines.append(f"        - from: {ip_only}/32")
-                lines.append(f"          table: {spec['table']}")
-    content = "\n".join(lines) + "\n"
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write(content)
-    os.chmod(path, 0o600)
-    return path, "Netplan file updated.", interface_map, route_specs
-
-
-def parse_netplan_addresses():
-    host_dir = "/host_netplan"
-    if not os.path.isdir(host_dir):
-        return {}
-    result = {}
-    try:
-        files = sorted(
-            entry
-            for entry in os.listdir(host_dir)
-            if entry.endswith((".yaml", ".yml"))
-        )
-    except OSError:
-        return {}
-    for filename in files:
-        path = os.path.join(host_dir, filename)
-        try:
-            with open(path, "r", encoding="utf-8", errors="replace") as handle:
-                lines = handle.readlines()
-        except OSError:
-            continue
-        in_ethernets = False
-        ethernets_indent = None
-        iface = None
-        iface_indent = None
-        addresses_indent = None
-        for raw in lines:
-            line = raw.split("#", 1)[0].rstrip("\n")
-            if not line.strip():
-                continue
-            indent = len(line) - len(line.lstrip(" "))
-            key = line.strip()
-            if key == "ethernets:":
-                in_ethernets = True
-                ethernets_indent = indent
-                iface = None
-                iface_indent = None
-                addresses_indent = None
-                continue
-            if in_ethernets and ethernets_indent is not None and indent <= ethernets_indent:
-                in_ethernets = False
-                iface = None
-                iface_indent = None
-                addresses_indent = None
-                continue
-            if in_ethernets:
-                if key == "addresses:" and iface:
-                    addresses_indent = indent
-                    continue
-                if key.endswith(":") and not key.startswith("- ") and key not in (
-                    "addresses:",
-                    "routes:",
-                    "routing-policy:",
-                    "nameservers:",
-                ):
-                    iface = key[:-1].strip()
-                    iface_indent = indent
-                    addresses_indent = None
-                    continue
-                if iface and iface_indent is not None:
-                    if indent <= iface_indent:
-                        iface = None
-                        iface_indent = None
-                        addresses_indent = None
-                        continue
-                    if addresses_indent is not None:
-                        if indent <= addresses_indent:
-                            addresses_indent = None
-                            continue
-                        if key.startswith("- "):
-                            addr = key[2:].strip()
-                            if addr:
-                                result.setdefault(iface, set()).add(addr)
-        continue
-    return result
-
-
-def apply_host_addresses(interface_map, route_specs):
-    desired_map = parse_netplan_addresses()
-    if desired_map and interface_map:
-        desired_map = {iface: desired_map.get(iface, set()) for iface in interface_map.keys()}
-    if not desired_map:
-        desired_map = interface_map
-    if not desired_map:
-        return True, "No addresses to apply."
-    sock = "/var/run/docker.sock"
-    if not os.path.exists(sock):
-        return False, "IP apply skipped (docker socket not available)."
-    if not shutil.which("curl"):
-        return False, "IP apply skipped (curl not available in container)."
-
-    lines = []
-    for iface, addrs in desired_map.items():
-        if not addrs:
-            continue
-        iface_quoted = shlex.quote(iface)
-        wanted = " ".join(shlex.quote(addr) for addr in sorted(addrs))
-        lines.append(f"ip addr flush dev {iface_quoted} || true")
-        for addr in sorted(addrs):
-            lines.append(f"ip addr add {shlex.quote(addr)} dev {iface_quoted} || true")
-    for spec in route_specs:
-        gateway = spec.get("gateway")
-        table = spec.get("table")
-        iface = spec.get("iface")
-        sources = spec.get("sources", [])
-        if not gateway or not table or not iface:
-            continue
-        lines.append(
-            f"ip route replace default via {shlex.quote(gateway)} dev {shlex.quote(iface)} table {int(table)}"
-        )
-        for addr in sources:
-            ip_only = addr.split('/', 1)[0]
-            lines.append(f"ip rule add from {shlex.quote(ip_only)}/32 table {int(table)} || true")
-    script = " ; ".join(lines) if lines else "true"
-
-    pull_cmd = [
-        "curl",
-        "-sS",
-        "--unix-socket",
-        sock,
-        "-X",
-        "POST",
-        "http://localhost/images/create?fromImage=ubuntu&tag=latest",
-    ]
-    pulled = subprocess.run(pull_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if pulled.returncode != 0:
-        return False, f"IP apply failed: {pulled.stderr.strip() or pulled.stdout.strip()}"
-
-    payload = {
-        "Image": "ubuntu",
-        "Cmd": ["bash", "-c", f"chroot /host bash -c {shlex.quote(script)} 2>&1"],
-        "HostConfig": {
-            "Privileged": True,
-            "Binds": ["/:/host"],
-            "AutoRemove": False,
-            "NetworkMode": "host",
-            "PidMode": "host",
-        },
-    }
-    create_cmd = [
-        "curl",
-        "-sS",
-        "--unix-socket",
-        sock,
-        "-H",
-        "Content-Type: application/json",
-        "-X",
-        "POST",
-        "-d",
-        json.dumps(payload),
-        "http://localhost/containers/create",
-    ]
-    created = subprocess.run(create_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if created.returncode != 0:
-        return False, f"IP apply failed: {created.stderr.strip() or created.stdout.strip()}"
-    try:
-        container_id = json.loads(created.stdout).get("Id")
-    except json.JSONDecodeError:
-        container_id = None
-    if not container_id:
-        return False, f"IP apply failed: {created.stdout.strip()}"
-
-    start_cmd = [
-        "curl",
-        "-sS",
-        "--unix-socket",
-        sock,
-        "-X",
-        "POST",
-        f"http://localhost/containers/{container_id}/start",
-    ]
-    started = subprocess.run(start_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if started.returncode != 0:
-        return False, f"IP apply failed: {started.stderr.strip() or started.stdout.strip()}"
-
-    wait_cmd = [
-        "curl",
-        "-sS",
-        "--unix-socket",
-        sock,
-        "-X",
-        "POST",
-        f"http://localhost/containers/{container_id}/wait",
-    ]
-    waited = subprocess.run(wait_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if waited.returncode != 0:
-        return False, f"IP apply failed: {waited.stderr.strip() or waited.stdout.strip()}"
-    try:
-        status = json.loads(waited.stdout).get("StatusCode", 1)
-    except json.JSONDecodeError:
-        status = 1
-
-    delete_cmd = [
-        "curl",
-        "-sS",
-        "--unix-socket",
-        sock,
-        "-X",
-        "DELETE",
-        f"http://localhost/containers/{container_id}?force=1",
-    ]
-    subprocess.run(delete_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-
-    if status != 0:
-        return False, f"IP apply failed: container exit {status}"
-    return True, "IP addresses applied."
-
-
-def apply_netplan(interface_map, route_specs):
-    def run_cmd(cmd, timeout_seconds=30):
-        try:
-            return subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout_seconds,
-            )
-        except subprocess.TimeoutExpired:
-            return None
-
-    host_netplan_path = "/host_netplan/90-threejnotif-pulsewatch.yaml"
-    chmod_cmd = ""
-    if os.path.exists(host_netplan_path):
-        chmod_cmd = "chmod 600 /etc/netplan/90-threejnotif-pulsewatch.yaml && "
-
-    docker_path = None
-    for candidate in ("/usr/bin/docker", "/usr/local/bin/docker"):
-        if os.path.exists(candidate):
-            docker_path = candidate
-            break
-    if docker_path is None:
-        docker_path = shutil.which("docker")
-    if docker_path:
-        command = (
-            f"{docker_path} run --rm --privileged --pid=host "
-            "-v /:/host "
-            "ubuntu bash -c "
-            f"\"chroot /host bash -c '{chmod_cmd}netplan apply'\""
-        )
-        result = run_cmd(["/bin/sh", "-c", command], timeout_seconds=60)
-        if result is None:
-            ip_ok, ip_msg = apply_host_addresses(interface_map, route_specs)
-            return ip_ok, f"Netplan apply timed out. {ip_msg}"
-        if result.returncode != 0:
-            stderr = (result.stderr or result.stdout or "").strip()
-            return False, f"Netplan apply failed: {stderr}"
-        ip_ok, ip_msg = apply_host_addresses(interface_map, route_specs)
-        if not ip_ok:
-            return False, f"Netplan applied. {ip_msg}"
-        return True, "Netplan applied."
-
-    sock = "/var/run/docker.sock"
-    if not os.path.exists(sock):
-        return False, "Netplan apply skipped (docker socket not available)."
-    if not shutil.which("curl"):
-        return False, "Netplan apply skipped (curl not available in container)."
-
-    pull_cmd = [
-        "curl",
-        "-sS",
-        "--unix-socket",
-        sock,
-        "-X",
-        "POST",
-        "http://localhost/images/create?fromImage=ubuntu&tag=latest",
-    ]
-    pulled = run_cmd(pull_cmd, timeout_seconds=60)
-    if pulled is None:
-        ip_ok, ip_msg = apply_host_addresses(interface_map, route_specs)
-        return ip_ok, f"Netplan apply timed out. {ip_msg}"
-    if pulled.returncode != 0:
-        return False, f"Netplan apply failed: {pulled.stderr.strip() or pulled.stdout.strip()}"
-
-    payload = {
-        "Image": "ubuntu",
-        "Cmd": [
-            "bash",
-            "-c",
-            f"chroot /host bash -c {shlex.quote(f'{chmod_cmd}netplan apply')} 2>&1",
-        ],
-        "HostConfig": {
-            "Privileged": True,
-            "Binds": ["/:/host"],
-            "AutoRemove": False,
-            "PidMode": "host",
-        },
-    }
-    create_cmd = [
-        "curl",
-        "-sS",
-        "--unix-socket",
-        sock,
-        "-H",
-        "Content-Type: application/json",
-        "-X",
-        "POST",
-        "-d",
-        json.dumps(payload),
-        "http://localhost/containers/create",
-    ]
-    created = run_cmd(create_cmd)
-    if created is None:
-        ip_ok, ip_msg = apply_host_addresses(interface_map, route_specs)
-        return ip_ok, f"Netplan apply timed out. {ip_msg}"
-    if created.returncode != 0:
-        return False, f"Netplan apply failed: {created.stderr.strip() or created.stdout.strip()}"
-    try:
-        container_id = json.loads(created.stdout).get("Id")
-    except json.JSONDecodeError:
-        container_id = None
-    if not container_id:
-        return False, f"Netplan apply failed: {created.stdout.strip()}"
-
-    start_cmd = [
-        "curl",
-        "-sS",
-        "--unix-socket",
-        sock,
-        "-X",
-        "POST",
-        f"http://localhost/containers/{container_id}/start",
-    ]
-    started = run_cmd(start_cmd)
-    if started is None:
-        ip_ok, ip_msg = apply_host_addresses(interface_map, route_specs)
-        return ip_ok, f"Netplan apply timed out. {ip_msg}"
-    if started.returncode != 0:
-        return False, f"Netplan apply failed: {started.stderr.strip() or started.stdout.strip()}"
-
-    wait_cmd = [
-        "curl",
-        "-sS",
-        "--unix-socket",
-        sock,
-        "-X",
-        "POST",
-        f"http://localhost/containers/{container_id}/wait",
-    ]
-    waited = run_cmd(wait_cmd, timeout_seconds=15)
-    if waited is None:
-        ip_ok, ip_msg = apply_host_addresses(interface_map, route_specs)
-        return ip_ok, f"Netplan apply timed out. {ip_msg}"
-    if waited.returncode != 0:
-        return False, f"Netplan apply failed: {waited.stderr.strip() or waited.stdout.strip()}"
-    try:
-        status = json.loads(waited.stdout).get("StatusCode", 1)
-    except json.JSONDecodeError:
-        status = 1
-    logs_cmd = [
-        "curl",
-        "-sS",
-        "--unix-socket",
-        sock,
-        "-X",
-        "GET",
-        f"http://localhost/containers/{container_id}/logs?stdout=1&stderr=1",
-    ]
-    logs = run_cmd(logs_cmd)
-    if logs is None:
-        logs = subprocess.CompletedProcess(args=logs_cmd, returncode=1, stdout="", stderr="")
-    output = (logs.stdout or logs.stderr or "").strip()
-    delete_cmd = [
-        "curl",
-        "-sS",
-        "--unix-socket",
-        sock,
-        "-X",
-        "DELETE",
-        f"http://localhost/containers/{container_id}?force=1",
-    ]
-    run_cmd(delete_cmd)
-    if status != 0:
-        detail = output or f"container exit {status}"
-        return False, f"Netplan apply failed: {detail}"
-    ip_ok, ip_msg = apply_host_addresses(interface_map, route_specs)
-    if not ip_ok:
-        return False, f"Netplan applied. {ip_msg}"
-    return True, "Netplan applied."
-
-
 def run_host_command(script, timeout_seconds=60):
     def run_cmd(cmd, timeout_seconds=30):
         try:
@@ -3973,9 +3458,9 @@ def normalize_pulsewatch_settings(settings):
         core.setdefault("port", 8728)
         core.setdefault("username", "")
         core.setdefault("password", "")
-        core.setdefault("interface", "")
-        core.setdefault("prefix", 24)
-        core.setdefault("gateway", "")
+        core.pop("interface", None)
+        core.pop("prefix", None)
+        core.pop("gateway", None)
 
     for isp in pulse.get("isps", []):
         sources = isp.get("sources")
@@ -7314,104 +6799,7 @@ async def wan_targets_ping_stream(
 
 
 def _build_usage_summary_data(settings, state):
-    settings = settings if isinstance(settings, dict) else {}
-    state = state if isinstance(state, dict) else {}
-    active_rows = state.get("active_rows") if isinstance(state.get("active_rows"), list) else []
-    offline_rows = state.get("offline_rows") if isinstance(state.get("offline_rows"), list) else []
-    hosts = state.get("pppoe_hosts") if isinstance(state.get("pppoe_hosts"), dict) else {}
-
-    detect = settings.get("detection") if isinstance(settings.get("detection"), dict) else {}
-    peak_enabled = bool(detect.get("peak_enabled", True))
-    min_devices = max(int(detect.get("min_connected_devices", 2) or 2), 1)
-    kbps_from = detect.get("total_kbps_from")
-    kbps_to = detect.get("total_kbps_to")
-    if kbps_from is None:
-        kbps_from = 0
-    if kbps_to is None:
-        kbps_to = detect.get("min_total_kbps", 8)
-    kbps_from = max(float(kbps_from or 0.0), 0.0)
-    kbps_to = max(float(kbps_to or 0.0), 0.0)
-    if kbps_to < kbps_from:
-        kbps_from, kbps_to = kbps_to, kbps_from
-    range_from_bps = kbps_from * 1000.0
-    range_to_bps = kbps_to * 1000.0
-    start_ph = (detect.get("peak_start_ph") or "17:30").strip()
-    end_ph = (detect.get("peak_end_ph") or "21:00").strip()
-
-    now_ph = datetime.now(PH_TZ)
-    in_peak = is_time_window_ph(now_ph, start_ph, end_ph)
-    anytime_issues = state.get("anytime_issues") if isinstance(state.get("anytime_issues"), dict) else {}
-
-    issues = []
-    stable = []
-    for row in active_rows:
-        pppoe = (row.get("pppoe") or "").strip()
-        if not pppoe:
-            continue
-        host_info = hosts.get(pppoe) or hosts.get(pppoe.lower()) or {}
-        host_count = int(host_info.get("host_count") or 0)
-        hostnames = host_info.get("hostnames") if isinstance(host_info.get("hostnames"), list) else []
-        ul_bps = row.get("rx_bps")
-        dl_bps = row.get("tx_bps")
-        total_bps = float(ul_bps or 0.0) + float(dl_bps or 0.0)
-        peak_issue = bool(
-            peak_enabled
-            and in_peak
-            and host_count >= min_devices
-            and (range_from_bps <= total_bps <= range_to_bps)
-        )
-        key = f"{(row.get('router_id') or '').strip()}|{pppoe.lower()}"
-        anytime_issue = bool(anytime_issues.get(key))
-        is_issue = bool(peak_issue or anytime_issue)
-        target = issues if is_issue else stable
-        target.append(
-            {
-                "entry_id": _usage_nav_entry_id(row),
-                "pppoe": pppoe,
-                "router_id": row.get("router_id") or "",
-                "router_name": row.get("router_name") or row.get("router_id") or "",
-                "address": row.get("address") or "",
-                "uptime": row.get("uptime") or "",
-                "session_id": row.get("session_id") or "",
-                "dl_bps": dl_bps,
-                "ul_bps": ul_bps,
-                "dl_total_bytes": row.get("bytes_out"),
-                "ul_total_bytes": row.get("bytes_in"),
-                "host_count": host_count,
-                "hostnames": hostnames,
-                "last_seen": format_ts_ph(row.get("timestamp")),
-                "last_seen_ts": row.get("timestamp") or "",
-                "issue": is_issue,
-                "issue_peak": peak_issue,
-                "issue_anytime": anytime_issue,
-                "is_new": False,
-            }
-        )
-
-    return {
-        "issues": issues,
-        "stable": stable,
-        "offline_rows": offline_rows,
-        "peak": {
-            "in_peak": bool(in_peak),
-            "start": start_ph,
-            "end": end_ph,
-            "min_devices": min_devices,
-            "total_kbps_from": kbps_from,
-            "total_kbps_to": kbps_to,
-            "enabled": bool(peak_enabled),
-        },
-        "anytime": {
-            "enabled": bool(detect.get("anytime_enabled", False)),
-            "no_usage_minutes": int(detect.get("anytime_no_usage_minutes", 120) or 120),
-            "min_devices": int(detect.get("anytime_min_connected_devices", 2) or 2),
-            "total_kbps_from": float(detect.get("anytime_total_kbps_from", 0) or 0),
-            "total_kbps_to": float(detect.get("anytime_total_kbps_to", 8) or 8),
-            "work_start": (detect.get("anytime_work_start_ph") or "00:00").strip(),
-            "work_end": (detect.get("anytime_work_end_ph") or "23:59").strip(),
-            "last_eval": format_ts_ph(state.get("anytime_eval_at")),
-        },
-    }
+    return build_usage_summary_data_shared(settings, state)
 
 
 @app.get("/usage/summary")
@@ -7419,6 +6807,7 @@ async def usage_summary(request: Request):
     settings = get_settings("usage", USAGE_DEFAULTS)
     state = get_state("usage_state", {})
     summary = _build_usage_summary_data(settings, state)
+    reboot_settings = normalize_usage_modem_reboot_settings(settings)
     issue_ids = [
         str(row.get("entry_id") or "").strip()
         for row in (summary.get("issues") or [])
@@ -7432,6 +6821,19 @@ async def usage_summary(request: Request):
     issues = summary.get("issues") or []
     stable = summary.get("stable") or []
     offline_rows = summary.get("offline_rows") or []
+    can_view_reboot_history = (
+        not bool(getattr(request.state, "auth_enabled", True))
+        or _auth_request_has_permission(request, "usage.status.reboot_history.view")
+    )
+    reboot_history_rows = []
+    reboot_history_count = 0
+    if reboot_settings.get("enabled") and can_view_reboot_history:
+        reboot_history_count = count_usage_modem_reboot_history()
+        for row in list_usage_modem_reboot_history(limit=250):
+            item = dict(row or {})
+            item["attempted_at_ph"] = format_ts_ph(item.get("attempted_at"))
+            item["verified_at_ph"] = format_ts_ph(item.get("verified_at"))
+            reboot_history_rows.append(item)
     return JSONResponse(
         {
             "updated_at": utc_now_iso(),
@@ -7440,9 +6842,23 @@ async def usage_summary(request: Request):
             "genieacs_error": (state.get("genieacs_error") or "").strip(),
             "peak": summary.get("peak") or {},
             "anytime": summary.get("anytime") or {},
+            "modem_reboot": {
+                "enabled": bool(reboot_settings.get("enabled")),
+                "can_view_history": bool(can_view_reboot_history),
+            },
             "new": {"ids": new_ids, "count": len(new_ids)},
-            "counts": {"issues": len(issues), "stable": len(stable), "offline": len(offline_rows)},
-            "rows": {"issues": issues, "stable": stable, "offline": offline_rows},
+            "counts": {
+                "issues": len(issues),
+                "stable": len(stable),
+                "offline": len(offline_rows),
+                "reboot_history": reboot_history_count,
+            },
+            "rows": {
+                "issues": issues,
+                "stable": stable,
+                "offline": offline_rows,
+                "reboot_history": reboot_history_rows,
+            },
         }
     )
 
@@ -7578,11 +6994,31 @@ async def offline_mark_new_seen(request: Request):
 
 
 @app.get("/offline/history", response_class=JSONResponse)
-async def offline_history(days: int = 30, limit: int = 500):
+async def offline_history(request: Request, days: int = 30, limit: str | int = 100, page: int = 1):
     days = max(min(int(days or 30), 3650), 1)
-    limit = max(min(int(limit or 500), 2000), 1)
+    limit = _parse_table_limit(limit, default=100)
+    if not limit:
+        limit = TABLE_PAGE_SIZE_OPTIONS[-1]
+    limit = max(min(int(limit or 100), TABLE_PAGE_SIZE_OPTIONS[-1]), 1)
+    page = _parse_table_page(page, 1)
+    search_query = str(request.query_params.get("q") or "").strip()
+    router_filters = [str(item or "").strip() for item in request.query_params.getlist("router") if str(item or "").strip()]
+    sort_key = str(request.query_params.get("sort") or "offline_ended_at").strip() or "offline_ended_at"
+    sort_dir = str(request.query_params.get("dir") or "desc").strip().lower()
     since_iso = (datetime.utcnow() - timedelta(days=days)).replace(microsecond=0).isoformat() + "Z"
-    rows = get_offline_history_since(since_iso, limit=limit)
+    total = count_offline_history_since(since_iso, search=search_query, router_names=router_filters)
+    pages = max((total + limit - 1) // limit, 1)
+    page = min(max(page, 1), pages)
+    offset = (page - 1) * limit
+    rows = get_offline_history_page_since(
+        since_iso,
+        limit=limit,
+        offset=offset,
+        sort_key=sort_key,
+        sort_dir=sort_dir,
+        search=search_query,
+        router_names=router_filters,
+    )
     payload = []
     for row in rows:
         payload.append(
@@ -7603,7 +7039,23 @@ async def offline_history(days: int = 30, limit: int = 500):
                 "last_logged_out": (row.get("last_logged_out") or "").strip(),
             }
         )
-    return JSONResponse({"days": days, "count": len(payload), "rows": payload})
+    return JSONResponse(
+        {
+            "days": days,
+            "count": total,
+            "rows": payload,
+            "pagination": {
+                "page": page,
+                "pages": pages,
+                "limit": limit,
+                "total": total,
+                "start": offset + 1 if total else 0,
+                "end": min(offset + len(payload), total),
+                "has_prev": page > 1,
+                "has_next": page < pages,
+            },
+        }
+    )
 
 
 @app.get("/offline/radius/accounts", response_class=JSONResponse)
@@ -7755,20 +7207,9 @@ async def import_settings_route(request: Request):
             message = "Invalid JSON file."
         except Exception as exc:
             message = f"Import failed: {exc}"
-    settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
     if message.startswith("Settings imported"):
-        netplan_msg = None
-        apply_msg = None
-        try:
-            netplan_path, netplan_msg, interface_map, route_specs = build_pulsewatch_netplan(settings)
-            if netplan_path:
-                _, apply_msg = apply_netplan(interface_map, route_specs)
-        except Exception as exc:
-            apply_msg = f"Netplan update failed: {exc}"
-        if netplan_msg and "no router source IPs configured" not in netplan_msg:
-            message = f"{message} {netplan_msg}"
-        if apply_msg and not apply_msg.startswith("Netplan applied"):
-            message = f"{message} {apply_msg}"
+        settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+        save_settings("isp_ping", settings)
     return render_system_settings_response(request, message, active_tab="backup", routers_tab="cores")
 
 
@@ -8953,7 +8394,17 @@ async def usage_settings(request: Request):
         active_tab = "status"
     settings_tab = (request.query_params.get("settings_tab") or "general").strip().lower()
     can_run_danger_actions = _auth_request_has_permission(request, "usage.settings.danger.run")
-    if settings_tab not in ("general", "routers", "data", "detection", "storage"):
+    can_view_reboot_history = (
+        not bool(getattr(request.state, "auth_enabled", True))
+        or _auth_request_has_permission(request, "usage.status.reboot_history.view")
+    )
+    can_edit_modem_reboot = (
+        not bool(getattr(request.state, "auth_enabled", True))
+        or _auth_request_has_permission(request, "usage.settings.modem_reboot.edit")
+    )
+    if settings_tab not in ("general", "routers", "data", "detection", "modem_reboot", "storage"):
+        settings_tab = "general"
+    if settings_tab == "modem_reboot" and not can_edit_modem_reboot:
         settings_tab = "general"
     job_status = {item["job_name"]: dict(item) for item in get_job_status()}
     usage_job = job_status.get("usage", {})
@@ -8991,8 +8442,13 @@ async def usage_settings(request: Request):
                 "usage_counts": {
                     "issues": len(usage_summary_data.get("issues") or []),
                     "stable": len(usage_summary_data.get("stable") or []),
+                    "reboot_history": count_usage_modem_reboot_history()
+                    if normalize_usage_modem_reboot_settings(settings).get("enabled") and can_view_reboot_history
+                    else 0,
                 },
                 "usage_new_view_seconds": _USAGE_NEW_VIEW_SECONDS,
+                "can_view_usage_reboot_history": can_view_reboot_history,
+                "can_edit_usage_modem_reboot": can_edit_modem_reboot,
             },
         ),
     )
@@ -9003,7 +8459,15 @@ async def usage_settings_save(request: Request):
     form = await request.form()
     settings_tab = (form.get("settings_tab") or "general").strip().lower() or "general"
     can_run_danger_actions = _auth_request_has_permission(request, "usage.settings.danger.run")
-    if settings_tab not in ("general", "routers", "data", "detection", "storage"):
+    can_view_reboot_history = (
+        not bool(getattr(request.state, "auth_enabled", True))
+        or _auth_request_has_permission(request, "usage.status.reboot_history.view")
+    )
+    can_edit_modem_reboot = (
+        not bool(getattr(request.state, "auth_enabled", True))
+        or _auth_request_has_permission(request, "usage.settings.modem_reboot.edit")
+    )
+    if settings_tab not in ("general", "routers", "data", "detection", "modem_reboot", "storage"):
         settings_tab = "general"
     settings = get_settings("usage", USAGE_DEFAULTS)
 
@@ -9082,6 +8546,16 @@ async def usage_settings_save(request: Request):
             settings["detection"]["peak_start_ph"] = (form.get("peak_start_ph") or "").strip() or "17:30"
             settings["detection"]["peak_end_ph"] = (form.get("peak_end_ph") or "").strip() or "21:00"
             settings["detection"]["peak_enabled"] = parse_bool(form, "peak_enabled")
+            settings["detection"]["peak_no_usage_minutes"] = parse_int(
+                form,
+                "peak_no_usage_minutes",
+                int(
+                    settings["detection"].get(
+                        "peak_no_usage_minutes",
+                        USAGE_DEFAULTS["detection"]["peak_no_usage_minutes"],
+                    )
+                ),
+            )
             settings["detection"]["min_connected_devices"] = parse_int(
                 form,
                 "min_connected_devices",
@@ -9155,6 +8629,52 @@ async def usage_settings_save(request: Request):
                 int(settings["storage"].get("sample_interval_seconds", USAGE_DEFAULTS["storage"]["sample_interval_seconds"])),
             )
             message = "Storage settings saved."
+        elif settings_tab == "modem_reboot":
+            if not can_edit_modem_reboot:
+                return _auth_forbidden_response(request, "usage.settings.modem_reboot.edit")
+            settings["modem_reboot"] = settings.get("modem_reboot") if isinstance(settings.get("modem_reboot"), dict) else {}
+            settings["modem_reboot"]["enabled"] = parse_bool(form, "modem_reboot_enabled")
+            settings["modem_reboot"]["buffer_hours"] = parse_int(
+                form,
+                "modem_reboot_buffer_hours",
+                int((settings.get("modem_reboot") or {}).get("buffer_hours", USAGE_DEFAULTS["modem_reboot"]["buffer_hours"])),
+            )
+            settings["modem_reboot"]["retry_count"] = parse_int(
+                form,
+                "modem_reboot_retry_count",
+                int((settings.get("modem_reboot") or {}).get("retry_count", USAGE_DEFAULTS["modem_reboot"]["retry_count"])),
+            )
+            settings["modem_reboot"]["retry_delay_minutes"] = parse_int(
+                form,
+                "modem_reboot_retry_delay_minutes",
+                int(
+                    (settings.get("modem_reboot") or {}).get(
+                        "retry_delay_minutes",
+                        USAGE_DEFAULTS["modem_reboot"]["retry_delay_minutes"],
+                    )
+                ),
+            )
+            settings["modem_reboot"]["history_retention_days"] = parse_int(
+                form,
+                "modem_reboot_history_retention_days",
+                int(
+                    (settings.get("modem_reboot") or {}).get(
+                        "history_retention_days",
+                        USAGE_DEFAULTS["modem_reboot"]["history_retention_days"],
+                    )
+                ),
+            )
+            settings["modem_reboot"]["verify_after_minutes"] = parse_int(
+                form,
+                "modem_reboot_verify_after_minutes",
+                int(
+                    (settings.get("modem_reboot") or {}).get(
+                        "verify_after_minutes",
+                        USAGE_DEFAULTS["modem_reboot"]["verify_after_minutes"],
+                    )
+                ),
+            )
+            message = "Modem Auto Reboot settings saved."
         else:
             message = "Settings saved."
 
@@ -9197,8 +8717,13 @@ async def usage_settings_save(request: Request):
                 "usage_counts": {
                     "issues": len(usage_summary_data.get("issues") or []),
                     "stable": len(usage_summary_data.get("stable") or []),
+                    "reboot_history": count_usage_modem_reboot_history()
+                    if normalize_usage_modem_reboot_settings(settings).get("enabled") and can_view_reboot_history
+                    else 0,
                 },
                 "usage_new_view_seconds": _USAGE_NEW_VIEW_SECONDS,
+                "can_view_usage_reboot_history": can_view_reboot_history,
+                "can_edit_usage_modem_reboot": can_edit_modem_reboot,
             },
         ),
     )
@@ -9267,8 +8792,23 @@ async def usage_test_genieacs(request: Request):
                 "usage_counts": {
                     "issues": len(usage_summary_data.get("issues") or []),
                     "stable": len(usage_summary_data.get("stable") or []),
+                    "reboot_history": count_usage_modem_reboot_history()
+                    if normalize_usage_modem_reboot_settings(settings).get("enabled")
+                    and (
+                        not bool(getattr(request.state, "auth_enabled", True))
+                        or _auth_request_has_permission(request, "usage.status.reboot_history.view")
+                    )
+                    else 0,
                 },
                 "usage_new_view_seconds": _USAGE_NEW_VIEW_SECONDS,
+                "can_view_usage_reboot_history": (
+                    not bool(getattr(request.state, "auth_enabled", True))
+                    or _auth_request_has_permission(request, "usage.status.reboot_history.view")
+                ),
+                "can_edit_usage_modem_reboot": (
+                    not bool(getattr(request.state, "auth_enabled", True))
+                    or _auth_request_has_permission(request, "usage.settings.modem_reboot.edit")
+                ),
             },
         ),
     )
@@ -9929,24 +9469,7 @@ def _profile_search_items(query, limit=12):
         )
 
     usage_detect = usage_settings.get("detection") if isinstance(usage_settings.get("detection"), dict) else {}
-    peak_enabled = bool(usage_detect.get("peak_enabled", True))
-    min_devices = max(int(usage_detect.get("min_connected_devices", 2) or 2), 1)
-    kbps_from = usage_detect.get("total_kbps_from")
-    kbps_to = usage_detect.get("total_kbps_to")
-    if kbps_from is None:
-        kbps_from = 0
-    if kbps_to is None:
-        kbps_to = usage_detect.get("min_total_kbps", 8)
-    kbps_from = max(float(kbps_from or 0.0), 0.0)
-    kbps_to = max(float(kbps_to or 0.0), 0.0)
-    if kbps_to < kbps_from:
-        kbps_from, kbps_to = kbps_to, kbps_from
-    range_from_bps = kbps_from * 1000.0
-    range_to_bps = kbps_to * 1000.0
-    start_ph = (usage_detect.get("peak_start_ph") or "17:30").strip()
-    end_ph = (usage_detect.get("peak_end_ph") or "21:00").strip()
-    in_peak = is_time_window_ph(datetime.now(PH_TZ), start_ph, end_ph)
-
+    usage_peak_issues = usage_state.get("peak_issues") if isinstance(usage_state.get("peak_issues"), dict) else {}
     for row in usage_rows:
         if not isinstance(row, dict):
             continue
@@ -9957,15 +9480,8 @@ def _profile_search_items(query, limit=12):
             continue
         pppoe_key = pppoe.lower()
         host_info = usage_hosts.get(pppoe) or usage_hosts.get(pppoe_key) or {}
-        host_count = int(host_info.get("host_count") or 0)
-        total_bps = float(row.get("rx_bps") or 0.0) + float(row.get("tx_bps") or 0.0)
-        peak_issue = bool(
-            peak_enabled
-            and in_peak
-            and host_count >= min_devices
-            and (range_from_bps <= total_bps <= range_to_bps)
-        )
         router_id = (row.get("router_id") or "").strip()
+        peak_issue = bool(usage_peak_issues.get(f"{router_id}|{pppoe_key}"))
         anytime_issue = bool(usage_anytime_issues.get(f"{router_id}|{pppoe_key}"))
         _profile_merge_search_item(
             merged,
@@ -11288,39 +10804,14 @@ async def profile_review(request: Request):
         hostnames = [str(x).strip() for x in hostnames if str(x or "").strip()]
         usage["devices"] = host_count
         usage["hostnames"] = hostnames
+        usage_peak_issues = usage_state.get("peak_issues") if isinstance(usage_state.get("peak_issues"), dict) else {}
         if usage_enabled:
             try:
                 if usage_row:
                     ul_bps = usage_row.get("rx_bps")
                     dl_bps = usage_row.get("tx_bps")
-                    total_bps = float(ul_bps or 0.0) + float(dl_bps or 0.0)
-
-                    detect = usage_settings.get("detection") if isinstance(usage_settings.get("detection"), dict) else {}
-                    peak_enabled = bool(detect.get("peak_enabled", True))
-                    min_devices = max(int(detect.get("min_connected_devices", 2) or 2), 1)
-                    kbps_from = detect.get("total_kbps_from")
-                    kbps_to = detect.get("total_kbps_to")
-                    if kbps_from is None:
-                        kbps_from = 0
-                    if kbps_to is None:
-                        kbps_to = detect.get("min_total_kbps", 8)
-                    kbps_from = max(float(kbps_from or 0.0), 0.0)
-                    kbps_to = max(float(kbps_to or 0.0), 0.0)
-                    if kbps_to < kbps_from:
-                        kbps_from, kbps_to = kbps_to, kbps_from
-                    range_from_bps = kbps_from * 1000.0
-                    range_to_bps = kbps_to * 1000.0
-                    start_ph = (detect.get("peak_start_ph") or "17:30").strip()
-                    end_ph = (detect.get("peak_end_ph") or "21:00").strip()
-                    now_ph = datetime.now(PH_TZ)
-                    in_peak = is_time_window_ph(now_ph, start_ph, end_ph)
-                    peak_issue = bool(
-                        peak_enabled
-                        and in_peak
-                        and host_count >= min_devices
-                        and (range_from_bps <= total_bps <= range_to_bps)
-                    )
                     router_id = (usage_row.get("router_id") or "").strip()
+                    peak_issue = bool(usage_peak_issues.get(f"{router_id}|{pppoe_key}"))
                     anytime_issue = bool(usage_anytime_issues.get(f"{router_id}|{pppoe_key}"))
 
                     usage.update(
@@ -17221,6 +16712,297 @@ async def surveillance_ai_reports(pppoe: str):
     )
 
 
+_SURVEILLANCE_HISTORY_STAGE_META = {
+    "under": {"label": "Active Monitoring", "badge": "yellow"},
+    "level2": {"label": "Needs Manual Fix", "badge": "red"},
+    "observe": {"label": "Post-Fix Observation", "badge": "blue"},
+}
+
+
+def _surveillance_history_stage_label(stage_key: str) -> str:
+    return (_SURVEILLANCE_HISTORY_STAGE_META.get((stage_key or "").strip().lower()) or {}).get("label") or "Unknown Stage"
+
+
+def _surveillance_history_stage_badge(stage_key: str) -> str:
+    return (_SURVEILLANCE_HISTORY_STAGE_META.get((stage_key or "").strip().lower()) or {}).get("badge") or "secondary"
+
+
+def _clean_surveillance_session_note(note: str) -> str:
+    text = (note or "").strip()
+    for prefix in ("Marked as fully recovered:", "Marked as False:"):
+        if text.lower().startswith(prefix.lower()):
+            return text[len(prefix):].strip()
+    return text
+
+
+def _surveillance_session_stage_segments(session_row: dict) -> list[dict]:
+    if not isinstance(session_row, dict):
+        return []
+    started_iso = (session_row.get("started_at") or "").strip()
+    ended_iso = (session_row.get("ended_at") or "").strip()
+    started_dt = _parse_iso_z(started_iso)
+    ended_dt = _parse_iso_z(ended_iso) if ended_iso else datetime.utcnow().replace(microsecond=0)
+    if not isinstance(started_dt, datetime) or not isinstance(ended_dt, datetime):
+        return []
+    if ended_dt < started_dt:
+        ended_dt = started_dt
+    try:
+        under_seconds = max(int(session_row.get("under_seconds") or 0), 0)
+    except Exception:
+        under_seconds = 0
+    try:
+        level2_seconds = max(int(session_row.get("level2_seconds") or 0), 0)
+    except Exception:
+        level2_seconds = 0
+    try:
+        observe_seconds = max(int(session_row.get("observe_seconds") or 0), 0)
+    except Exception:
+        observe_seconds = 0
+    actual_seconds = max(int((ended_dt - started_dt).total_seconds()), 0)
+    stage_seconds = {
+        "under": under_seconds,
+        "level2": level2_seconds,
+        "observe": observe_seconds,
+    }
+    total_seconds = under_seconds + level2_seconds + observe_seconds
+    inferred_stage = "observe" if observe_seconds > 0 else ("level2" if level2_seconds > 0 or (session_row.get("last_state") or "").strip().lower() == "level2" else "under")
+    if total_seconds <= 0 and actual_seconds > 0:
+        stage_seconds[inferred_stage] = actual_seconds
+        total_seconds = actual_seconds
+    elif actual_seconds > total_seconds:
+        for stage_key in ("observe", "level2", "under"):
+            if stage_seconds.get(stage_key, 0) > 0:
+                stage_seconds[stage_key] += actual_seconds - total_seconds
+                break
+        else:
+            stage_seconds[inferred_stage] += actual_seconds - total_seconds
+
+    segments = []
+    cursor = started_dt
+    for stage_key in ("under", "level2", "observe"):
+        seconds = max(int(stage_seconds.get(stage_key) or 0), 0)
+        if seconds <= 0:
+            continue
+        segment_end = cursor + timedelta(seconds=seconds)
+        if segment_end > ended_dt:
+            segment_end = ended_dt
+        if segment_end <= cursor and ended_dt > cursor:
+            segment_end = ended_dt
+        if segment_end <= cursor:
+            continue
+        segment_seconds = max(int((segment_end - cursor).total_seconds()), 0)
+        segments.append(
+            {
+                "stage": stage_key,
+                "label": _surveillance_history_stage_label(stage_key),
+                "badge": _surveillance_history_stage_badge(stage_key),
+                "start_dt": cursor,
+                "end_dt": segment_end,
+                "start_at_iso": cursor.replace(microsecond=0).isoformat() + "Z",
+                "end_at_iso": segment_end.replace(microsecond=0).isoformat() + "Z",
+                "start_at_ph": format_ts_ph(cursor.replace(microsecond=0).isoformat() + "Z"),
+                "end_at_ph": format_ts_ph(segment_end.replace(microsecond=0).isoformat() + "Z"),
+                "seconds": segment_seconds,
+                "duration_text": _format_duration_short(segment_seconds) or "0m",
+                "session_id": int(session_row.get("id") or 0),
+            }
+        )
+        cursor = segment_end
+    if segments and cursor < ended_dt:
+        last = segments[-1]
+        last["end_dt"] = ended_dt
+        last["end_at_iso"] = ended_dt.replace(microsecond=0).isoformat() + "Z"
+        last["end_at_ph"] = format_ts_ph(last["end_at_iso"])
+        last["seconds"] = max(int((ended_dt - last["start_dt"]).total_seconds()), 0)
+        last["duration_text"] = _format_duration_short(last["seconds"]) or "0m"
+    return segments
+
+
+def _row_in_surveillance_segment(ts: str, segment: dict, is_last_segment: bool = False) -> bool:
+    dt = _parse_iso_z(ts)
+    if not isinstance(dt, datetime):
+        return False
+    start_dt = segment.get("start_dt")
+    end_dt = segment.get("end_dt")
+    if not isinstance(start_dt, datetime) or not isinstance(end_dt, datetime):
+        return False
+    if dt < start_dt:
+        return False
+    if is_last_segment:
+        return dt <= end_dt
+    return dt < end_dt
+
+
+def _filter_rows_for_stage_segments(rows: list[dict], segments: list[dict], ts_key: str = "timestamp") -> list[dict]:
+    if not rows or not segments:
+        return []
+    out = []
+    for row in rows:
+        ts = (row.get(ts_key) or "").strip() if isinstance(row, dict) else ""
+        if not ts:
+            continue
+        for idx, segment in enumerate(segments):
+            if _row_in_surveillance_segment(ts, segment, is_last_segment=(idx == len(segments) - 1)):
+                out.append(row)
+                break
+    return out
+
+
+def _summarize_surveillance_ping_rows(rows: list[dict]) -> dict:
+    samples = 0
+    down_samples = 0
+    loss_values = []
+    avg_values = []
+    loss_events = 0
+    last_ts = ""
+    prev_full_down = False
+    for item in rows or []:
+        samples += 1
+        ok = bool(item.get("ok"))
+        loss_val = item.get("loss")
+        avg_val = item.get("avg_ms")
+        if not ok:
+            down_samples += 1
+        try:
+            if loss_val is not None:
+                loss_values.append(float(loss_val))
+        except Exception:
+            pass
+        try:
+            if avg_val is not None:
+                avg_values.append(float(avg_val))
+        except Exception:
+            pass
+        full_down = (not ok) or (
+            loss_val is not None and isinstance(loss_val, (int, float)) and float(loss_val) >= 100.0
+        )
+        if full_down and not prev_full_down:
+            loss_events += 1
+        prev_full_down = full_down
+        last_ts = (item.get("timestamp") or "").strip() or last_ts
+    uptime_pct = (100.0 - (down_samples / samples * 100.0)) if samples else None
+    return {
+        "samples": samples,
+        "down_samples": down_samples,
+        "loss_events": loss_events,
+        "uptime_pct": uptime_pct,
+        "avg_loss": (sum(loss_values) / len(loss_values)) if loss_values else None,
+        "avg_ms": (sum(avg_values) / len(avg_values)) if avg_values else None,
+        "worst_ms": max(avg_values) if avg_values else None,
+        "last_sample_at_iso": last_ts,
+        "last_sample_at_ph": format_ts_ph(last_ts) if last_ts else "n/a",
+    }
+
+
+def _summarize_surveillance_optical_rows(rows: list[dict], device_id: str = "") -> dict:
+    rx_values = []
+    last_row = rows[-1] if rows else {}
+    for item in rows or []:
+        try:
+            value = item.get("rx")
+            if value is not None:
+                rx_values.append(float(value))
+        except Exception:
+            pass
+    last_ts = (last_row.get("timestamp") or "").strip() if isinstance(last_row, dict) else ""
+    return {
+        "device_id": (device_id or "").strip() or "n/a",
+        "samples": len(rows or []),
+        "latest_rx": last_row.get("rx") if isinstance(last_row, dict) else None,
+        "latest_tx": last_row.get("tx") if isinstance(last_row, dict) else None,
+        "worst_rx": min(rx_values) if rx_values else None,
+        "last_sample_at_iso": last_ts,
+        "last_sample_at_ph": format_ts_ph(last_ts) if last_ts else "n/a",
+    }
+
+
+def _summarize_surveillance_usage_rows(rows: list[dict]) -> dict:
+    rx_vals = []
+    tx_vals = []
+    total_vals = []
+    active_device_max = 0
+    last_ts = ""
+    for item in rows or []:
+        try:
+            rx = float(item.get("rx_bps") or 0.0)
+        except Exception:
+            rx = 0.0
+        try:
+            tx = float(item.get("tx_bps") or 0.0)
+        except Exception:
+            tx = 0.0
+        rx_vals.append(rx)
+        tx_vals.append(tx)
+        total_vals.append(max(rx, 0.0) + max(tx, 0.0))
+        last_ts = (item.get("timestamp") or "").strip() or last_ts
+        try:
+            active_device_max = max(active_device_max, int(item.get("host_count") or 0))
+        except Exception:
+            pass
+    return {
+        "samples": len(rows or []),
+        "avg_rx_bps": (sum(rx_vals) / len(rx_vals)) if rx_vals else None,
+        "avg_tx_bps": (sum(tx_vals) / len(tx_vals)) if tx_vals else None,
+        "peak_total_bps": max(total_vals) if total_vals else None,
+        "active_device_max": active_device_max,
+        "last_sample_at_iso": last_ts,
+        "last_sample_at_ph": format_ts_ph(last_ts) if last_ts else "n/a",
+    }
+
+
+def _build_surveillance_stage_events(audit_rows: list[dict], cycle_rows: list[dict]) -> tuple[dict, dict]:
+    stage_events = {"under": None, "level2": None, "observe": None}
+    final_event = None
+    for row in audit_rows or []:
+        action = (row.get("action") or "").strip().lower()
+        username = (row.get("username") or "system").strip() or "system"
+        details_text = (row.get("details") or "").strip()
+        details_map = _audit_details_map(details_text)
+        note = (
+            (details_map.get("reason") or "").strip()
+            or (details_map.get("remarks") or "").strip()
+            or details_text
+        )
+        event = {
+            "at_iso": (row.get("timestamp") or "").strip(),
+            "at_ph": format_ts_ph(row.get("timestamp")),
+            "actor": username,
+            "note": note,
+            "action": action,
+            "action_label": "",
+        }
+        if action in ("surveillance.add_manual", "surveillance.add_auto") and not stage_events["under"]:
+            event["action_label"] = "Added to Active Monitoring" if action.endswith("manual") else "Auto-added to Active Monitoring"
+            stage_events["under"] = event
+        elif action == "surveillance.move_to_manual_fix" and not stage_events["level2"]:
+            event["action_label"] = "Moved to Needs Manual Fix"
+            stage_events["level2"] = event
+        elif action in ("surveillance.mark_fixed", "surveillance.mark_fixed_bulk") and not stage_events["observe"]:
+            event["action_label"] = "Moved to Post-Fix Observation"
+            stage_events["observe"] = event
+        elif action in ("surveillance.mark_false", "surveillance.mark_fully_recovered", "surveillance.remove", "surveillance.remove_bulk"):
+            if action == "surveillance.mark_false":
+                event["action_label"] = "Marked False"
+            elif action == "surveillance.mark_fully_recovered":
+                event["action_label"] = "Marked Fully Recovered"
+            else:
+                event["action_label"] = "Removed from Surveillance"
+            final_event = event
+    if not stage_events["observe"]:
+        fixed_row = next((item for item in cycle_rows if (item.get("end_reason") or "").strip().lower() == "fixed"), None)
+        if isinstance(fixed_row, dict):
+            ended_iso = (fixed_row.get("ended_at") or "").strip()
+            stage_events["observe"] = {
+                "at_iso": ended_iso,
+                "at_ph": format_ts_ph(ended_iso),
+                "actor": "",
+                "note": _clean_surveillance_session_note(fixed_row.get("end_note") or ""),
+                "action": "surveillance.mark_fixed",
+                "action_label": "Moved to Post-Fix Observation",
+            }
+    return stage_events, final_event
+
+
 @app.get("/surveillance/history_detail", response_class=JSONResponse)
 async def surveillance_history_detail(id: int):
     row = get_surveillance_session_by_id(id)
@@ -17228,33 +17010,36 @@ async def surveillance_history_detail(id: int):
         return JSONResponse({"ok": False, "error": "Session not found."}, status_code=404)
 
     pppoe = (row.get("pppoe") or "").strip()
-    started_iso = (row.get("started_at") or "").strip()
-    ended_iso = (row.get("ended_at") or "").strip()
-    started_dt = _parse_iso_z(started_iso)
-    ended_dt = _parse_iso_z(ended_iso) if ended_iso else datetime.utcnow().replace(microsecond=0)
-    if isinstance(started_dt, datetime) and isinstance(ended_dt, datetime) and ended_dt < started_dt:
+    observed_count = int(row.get("observed_count") or 0)
+    cycle_rows = list_surveillance_cycle_sessions(pppoe, observed_count) if pppoe and observed_count > 0 else []
+    if not cycle_rows:
+        cycle_rows = [row]
+    elif not any(int(item.get("id") or 0) == int(row.get("id") or 0) for item in cycle_rows):
+        cycle_rows.append(row)
+    cycle_rows = sorted(
+        cycle_rows,
+        key=lambda item: (
+            (_parse_iso_z(item.get("started_at")) or _parse_iso_z(item.get("ended_at")) or datetime.min.replace(tzinfo=timezone.utc)),
+            int(item.get("id") or 0),
+        ),
+    )
+
+    segment_rows = []
+    for cycle_row in cycle_rows:
+        segment_rows.extend(_surveillance_session_stage_segments(cycle_row))
+    segment_rows = sorted(segment_rows, key=lambda item: item.get("start_dt") or datetime.min.replace(tzinfo=timezone.utc))
+
+    started_dt = segment_rows[0]["start_dt"] if segment_rows else _parse_iso_z((row.get("started_at") or "").strip())
+    ended_dt = segment_rows[-1]["end_dt"] if segment_rows else (_parse_iso_z((row.get("ended_at") or "").strip()) if (row.get("ended_at") or "").strip() else datetime.utcnow().replace(microsecond=0))
+    if not isinstance(started_dt, datetime):
+        started_dt = datetime.utcnow().replace(microsecond=0)
+    if not isinstance(ended_dt, datetime):
+        ended_dt = started_dt
+    if ended_dt < started_dt:
         ended_dt = started_dt
 
-    since_iso = started_iso
-    until_iso = ended_iso
-    if isinstance(started_dt, datetime):
-        since_iso = started_dt.replace(microsecond=0).isoformat() + "Z"
-    if isinstance(ended_dt, datetime):
-        until_iso = ended_dt.replace(microsecond=0).isoformat() + "Z"
-    if not since_iso:
-        since_iso = until_iso or utc_now_iso()
-    if not until_iso:
-        until_iso = since_iso
-
-    def _in_window(ts):
-        dt = _parse_iso_z(ts)
-        if not isinstance(dt, datetime):
-            return False
-        if isinstance(started_dt, datetime) and dt < started_dt:
-            return False
-        if isinstance(ended_dt, datetime) and dt > ended_dt:
-            return False
-        return True
+    since_iso = started_dt.replace(microsecond=0).isoformat() + "Z"
+    until_iso = ended_dt.replace(microsecond=0).isoformat() + "Z"
 
     action = (row.get("end_reason") or "").strip().lower()
     action_label_map = {
@@ -17265,120 +17050,87 @@ async def surveillance_history_detail(id: int):
         "removed": "Removed",
     }
 
-    try:
-        under_seconds = max(int(row.get("under_seconds") or 0), 0)
-    except Exception:
-        under_seconds = 0
-    try:
-        level2_seconds = max(int(row.get("level2_seconds") or 0), 0)
-    except Exception:
-        level2_seconds = 0
-    try:
-        observe_seconds = max(int(row.get("observe_seconds") or 0), 0)
-    except Exception:
-        observe_seconds = 0
-
-    total_seconds = under_seconds + level2_seconds + observe_seconds
-    if total_seconds <= 0 and isinstance(started_dt, datetime) and isinstance(ended_dt, datetime):
-        total_seconds = max(int((ended_dt - started_dt).total_seconds()), 0)
-
     account_ids = _accounts_ping_account_ids_for_pppoe(pppoe)
     ping_series = _accounts_ping_series_rows_for_account_ids(account_ids, since_iso, until_iso)
-    ping_samples = 0
-    ping_down_samples = 0
-    ping_loss_values = []
-    ping_avg_values = []
-    ping_loss_events = 0
-    ping_last_ts = ""
-    ping_recent = []
-    prev_full_down = False
-    for item in ping_series:
-        ts = (item.get("timestamp") or "").strip()
-        if not _in_window(ts):
-            continue
-        ping_samples += 1
-        ok = bool(item.get("ok"))
-        loss_val = item.get("loss")
-        avg_val = item.get("avg_ms")
-        if not ok:
-            ping_down_samples += 1
-        try:
-            if loss_val is not None:
-                ping_loss_values.append(float(loss_val))
-        except Exception:
-            pass
-        try:
-            if avg_val is not None:
-                ping_avg_values.append(float(avg_val))
-        except Exception:
-            pass
-        full_down = (not ok) or (
-            loss_val is not None and isinstance(loss_val, (int, float)) and float(loss_val) >= 100.0
-        )
-        if full_down and not prev_full_down:
-            ping_loss_events += 1
-        prev_full_down = full_down
-        ping_last_ts = ts or ping_last_ts
-        ping_recent.append(
-            {
-                "timestamp_iso": ts,
-                "timestamp_ph": format_ts_ph(ts),
-                "ok": ok,
-                "loss": loss_val,
-                "avg_ms": avg_val,
-                "ip": (item.get("ip") or "").strip(),
-                "mode": (item.get("mode") or "").strip(),
-            }
-        )
-    ping_recent = ping_recent[-20:][::-1]
-    ping_uptime_pct = (100.0 - (ping_down_samples / ping_samples * 100.0)) if ping_samples else None
 
     optical_latest_map = get_latest_optical_by_pppoe([pppoe]) if pppoe else {}
     optical_latest = optical_latest_map.get(pppoe) if isinstance(optical_latest_map, dict) else {}
     optical_device_id = (optical_latest.get("device_id") or "").strip() if isinstance(optical_latest, dict) else ""
     optical_rows = get_optical_results_for_device_since(optical_device_id, since_iso) if optical_device_id else []
-    optical_filtered = []
-    for item in optical_rows:
-        ts = (item.get("timestamp") or "").strip()
-        if not _in_window(ts):
-            continue
-        optical_filtered.append(item)
-    optical_sample_total = len(optical_filtered)
-    optical_latest_row = optical_filtered[-1] if optical_filtered else {}
-    optical_rx_values = []
-    for item in optical_filtered:
-        try:
-            val = item.get("rx")
-            if val is not None:
-                optical_rx_values.append(float(val))
-        except Exception:
-            pass
 
     usage_rows = get_pppoe_usage_series_since("", pppoe, since_iso) if pppoe else []
-    usage_filtered = []
-    for item in usage_rows:
-        ts = (item.get("timestamp") or "").strip()
-        if not _in_window(ts):
+    audit_rows = list_surveillance_audit_logs_for_pppoe(pppoe, since_iso=since_iso, until_iso=until_iso, limit=300) if pppoe else []
+    stage_events, final_event = _build_surveillance_stage_events(audit_rows, cycle_rows)
+
+    stage_summaries = []
+    stage_totals = {"under": 0, "level2": 0, "observe": 0}
+    for stage_key in ("under", "level2", "observe"):
+        stage_segments = [item for item in segment_rows if (item.get("stage") or "") == stage_key]
+        total_stage_seconds = sum(max(int(item.get("seconds") or 0), 0) for item in stage_segments)
+        stage_totals[stage_key] = total_stage_seconds
+        entered_event = stage_events.get(stage_key) or {}
+        ping_stage_rows = _filter_rows_for_stage_segments(ping_series, stage_segments)
+        optical_stage_rows = _filter_rows_for_stage_segments(optical_rows, stage_segments)
+        usage_stage_rows = _filter_rows_for_stage_segments(usage_rows, stage_segments)
+        stage_summaries.append(
+            {
+                "stage": stage_key,
+                "label": _surveillance_history_stage_label(stage_key),
+                "badge": _surveillance_history_stage_badge(stage_key),
+                "present": total_stage_seconds > 0,
+                "seconds": total_stage_seconds,
+                "duration_text": _format_duration_short(total_stage_seconds) or "0m",
+                "started_at_iso": stage_segments[0]["start_at_iso"] if stage_segments else "",
+                "started_at_ph": stage_segments[0]["start_at_ph"] if stage_segments else "n/a",
+                "ended_at_iso": stage_segments[-1]["end_at_iso"] if stage_segments else "",
+                "ended_at_ph": stage_segments[-1]["end_at_ph"] if stage_segments else "n/a",
+                "entered_by": (entered_event.get("actor") or "").strip() or "n/a",
+                "entered_at_iso": (entered_event.get("at_iso") or "").strip(),
+                "entered_at_ph": (entered_event.get("at_ph") or "").strip() or "n/a",
+                "entered_action": (entered_event.get("action") or "").strip(),
+                "entered_action_label": (entered_event.get("action_label") or "").strip() or "Entered stage",
+                "note": (entered_event.get("note") or "").strip(),
+                "accounts_ping": _summarize_surveillance_ping_rows(ping_stage_rows),
+                "optical": _summarize_surveillance_optical_rows(optical_stage_rows, device_id=optical_device_id),
+                "usage": _summarize_surveillance_usage_rows(usage_stage_rows),
+            }
+        )
+
+    total_seconds = sum(stage_totals.values())
+    if total_seconds <= 0:
+        total_seconds = max(int((ended_dt - started_dt).total_seconds()), 0)
+
+    movement_rows = []
+    for item in stage_summaries:
+        if not item.get("present") and not item.get("entered_at_iso"):
             continue
-        usage_filtered.append(item)
-    usage_sample_total = len(usage_filtered)
-    usage_rx_vals = []
-    usage_tx_vals = []
-    usage_total_vals = []
-    usage_last_ts = ""
-    usage_active_device_max = 0
-    for item in usage_filtered:
-        rx = float(item.get("rx_bps") or 0.0)
-        tx = float(item.get("tx_bps") or 0.0)
-        total = max(rx, 0.0) + max(tx, 0.0)
-        usage_rx_vals.append(rx)
-        usage_tx_vals.append(tx)
-        usage_total_vals.append(total)
-        usage_last_ts = (item.get("timestamp") or "").strip() or usage_last_ts
-        try:
-            usage_active_device_max = max(usage_active_device_max, int(item.get("host_count") or 0))
-        except Exception:
-            pass
+        movement_rows.append(
+            {
+                "stage": item.get("stage") or "",
+                "stage_label": item.get("label") or "Stage",
+                "badge": item.get("badge") or "secondary",
+                "window": f"{item.get('started_at_ph') or 'n/a'} → {item.get('ended_at_ph') or 'n/a'}" if item.get("present") else "Not entered in this cycle",
+                "duration_text": item.get("duration_text") or "0m",
+                "updated_by": item.get("entered_by") or "n/a",
+                "updated_at_ph": item.get("entered_at_ph") or "n/a",
+                "action_label": item.get("entered_action_label") or "Entered stage",
+                "note": item.get("note") or "—",
+            }
+        )
+    if final_event:
+        movement_rows.append(
+            {
+                "stage": "final",
+                "stage_label": "Final Action",
+                "badge": "secondary",
+                "window": f"{format_ts_ph((row.get('started_at') or '').strip()) or 'n/a'} → {format_ts_ph((row.get('ended_at') or '').strip()) or 'n/a'}",
+                "duration_text": _format_duration_short(total_seconds) or "0m",
+                "updated_by": (final_event.get("actor") or "").strip() or "n/a",
+                "updated_at_ph": (final_event.get("at_ph") or "").strip() or "n/a",
+                "action_label": (final_event.get("action_label") or "").strip() or action_label_map.get(action, "Closed"),
+                "note": (final_event.get("note") or "").strip() or _clean_surveillance_session_note(row.get("end_note") or "") or "—",
+            }
+        )
 
     return JSONResponse(
         {
@@ -17386,58 +17138,31 @@ async def surveillance_history_detail(id: int):
             "session": {
                 "id": int(row.get("id") or 0),
                 "pppoe": pppoe,
-                "source": (row.get("source") or "").strip(),
+                "source": next((str((item.get("source") or "")).strip() for item in cycle_rows if (item.get("source") or "").strip()), (row.get("source") or "").strip()),
                 "last_ip": (row.get("last_ip") or "").strip(),
                 "last_state": (row.get("last_state") or "").strip(),
-                "observed_count": int(row.get("observed_count") or 0),
-                "started_at_iso": started_iso,
-                "ended_at_iso": ended_iso,
-                "started_at_ph": format_ts_ph(started_iso),
-                "ended_at_ph": format_ts_ph(ended_iso),
+                "observed_count": observed_count,
+                "started_at_iso": since_iso,
+                "ended_at_iso": until_iso,
+                "started_at_ph": format_ts_ph(since_iso),
+                "ended_at_ph": format_ts_ph(until_iso),
                 "updated_at_iso": (row.get("updated_at") or "").strip(),
                 "updated_at_ph": format_ts_ph(row.get("updated_at")),
                 "end_reason": action,
                 "end_reason_label": action_label_map.get(action, "Removed"),
-                "end_note": (row.get("end_note") or "").strip(),
-                "under_seconds": under_seconds,
-                "level2_seconds": level2_seconds,
-                "observe_seconds": observe_seconds,
-                "under_for_text": _format_duration_short(under_seconds) or "0m",
-                "level2_for_text": _format_duration_short(level2_seconds) or "0m",
-                "observe_for_text": _format_duration_short(observe_seconds) or "0m",
+                "end_note": _clean_surveillance_session_note(row.get("end_note") or ""),
+                "under_seconds": stage_totals["under"],
+                "level2_seconds": stage_totals["level2"],
+                "observe_seconds": stage_totals["observe"],
+                "under_for_text": _format_duration_short(stage_totals["under"]) or "0m",
+                "level2_for_text": _format_duration_short(stage_totals["level2"]) or "0m",
+                "observe_for_text": _format_duration_short(stage_totals["observe"]) or "0m",
                 "total_seconds": total_seconds,
                 "total_for_text": _format_duration_short(total_seconds) or "0m",
+                "cycle_session_count": len(cycle_rows),
             },
-            "accounts_ping": {
-                "samples": ping_samples,
-                "down_samples": ping_down_samples,
-                "loss_events": ping_loss_events,
-                "uptime_pct": ping_uptime_pct,
-                "avg_loss": (sum(ping_loss_values) / len(ping_loss_values)) if ping_loss_values else None,
-                "avg_ms": (sum(ping_avg_values) / len(ping_avg_values)) if ping_avg_values else None,
-                "worst_ms": max(ping_avg_values) if ping_avg_values else None,
-                "last_sample_at_iso": ping_last_ts,
-                "last_sample_at_ph": format_ts_ph(ping_last_ts),
-                "recent": ping_recent,
-            },
-            "optical": {
-                "device_id": optical_device_id,
-                "samples": optical_sample_total,
-                "latest_rx": optical_latest_row.get("rx") if optical_latest_row else None,
-                "latest_tx": optical_latest_row.get("tx") if optical_latest_row else None,
-                "worst_rx": min(optical_rx_values) if optical_rx_values else None,
-                "last_sample_at_iso": (optical_latest_row.get("timestamp") or "").strip() if optical_latest_row else "",
-                "last_sample_at_ph": format_ts_ph(optical_latest_row.get("timestamp")) if optical_latest_row else "n/a",
-            },
-            "usage": {
-                "samples": usage_sample_total,
-                "avg_rx_bps": (sum(usage_rx_vals) / len(usage_rx_vals)) if usage_rx_vals else None,
-                "avg_tx_bps": (sum(usage_tx_vals) / len(usage_tx_vals)) if usage_tx_vals else None,
-                "peak_total_bps": max(usage_total_vals) if usage_total_vals else None,
-                "active_device_max": usage_active_device_max,
-                "last_sample_at_iso": usage_last_ts,
-                "last_sample_at_ph": format_ts_ph(usage_last_ts),
-            },
+            "stage_summaries": stage_summaries,
+            "movement": movement_rows,
         }
     )
 
@@ -18313,7 +18038,7 @@ _SYSTEM_DANGER_ACTIONS = {
         "label": "Usage",
         "button_label": "Format Usage",
         "permission": "usage.settings.danger.run",
-        "summary": "Clears stored usage history and trend samples. Settings are preserved.",
+        "summary": "Clears stored usage history, trend samples, and modem auto reboot history/runtime state. Settings are preserved.",
         "path": "/settings/usage?tab=settings",
     },
     "offline": {
@@ -18524,6 +18249,12 @@ def _system_danger_format_accounts_ping():
 
 def _system_danger_format_usage():
     clear_pppoe_usage_samples()
+    clear_usage_modem_reboot_history()
+    state = get_state("usage_state", {})
+    if not isinstance(state, dict):
+        state = {}
+    state.pop("modem_reboot", None)
+    save_state("usage_state", state)
 
 
 def _system_danger_format_offline():
@@ -18886,7 +18617,6 @@ def render_system_settings_response(
                 save_settings("wan_ping", wan_settings_data)
         except Exception:
             pass
-    interfaces = get_interface_options()
     telegram_state = get_state("telegram_state", {})
     auth_permissions = []
     auth_permission_groups = []
@@ -18984,7 +18714,6 @@ def render_system_settings_response(
                 "wan_rows": wan_rows,
                 "wan_rows_loaded": wan_rows_loaded,
                 "wan_autodetect_warnings": wan_autodetect_warnings,
-                "interfaces": interfaces,
                 "telegram_state": telegram_state,
                 "system_settings": system_settings,
                 "auth_settings": auth_settings,
@@ -19081,28 +18810,12 @@ async def system_mikrotik_save(request: Request):
                 "port": parse_int(form, f"{core_id}_port", 8728),
                 "username": form.get(f"{core_id}_username", ""),
                 "password": form.get(f"{core_id}_password", ""),
-                "interface": form.get(f"{core_id}_interface", ""),
-                "prefix": parse_int(form, f"{core_id}_prefix", 24),
-                "gateway": form.get(f"{core_id}_gateway", ""),
             }
         )
     pulsewatch["mikrotik"] = {"cores": cores}
     settings["pulsewatch"] = pulsewatch
     save_settings("isp_ping", settings)
-    message = "MikroTik settings saved."
-    netplan_msg = None
-    apply_msg = None
-    try:
-        netplan_path, netplan_msg, interface_map, route_specs = build_pulsewatch_netplan(settings)
-        if netplan_path:
-            _, apply_msg = apply_netplan(interface_map, route_specs)
-    except Exception as exc:
-        apply_msg = f"Netplan update failed: {exc}"
-    if netplan_msg and "no router source IPs configured" not in netplan_msg:
-        message = f"{message} {netplan_msg}"
-    if apply_msg and not apply_msg.startswith("Netplan applied"):
-        message = f"{message} {apply_msg}"
-    return render_system_settings_response(request, message, active_tab="routers", routers_tab="cores")
+    return render_system_settings_response(request, "MikroTik settings saved.", active_tab="routers", routers_tab="cores")
 
 
 @app.post("/settings/system/telegram", response_class=HTMLResponse)
@@ -19545,7 +19258,6 @@ async def system_auth_user_reset_password(request: Request, user_id: int):
 @app.post("/settings/system/mikrotik/add", response_class=HTMLResponse)
 async def system_mikrotik_add(request: Request):
     settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
-    interfaces = get_interface_options()
     pulsewatch = settings.get("pulsewatch", {})
     mikrotik = pulsewatch.get("mikrotik", {})
     cores = mikrotik.get("cores", [])
@@ -19562,35 +19274,18 @@ async def system_mikrotik_add(request: Request):
             "port": 8728,
             "username": "",
             "password": "",
-            "interface": "",
-            "prefix": 24,
-            "gateway": "",
         }
     )
     mikrotik["cores"] = cores
     pulsewatch["mikrotik"] = mikrotik
     settings["pulsewatch"] = pulsewatch
     save_settings("isp_ping", settings)
-    message = "MikroTik core added."
-    netplan_msg = None
-    apply_msg = None
-    try:
-        netplan_path, netplan_msg, interface_map, route_specs = build_pulsewatch_netplan(settings)
-        if netplan_path:
-            _, apply_msg = apply_netplan(interface_map, route_specs)
-    except Exception as exc:
-        apply_msg = f"Netplan update failed: {exc}"
-    if netplan_msg and "no router source IPs configured" not in netplan_msg:
-        message = f"{message} {netplan_msg}"
-    if apply_msg and not apply_msg.startswith("Netplan applied"):
-        message = f"{message} {apply_msg}"
-    return render_system_settings_response(request, message, active_tab="routers", routers_tab="cores")
+    return render_system_settings_response(request, "MikroTik core added.", active_tab="routers", routers_tab="cores")
 
 
 @app.post("/settings/system/mikrotik/remove/{core_id}", response_class=HTMLResponse)
 async def system_mikrotik_remove(request: Request, core_id: str):
     settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
-    interfaces = get_interface_options()
     pulsewatch = settings.get("pulsewatch", {})
     mikrotik = pulsewatch.get("mikrotik", {})
     mikrotik["cores"] = [core for core in mikrotik.get("cores", []) if core.get("id") != core_id]
@@ -19604,20 +19299,7 @@ async def system_mikrotik_remove(request: Request, core_id: str):
     pulsewatch["mikrotik"] = mikrotik
     settings["pulsewatch"] = pulsewatch
     save_settings("isp_ping", settings)
-    message = f"{core_id} removed."
-    netplan_msg = None
-    apply_msg = None
-    try:
-        netplan_path, netplan_msg, interface_map, route_specs = build_pulsewatch_netplan(settings)
-        if netplan_path:
-            _, apply_msg = apply_netplan(interface_map, route_specs)
-    except Exception as exc:
-        apply_msg = f"Netplan update failed: {exc}"
-    if netplan_msg and "no router source IPs configured" not in netplan_msg:
-        message = f"{message} {netplan_msg}"
-    if apply_msg and not apply_msg.startswith("Netplan applied"):
-        message = f"{message} {apply_msg}"
-    return render_system_settings_response(request, message, active_tab="routers", routers_tab="cores")
+    return render_system_settings_response(request, f"{core_id} removed.", active_tab="routers", routers_tab="cores")
 
 
 @app.post("/settings/system/routers/pppoe", response_class=HTMLResponse)

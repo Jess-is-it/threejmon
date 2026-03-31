@@ -16,10 +16,13 @@ from .db import (
     delete_optical_results_older_than,
     delete_offline_history_older_than,
     delete_pppoe_usage_samples_older_than,
+    delete_usage_modem_reboot_history_older_than,
     get_pppoe_usage_window_stats_since,
     insert_pppoe_usage_sample,
+    insert_usage_modem_reboot_history,
     insert_offline_history_event,
     update_job_status,
+    update_usage_modem_reboot_history,
     utc_now_iso,
     get_accounts_ping_checker_stats_map,
     get_accounts_ping_down_events_map,
@@ -60,6 +63,12 @@ from .settings_defaults import (
 )
 from .settings_store import get_settings, get_state, save_settings, save_state
 from .telegram_commands import handle_telegram_command
+from .usage_logic import (
+    build_usage_summary_data,
+    normalize_usage_modem_reboot_settings,
+    normalize_usage_modem_reboot_state,
+    usage_issue_key,
+)
 from .mikrotik import RouterOSClient
 from .feature_usage import add_feature_cpu, register_feature
 
@@ -84,6 +93,375 @@ def _safe_insert_system_audit(action, resource="", details=""):
         )
     except Exception:
         pass
+
+
+def _parse_iso_utc(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = raw[:-1]
+    try:
+        return datetime.fromisoformat(raw)
+    except Exception:
+        return None
+
+
+def _iso_utc(dt):
+    if not isinstance(dt, datetime):
+        return ""
+    return dt.replace(microsecond=0).isoformat() + "Z"
+
+
+def _usage_live_issue_still_present(cfg, row, now_dt=None):
+    cfg = cfg if isinstance(cfg, dict) else {}
+    row = row if isinstance(row, dict) else {}
+    now_dt = now_dt or datetime.utcnow()
+    detect = cfg.get("detection") if isinstance(cfg.get("detection"), dict) else {}
+
+    peak_enabled = bool(detect.get("peak_enabled", True))
+    peak_window_min = max(int(detect.get("peak_no_usage_minutes", 120) or 120), 5)
+    peak_min_devices = max(int(detect.get("min_connected_devices", 2) or 2), 1)
+    peak_from = detect.get("total_kbps_from")
+    peak_to = detect.get("total_kbps_to")
+    if peak_from is None:
+        peak_from = 0
+    if peak_to is None:
+        peak_to = detect.get("min_total_kbps", 8)
+    peak_from = max(float(peak_from or 0.0), 0.0) * 1000.0
+    peak_to = max(float(peak_to or 0.0), 0.0) * 1000.0
+    if peak_to < peak_from:
+        peak_from, peak_to = peak_to, peak_from
+
+    anytime_enabled = bool(detect.get("anytime_enabled", False))
+    anytime_window_min = max(int(detect.get("anytime_no_usage_minutes", 120) or 120), 5)
+    anytime_min_devices = max(int(detect.get("anytime_min_connected_devices", 2) or 2), 1)
+    anytime_from = max(float(detect.get("anytime_total_kbps_from", 0) or 0.0), 0.0) * 1000.0
+    anytime_to = max(float(detect.get("anytime_total_kbps_to", 8) or 8.0), 0.0) * 1000.0
+    if anytime_to < anytime_from:
+        anytime_from, anytime_to = anytime_to, anytime_from
+
+    total_bps = max(float(row.get("dl_bps") or 0.0), 0.0) + max(float(row.get("ul_bps") or 0.0), 0.0)
+    host_count = max(int(row.get("host_count") or 0), 0)
+    sample_interval = max(int(((cfg.get("storage") or {}).get("sample_interval_seconds", 60) or 60)), 10)
+    router_id = str(row.get("router_id") or "").strip()
+    pppoe = str(row.get("pppoe") or "").strip()
+    stat_cache = {}
+
+    def _window_issue(window_min, from_bps, to_bps, required_devices):
+        if required_devices <= 0 or host_count < required_devices or not pppoe:
+            return False
+        cache_key = int(window_min)
+        stat_map = stat_cache.get(cache_key)
+        if stat_map is None:
+            since_iso = (now_dt - timedelta(minutes=max(cache_key, 1))).replace(microsecond=0).isoformat() + "Z"
+            stat_map = get_pppoe_usage_window_stats_since(since_iso)
+            stat_cache[cache_key] = stat_map
+        stat = stat_map.get(usage_issue_key(router_id, pppoe))
+        if not stat:
+            return False
+        expected = int((max(window_min, 1) * 60) / sample_interval)
+        min_samples = max(3, int(expected * 0.25), 10)
+        if int(stat.get("samples") or 0) < min_samples:
+            return False
+        max_total_bps = float(stat.get("max_total_bps") or 0.0)
+        return bool(from_bps <= max_total_bps <= to_bps)
+
+    try:
+        usage_tz = ZoneInfo("Asia/Manila") if ZoneInfo else None
+    except Exception:
+        usage_tz = None
+    now_ph = now_dt.astimezone(usage_tz) if usage_tz else now_dt
+    start_ph = (detect.get("peak_start_ph") or "17:30").strip()
+    end_ph = (detect.get("peak_end_ph") or "21:00").strip()
+    peak_now = False
+    if peak_enabled:
+        try:
+            sh, sm = [int(part) for part in start_ph.split(":", 1)] if ":" in start_ph else (17, 30)
+        except Exception:
+            sh, sm = (17, 30)
+        try:
+            eh, em = [int(part) for part in end_ph.split(":", 1)] if ":" in end_ph else (21, 0)
+        except Exception:
+            eh, em = (21, 0)
+        start_t = time(hour=max(min(sh, 23), 0), minute=max(min(sm, 59), 0))
+        end_t = time(hour=max(min(eh, 23), 0), minute=max(min(em, 59), 0))
+        current_t = now_ph.time()
+        if start_t <= end_t:
+            peak_now = start_t <= current_t <= end_t
+        else:
+            peak_now = current_t >= start_t or current_t <= end_t
+
+    peak_issue = bool(peak_enabled and peak_now and _window_issue(peak_window_min, peak_from, peak_to, peak_min_devices))
+    anytime_live_low = bool(anytime_enabled and _window_issue(anytime_window_min, anytime_from, anytime_to, anytime_min_devices))
+    return bool(peak_issue or anytime_live_low)
+
+
+def _usage_modem_reboot_bad_detail(result):
+    if not isinstance(result, dict):
+        return ""
+    detail = str(result.get("detail") or result.get("error") or "").strip()
+    http_status = int(result.get("http_status", 0) or 0)
+    if http_status > 0 and detail:
+        return f"HTTP {http_status}: {detail}"
+    if http_status > 0:
+        return f"HTTP {http_status}"
+    return detail
+
+
+def _process_usage_modem_reboots(cfg, state, summary, now, now_iso):
+    reboot_cfg = normalize_usage_modem_reboot_settings(cfg)
+    reboot_state = normalize_usage_modem_reboot_state((state or {}).get("modem_reboot"))
+    current = reboot_state.get("current") if isinstance(reboot_state.get("current"), dict) else {}
+    last_success_at = (
+        reboot_state.get("last_success_at") if isinstance(reboot_state.get("last_success_at"), dict) else {}
+    )
+    suppression = (
+        reboot_state.get("issue_suppression") if isinstance(reboot_state.get("issue_suppression"), dict) else {}
+    )
+
+    for key in list(suppression.keys()):
+        until_dt = _parse_iso_utc((suppression.get(key) or {}).get("until"))
+        if not until_dt or until_dt <= now:
+            suppression.pop(key, None)
+
+    success_keep_cutoff = now - timedelta(days=max(int(reboot_cfg.get("history_retention_days", 180) or 180), 30))
+    for key in list(last_success_at.keys()):
+        ts_dt = _parse_iso_utc(last_success_at.get(key))
+        if not ts_dt or ts_dt < success_keep_cutoff:
+            last_success_at.pop(key, None)
+
+    all_rows = []
+    all_rows.extend(summary.get("issues") or [])
+    all_rows.extend(summary.get("stable") or [])
+    rows_by_key = {}
+    issue_keys = set()
+    for row in all_rows:
+        key = usage_issue_key(row.get("router_id"), row.get("pppoe"))
+        if not key:
+            continue
+        rows_by_key[key] = row
+    for row in summary.get("issues") or []:
+        key = usage_issue_key(row.get("router_id"), row.get("pppoe"))
+        if key:
+            issue_keys.add(key)
+
+    def _save_cycle(key, row, cycle=None):
+        cycle = cycle if isinstance(cycle, dict) else {}
+        if isinstance(row, dict):
+            cycle["pppoe"] = str(row.get("pppoe") or cycle.get("pppoe") or "").strip()
+            cycle["router_id"] = str(row.get("router_id") or cycle.get("router_id") or "").strip()
+            cycle["router_name"] = str(row.get("router_name") or cycle.get("router_name") or "").strip()
+            cycle["address"] = str(row.get("address") or cycle.get("address") or "").strip()
+            cycle["device_id"] = str(row.get("device_id") or cycle.get("device_id") or "").strip()
+        current[key] = cycle
+        return cycle
+
+    def _schedule_retry(cycle, detail):
+        retry_limit = max(int(reboot_cfg.get("retry_count", 5) or 5), 0)
+        delay_minutes = max(int(reboot_cfg.get("retry_delay_minutes", 5) or 5), 1)
+        attempt_count = max(int(cycle.get("attempt_count", 0) or 0), 0)
+        cycle["last_error"] = str(detail or "").strip()
+        if attempt_count < retry_limit:
+            cycle["next_retry_at"] = _iso_utc(now + timedelta(minutes=delay_minutes))
+        else:
+            cycle["next_retry_at"] = ""
+
+    def _attempt_reboot(key, row, cycle):
+        retry_limit = max(int(reboot_cfg.get("retry_count", 5) or 5), 0)
+        buffer_hours = max(int(reboot_cfg.get("buffer_hours", 32) or 32), 1)
+        verify_after_minutes = max(int(reboot_cfg.get("verify_after_minutes", 5) or 5), 1)
+
+        cycle["attempt_count"] = max(int(cycle.get("attempt_count", 0) or 0), 0) + 1
+        cycle["last_attempt_at"] = now_iso
+        cycle["verify_status"] = ""
+        cycle["verify_due_at"] = ""
+        cycle["verify_checked_at"] = ""
+        cycle["task_id"] = ""
+        cycle["http_status"] = 0
+
+        device_id = str(row.get("device_id") or "").strip()
+        if not device_id:
+            detail = "No TR-069 / GenieACS device ID is mapped to this account."
+            history_id = insert_usage_modem_reboot_history(
+                attempted_at=now_iso,
+                pppoe=row.get("pppoe") or "",
+                router_id=row.get("router_id") or "",
+                router_name=row.get("router_name") or "",
+                address=row.get("address") or "",
+                device_id="",
+                issue_opened_at=cycle.get("opened_at") or now_iso,
+                retry_index=cycle.get("attempt_count") or 0,
+                retry_limit=retry_limit,
+                status="no_tr069",
+                error_message=detail,
+                detail=detail,
+            )
+            cycle["latest_history_id"] = history_id
+            cycle["last_status"] = "no_tr069"
+            _schedule_retry(cycle, detail)
+            return
+
+        result = usage_notifier.send_genieacs_reboot_task(cfg, device_id, connection_request=True)
+        detail = _usage_modem_reboot_bad_detail(result)
+        http_status = int(result.get("http_status", 0) or 0)
+        if result.get("ok"):
+            buffer_until = _iso_utc(now + timedelta(hours=buffer_hours))
+            history_id = insert_usage_modem_reboot_history(
+                attempted_at=now_iso,
+                pppoe=row.get("pppoe") or "",
+                router_id=row.get("router_id") or "",
+                router_name=row.get("router_name") or "",
+                address=row.get("address") or "",
+                device_id=device_id,
+                issue_opened_at=cycle.get("opened_at") or now_iso,
+                retry_index=cycle.get("attempt_count") or 0,
+                retry_limit=retry_limit,
+                status="success",
+                task_id=result.get("task_id") or "",
+                http_status=http_status,
+                buffer_until=buffer_until,
+                detail=detail or "GenieACS reboot task accepted.",
+            )
+            cycle["latest_history_id"] = history_id
+            cycle["last_status"] = "success"
+            cycle["last_error"] = ""
+            cycle["next_retry_at"] = ""
+            cycle["success_at"] = now_iso
+            cycle["buffer_until"] = buffer_until
+            cycle["verify_due_at"] = _iso_utc(now + timedelta(minutes=verify_after_minutes))
+            cycle["verify_status"] = "pending"
+            cycle["task_id"] = str(result.get("task_id") or "").strip()
+            cycle["http_status"] = http_status
+            last_success_at[key] = now_iso
+            return
+
+        history_id = insert_usage_modem_reboot_history(
+            attempted_at=now_iso,
+            pppoe=row.get("pppoe") or "",
+            router_id=row.get("router_id") or "",
+            router_name=row.get("router_name") or "",
+            address=row.get("address") or "",
+            device_id=device_id,
+            issue_opened_at=cycle.get("opened_at") or now_iso,
+            retry_index=cycle.get("attempt_count") or 0,
+            retry_limit=retry_limit,
+            status="failed",
+            task_id=result.get("task_id") or "",
+            http_status=http_status,
+            error_message=detail or "GenieACS reboot task failed.",
+            detail=detail or "GenieACS reboot task failed.",
+        )
+        cycle["latest_history_id"] = history_id
+        cycle["last_status"] = "failed"
+        cycle["task_id"] = str(result.get("task_id") or "").strip()
+        cycle["http_status"] = http_status
+        _schedule_retry(cycle, detail or "GenieACS reboot task failed.")
+
+    def _finalize_verification(key, cycle, row):
+        history_id = int(cycle.get("latest_history_id", 0) or 0)
+        if row and not _usage_live_issue_still_present(cfg, row, now_dt=now):
+            suppress_minutes = max(
+                int(((cfg.get("detection") or {}).get("anytime_no_usage_minutes", 120) or 120))
+                if bool(((cfg.get("detection") or {}).get("anytime_enabled", False)))
+                else 15,
+                5,
+            )
+            suppression[key] = {
+                "until": _iso_utc(now + timedelta(minutes=suppress_minutes)),
+                "verified_at": now_iso,
+                "reason": "reboot_verified",
+            }
+            cycle["verify_status"] = "passed"
+            cycle["verify_checked_at"] = now_iso
+            cycle["last_status"] = "verify_passed"
+            cycle["last_error"] = ""
+            if history_id > 0:
+                update_usage_modem_reboot_history(
+                    history_id,
+                    verified_at=now_iso,
+                    verification_status="passed",
+                    detail="Traffic returned after modem reboot verification.",
+                )
+            return
+
+        detail = "Usage issue was still present after the reboot verification window."
+        if not row:
+            detail = "No active PPPoE session was found when the reboot verification window elapsed."
+        cycle["verify_status"] = "failed"
+        cycle["verify_checked_at"] = now_iso
+        cycle["last_status"] = "verify_failed"
+        cycle["last_error"] = detail
+        if history_id > 0:
+            update_usage_modem_reboot_history(
+                history_id,
+                verified_at=now_iso,
+                verification_status="failed",
+                detail=detail,
+                error_message=detail,
+            )
+
+    for key in list(current.keys()):
+        cycle = current.get(key) if isinstance(current.get(key), dict) else {}
+        row = rows_by_key.get(key)
+        cycle = _save_cycle(key, row, cycle)
+        verify_due_dt = _parse_iso_utc(cycle.get("verify_due_at"))
+        verify_status = str(cycle.get("verify_status") or "").strip().lower()
+        if cycle.get("success_at") and verify_due_dt and verify_due_dt <= now and verify_status in ("", "pending"):
+            _finalize_verification(key, cycle, row)
+        if key not in issue_keys:
+            pending_success_verify = bool(cycle.get("success_at")) and str(cycle.get("verify_status") or "").strip().lower() in ("", "pending")
+            if pending_success_verify:
+                current[key] = cycle
+                continue
+            current.pop(key, None)
+
+    for row in summary.get("issues") or []:
+        key = usage_issue_key(row.get("router_id"), row.get("pppoe"))
+        if not key:
+            continue
+        cycle = current.get(key) if isinstance(current.get(key), dict) else {}
+        cycle = _save_cycle(key, row, cycle)
+        if not str(cycle.get("opened_at") or "").strip():
+            cycle["opened_at"] = now_iso
+
+        verify_status = str(cycle.get("verify_status") or "").strip().lower()
+        if cycle.get("success_at"):
+            if verify_status in ("", "pending"):
+                current[key] = cycle
+                continue
+            buffer_until_dt = _parse_iso_utc(cycle.get("buffer_until"))
+            if buffer_until_dt and buffer_until_dt > now:
+                current[key] = cycle
+                continue
+            cycle["success_at"] = ""
+            cycle["buffer_until"] = ""
+            cycle["verify_status"] = ""
+            cycle["verify_due_at"] = ""
+            cycle["verify_checked_at"] = ""
+
+        last_success_dt = _parse_iso_utc(last_success_at.get(key))
+        if last_success_dt:
+            buffer_until_dt = last_success_dt + timedelta(hours=max(int(reboot_cfg.get("buffer_hours", 32) or 32), 1))
+            if buffer_until_dt > now and not cycle.get("success_at"):
+                cycle["last_status"] = "buffered"
+                cycle["buffer_until"] = _iso_utc(buffer_until_dt)
+                cycle["next_retry_at"] = ""
+                current[key] = cycle
+                continue
+
+        next_retry_dt = _parse_iso_utc(cycle.get("next_retry_at"))
+        if next_retry_dt and next_retry_dt > now:
+            current[key] = cycle
+            continue
+
+        _attempt_reboot(key, row, cycle)
+        current[key] = cycle
+
+    reboot_state["current"] = current
+    reboot_state["last_success_at"] = last_success_at
+    reboot_state["issue_suppression"] = suppression
+    return reboot_state
 
 
 _RE_PING_TIME = re.compile(r"time=([0-9.]+)\s*ms")
@@ -1373,6 +1751,8 @@ class JobsManager:
                         "secrets_cache": {},
                         "prev_bytes": {},
                         "pppoe_hosts": {},
+                        "peak_issues": {},
+                        "peak_eval_at": None,
                         "anytime_issues": {},
                         "anytime_eval_at": None,
                         "ppp_active_stats_supported": {},
@@ -1382,12 +1762,17 @@ class JobsManager:
                 loop_cpu_start = time_module.thread_time()
                 try:
                     retention_days = int((cfg.get("storage") or {}).get("raw_retention_days", 0) or 0)
-                    if retention_days > 0:
+                    reboot_cfg = normalize_usage_modem_reboot_settings(cfg)
+                    reboot_retention_days = max(int(reboot_cfg.get("history_retention_days", 180) or 180), 1)
+                    if retention_days > 0 or reboot_retention_days > 0:
                         last_prune = state.get("last_prune_at")
                         last_prune_dt = datetime.fromisoformat(last_prune.replace("Z", "")) if last_prune else None
                         if not last_prune_dt or last_prune_dt + timedelta(hours=24) < now:
-                            cutoff = now - timedelta(days=retention_days)
-                            delete_pppoe_usage_samples_older_than(cutoff.isoformat() + "Z")
+                            if retention_days > 0:
+                                cutoff = now - timedelta(days=retention_days)
+                                delete_pppoe_usage_samples_older_than(cutoff.isoformat() + "Z")
+                            reboot_cutoff = now - timedelta(days=reboot_retention_days)
+                            delete_usage_modem_reboot_history_older_than(reboot_cutoff.isoformat() + "Z")
                             state["last_prune_at"] = now_iso
 
                     refresh_minutes = int((cfg.get("source") or {}).get("refresh_minutes", 15) or 15)
@@ -1864,8 +2249,25 @@ class JobsManager:
                             )
                         state["last_db_write_at"] = now_iso
 
-                    # Anytime no-usage detection (window-based, not peak hours).
+                    # Window-based no-usage detection for Peak Hours and Anytime rules.
                     detect = cfg.get("detection") if isinstance(cfg.get("detection"), dict) else {}
+                    peak_enabled = bool(detect.get("peak_enabled", True))
+                    peak_window_min = int(detect.get("peak_no_usage_minutes", 120) or 120)
+                    peak_window_min = max(peak_window_min, 5)
+                    peak_min_devices = max(int(detect.get("min_connected_devices", 2) or 2), 1)
+                    peak_from_bps = detect.get("total_kbps_from")
+                    peak_to_bps = detect.get("total_kbps_to")
+                    if peak_from_bps is None:
+                        peak_from_bps = 0
+                    if peak_to_bps is None:
+                        peak_to_bps = detect.get("min_total_kbps", 8)
+                    peak_from_bps = max(float(peak_from_bps or 0.0) * 1000.0, 0.0)
+                    peak_to_bps = max(float(peak_to_bps or 0.0) * 1000.0, 0.0)
+                    if peak_to_bps < peak_from_bps:
+                        peak_from_bps, peak_to_bps = peak_to_bps, peak_from_bps
+                    peak_start = (detect.get("peak_start_ph") or "17:30").strip()
+                    peak_end = (detect.get("peak_end_ph") or "21:00").strip()
+
                     anytime_enabled = bool(detect.get("anytime_enabled", False))
                     anytime_window_min = int(detect.get("anytime_no_usage_minutes", 120) or 120)
                     anytime_window_min = max(anytime_window_min, 5)
@@ -1877,22 +2279,75 @@ class JobsManager:
                     work_start = (detect.get("anytime_work_start_ph") or "00:00").strip()
                     work_end = (detect.get("anytime_work_end_ph") or "23:59").strip()
 
-                    last_eval = state.get("anytime_eval_at")
-                    last_eval_dt = datetime.fromisoformat(last_eval.replace("Z", "")) if last_eval else None
-                    eval_due = (not last_eval_dt) or (now - last_eval_dt >= timedelta(seconds=60))
+                    def _calc_min_samples(window_minutes):
+                        expected = int((window_minutes * 60) / max(sample_interval, 10))
+                        return max(3, int(expected * 0.25), 10)
+
+                    stats_cache = {}
+
+                    def _load_window_stats(window_minutes):
+                        cache_key = int(window_minutes)
+                        stats = stats_cache.get(cache_key)
+                        if stats is None:
+                            since_iso = (now - timedelta(minutes=cache_key)).isoformat() + "Z"
+                            stats = get_pppoe_usage_window_stats_since(since_iso)
+                            stats_cache[cache_key] = stats
+                        return stats
+
+                    hosts = state.get("pppoe_hosts") if isinstance(state.get("pppoe_hosts"), dict) else {}
+                    now_ph = datetime.now(usage_tz) if usage_tz else datetime.utcnow()
+
+                    peak_last_eval = state.get("peak_eval_at")
+                    peak_last_eval_dt = datetime.fromisoformat(peak_last_eval.replace("Z", "")) if peak_last_eval else None
+                    peak_eval_due = (not peak_last_eval_dt) or (now - peak_last_eval_dt >= timedelta(seconds=60))
+                    if not peak_enabled:
+                        state["peak_issues"] = {}
+                    elif peak_eval_due:
+                        if not _in_time_window(now_ph, peak_start, peak_end):
+                            state["peak_issues"] = {}
+                            state["peak_eval_at"] = now_iso
+                        else:
+                            stats_map = _load_window_stats(peak_window_min)
+                            min_samples = _calc_min_samples(peak_window_min)
+                            issues_map = {}
+                            for row in active_rows:
+                                pppoe = (row.get("pppoe") or "").strip()
+                                if not pppoe:
+                                    continue
+                                router_id = (row.get("router_id") or "").strip()
+                                host_info = hosts.get(pppoe) or hosts.get(pppoe.lower()) or {}
+                                host_count = int(host_info.get("host_count") or 0)
+                                if host_count < peak_min_devices:
+                                    continue
+                                key = usage_issue_key(router_id, pppoe)
+                                stat = stats_map.get(key)
+                                if not stat:
+                                    continue
+                                if int(stat.get("samples") or 0) < min_samples:
+                                    continue
+                                max_total_bps = float(stat.get("max_total_bps") or 0.0)
+                                if peak_from_bps <= max_total_bps <= peak_to_bps:
+                                    issues_map[key] = {
+                                        "samples": int(stat.get("samples") or 0),
+                                        "max_total_bps": max_total_bps,
+                                        "window_minutes": peak_window_min,
+                                        "min_samples": min_samples,
+                                    }
+                            state["peak_issues"] = issues_map
+                            state["peak_eval_at"] = now_iso
+
+                    anytime_last_eval = state.get("anytime_eval_at")
+                    anytime_last_eval_dt = datetime.fromisoformat(anytime_last_eval.replace("Z", "")) if anytime_last_eval else None
+                    anytime_eval_due = (not anytime_last_eval_dt) or (now - anytime_last_eval_dt >= timedelta(seconds=60))
                     if not anytime_enabled:
                         state["anytime_issues"] = {}
-                    elif eval_due:
-                        now_ph = datetime.now(usage_tz) if usage_tz else datetime.utcnow()
+                    elif anytime_eval_due:
                         if not _in_time_window(now_ph, work_start, work_end):
                             state["anytime_issues"] = {}
                             state["anytime_eval_at"] = now_iso
                         else:
-                            since_iso = (now - timedelta(minutes=anytime_window_min)).isoformat() + "Z"
-                            stats_map = get_pppoe_usage_window_stats_since(since_iso)
-                            expected = int((anytime_window_min * 60) / max(sample_interval, 10))
-                            min_samples = max(3, int(expected * 0.25), 10)
-                            hosts = state.get("pppoe_hosts") if isinstance(state.get("pppoe_hosts"), dict) else {}
+                            stats_map = _load_window_stats(anytime_window_min)
+                            min_samples = _calc_min_samples(anytime_window_min)
                             issues_map = {}
                             for row in active_rows:
                                 pppoe = (row.get("pppoe") or "").strip()
@@ -1903,7 +2358,7 @@ class JobsManager:
                                 host_count = int(host_info.get("host_count") or 0)
                                 if host_count < anytime_min_devices:
                                     continue
-                                key = f"{router_id}|{pppoe.lower()}"
+                                key = usage_issue_key(router_id, pppoe)
                                 stat = stats_map.get(key)
                                 if not stat:
                                     continue
@@ -1922,6 +2377,14 @@ class JobsManager:
 
                     state["active_rows"] = active_rows
                     state["offline_rows"] = offline_rows
+                    if reboot_cfg.get("enabled"):
+                        summary = build_usage_summary_data(cfg, state)
+                        state["modem_reboot"] = _process_usage_modem_reboots(cfg, state, summary, now, now_iso)
+                    elif isinstance(state.get("modem_reboot"), dict):
+                        reboot_state = normalize_usage_modem_reboot_state(state.get("modem_reboot"))
+                        reboot_state["current"] = {}
+                        state["modem_reboot"] = reboot_state
+
                     state["routers"] = router_status
                     state["enabled_router_ids"] = sorted(list(enabled_router_ids))
                     state["prev_bytes"] = prev_bytes

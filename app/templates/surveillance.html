@@ -2055,9 +2055,10 @@
                               <tr><td class="text-muted">Last State</td><td class="text-end" id="surv-history-detail-state">—</td></tr>
                               <tr><td class="text-muted">Last IP</td><td class="text-end" id="surv-history-detail-ip">—</td></tr>
                               <tr><td class="text-muted">Cycle #</td><td class="text-end" id="surv-history-detail-cycle">0</td></tr>
-                              <tr><td class="text-muted">Started</td><td class="text-end" id="surv-history-detail-started">—</td></tr>
-                              <tr><td class="text-muted">Ended</td><td class="text-end" id="surv-history-detail-ended">—</td></tr>
-                              <tr><td class="text-muted">Total Duration</td><td class="text-end" id="surv-history-detail-total">—</td></tr>
+                              <tr><td class="text-muted">Cycle Started</td><td class="text-end" id="surv-history-detail-started">—</td></tr>
+                              <tr><td class="text-muted">Cycle Ended</td><td class="text-end" id="surv-history-detail-ended">—</td></tr>
+                              <tr><td class="text-muted">Cycle Duration</td><td class="text-end" id="surv-history-detail-total">—</td></tr>
+                              <tr><td class="text-muted">Session Pieces</td><td class="text-end" id="surv-history-detail-pieces">1</td></tr>
                             </tbody>
                           </table>
                         </div>
@@ -2065,12 +2066,12 @@
                     </div>
                     <div class="col-12 col-lg-6">
                       <div class="card">
-                        <div class="card-header py-2"><div class="fw-semibold">Stage Duration Breakdown</div></div>
+                        <div class="card-header py-2"><div class="fw-semibold">Cycle Stage Breakdown</div></div>
                         <div class="card-body">
                           <div class="d-flex flex-wrap gap-2">
-                            <span class="badge bg-indigo-lt text-indigo">Active Monitoring: <span id="surv-history-detail-under">0m</span></span>
+                            <span class="badge bg-yellow-lt text-yellow">Active Monitoring: <span id="surv-history-detail-under">0m</span></span>
                             <span class="badge bg-red-lt text-red">Needs Manual Fix: <span id="surv-history-detail-level2">0m</span></span>
-                            <span class="badge bg-green-lt text-green">Post-Fix Observation: <span id="surv-history-detail-observe">0m</span></span>
+                            <span class="badge bg-blue-lt text-blue">Post-Fix Observation: <span id="surv-history-detail-observe">0m</span></span>
                           </div>
                           <div class="mt-3 text-muted small" id="surv-history-detail-note">No note provided.</div>
                         </div>
@@ -2078,65 +2079,30 @@
                     </div>
                     <div class="col-12">
                       <div class="card">
-                        <div class="card-header py-2"><div class="fw-semibold">Accounts Ping in Session Window</div></div>
+                        <div class="card-header py-2"><div class="fw-semibold">Stage-Based Investigation Summary</div></div>
                         <div class="card-body">
-                          <div class="d-flex flex-wrap gap-2 mb-2">
-                            <span class="badge bg-secondary-lt text-secondary">Samples: <span id="surv-history-ping-samples">0</span></span>
-                            <span class="badge bg-red-lt text-red">Down: <span id="surv-history-ping-down">0</span></span>
-                            <span class="badge bg-blue-lt text-blue">Loss Events: <span id="surv-history-ping-events">0</span></span>
-                            <span class="badge bg-green-lt text-green">Uptime: <span id="surv-history-ping-uptime">n/a</span></span>
-                            <span class="badge bg-orange-lt text-orange">Avg Loss: <span id="surv-history-ping-loss">n/a</span></span>
-                            <span class="badge bg-yellow-lt text-yellow">Avg Latency: <span id="surv-history-ping-avgms">n/a</span></span>
-                            <span class="badge bg-purple-lt text-purple">Worst Latency: <span id="surv-history-ping-worstms">n/a</span></span>
-                          </div>
-                          <div class="text-muted small mb-2">Latest in window: <span id="surv-history-ping-last">n/a</span></div>
-                          <div class="table-responsive">
-                            <table class="table table-sm table-vcenter mb-0">
-                              <thead>
-                                <tr>
-                                  <th>Time (PHT)</th>
-                                  <th>Status</th>
-                                  <th>Loss</th>
-                                  <th>Avg Latency</th>
-                                  <th>IP</th>
-                                  <th>Mode</th>
-                                </tr>
-                              </thead>
-                              <tbody id="surv-history-ping-recent">
-                                <tr><td colspan="6" class="text-muted small">No ping samples in this session window.</td></tr>
-                              </tbody>
-                            </table>
-                          </div>
+                          <div id="surv-history-stage-summary" class="text-muted small">No stage summary available.</div>
                         </div>
                       </div>
                     </div>
-                    <div class="col-12 col-lg-6">
+                    <div class="col-12">
                       <div class="card">
-                        <div class="card-header py-2"><div class="fw-semibold">Optical in Session Window</div></div>
-                        <div class="card-body">
-                          <div class="d-flex flex-wrap gap-2 mb-2">
-                            <span class="badge bg-secondary-lt text-secondary">Device ID: <span id="surv-history-optical-device">n/a</span></span>
-                            <span class="badge bg-secondary-lt text-secondary">Samples: <span id="surv-history-optical-samples">0</span></span>
-                            <span class="badge bg-blue-lt text-blue">Latest RX: <span id="surv-history-optical-rx">n/a</span></span>
-                            <span class="badge bg-azure-lt text-azure">Latest TX: <span id="surv-history-optical-tx">n/a</span></span>
-                            <span class="badge bg-red-lt text-red">Worst RX: <span id="surv-history-optical-worst">n/a</span></span>
-                          </div>
-                          <div class="text-muted small">Latest in window: <span id="surv-history-optical-last">n/a</span></div>
-                        </div>
-                      </div>
-                    </div>
-                    <div class="col-12 col-lg-6">
-                      <div class="card">
-                        <div class="card-header py-2"><div class="fw-semibold">Usage in Session Window</div></div>
-                        <div class="card-body">
-                          <div class="d-flex flex-wrap gap-2 mb-2">
-                            <span class="badge bg-secondary-lt text-secondary">Samples: <span id="surv-history-usage-samples">0</span></span>
-                            <span class="badge bg-blue-lt text-blue">Avg DL Rate: <span id="surv-history-usage-rx">n/a</span></span>
-                            <span class="badge bg-azure-lt text-azure">Avg UL Rate: <span id="surv-history-usage-tx">n/a</span></span>
-                            <span class="badge bg-purple-lt text-purple">Peak Total Rate: <span id="surv-history-usage-peak">n/a</span></span>
-                            <span class="badge bg-orange-lt text-orange">Max Active Devices: <span id="surv-history-usage-devices">0</span></span>
-                          </div>
-                          <div class="text-muted small">Latest in window: <span id="surv-history-usage-last">n/a</span></div>
+                        <div class="card-header py-2"><div class="fw-semibold">Stage Movement History</div></div>
+                        <div class="table-responsive">
+                          <table class="table table-sm table-vcenter mb-0">
+                            <thead>
+                              <tr>
+                                <th>Stage</th>
+                                <th>Window</th>
+                                <th>Updated By</th>
+                                <th>Action</th>
+                                <th>Note</th>
+                              </tr>
+                            </thead>
+                            <tbody id="surv-history-movement">
+                              <tr><td colspan="5" class="text-muted small">No movement history available.</td></tr>
+                            </tbody>
+                          </table>
                         </div>
                       </div>
                     </div>
@@ -3501,9 +3467,10 @@
             if (num >= 1_000) return `${(num / 1_000).toFixed(2)} Kbps`;
             return `${num.toFixed(0)} bps`;
           };
-          const statusBadge = (ok) => ok
-            ? `<span class="badge bg-green-lt text-green">Up</span>`
-            : `<span class="badge bg-red-lt text-red">Down</span>`;
+          const formatDbm = (value) => {
+            const num = Number(value);
+            return Number.isFinite(num) ? `${num.toFixed(2)} dBm` : "n/a";
+          };
           const actionBadge = (action) => {
             const normalized = String(action || "").trim().toLowerCase();
             if (normalized === "healed") return '<span class="badge bg-green-lt text-green">Auto Healed</span>';
@@ -3511,6 +3478,115 @@
             if (normalized === "fixed") return '<span class="badge bg-blue-lt text-blue">Fixed</span>';
             if (normalized === "recovered") return '<span class="badge bg-green-lt text-green">Fully Recovered</span>';
             return '<span class="badge bg-secondary-lt text-secondary">Removed</span>';
+          };
+          const buildMetricBadges = (items) => {
+            return items.map((item) => `
+              <span class="badge bg-secondary-lt text-secondary">${escapeCell(item.label)}: ${escapeCell(item.value)}</span>
+            `).join("");
+          };
+          const renderStageSummaryCards = (stages) => {
+            if (!Array.isArray(stages) || !stages.length) {
+              return '<div class="text-muted small">No stage summary available.</div>';
+            }
+            return stages.map((stage) => {
+              const ping = (stage && typeof stage.accounts_ping === "object") ? stage.accounts_ping : {};
+              const optical = (stage && typeof stage.optical === "object") ? stage.optical : {};
+              const usage = (stage && typeof stage.usage === "object") ? stage.usage : {};
+              const badge = escapeCell(stage.badge || "secondary");
+              const label = escapeCell(stage.label || "Stage");
+              const windowText = stage.present
+                ? `${escapeCell(stage.started_at_ph || "n/a")} → ${escapeCell(stage.ended_at_ph || "n/a")}`
+                : "This account did not enter this stage in the selected cycle.";
+              const noteText = escapeCell(stage.note || (stage.present ? "No saved note for this stage." : "No stage data to summarize."));
+              const enteredBy = escapeCell(stage.entered_by || "n/a");
+              const enteredAction = escapeCell(stage.entered_action_label || "Entered stage");
+              const enteredAt = escapeCell(stage.entered_at_ph || "n/a");
+              const pingBadges = buildMetricBadges([
+                { label: "Samples", value: `${ping.samples || 0}` },
+                { label: "Down", value: `${ping.down_samples || 0}` },
+                { label: "Loss Events", value: `${ping.loss_events || 0}` },
+                { label: "Uptime", value: formatPercent(ping.uptime_pct) },
+                { label: "Avg Loss", value: formatPercent(ping.avg_loss) },
+                { label: "Avg Latency", value: formatMs(ping.avg_ms) },
+                { label: "Worst Latency", value: formatMs(ping.worst_ms) },
+              ]);
+              const opticalBadges = buildMetricBadges([
+                { label: "Device", value: optical.device_id || "n/a" },
+                { label: "Samples", value: `${optical.samples || 0}` },
+                { label: "Latest RX", value: formatDbm(optical.latest_rx) },
+                { label: "Latest TX", value: formatDbm(optical.latest_tx) },
+                { label: "Worst RX", value: formatDbm(optical.worst_rx) },
+              ]);
+              const usageBadges = buildMetricBadges([
+                { label: "Samples", value: `${usage.samples || 0}` },
+                { label: "Avg DL", value: formatBps(usage.avg_rx_bps) },
+                { label: "Avg UL", value: formatBps(usage.avg_tx_bps) },
+                { label: "Peak Total", value: formatBps(usage.peak_total_bps) },
+                { label: "Max Devices", value: `${usage.active_device_max || 0}` },
+              ]);
+              return `
+                <div class="border rounded p-3 mb-3">
+                  <div class="d-flex align-items-start justify-content-between gap-3 flex-wrap mb-2">
+                    <div>
+                      <div class="d-flex align-items-center gap-2 flex-wrap">
+                        <span class="badge bg-${badge}-lt text-${badge}">${label}</span>
+                        <span class="text-muted small">${windowText}</span>
+                      </div>
+                      <div class="text-muted small mt-1">Duration: ${escapeCell(stage.duration_text || "0m")}</div>
+                    </div>
+                    <div class="text-end">
+                      <div class="text-muted small">Updated By</div>
+                      <div class="fw-semibold">${enteredBy}</div>
+                      <div class="text-muted small">${enteredAction} · ${enteredAt}</div>
+                    </div>
+                  </div>
+                  <div class="text-muted small mb-3">${noteText}</div>
+                  <div class="row g-2">
+                    <div class="col-12 col-lg-4">
+                      <div class="border rounded p-2 h-100">
+                        <div class="fw-semibold mb-2">Accounts Ping</div>
+                        <div class="d-flex flex-wrap gap-2 mb-2">${pingBadges}</div>
+                        <div class="text-muted small">Latest sample: ${escapeCell(ping.last_sample_at_ph || "n/a")}</div>
+                      </div>
+                    </div>
+                    <div class="col-12 col-lg-4">
+                      <div class="border rounded p-2 h-100">
+                        <div class="fw-semibold mb-2">Optical</div>
+                        <div class="d-flex flex-wrap gap-2 mb-2">${opticalBadges}</div>
+                        <div class="text-muted small">Latest sample: ${escapeCell(optical.last_sample_at_ph || "n/a")}</div>
+                      </div>
+                    </div>
+                    <div class="col-12 col-lg-4">
+                      <div class="border rounded p-2 h-100">
+                        <div class="fw-semibold mb-2">Usage</div>
+                        <div class="d-flex flex-wrap gap-2 mb-2">${usageBadges}</div>
+                        <div class="text-muted small">Latest sample: ${escapeCell(usage.last_sample_at_ph || "n/a")}</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              `;
+            }).join("");
+          };
+          const renderMovementRows = (rows) => {
+            if (!Array.isArray(rows) || !rows.length) {
+              return '<tr><td colspan="5" class="text-muted small">No movement history available.</td></tr>';
+            }
+            return rows.map((item) => `
+              <tr>
+                <td>
+                  <span class="badge bg-${escapeCell(item.badge || "secondary")}-lt text-${escapeCell(item.badge || "secondary")}">${escapeCell(item.stage_label || "Stage")}</span>
+                  <div class="text-muted small mt-1">${escapeCell(item.duration_text || "0m")}</div>
+                </td>
+                <td class="small">${escapeCell(item.window || "n/a")}</td>
+                <td>
+                  <div class="fw-semibold">${escapeCell(item.updated_by || "n/a")}</div>
+                  <div class="text-muted small">${escapeCell(item.updated_at_ph || "n/a")}</div>
+                </td>
+                <td class="small">${escapeCell(item.action_label || "—")}</td>
+                <td class="small">${escapeCell(item.note || "—")}</td>
+              </tr>
+            `).join("");
           };
           const resetHistoryModal = () => {
             setHistoryText("surv-history-detail-session-id", "—");
@@ -3522,40 +3598,22 @@
             setHistoryText("surv-history-detail-started", "—");
             setHistoryText("surv-history-detail-ended", "—");
             setHistoryText("surv-history-detail-total", "—");
+            setHistoryText("surv-history-detail-pieces", "1");
             setHistoryText("surv-history-detail-under", "0m");
             setHistoryText("surv-history-detail-level2", "0m");
             setHistoryText("surv-history-detail-observe", "0m");
             setHistoryText("surv-history-detail-note", "No note provided.");
             const actionEl = document.getElementById("surv-history-detail-action");
             if (actionEl) actionEl.innerHTML = "—";
-            setHistoryText("surv-history-ping-samples", "0");
-            setHistoryText("surv-history-ping-down", "0");
-            setHistoryText("surv-history-ping-events", "0");
-            setHistoryText("surv-history-ping-uptime", "n/a");
-            setHistoryText("surv-history-ping-loss", "n/a");
-            setHistoryText("surv-history-ping-avgms", "n/a");
-            setHistoryText("surv-history-ping-worstms", "n/a");
-            setHistoryText("surv-history-ping-last", "n/a");
-            const recent = document.getElementById("surv-history-ping-recent");
-            if (recent) recent.innerHTML = '<tr><td colspan="6" class="text-muted small">No ping samples in this session window.</td></tr>';
-            setHistoryText("surv-history-optical-device", "n/a");
-            setHistoryText("surv-history-optical-samples", "0");
-            setHistoryText("surv-history-optical-rx", "n/a");
-            setHistoryText("surv-history-optical-tx", "n/a");
-            setHistoryText("surv-history-optical-worst", "n/a");
-            setHistoryText("surv-history-optical-last", "n/a");
-            setHistoryText("surv-history-usage-samples", "0");
-            setHistoryText("surv-history-usage-rx", "n/a");
-            setHistoryText("surv-history-usage-tx", "n/a");
-            setHistoryText("surv-history-usage-peak", "n/a");
-            setHistoryText("surv-history-usage-devices", "0");
-            setHistoryText("surv-history-usage-last", "n/a");
+            const stageSummaryEl = document.getElementById("surv-history-stage-summary");
+            if (stageSummaryEl) stageSummaryEl.innerHTML = '<div class="text-muted small">No stage summary available.</div>';
+            const movementEl = document.getElementById("surv-history-movement");
+            if (movementEl) movementEl.innerHTML = '<tr><td colspan="5" class="text-muted small">No movement history available.</td></tr>';
           };
           const renderHistoryModal = (payload) => {
             const session = (payload && payload.session && typeof payload.session === "object") ? payload.session : {};
-            const ping = (payload && payload.accounts_ping && typeof payload.accounts_ping === "object") ? payload.accounts_ping : {};
-            const optical = (payload && payload.optical && typeof payload.optical === "object") ? payload.optical : {};
-            const usage = (payload && payload.usage && typeof payload.usage === "object") ? payload.usage : {};
+            const stages = Array.isArray(payload && payload.stage_summaries) ? payload.stage_summaries : [];
+            const movement = Array.isArray(payload && payload.movement) ? payload.movement : [];
             setHistoryText("surv-history-detail-session-id", `${session.id || "—"}`);
             setHistoryText("surv-history-detail-pppoe", session.pppoe || "—");
             setHistoryText("surv-history-detail-source", session.source || "—");
@@ -3566,50 +3624,17 @@
             setHistoryText("surv-history-detail-started", session.started_at_ph || "—");
             setHistoryText("surv-history-detail-ended", session.ended_at_ph || "—");
             setHistoryText("surv-history-detail-total", session.total_for_text || "0m");
+            setHistoryText("surv-history-detail-pieces", `${session.cycle_session_count || 1}`);
             setHistoryText("surv-history-detail-under", session.under_for_text || "0m");
             setHistoryText("surv-history-detail-level2", session.level2_for_text || "0m");
             setHistoryText("surv-history-detail-observe", session.observe_for_text || "0m");
             setHistoryText("surv-history-detail-note", session.end_note || "No note provided.");
             const actionEl = document.getElementById("surv-history-detail-action");
             if (actionEl) actionEl.innerHTML = actionBadge(session.end_reason || "");
-            setHistoryText("surv-history-ping-samples", `${ping.samples || 0}`);
-            setHistoryText("surv-history-ping-down", `${ping.down_samples || 0}`);
-            setHistoryText("surv-history-ping-events", `${ping.loss_events || 0}`);
-            setHistoryText("surv-history-ping-uptime", formatPercent(ping.uptime_pct));
-            setHistoryText("surv-history-ping-loss", formatPercent(ping.avg_loss));
-            setHistoryText("surv-history-ping-avgms", formatMs(ping.avg_ms));
-            setHistoryText("surv-history-ping-worstms", formatMs(ping.worst_ms));
-            setHistoryText("surv-history-ping-last", ping.last_sample_at_ph || "n/a");
-            const recent = document.getElementById("surv-history-ping-recent");
-            if (recent) {
-              const rows = Array.isArray(ping.recent) ? ping.recent : [];
-              if (!rows.length) {
-                recent.innerHTML = '<tr><td colspan="6" class="text-muted small">No ping samples in this session window.</td></tr>';
-              } else {
-                recent.innerHTML = rows.map((item) => `
-                  <tr>
-                    <td class="small">${escapeCell(item.timestamp_ph || "n/a")}</td>
-                    <td>${statusBadge(Boolean(item.ok))}</td>
-                    <td class="small">${item.loss === null || item.loss === undefined ? "n/a" : `${Number(item.loss).toFixed(1)}%`}</td>
-                    <td class="small">${item.avg_ms === null || item.avg_ms === undefined ? "n/a" : `${Number(item.avg_ms).toFixed(1)}ms`}</td>
-                    <td class="small">${escapeCell(item.ip || "—")}</td>
-                    <td class="small">${escapeCell(item.mode || "—")}</td>
-                  </tr>
-                `).join("");
-              }
-            }
-            setHistoryText("surv-history-optical-device", optical.device_id || "n/a");
-            setHistoryText("surv-history-optical-samples", `${optical.samples || 0}`);
-            setHistoryText("surv-history-optical-rx", optical.latest_rx === null || optical.latest_rx === undefined ? "n/a" : `${Number(optical.latest_rx).toFixed(2)} dBm`);
-            setHistoryText("surv-history-optical-tx", optical.latest_tx === null || optical.latest_tx === undefined ? "n/a" : `${Number(optical.latest_tx).toFixed(2)} dBm`);
-            setHistoryText("surv-history-optical-worst", optical.worst_rx === null || optical.worst_rx === undefined ? "n/a" : `${Number(optical.worst_rx).toFixed(2)} dBm`);
-            setHistoryText("surv-history-optical-last", optical.last_sample_at_ph || "n/a");
-            setHistoryText("surv-history-usage-samples", `${usage.samples || 0}`);
-            setHistoryText("surv-history-usage-rx", formatBps(usage.avg_rx_bps));
-            setHistoryText("surv-history-usage-tx", formatBps(usage.avg_tx_bps));
-            setHistoryText("surv-history-usage-peak", formatBps(usage.peak_total_bps));
-            setHistoryText("surv-history-usage-devices", `${usage.active_device_max || 0}`);
-            setHistoryText("surv-history-usage-last", usage.last_sample_at_ph || "n/a");
+            const stageSummaryEl = document.getElementById("surv-history-stage-summary");
+            if (stageSummaryEl) stageSummaryEl.innerHTML = renderStageSummaryCards(stages);
+            const movementEl = document.getElementById("surv-history-movement");
+            if (movementEl) movementEl.innerHTML = renderMovementRows(movement);
           };
 
           historyModalEl.addEventListener("show.bs.modal", (event) => {

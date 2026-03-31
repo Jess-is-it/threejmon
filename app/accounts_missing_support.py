@@ -12,6 +12,7 @@ from .db import (
     delete_auth_audit_logs_for_pppoe,
     delete_offline_history_for_pppoe,
     delete_optical_results_for_pppoe,
+    delete_usage_modem_reboot_history_for_pppoe,
     delete_pppoe_usage_samples_for_pppoe,
     delete_surveillance_sessions_for_pppoe,
 )
@@ -634,6 +635,7 @@ def purge_pppoe_account_data(pppoe):
     delete_accounts_ping_rollups_for_account_ids(sorted(account_ids))
     delete_optical_results_for_pppoe(pppoe)
     delete_pppoe_usage_samples_for_pppoe(pppoe)
+    delete_usage_modem_reboot_history_for_pppoe(pppoe)
     delete_offline_history_for_pppoe(pppoe)
     delete_surveillance_sessions_for_pppoe(pppoe)
     delete_auth_audit_logs_for_pppoe(pppoe)

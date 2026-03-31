@@ -207,7 +207,6 @@
           <div class="card-body">
             <form method="post" action="/settings/system/mikrotik">
               {% set cores = settings.pulsewatch.mikrotik.cores %}
-              {% set interface_options = interfaces if interfaces is defined else [] %}
               <textarea name="core_ids" style="display: none;">{% for core in cores %}{{ core.id }}
 {% endfor %}</textarea>
               {% for core in cores %}
@@ -225,23 +224,6 @@
                     <div class="col-md-3">
                       <label class="form-label">Host <span class="info" data-tip="MikroTik API IP/hostname for this router.">i</span></label>
                       <input class="form-control" type="text" name="{{ core.id }}_host" value="{{ core.host }}" {% if not can_edit_system_router_cores %}readonly{% endif %} />
-                    </div>
-                    <div class="col-md-3">
-                      <label class="form-label">Interface <span class="info" data-tip="Linux NIC that carries this router's source IPs (e.g., enp0s8).">i</span></label>
-                      <select class="form-select" name="{{ core.id }}_interface" {% if not can_edit_system_router_cores %}disabled{% endif %}>
-                        <option value="">Select interface</option>
-                        {% for iface in interface_options %}
-                          <option value="{{ iface }}" {% if iface == core.interface %}selected{% endif %}>{{ iface }}</option>
-                        {% endfor %}
-                      </select>
-                    </div>
-                    <div class="col-md-3">
-                      <label class="form-label">Prefix <span class="info" data-tip="CIDR prefix length for the source IPs on this interface (usually 24).">i</span></label>
-                      <input class="form-control" type="number" name="{{ core.id }}_prefix" value="{{ core.prefix }}" {% if not can_edit_system_router_cores %}readonly{% endif %} />
-                    </div>
-                    <div class="col-md-3">
-                      <label class="form-label">Source IP Gateway <span class="info" data-tip="Default gateway used when traffic is sourced from this core's IPs. Example: 172.16.90.1.">i</span></label>
-                      <input class="form-control" type="text" name="{{ core.id }}_gateway" value="{{ core.gateway }}" placeholder="e.g. 172.16.90.1" {% if not can_edit_system_router_cores %}readonly{% endif %} />
                     </div>
                     <div class="col-md-3">
                       <label class="form-label">Port <span class="info" data-tip="MikroTik API port (8728 by default).">i</span></label>
@@ -267,7 +249,7 @@
                 <button type="submit" class="btn btn-outline-primary" formaction="/settings/system/mikrotik/test" formmethod="post" {% if not can_test_system_routers %}disabled{% endif %}>Test MikroTik API</button>
               </div>
               <div class="text-muted small mt-3">
-                Guide: Cores are used to retrieve TO-ISP lists and to bind source IPs for WAN checks.
+                Guide: Cores are used to retrieve TO-ISP lists and provide WAN router API access.
               </div>
               {% if not can_edit_system_router_cores %}
                 <div class="text-muted small mt-3">Cores are in read-only mode for your role.</div>

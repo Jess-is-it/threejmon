@@ -1,6 +1,7 @@
 import base64
 import json
 import re
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -329,6 +330,75 @@ def fetch_genieacs_devices(cfg):
             devices.extend(payload)
         skip += page_size
     return devices
+
+
+def send_genieacs_reboot_task(cfg, device_id, connection_request=True):
+    genie = cfg.get("genieacs") or {}
+    base_url = (genie.get("base_url") or "").rstrip("/")
+    device_id = str(device_id or "").strip()
+    if not base_url:
+        return {"ok": False, "error": "GenieACS Base URL is required.", "http_status": 0}
+    if not device_id:
+        return {"ok": False, "error": "GenieACS device ID is required.", "http_status": 0}
+
+    headers = build_auth_header(cfg)
+    headers["Content-Type"] = "application/json"
+    headers["Accept"] = "application/json"
+    suffix = "?connection_request" if connection_request else ""
+    quoted_device_id = urllib.parse.quote(device_id, safe="")
+    url = f"{base_url}/devices/{quoted_device_id}/tasks{suffix}"
+    payload = json.dumps({"name": "reboot"}).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            raw_body = resp.read().decode("utf-8", errors="replace")
+            parsed = None
+            if raw_body.strip():
+                try:
+                    parsed = json.loads(raw_body)
+                except Exception:
+                    parsed = raw_body.strip()
+            detail = ""
+            task_id = ""
+            if isinstance(parsed, dict):
+                task_id = str(parsed.get("_id") or parsed.get("id") or "").strip()
+                detail = str(parsed.get("name") or parsed.get("status") or "").strip()
+            elif isinstance(parsed, list):
+                detail = f"{len(parsed)} task object(s) returned."
+            else:
+                detail = str(parsed or "").strip()
+            if not detail:
+                detail = "GenieACS reboot task accepted."
+            return {
+                "ok": True,
+                "http_status": int(getattr(resp, "status", 200) or 200),
+                "task_id": task_id,
+                "detail": detail,
+                "payload": parsed,
+            }
+    except urllib.error.HTTPError as exc:
+        raw_body = ""
+        try:
+            raw_body = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            raw_body = ""
+        message = raw_body.strip() or str(exc)
+        return {
+            "ok": False,
+            "http_status": int(getattr(exc, "code", 0) or 0),
+            "error": message,
+            "detail": message,
+            "task_id": "",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "http_status": 0,
+            "error": str(exc),
+            "detail": str(exc),
+            "task_id": "",
+        }
 
 
 def get_nested(node, path):

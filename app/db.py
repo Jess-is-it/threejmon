@@ -107,6 +107,7 @@ AUTH_DEFAULT_PERMISSIONS = [
     {"code": "usage.tab.settings.view", "label": "Usage · Settings Tab", "description": "View usage settings tab."},
     {"code": "usage.status.issues.view", "label": "Usage · Issues Tab", "description": "View usage issues table."},
     {"code": "usage.status.stable.view", "label": "Usage · Stable Tab", "description": "View stable usage table."},
+    {"code": "usage.status.reboot_history.view", "label": "Usage · Rebooted History Tab", "description": "View modem auto reboot history under Usage status."},
     {"code": "usage.table.devices.view", "label": "Usage · Devices Column", "description": "View per-account device details/panel."},
     {"code": "usage.chart.series.view", "label": "Usage · Chart Series", "description": "View usage rate/total charts and modal."},
     {"code": "usage.settings.general.edit", "label": "Usage · Settings · General", "description": "Edit general usage settings and intervals."},
@@ -114,6 +115,7 @@ AUTH_DEFAULT_PERMISSIONS = [
     {"code": "usage.settings.routers.view", "label": "Usage · Settings · Routers View", "description": "View router reference list under Usage settings."},
     {"code": "usage.settings.routers.edit", "label": "Usage · Settings · Routers Scope", "description": "Enable/disable router scope used by Usage."},
     {"code": "usage.settings.rules.edit", "label": "Usage · Settings · Detection Rules", "description": "Edit usage issue detection rules and working hours."},
+    {"code": "usage.settings.modem_reboot.edit", "label": "Usage · Settings · Modem Auto Reboot", "description": "Edit modem auto reboot, retry, and history retention settings."},
     {"code": "usage.settings.retention.edit", "label": "Usage · Settings · Retention", "description": "Edit usage data retention settings."},
     {"code": "usage.settings.danger.run", "label": "Usage · Settings · Danger", "description": "Run usage destructive format actions."},
     {"code": "usage.action.test_source.run", "label": "Usage · Test Data Source", "description": "Run Usage data source and router test actions."},
@@ -785,6 +787,31 @@ def init_db():
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS usage_modem_reboot_history (
+                    id BIGSERIAL PRIMARY KEY,
+                    attempted_at TEXT NOT NULL,
+                    verified_at TEXT,
+                    pppoe TEXT NOT NULL,
+                    router_id TEXT,
+                    router_name TEXT,
+                    address TEXT,
+                    device_id TEXT,
+                    issue_opened_at TEXT,
+                    retry_index INTEGER NOT NULL DEFAULT 0,
+                    retry_limit INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL,
+                    verification_status TEXT,
+                    task_id TEXT,
+                    http_status INTEGER,
+                    buffer_until TEXT,
+                    next_retry_at TEXT,
+                    error_message TEXT,
+                    detail TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS surveillance_sessions (
                     id BIGSERIAL PRIMARY KEY,
                     pppoe TEXT NOT NULL,
@@ -1113,6 +1140,31 @@ def init_db():
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS usage_modem_reboot_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    attempted_at TEXT NOT NULL,
+                    verified_at TEXT,
+                    pppoe TEXT NOT NULL,
+                    router_id TEXT,
+                    router_name TEXT,
+                    address TEXT,
+                    device_id TEXT,
+                    issue_opened_at TEXT,
+                    retry_index INTEGER NOT NULL DEFAULT 0,
+                    retry_limit INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL,
+                    verification_status TEXT,
+                    task_id TEXT,
+                    http_status INTEGER,
+                    buffer_until TEXT,
+                    next_retry_at TEXT,
+                    error_message TEXT,
+                    detail TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS surveillance_sessions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     pppoe TEXT NOT NULL,
@@ -1259,6 +1311,14 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pppoe_usage_samples_pppoe_ts ON pppoe_usage_samples (pppoe, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pppoe_usage_samples_router_ts ON pppoe_usage_samples (router_id, timestamp)")
         conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_usage_modem_reboot_history_pppoe_attempted "
+            "ON usage_modem_reboot_history (pppoe, attempted_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_usage_modem_reboot_history_router_attempted "
+            "ON usage_modem_reboot_history (router_id, attempted_at)"
+        )
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_surveillance_sessions_pppoe_started ON surveillance_sessions (pppoe, started_at)"
         )
         conn.execute(
@@ -1393,29 +1453,113 @@ def insert_offline_history_event(
         conn.close()
 
 
-def get_offline_history_since(since_iso, limit=500):
+_OFFLINE_HISTORY_SORT_COLUMNS = {
+    "pppoe": "pppoe",
+    "router_name": "router_name",
+    "mode": "mode",
+    "offline_started_at": "offline_started_at",
+    "offline_ended_at": "offline_ended_at",
+    "duration_seconds": "duration_seconds",
+}
+
+
+def _offline_history_where_clause(since_iso, search="", router_names=None):
+    clauses = ["offline_ended_at >= ?"]
+    params = [since_iso]
+    search = (search or "").strip().lower()
+    if search:
+        like = f"%{search}%"
+        clauses.append(
+            """
+            (
+                LOWER(pppoe) LIKE ?
+                OR LOWER(COALESCE(router_name, '')) LIKE ?
+                OR LOWER(COALESCE(router_id, '')) LIKE ?
+                OR LOWER(COALESCE(mode, '')) LIKE ?
+                OR LOWER(COALESCE(radius_status, '')) LIKE ?
+                OR LOWER(COALESCE(profile, '')) LIKE ?
+                OR LOWER(COALESCE(last_logged_out, '')) LIKE ?
+            )
+            """
+        )
+        params.extend([like, like, like, like, like, like, like])
+    normalized_routers = []
+    for name in router_names or []:
+        value = str(name or "").strip().lower()
+        if value and value not in normalized_routers:
+            normalized_routers.append(value)
+    if normalized_routers:
+        placeholders = ",".join("?" for _ in normalized_routers)
+        clauses.append(
+            f"(LOWER(COALESCE(router_name, '')) IN ({placeholders}) OR LOWER(COALESCE(router_id, '')) IN ({placeholders}))"
+        )
+        params.extend(normalized_routers)
+        params.extend(normalized_routers)
+    return " AND ".join(clauses), params
+
+
+def count_offline_history_since(since_iso, search="", router_names=None):
+    since_iso = (since_iso or "").strip()
+    if not since_iso:
+        return 0
+    where_sql, params = _offline_history_where_clause(since_iso, search=search, router_names=router_names)
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            f"SELECT COUNT(*) AS total FROM offline_history WHERE {where_sql}",
+            tuple(params),
+        ).fetchone()
+        if not row:
+            return 0
+        try:
+            total = row["total"]
+        except Exception:
+            total = row[0]
+        return int(total or 0)
+    finally:
+        conn.close()
+
+
+def get_offline_history_page_since(
+    since_iso,
+    limit=500,
+    offset=0,
+    sort_key="offline_ended_at",
+    sort_dir="desc",
+    search="",
+    router_names=None,
+):
     since_iso = (since_iso or "").strip()
     limit = max(min(int(limit or 500), 2000), 1)
+    offset = max(int(offset or 0), 0)
     if not since_iso:
         return []
+    sort_column = _OFFLINE_HISTORY_SORT_COLUMNS.get(str(sort_key or "").strip(), "offline_ended_at")
+    order_dir = "ASC" if str(sort_dir or "").strip().lower() == "asc" else "DESC"
+    where_sql, params = _offline_history_where_clause(since_iso, search=search, router_names=router_names)
     conn = get_conn()
     try:
         rows = conn.execute(
-            """
+            f"""
             SELECT
                 id, pppoe, router_id, router_name, mode,
                 offline_started_at, offline_ended_at, duration_seconds,
                 radius_status, disabled, profile, last_logged_out
             FROM offline_history
-            WHERE offline_ended_at >= ?
-            ORDER BY offline_ended_at DESC
+            WHERE {where_sql}
+            ORDER BY {sort_column} {order_dir}, id DESC
             LIMIT ?
+            OFFSET ?
             """,
-            (since_iso, limit),
+            tuple(params) + (limit, offset),
         ).fetchall()
         return [dict(row) for row in rows]
     finally:
         conn.close()
+
+
+def get_offline_history_since(since_iso, limit=500):
+    return get_offline_history_page_since(since_iso, limit=limit)
 
 
 def get_offline_history_for_pppoe(pppoe, since_iso="", limit=20):
@@ -1953,6 +2097,33 @@ def get_recent_surveillance_sessions_for_pppoe(pppoe, limit=10):
             (pppoe, limit),
         ).fetchall()
         return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def list_surveillance_cycle_sessions(pppoe, observed_count):
+    pppoe = (pppoe or "").strip()
+    try:
+        observed_count = int(observed_count or 0)
+    except Exception:
+        observed_count = 0
+    if not pppoe or observed_count <= 0:
+        return []
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, pppoe, source, started_at, ended_at, end_reason, end_note,
+                   under_seconds, level2_seconds, observe_seconds,
+                   observed_count, last_state, last_ip, updated_at
+            FROM surveillance_sessions
+            WHERE LOWER(pppoe) = LOWER(?)
+              AND observed_count = ?
+            ORDER BY COALESCE(started_at, ended_at, updated_at) ASC, id ASC
+            """,
+            (pppoe, observed_count),
+        ).fetchall()
+        return [dict(row) for row in rows] if rows else []
     finally:
         conn.close()
 
@@ -3264,6 +3435,45 @@ def list_auth_audit_logs(limit=200):
             (limit,),
         ).fetchall()
         return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def list_surveillance_audit_logs_for_pppoe(pppoe, since_iso="", until_iso="", limit=200):
+    pppoe = (pppoe or "").strip()
+    since_iso = (since_iso or "").strip()
+    until_iso = (until_iso or "").strip()
+    try:
+        limit = int(limit or 200)
+    except Exception:
+        limit = 200
+    limit = max(1, min(limit, 2000))
+    if not pppoe:
+        return []
+    conn = get_conn()
+    try:
+        sql = [
+            """
+            SELECT timestamp, user_id, username, action, resource, details, ip_address
+            FROM auth_audit_logs
+            WHERE action LIKE ?
+              AND (
+                LOWER(resource) = LOWER(?)
+                OR LOWER(resource) LIKE ?
+              )
+            """
+        ]
+        params = ["surveillance.%", pppoe, f"%{pppoe.lower()}%"]
+        if since_iso:
+            sql.append("AND timestamp >= ?")
+            params.append(since_iso)
+        if until_iso:
+            sql.append("AND timestamp <= ?")
+            params.append(until_iso)
+        sql.append("ORDER BY timestamp ASC LIMIT ?")
+        params.append(limit)
+        rows = conn.execute("\n".join(sql), tuple(params)).fetchall()
+        return [dict(row) for row in rows] if rows else []
     finally:
         conn.close()
 
@@ -4738,6 +4948,209 @@ def delete_pppoe_usage_samples_for_pppoe(pppoe):
     try:
         with conn:
             conn.execute("DELETE FROM pppoe_usage_samples WHERE LOWER(pppoe) = LOWER(?)", (pppoe,))
+    finally:
+        conn.close()
+
+
+def insert_usage_modem_reboot_history(
+    attempted_at,
+    pppoe,
+    *,
+    router_id="",
+    router_name="",
+    address="",
+    device_id="",
+    issue_opened_at="",
+    retry_index=0,
+    retry_limit=0,
+    status="",
+    verification_status="",
+    task_id="",
+    http_status=None,
+    buffer_until="",
+    next_retry_at="",
+    error_message="",
+    detail="",
+):
+    conn = get_conn()
+    params = (
+        attempted_at,
+        None,
+        pppoe,
+        router_id,
+        router_name,
+        address,
+        device_id,
+        issue_opened_at,
+        retry_index,
+        retry_limit,
+        status,
+        verification_status,
+        task_id,
+        http_status,
+        buffer_until,
+        next_retry_at,
+        error_message,
+        detail,
+    )
+    try:
+        with conn:
+            try:
+                row = conn.execute(
+                    """
+                    INSERT INTO usage_modem_reboot_history
+                        (attempted_at, verified_at, pppoe, router_id, router_name, address, device_id,
+                         issue_opened_at, retry_index, retry_limit, status, verification_status,
+                         task_id, http_status, buffer_until, next_retry_at, error_message, detail)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    RETURNING id
+                    """,
+                    params,
+                ).fetchone()
+                return int(_row_get(row, "id", 0) or 0)
+            except Exception:
+                conn.execute(
+                    """
+                    INSERT INTO usage_modem_reboot_history
+                        (attempted_at, verified_at, pppoe, router_id, router_name, address, device_id,
+                         issue_opened_at, retry_index, retry_limit, status, verification_status,
+                         task_id, http_status, buffer_until, next_retry_at, error_message, detail)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    params,
+                )
+                row = conn.execute(
+                    """
+                    SELECT id
+                    FROM usage_modem_reboot_history
+                    WHERE attempted_at = ? AND LOWER(pppoe) = LOWER(?) AND COALESCE(router_id, '') = COALESCE(?, '')
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (attempted_at, pppoe, router_id),
+                ).fetchone()
+                return int(_row_get(row, "id", 0) or 0)
+    finally:
+        conn.close()
+
+
+def update_usage_modem_reboot_history(history_id, **fields):
+    try:
+        history_id = int(history_id or 0)
+    except Exception:
+        history_id = 0
+    if history_id <= 0:
+        return
+    allowed = {
+        "verified_at",
+        "verification_status",
+        "status",
+        "task_id",
+        "http_status",
+        "buffer_until",
+        "next_retry_at",
+        "error_message",
+        "detail",
+    }
+    updates = []
+    params = []
+    for key, value in fields.items():
+        if key not in allowed:
+            continue
+        updates.append(f"{key} = ?")
+        params.append(value)
+    if not updates:
+        return
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute(
+                f"UPDATE usage_modem_reboot_history SET {', '.join(updates)} WHERE id = ?",
+                tuple(params) + (history_id,),
+            )
+    finally:
+        conn.close()
+
+
+def list_usage_modem_reboot_history(limit=200):
+    try:
+        limit = int(limit or 200)
+    except Exception:
+        limit = 200
+    limit = max(1, min(limit, 1000))
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                id,
+                attempted_at,
+                verified_at,
+                pppoe,
+                router_id,
+                router_name,
+                address,
+                device_id,
+                issue_opened_at,
+                retry_index,
+                retry_limit,
+                status,
+                verification_status,
+                task_id,
+                http_status,
+                buffer_until,
+                next_retry_at,
+                error_message,
+                detail
+            FROM usage_modem_reboot_history
+            ORDER BY attempted_at DESC, id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def count_usage_modem_reboot_history():
+    conn = get_conn()
+    try:
+        row = conn.execute("SELECT COUNT(*) AS count_value FROM usage_modem_reboot_history").fetchone()
+        return int(_row_get(row, "count_value", 0) or 0)
+    finally:
+        conn.close()
+
+
+def delete_usage_modem_reboot_history_older_than(cutoff_iso):
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM usage_modem_reboot_history WHERE attempted_at < ?", (cutoff_iso,))
+    finally:
+        conn.close()
+
+
+def clear_usage_modem_reboot_history():
+    conn = get_conn()
+    try:
+        with conn:
+            if _use_postgres():
+                conn.execute("TRUNCATE TABLE usage_modem_reboot_history RESTART IDENTITY")
+            else:
+                conn.execute("DELETE FROM usage_modem_reboot_history")
+    finally:
+        conn.close()
+
+
+def delete_usage_modem_reboot_history_for_pppoe(pppoe):
+    pppoe = (pppoe or "").strip()
+    if not pppoe:
+        return
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM usage_modem_reboot_history WHERE LOWER(pppoe) = LOWER(?)", (pppoe,))
     finally:
         conn.close()
 
