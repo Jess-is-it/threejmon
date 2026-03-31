@@ -821,6 +821,7 @@
     let offlineNewSeenInFlight = false;
     let offlineNewSeenDueAt = 0;
     let offlineNewSeenSignature = "";
+    let offlineNewFocusSignature = "";
 
     const radiusAccountsSearchKey = "offline_radius_accounts_search_v1";
     const radiusAccountsStatusKey = "offline_radius_accounts_status_v1";
@@ -1374,6 +1375,37 @@
       }
     }
 
+    function findFirstNewOfflineTarget(filteredByRule) {
+      for (const rule of currentRules) {
+        const ruleId = String(rule?.id || "").trim();
+        if (!ruleId) continue;
+        const rows = Array.isArray(filteredByRule?.[ruleId]) ? filteredByRule[ruleId] : [];
+        const row = rows.find((item) => item?.is_new);
+        if (!row) continue;
+        return {
+          ruleId,
+          entryId: String(row.entry_id || "").trim(),
+        };
+      }
+      return null;
+    }
+
+    function focusOfflineNewRow(target) {
+      if (!target || !currentBody) return;
+      const entryId = String(target.entryId || "").trim();
+      let rowEl = null;
+      if (entryId) {
+        rowEl = currentBody.querySelector(`[data-offline-entry-id="${CSS.escape(entryId)}"]`);
+      }
+      if (!rowEl) {
+        rowEl = currentBody.querySelector('[data-offline-entry-id][data-offline-new-entry="1"]');
+      }
+      if (!rowEl) return;
+      rowEl.scrollIntoView({ block: "center", behavior: "smooth" });
+      rowEl.classList.add("table-primary");
+      window.setTimeout(() => rowEl.classList.remove("table-primary"), 4000);
+    }
+
     function renderAllTables(forceSearchFocus = false, options = {}) {
       const skipCurrentRender = !!options.skipCurrentRender;
       const skipHistoryRender = !!options.skipHistoryRender;
@@ -1390,6 +1422,25 @@
         filteredByRule[ruleId] = sortRows(filterRows(Array.isArray(rows) ? rows : []), "current");
       });
       syncOfflineSearchTabs(filteredByRule, historyMatchCount, forceSearchFocus);
+      const allowNewFocus = !forceSearchFocus && !String(searchQuery || "").trim();
+      const firstNewTarget = allowNewFocus ? findFirstNewOfflineTarget(filteredByRule) : null;
+      let focusNewAfterRender = false;
+      if (firstNewTarget) {
+        const signature = `${firstNewTarget.ruleId}:${firstNewTarget.entryId}`;
+        if (
+          offlineNewFocusSignature !== signature ||
+          activeStatusView.type !== "rule" ||
+          activeStatusView.ruleId !== firstNewTarget.ruleId ||
+          currentPage !== 1
+        ) {
+          offlineNewFocusSignature = signature;
+          activeStatusView = { type: "rule", ruleId: firstNewTarget.ruleId };
+          currentPage = 1;
+          focusNewAfterRender = true;
+        }
+      } else if (allowNewFocus) {
+        offlineNewFocusSignature = "";
+      }
       ensureActiveStatusView();
       const activeRule = getActiveRule();
       const currentRows = activeRule ? (filteredByRule[String(activeRule.id || "").trim()] || []) : [];
@@ -1426,6 +1477,9 @@
       if (!skipHistoryRender && historyTableWrap) {
         historyTableWrap.scrollTop = resetHistoryScroll ? 0 : historyScrollTop;
         historyTableWrap.scrollLeft = resetHistoryScroll ? 0 : historyScrollLeft;
+      }
+      if (focusNewAfterRender && !skipCurrentRender) {
+        focusOfflineNewRow(firstNewTarget);
       }
     }
 
