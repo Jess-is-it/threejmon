@@ -15768,9 +15768,20 @@ async def surveillance_page(request: Request):
 
     surveillance_logs_query = (request.query_params.get("logs_q") or "").strip() if active_tab == "logs" else ""
     surveillance_logs_page = _parse_table_page(request.query_params.get("logs_page"), default=1) if active_tab == "logs" else 1
-    surveillance_logs_limit = 80
+    surveillance_logs_limit = _parse_table_limit(request.query_params.get("logs_limit"), default=100) if active_tab == "logs" else 100
     surveillance_logs_rows = []
-    surveillance_logs_pagination = {"page": 1, "pages": 1, "total": 0}
+    surveillance_logs_pagination = {
+        "page": 1,
+        "pages": 1,
+        "limit": surveillance_logs_limit,
+        "total": 0,
+        "start": 0,
+        "end": 0,
+        "has_prev": False,
+        "has_next": False,
+        "options": TABLE_PAGE_SIZE_OPTIONS,
+        "limit_label": str(surveillance_logs_limit),
+    }
     if active_tab == "logs":
         logs_rows = _audit_log_rows(limit=20000, surveillance_only=True)
         if surveillance_logs_query:
@@ -15784,15 +15795,9 @@ async def surveillance_page(request: Request):
                 or query_text in (row.get("details") or "").lower()
                 or query_text in (row.get("ip_address") or "").lower()
             ]
-        total_logs = len(logs_rows)
-        page_logs = max(surveillance_logs_page, 1)
-        pages_logs = max((total_logs + surveillance_logs_limit - 1) // surveillance_logs_limit, 1)
-        if page_logs > pages_logs:
-            page_logs = pages_logs
-        start_idx = (page_logs - 1) * surveillance_logs_limit
-        end_idx = start_idx + surveillance_logs_limit
-        surveillance_logs_rows = logs_rows[start_idx:end_idx]
-        surveillance_logs_pagination = {"page": page_logs, "pages": pages_logs, "total": total_logs}
+        surveillance_logs_rows, surveillance_logs_pagination = _paginate_items(logs_rows, surveillance_logs_page, surveillance_logs_limit)
+        surveillance_logs_pagination["options"] = TABLE_PAGE_SIZE_OPTIONS
+        surveillance_logs_pagination["limit_label"] = str(surveillance_logs_pagination.get("limit") or surveillance_logs_limit or "ALL")
 
     return templates.TemplateResponse(
         "surveillance.html",

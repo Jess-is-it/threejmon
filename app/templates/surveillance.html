@@ -1965,12 +1965,13 @@
 	      </div>
 
 	      <div class="tab-pane {% if active_tab == 'logs' %}active{% endif %}" id="surv-logs">
+          {% set logs_meta = surveillance_logs_pagination or {} %}
 	        <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
 	          <div>
 	            <h4 class="mb-1">Logs Tracking</h4>
 	            <div class="text-muted small">User actions in Under Surveillance workflow (manual add, moves, fixes, remarks).</div>
 	            <div class="mt-2">
-	              <span class="badge bg-indigo-lt text-indigo">Total: {{ (surveillance_logs_pagination.total if surveillance_logs_pagination else (surveillance_logs_rows|length)) }}</span>
+	              <span class="badge bg-indigo-lt text-indigo">Total: {{ (logs_meta.total if surveillance_logs_pagination else (surveillance_logs_rows|length)) }}</span>
 	            </div>
 	          </div>
 	          <div class="d-flex align-items-center gap-2">
@@ -1978,7 +1979,16 @@
 	              <input class="form-control form-control-sm" id="surv-logs-search" type="text" placeholder="Search user/action/account/remarks" autocomplete="off" value="{{ surveillance_logs_query or '' }}" />
 	              <button type="button" class="input-icon-addon search-addon-btn" data-search-clear-btn aria-label="Search"><i class="ti ti-search"></i></button>
 	            </div>
-	            <a class="btn btn-outline-secondary btn-sm" href="/surveillance?tab=logs{% if surveillance_logs_query %}&logs_q={{ surveillance_logs_query|urlencode }}{% endif %}#surv-logs">Refresh</a>
+              <div class="dropdown">
+                <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown">Show: {{ logs_meta.limit_label or 100 }}</button>
+                <div class="dropdown-menu dropdown-menu-end">
+                  {% for opt in logs_meta.options or [50, 100, 200, 500, 1000] %}
+                    <a class="dropdown-item"
+                       href="/surveillance?tab=logs&logs_limit={{ opt }}&logs_page=1{% if surveillance_logs_query %}&logs_q={{ surveillance_logs_query|urlencode }}{% endif %}#surv-logs">{{ opt }}</a>
+                  {% endfor %}
+                </div>
+              </div>
+	            <a class="btn btn-outline-secondary btn-sm" href="/surveillance?tab=logs&logs_limit={{ logs_meta.limit or 100 }}{% if surveillance_logs_query %}&logs_q={{ surveillance_logs_query|urlencode }}{% endif %}#surv-logs">Refresh</a>
 	          </div>
 	        </div>
 
@@ -2013,21 +2023,26 @@
 	          </table>
 	        </div>
 
-	        {% if surveillance_logs_pagination and surveillance_logs_pagination.pages > 1 %}
-	          <div class="d-flex align-items-center justify-content-between mt-3">
-	            <div class="text-muted small">
-	              Page {{ surveillance_logs_pagination.page }} of {{ surveillance_logs_pagination.pages }} · {{ surveillance_logs_pagination.total }} total
-	            </div>
-	            <div class="btn-group">
-	              {% set prev_logs_page = surveillance_logs_pagination.page - 1 %}
-	              {% set next_logs_page = surveillance_logs_pagination.page + 1 %}
-	              <a class="btn btn-sm btn-outline-secondary {% if surveillance_logs_pagination.page <= 1 %}disabled{% endif %}"
-	                 href="/surveillance?tab=logs&logs_page={{ prev_logs_page }}{% if surveillance_logs_query %}&logs_q={{ surveillance_logs_query|urlencode }}{% endif %}#surv-logs">Prev</a>
-	              <a class="btn btn-sm btn-outline-secondary {% if surveillance_logs_pagination.page >= surveillance_logs_pagination.pages %}disabled{% endif %}"
-	                 href="/surveillance?tab=logs&logs_page={{ next_logs_page }}{% if surveillance_logs_query %}&logs_q={{ surveillance_logs_query|urlencode }}{% endif %}#surv-logs">Next</a>
-	            </div>
-	          </div>
-	        {% endif %}
+          {% set prev_logs_page = logs_meta.page - 1 if logs_meta.page > 1 else 1 %}
+          {% set next_logs_page = logs_meta.page + 1 if logs_meta.page < logs_meta.pages else logs_meta.pages %}
+          <div class="d-flex flex-wrap align-items-center justify-content-between mt-3 gap-2">
+            <div class="text-muted small">Showing {{ logs_meta.start }}–{{ logs_meta.end }} of {{ logs_meta.total }}</div>
+            {% if logs_meta.pages > 1 %}
+              <div class="d-flex align-items-center gap-2">
+                <span class="text-muted small">Page {{ logs_meta.page }} of {{ logs_meta.pages }}</span>
+                <ul class="pagination pagination-sm mb-0">
+                  <li class="page-item {% if not logs_meta.has_prev %}disabled{% endif %}">
+                    <a class="page-link"
+                       href="/surveillance?tab=logs&logs_limit={{ logs_meta.limit or 100 }}&logs_page={{ prev_logs_page }}{% if surveillance_logs_query %}&logs_q={{ surveillance_logs_query|urlencode }}{% endif %}#surv-logs">Prev</a>
+                  </li>
+                  <li class="page-item {% if not logs_meta.has_next %}disabled{% endif %}">
+                    <a class="page-link"
+                       href="/surveillance?tab=logs&logs_limit={{ logs_meta.limit or 100 }}&logs_page={{ next_logs_page }}{% if surveillance_logs_query %}&logs_q={{ surveillance_logs_query|urlencode }}{% endif %}#surv-logs">Next</a>
+                  </li>
+                </ul>
+              </div>
+            {% endif %}
+          </div>
 	      </div>
 
         <div class="modal modal-blur fade" id="surv-history-modal" tabindex="-1" role="dialog" aria-hidden="true">
@@ -2876,6 +2891,7 @@
             if (tab !== "logs") {
               url.searchParams.delete("logs_q");
               url.searchParams.delete("logs_page");
+              url.searchParams.delete("logs_limit");
             }
             const hash = Object.entries(surveillanceTabMap).find(([, value]) => value === tab)?.[0];
             if (hash) url.hash = hash;
@@ -3412,6 +3428,7 @@
             const url = new URL(window.location.href);
             url.searchParams.set("tab", "logs");
             url.searchParams.set("logs_page", "1");
+            if (!url.searchParams.get("logs_limit")) url.searchParams.set("logs_limit", "100");
             if (q) url.searchParams.set("logs_q", q);
             else url.searchParams.delete("logs_q");
             url.hash = "#surv-logs";
