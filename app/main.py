@@ -19109,7 +19109,8 @@ def _system_settings_caps(request: Request):
     }
     caps.update(_system_danger_capabilities(request))
     caps.update(_system_update_capabilities(request))
-    caps["can_view_general_tab"] = caps["can_view_system_branding"] or caps["can_view_system_telegram"]
+    caps["can_view_general_tab"] = caps["can_view_system_branding"]
+    caps["can_view_telegram_tab"] = caps["can_view_system_telegram"]
     caps["can_view_routers_tab"] = (
         caps["can_view_system_router_cores"]
         or caps["can_view_system_router_mikrotik"]
@@ -19129,7 +19130,7 @@ def _normalize_system_settings_tabs(active_tab: str, routers_tab: str, access_ta
     routers_tab = (routers_tab or "cores").strip().lower()
     access_tab = (access_tab or "auth").strip().lower()
 
-    if active_tab not in {"general", "routers", "access", "update", "backup", "danger"}:
+    if active_tab not in {"general", "telegram", "routers", "access", "update", "backup", "danger"}:
         active_tab = "general"
     if routers_tab not in {"cores", "mikrotik-routers", "isps"}:
         routers_tab = "cores"
@@ -19139,6 +19140,8 @@ def _normalize_system_settings_tabs(active_tab: str, routers_tab: str, access_ta
     allowed_main_tabs = []
     if caps.get("can_view_general_tab"):
         allowed_main_tabs.append("general")
+    if caps.get("can_view_telegram_tab"):
+        allowed_main_tabs.append("telegram")
     if caps.get("can_view_routers_tab"):
         allowed_main_tabs.append("routers")
     if caps.get("can_view_access_tab"):
@@ -19461,7 +19464,7 @@ async def system_telegram_save(request: Request):
     settings["telegram"] = telegram
     save_settings("isp_ping", settings)
     message = "Telegram command settings saved."
-    return render_system_settings_response(request, message, active_tab="general", routers_tab="cores")
+    return render_system_settings_response(request, message, active_tab="telegram", routers_tab="cores")
 
 
 @app.post("/settings/system/ai", response_class=HTMLResponse)

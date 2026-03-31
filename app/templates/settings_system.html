@@ -15,6 +15,11 @@
       <a href="#sys-general" class="nav-link {% if active_tab == 'general' %}active{% endif %}" data-bs-toggle="tab">General</a>
     </li>
   {% endif %}
+  {% if can_view_telegram_tab %}
+    <li class="nav-item">
+      <a href="#sys-telegram" class="nav-link {% if active_tab == 'telegram' %}active{% endif %}" data-bs-toggle="tab">Telegram Commands</a>
+    </li>
+  {% endif %}
   {% if can_view_routers_tab %}
     <li class="nav-item">
       <a href="#sys-routers" class="nav-link {% if active_tab == 'routers' %}active{% endif %}" data-bs-toggle="tab">Routers</a>
@@ -42,7 +47,7 @@
   {% endif %}
 </ul>
 
-{% if not can_view_general_tab and not can_view_routers_tab and not can_view_access_tab and not can_view_update_tab and not can_manage_import_export and not can_view_danger_tab %}
+{% if not can_view_general_tab and not can_view_telegram_tab and not can_view_routers_tab and not can_view_access_tab and not can_view_update_tab and not can_manage_import_export and not can_view_danger_tab %}
   <div class="alert alert-warning">Your role can open System Settings, but no system sections are assigned yet.</div>
 {% endif %}
 
@@ -115,7 +120,12 @@
       </div>
     </div>
     {% endif %}
+  </div>
 
+  <div class="tab-pane {% if active_tab == 'telegram' %}active{% endif %}" id="sys-telegram">
+    {% if not can_view_telegram_tab %}
+      <div class="alert alert-warning">You do not have permission to view Telegram Commands.</div>
+    {% endif %}
     {% if can_view_system_telegram %}
       <div class="card mb-4">
         <div class="card-header">
