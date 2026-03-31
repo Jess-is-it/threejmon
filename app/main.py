@@ -3740,7 +3740,7 @@ remote_date=$(git_repo log -1 --format=%cs "$remote_ref")
 ahead=$(git_repo rev-list --count "$remote_ref"..HEAD)
 behind=$(git_repo rev-list --count HEAD.."$remote_ref")
 dirty=0
-dirty_lines=$(git_repo status --short --untracked-files=no || true)
+dirty_lines=$(git_repo status --short --untracked-files=no | awk 'substr($0,4) != ".threej_version"' || true)
 if [ -n "$dirty_lines" ]; then
   dirty=1
 fi
