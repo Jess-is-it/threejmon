@@ -97,12 +97,12 @@
           <div class="col-12">
             <form method="post" action="/settings/system/branding">
               <label class="form-label">System Display Name <span class="info" data-tip="Used in system emails (subjects and messages).">i</span></label>
-              <div class="row g-2">
-                <div class="col-12 col-lg-8">
+              <div class="row g-2 align-items-end">
+                <div class="col-12 col-lg">
                   <input class="form-control" type="text" name="branding_app_name" maxlength="80" value="{{ (system_settings.branding.app_name if system_settings and system_settings.branding else 'ThreeJ Notifier') or 'ThreeJ Notifier' }}" required {% if not can_edit_system_branding %}readonly{% endif %} />
                 </div>
-                <div class="col-12 col-lg-4">
-                  <button type="submit" class="btn btn-primary w-100" {% if not can_edit_system_branding %}disabled{% endif %}>Save Display Name</button>
+                <div class="col-12 col-lg-auto">
+                  <button type="submit" class="btn btn-primary" {% if not can_edit_system_branding %}disabled{% endif %}>Save Display Name</button>
                 </div>
               </div>
               <div class="text-muted small mt-1">Example: this changes email titles like “Account created” and “Password reset”.</div>
