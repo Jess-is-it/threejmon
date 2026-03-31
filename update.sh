@@ -170,7 +170,7 @@ detect_branch() {
 
 ensure_clean_repo() {
   local tracked_status
-  tracked_status=$(git_repo status --short --untracked-files=no | awk 'substr($0,4) != ".threej_version"' || true)
+  tracked_status=$(git_repo status --porcelain=v1 --untracked-files=no | awk 'substr($0,4) != ".threej_version"' || true)
   if [ -n "${tracked_status}" ]; then
     log "Tracked local changes were found in ${INSTALL_DIR}:"
     printf "%s\n" "${tracked_status}"
