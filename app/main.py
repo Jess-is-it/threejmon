@@ -3650,48 +3650,15 @@ set -eu
 REPO={shlex.quote(repo)}
 OVERRIDE_SOURCE={shlex.quote(str(os.environ.get("THREEJ_REPO_URL") or "").strip())}
 CHECK_REF=refs/threejmon-system-update/check
-APP_USER=${{THREEJ_APP_USER:-threejnotif}}
-GIT_USER=${{THREEJ_GIT_USER:-$APP_USER}}
-git_store_writable() {{
-  local user path
-  user=${{1:-}}
-  for path in "$REPO/.git" "$REPO/.git/objects" "$REPO/.git/refs"; do
-    [ -e "$path" ] || continue
-    if command -v runuser >/dev/null 2>&1; then
-      if ! runuser -u "$user" -- test -w "$path"; then
-        return 1
-      fi
-    elif [ ! -w "$path" ]; then
-      return 1
-    fi
-  done
-  return 0
-}}
-if ! id "$GIT_USER" >/dev/null 2>&1; then
-  GIT_USER=root
-  GIT_HOME=/root
-else
-  GIT_HOME=$(getent passwd "$GIT_USER" | cut -d: -f6)
-  if [ -z "$GIT_HOME" ] || [ ! -d "$GIT_HOME" ]; then
-    GIT_USER=root
-    GIT_HOME=/root
-  elif [ "$GIT_USER" != "root" ]; then
-    if ! git_store_writable "$GIT_USER"; then
-      GIT_USER=root
-      GIT_HOME=/root
-    fi
-  fi
+GIT_USER=root
+GIT_HOME=/root
+if [ -d "$REPO/.git" ]; then
+  chown -R root:root "$REPO/.git"
+  find "$REPO/.git" -type d -exec chmod u+rwx {{}} \\; >/dev/null 2>&1 || true
+  find "$REPO/.git" -type f -exec chmod u+rw {{}} \\; >/dev/null 2>&1 || true
 fi
 git_repo() {{
-  if [ "$GIT_USER" = "root" ]; then
-    git -c safe.directory="$REPO" -C "$REPO" "$@"
-    return
-  fi
-  if command -v runuser >/dev/null 2>&1; then
-    runuser -u "$GIT_USER" -- env HOME="$GIT_HOME" USER="$GIT_USER" LOGNAME="$GIT_USER" git -c safe.directory="$REPO" -C "$REPO" "$@"
-    return
-  fi
-  su -s /bin/bash "$GIT_USER" -c "HOME=$(printf '%q' "$GIT_HOME") USER=$(printf '%q' "$GIT_USER") LOGNAME=$(printf '%q' "$GIT_USER") git -c safe.directory=$(printf '%q' "$REPO") -C $(printf '%q' "$REPO") $*"
+  HOME="$GIT_HOME" USER="$GIT_USER" LOGNAME="$GIT_USER" git -c safe.directory="$REPO" -C "$REPO" "$@"
 }}
 normalize_source_url() {{
   local raw
@@ -3739,7 +3706,7 @@ fi
 if [ -z "$source_url" ]; then
   source_url=origin
 fi
-git_repo fetch --no-write-fetch-head "$source_url" "$branch:$CHECK_REF"
+git_repo fetch --quiet --no-write-fetch-head "$source_url" "$branch:$CHECK_REF"
 remote_ref="$CHECK_REF"
 local_full=$(git_repo rev-parse HEAD)
 local_short=$(git_repo rev-parse --short HEAD)

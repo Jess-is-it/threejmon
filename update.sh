@@ -5,7 +5,7 @@ APP_USER=${THREEJ_APP_USER:-threejnotif}
 INSTALL_DIR=${THREEJ_INSTALL_DIR:-/opt/threejnotif}
 BRANCH=${THREEJ_BRANCH:-}
 REPO_URL=${THREEJ_REPO_URL:-}
-GIT_USER=${THREEJ_GIT_USER:-${SUDO_USER:-$APP_USER}}
+GIT_USER=root
 SKIP_REBUILD=${THREEJ_SKIP_REBUILD:-0}
 FORCE_REBUILD=${THREEJ_FORCE_REBUILD:-0}
 STATUS_FILE=${THREEJ_STATUS_FILE:-${INSTALL_DIR}/data/system_update_status.json}
@@ -110,39 +110,19 @@ ensure_repo() {
   fi
 }
 
+repair_git_store() {
+  if [ ! -d "${INSTALL_DIR}/.git" ]; then
+    return
+  fi
+  chown -R root:root "${INSTALL_DIR}/.git"
+  find "${INSTALL_DIR}/.git" -type d -exec chmod u+rwx {} \; >/dev/null 2>&1 || true
+  find "${INSTALL_DIR}/.git" -type f -exec chmod u+rw {} \; >/dev/null 2>&1 || true
+}
+
 resolve_git_user() {
-  git_store_writable() {
-    local user=$1
-    local path
-    for path in "${INSTALL_DIR}/.git" "${INSTALL_DIR}/.git/objects" "${INSTALL_DIR}/.git/refs"; do
-      [ -e "${path}" ] || continue
-      if command -v runuser >/dev/null 2>&1; then
-        if ! runuser -u "${user}" -- test -w "${path}"; then
-          return 1
-        fi
-      elif [ ! -w "${path}" ]; then
-        return 1
-      fi
-    done
-    return 0
-  }
-  if ! id "${GIT_USER}" >/dev/null 2>&1; then
-    GIT_USER=root
-    GIT_HOME=/root
-    return
-  fi
-  GIT_HOME=$(getent passwd "${GIT_USER}" | cut -d: -f6)
-  if [ -z "${GIT_HOME}" ] || [ ! -d "${GIT_HOME}" ]; then
-    GIT_USER=root
-    GIT_HOME=/root
-    return
-  fi
-  if [ "${GIT_USER}" != "root" ]; then
-    if ! git_store_writable "${GIT_USER}"; then
-      GIT_USER=root
-      GIT_HOME=/root
-    fi
-  fi
+  repair_git_store
+  GIT_USER=root
+  GIT_HOME=/root
 }
 
 run_as_git_user() {
@@ -208,7 +188,7 @@ run_update() {
   STATUS_OLD_COMMIT=${old_commit}
   set_phase 1 "fetching" "Fetching latest ${BRANCH}..."
   log "Fetching ${BRANCH}..."
-  git_repo fetch "${source_ref}" "${BRANCH}"
+  git_repo fetch --quiet "${source_ref}" "${BRANCH}"
   set_phase 2 "pulling" "Pulling latest ${BRANCH}..."
   log "Pulling latest ${BRANCH}..."
   git_repo pull --ff-only "${source_ref}" "${BRANCH}"
