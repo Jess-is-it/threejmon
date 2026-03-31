@@ -166,7 +166,7 @@ PH_TZ = ZoneInfo("Asia/Manila")
 DATA_DIR = Path("/data")
 SYSTEM_UPDATE_STATUS_PATH = DATA_DIR / "system_update_status.json"
 SYSTEM_UPDATE_LOG_PATH = DATA_DIR / "system_update.log"
-SYSTEM_UPDATE_CHECK_LIMIT = 20
+SYSTEM_UPDATE_CHECK_LIMIT = 50
 SYSTEM_UPDATE_LOG_TAIL_BYTES = 16384
 SYSTEM_UPDATE_STALE_SECONDS = 1800
 
@@ -3658,7 +3658,24 @@ def _system_update_parse_check_output(output: str):
                     "subject": parts[5].strip(),
                 }
             )
-    info["has_update"] = info["behind"] > 0 and bool(info["latest"]["full"])
+    info["has_update"] = bool(info["latest"]["full"]) and info["current"]["full"] != info["latest"]["full"]
+    current_full = info["current"]["full"]
+    current_index = -1
+    for idx, item in enumerate(info["commits"]):
+        if item.get("full") == current_full:
+            current_index = idx
+            break
+    for idx, item in enumerate(info["commits"]):
+        item["is_current"] = item.get("full") == current_full
+        item["is_latest"] = idx == 0
+        if item["is_current"]:
+            item["state"] = "installed"
+        elif current_index >= 0:
+            item["state"] = "newer" if idx < current_index else "older"
+        elif idx == 0:
+            item["state"] = "latest"
+        else:
+            item["state"] = "available"
     return info
 
 
@@ -3759,7 +3776,7 @@ if [ -n "$dirty_lines" ]; then
     printf 'DIRTY\\x1f%s\\n' "$line"
   done
 fi
-git_repo log --date=short --pretty=format:'COMMIT%x1f%H%x1f%h%x1f%cs%x1f%an%x1f%s' HEAD.."$remote_ref" | head -n {limit}
+git_repo log --date=short --pretty=format:'COMMIT%x1f%H%x1f%h%x1f%cs%x1f%an%x1f%s' -n {limit} "$remote_ref"
 """
     ok, output = run_host_command(script, timeout_seconds=120)
     if not ok:
@@ -3777,7 +3794,7 @@ def _system_update_docker_path() -> str:
     return shutil.which("docker") or ""
 
 
-def _start_system_update_runner(check_info: dict):
+def _start_system_update_runner(check_info: dict, target_commit: str = "", allow_dirty: bool = False):
     docker_path = _system_update_docker_path()
     host_repo = _system_update_host_repo()
     host_status_file = f"{host_repo.rstrip('/')}/data/system_update_status.json"
@@ -3786,11 +3803,13 @@ def _start_system_update_runner(check_info: dict):
     source_url = _system_update_preferred_source(
         str((check_info or {}).get("source_url") or (check_info or {}).get("remote_url") or "")
     )
+    target_commit = str(target_commit or "").strip() or (((check_info or {}).get("latest") or {}).get("full") or "")
+    target_short = target_commit[:7] if target_commit else ""
     queued = _write_system_update_status(
         {
             "status": "queued",
             "phase": "queued",
-            "message": "Update queued.",
+            "message": f"Update to {target_short or 'selected commit'} queued.",
             "step_index": 0,
             "step_total": 5,
             "percent": 0,
@@ -3798,7 +3817,7 @@ def _start_system_update_runner(check_info: dict):
             "updated_at": utc_now_iso(),
             "branch": branch,
             "old_commit": ((check_info or {}).get("current") or {}).get("full") or "",
-            "new_commit": ((check_info or {}).get("latest") or {}).get("full") or "",
+            "new_commit": target_commit,
             "remote_url": source_url or (check_info or {}).get("remote_url") or "",
             "trigger": "system-ui",
             "runner_id": "",
@@ -3818,6 +3837,8 @@ def _start_system_update_runner(check_info: dict):
         f"THREEJ_UPDATE_TRIGGER=system-ui "
         f"THREEJ_BRANCH={shlex.quote(branch)} "
         f"THREEJ_REPO_URL={shlex.quote(source_url)} "
+        f"THREEJ_TARGET_COMMIT={shlex.quote(target_commit)} "
+        f"THREEJ_ALLOW_DIRTY={'1' if allow_dirty else '0'} "
         f"{shlex.quote(host_repo.rstrip('/') + '/update.sh')} >> {shlex.quote(host_log_file)} 2>&1"
     )
     runner_id = ""
@@ -7899,35 +7920,55 @@ async def system_update_start_route(request: Request):
             {"ok": False, "error": str(check_payload or "").strip() or "Unable to check for updates."},
             status_code=500,
         )
-    if check_payload.get("is_dirty"):
+    current_full = str(((check_payload or {}).get("current") or {}).get("full") or "").strip()
+    latest_full = str(((check_payload or {}).get("latest") or {}).get("full") or "").strip()
+    target_commit = str(form.get("target_commit") or latest_full).strip()
+    commit_map = {
+        str(item.get("full") or "").strip(): item
+        for item in ((check_payload or {}).get("commits") or [])
+        if str(item.get("full") or "").strip()
+    }
+    if not target_commit:
+        return _json_no_store({"ok": False, "error": "No target commit was selected."}, status_code=400)
+    if target_commit == current_full:
         return _json_no_store(
             {
                 "ok": False,
-                "error": "Tracked local changes were found in the install directory. Commit or stash them before updating.",
+                "error": "The selected commit is already installed.",
                 "check": check_payload,
             },
-            status_code=409,
+            status_code=400,
         )
-    if not check_payload.get("has_update"):
+    if target_commit not in commit_map and target_commit != latest_full:
         return _json_no_store(
             {
                 "ok": False,
-                "error": "The system is already up to date.",
+                "error": "Select one of the commits listed in Latest Remote Changes.",
                 "check": check_payload,
             },
             status_code=400,
         )
 
     try:
-        queued_status = _start_system_update_runner(check_payload)
+        queued_status = _start_system_update_runner(
+            check_payload,
+            target_commit=target_commit,
+            allow_dirty=bool((check_payload or {}).get("is_dirty")),
+        )
     except Exception as exc:
         return _json_no_store({"ok": False, "error": f"Failed to start update: {exc}"}, status_code=500)
 
+    target_info = commit_map.get(target_commit) or {}
     _auth_log_event(
         request,
         action="system.update.started",
         resource="/settings/system/update/start",
-        details=f"branch={check_payload.get('branch') or 'master'};from={(check_payload.get('current') or {}).get('short') or ''};to={(check_payload.get('latest') or {}).get('short') or ''}",
+        details=(
+            f"branch={check_payload.get('branch') or 'master'};"
+            f"from={(check_payload.get('current') or {}).get('short') or ''};"
+            f"to={target_info.get('short') or target_commit[:7]};"
+            f"dirty={1 if (check_payload or {}).get('is_dirty') else 0}"
+        ),
     )
     return _json_no_store(
         {

@@ -1026,7 +1026,7 @@
         <div>
           <div class="fw-semibold">In-app system updates</div>
           <div class="small text-muted mt-1">
-            This tab checks the tracked Git branch on the server, shows the latest pending commits, and runs the existing one-line updater from the host. During rebuild, the page may temporarily lose connection while services restart.
+            This tab checks the tracked Git branch on the server, shows the latest 50 remote commits, and can switch this server to a selected commit from the GUI. During rebuild, the page may temporarily lose connection while services restart.
           </div>
         </div>
       </div>
@@ -1041,11 +1041,6 @@
               {% if can_check_system_update %}
               <button type="button" class="btn btn-outline-primary btn-sm" id="system-update-check-btn">
                 <i class="ti ti-refresh me-1"></i>Check for Updates
-              </button>
-              {% endif %}
-              {% if can_run_system_update %}
-              <button type="button" class="btn btn-primary btn-sm" id="system-update-open-btn" disabled>
-                <i class="ti ti-cloud-download me-1"></i>Update Now
               </button>
               {% endif %}
             </div>
@@ -1115,8 +1110,15 @@
 
       <div class="col-12 col-xl-7">
         <div class="card h-100">
-          <div class="card-header">
-            <h3 class="card-title mb-0">Latest Remote Changes</h3>
+          <div class="card-header d-flex align-items-center">
+            <h3 class="card-title mb-0">Latest Remote Changes (Top 50)</h3>
+            {% if can_run_system_update %}
+            <div class="ms-auto">
+              <button type="button" class="btn btn-primary btn-sm" id="system-update-open-btn" disabled>
+                <i class="ti ti-cloud-download me-1"></i>Update Now
+              </button>
+            </div>
+            {% endif %}
           </div>
           <div class="card-body">
             <div id="system-update-check-error" class="alert alert-danger d-none mb-3"></div>
@@ -1151,11 +1153,13 @@
                 <span class="badge bg-yellow-lt text-yellow d-none" id="system-update-dirty-badge">Tracked local changes found</span>
                 <span class="badge bg-green-lt text-green d-none" id="system-update-up-to-date">Already up to date</span>
               </div>
+              <div class="text-muted small mb-3" id="system-update-selected-note">Select a commit below to update or revert this server.</div>
 
               <div class="table-responsive">
                 <table class="table table-vcenter">
                   <thead>
                     <tr>
+                      <th style="width: 44px;">Use</th>
                       <th>Date</th>
                       <th>Commit</th>
                       <th>Author</th>
@@ -1164,13 +1168,13 @@
                   </thead>
                   <tbody id="system-update-commit-body">
                     <tr>
-                      <td colspan="4" class="text-muted">No remote commits loaded yet.</td>
+                      <td colspan="5" class="text-muted">No remote commits loaded yet.</td>
                     </tr>
                   </tbody>
                 </table>
               </div>
               <div class="text-muted small d-none" id="system-update-dirty-list-wrap">
-                <div class="fw-semibold mb-1">Tracked local changes blocking update</div>
+                <div class="fw-semibold mb-1">Tracked local changes that will be overwritten</div>
                 <pre class="system-update-log mb-0" id="system-update-dirty-list"></pre>
               </div>
             </div>
@@ -1403,8 +1407,9 @@
           <div id="system-update-confirm-view">
             <div class="fw-semibold" id="system-update-confirm-label">Check for updates first.</div>
             <div class="text-muted small mt-1" id="system-update-confirm-summary">
-              The updater will pull the latest tracked branch on this server and run <code>docker compose up -d --build</code>.
+              The updater will switch this server to the selected commit and run <code>docker compose up -d --build</code>.
             </div>
+            <input type="hidden" name="target_commit" id="system-update-target-commit" />
             {% if system_update_requires_password %}
             <div class="mt-3">
               <label class="form-label">Confirm Password</label>
@@ -1915,6 +1920,7 @@
     const updateLatestDate = document.getElementById("system-update-latest-date");
     const updateRemoteUrl = document.getElementById("system-update-remote-url");
     const updateCommitCount = document.getElementById("system-update-commit-count");
+    const updateSelectedNote = document.getElementById("system-update-selected-note");
     const updateDirtyBadge = document.getElementById("system-update-dirty-badge");
     const updateUpToDate = document.getElementById("system-update-up-to-date");
     const updateCommitBody = document.getElementById("system-update-commit-body");
@@ -1928,6 +1934,7 @@
     const updateProgressView = document.getElementById("system-update-progress-view");
     const updateConfirmLabel = document.getElementById("system-update-confirm-label");
     const updateConfirmSummary = document.getElementById("system-update-confirm-summary");
+    const updateTargetInput = document.getElementById("system-update-target-commit");
     const updatePassword = document.getElementById("system-update-password");
     const updateSubmitBtn = document.getElementById("system-update-submit-btn");
     const updateCloseBtn = document.getElementById("system-update-close-btn");
@@ -1943,6 +1950,7 @@
 
     let latestCheck = null;
     let lastStatus = initialUpdateStatus || {};
+    let selectedUpdateCommit = "";
     let checkLoaded = false;
     let statusPollTimer = 0;
     let pollingWanted = false;
@@ -1954,6 +1962,44 @@
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#39;");
 
+    const currentInstalledCommit = () => String((latestCheck && latestCheck.current && latestCheck.current.full) || "").trim();
+    const selectedCommitDetails = () => {
+      if (!latestCheck || !selectedUpdateCommit) return null;
+      const rows = Array.isArray(latestCheck.commits) ? latestCheck.commits : [];
+      return rows.find((item) => String(item.full || "").trim() === selectedUpdateCommit) || null;
+    };
+    const canStartSelectedUpdate = () => {
+      const currentFull = currentInstalledCommit();
+      return !!selectedUpdateCommit && !!currentFull && selectedUpdateCommit !== currentFull && !(lastStatus && lastStatus.is_running);
+    };
+    const pickDefaultUpdateCommit = (check) => {
+      const rows = Array.isArray(check && check.commits) ? check.commits : [];
+      const currentFull = String((check && check.current && check.current.full) || "").trim();
+      if (selectedUpdateCommit && rows.some((item) => String(item.full || "").trim() === selectedUpdateCommit)) {
+        return selectedUpdateCommit;
+      }
+      const latestFull = String((check && check.latest && check.latest.full) || "").trim();
+      if (latestFull && latestFull !== currentFull) return latestFull;
+      const firstOther = rows.find((item) => String(item.full || "").trim() !== currentFull);
+      return firstOther ? String(firstOther.full || "").trim() : "";
+    };
+    const updateSelectedCommitUi = () => {
+      if (updateTargetInput) updateTargetInput.value = selectedUpdateCommit || "";
+      if (updateOpenBtn) updateOpenBtn.disabled = !canStartSelectedUpdate();
+      if (!updateSelectedNote) return;
+      const selected = selectedCommitDetails();
+      if (!latestCheck) {
+        updateSelectedNote.textContent = "Select a commit below to update or revert this server.";
+      } else if (selected) {
+        const direction = selected.state === "older" ? "Revert target" : selected.is_current ? "Installed" : "Update target";
+        updateSelectedNote.textContent = `${direction}: ${selected.short || "n/a"} · ${selected.subject || "No commit subject."}`;
+      } else if (selectedUpdateCommit && currentInstalledCommit() === selectedUpdateCommit) {
+        updateSelectedNote.textContent = "The selected commit is already installed on this server.";
+      } else {
+        updateSelectedNote.textContent = "Select a commit below to update or revert this server.";
+      }
+    };
+
     const refreshUpdateActionNote = () => {
       if (!updateActionNote) return;
       let text = "Check for updates to load pending commits.";
@@ -1962,10 +2008,11 @@
         text = "Update is currently running. Wait for it to finish before starting another update.";
         className = "text-blue small mb-3";
       } else if (latestCheck && latestCheck.is_dirty) {
-        text = "Update blocked by tracked local changes listed below.";
+        text = "Tracked local changes were found. The selected commit will overwrite those tracked files.";
         className = "text-danger small mb-3";
-      } else if (latestCheck && latestCheck.has_update) {
-        text = `Ready to install ${Number(latestCheck.behind || 0)} pending commit(s).`;
+      } else if (canStartSelectedUpdate()) {
+        const selected = selectedCommitDetails();
+        text = `Ready to apply ${selected?.short || selectedUpdateCommit.slice(0, 7)} on this server.`;
         className = "text-success small mb-3";
       } else if (latestCheck && !latestCheck.has_update) {
         text = "The system is already up to date.";
@@ -1973,6 +2020,7 @@
       }
       updateActionNote.className = className;
       updateActionNote.textContent = text;
+      updateSelectedCommitUi();
     };
 
     const updateStatusUi = (status) => {
@@ -1993,6 +2041,7 @@
         queued: "Queued",
         fetching: "Fetching latest branch",
         pulling: "Pulling commits",
+        switching_commit: "Switching to selected commit",
         rebuilding: "Rebuilding services",
         health_check: "Waiting for the updated app",
         done: "Completed",
@@ -2038,10 +2087,6 @@
       if (updateModalRunner) updateModalRunner.textContent = normalized.runner_id || "n/a";
       if (updateModalLog) updateModalLog.textContent = normalized.log_tail || "No update log yet.";
 
-      if (updateOpenBtn) {
-        const allowStart = !!latestCheck && !!latestCheck.has_update && !latestCheck.is_dirty && !normalized.is_running;
-        updateOpenBtn.disabled = !allowStart;
-      }
       refreshUpdateActionNote();
     };
 
@@ -2049,13 +2094,25 @@
       if (!updateCommitBody) return;
       const rows = Array.isArray(commits) ? commits : [];
       if (!rows.length) {
-        updateCommitBody.innerHTML = '<tr><td colspan="4" class="text-muted">No pending remote commits.</td></tr>';
+        updateCommitBody.innerHTML = '<tr><td colspan="5" class="text-muted">No remote commits loaded yet.</td></tr>';
         return;
       }
+      const currentFull = currentInstalledCommit();
       updateCommitBody.innerHTML = rows.map((item) => `
         <tr>
+          <td>
+            <label class="form-check form-check-single m-0">
+              <input class="form-check-input system-update-commit-radio" type="radio" name="system_update_commit_choice" value="${escapeHtml(item.full || "")}" ${String(item.full || "") === selectedUpdateCommit ? "checked" : ""} ${String(item.full || "") === currentFull ? "" : ""}>
+            </label>
+          </td>
           <td>${escapeHtml(item.date || "n/a")}</td>
-          <td><span class="badge bg-secondary-lt text-secondary">${escapeHtml(item.short || "n/a")}</span></td>
+          <td>
+            <span class="badge bg-secondary-lt text-secondary">${escapeHtml(item.short || "n/a")}</span>
+            ${item.is_current ? '<span class="badge bg-blue-lt text-blue ms-1">Installed</span>' : ''}
+            ${item.is_latest ? '<span class="badge bg-green-lt text-green ms-1">Latest</span>' : ''}
+            ${item.state === 'older' ? '<span class="badge bg-orange-lt text-orange ms-1">Older</span>' : ''}
+            ${item.state === 'newer' ? '<span class="badge bg-azure-lt text-azure ms-1">Pending</span>' : ''}
+          </td>
           <td>${escapeHtml(item.author || "n/a")}</td>
           <td>${escapeHtml(item.subject || "No commit subject.")}</td>
         </tr>
@@ -2070,7 +2127,9 @@
         updateCheckError.textContent = "";
       }
       if (!check) {
+        selectedUpdateCommit = "";
         if (updateOpenBtn) updateOpenBtn.disabled = true;
+        updateSelectedCommitUi();
         return;
       }
       if (updateEmpty) updateEmpty.classList.add("d-none");
@@ -2080,15 +2139,13 @@
       if (updateLatestVersion) updateLatestVersion.textContent = (check.latest && check.latest.short) || "n/a";
       if (updateLatestDate) updateLatestDate.textContent = (check.latest && check.latest.date) || "";
       if (updateRemoteUrl) updateRemoteUrl.textContent = check.remote_url || "origin";
-      if (updateCommitCount) updateCommitCount.textContent = `${Number(check.behind || 0)} pending commit(s)`;
+      if (updateCommitCount) updateCommitCount.textContent = `${Number((check.commits || []).length || 0)} remote commit(s) shown`;
       if (updateDirtyBadge) updateDirtyBadge.classList.toggle("d-none", !check.is_dirty);
       if (updateUpToDate) updateUpToDate.classList.toggle("d-none", !!check.has_update || !!check.is_dirty);
       if (updateDirtyListWrap) updateDirtyListWrap.classList.toggle("d-none", !check.is_dirty);
       if (updateDirtyList) updateDirtyList.textContent = (check.dirty_files || []).join("\n");
+      selectedUpdateCommit = pickDefaultUpdateCommit(check);
       renderCommits(check.commits || []);
-      if (updateOpenBtn) {
-        updateOpenBtn.disabled = !(check.has_update && !check.is_dirty && !(lastStatus && lastStatus.is_running));
-      }
       refreshUpdateActionNote();
     };
 
@@ -2115,31 +2172,36 @@
       if (updateProgressView) updateProgressView.classList.add("d-none");
       if (updateSubmitBtn) {
         updateSubmitBtn.classList.remove("d-none");
-        updateSubmitBtn.disabled = !(latestCheck && latestCheck.has_update && !latestCheck.is_dirty);
+        updateSubmitBtn.disabled = !canStartSelectedUpdate();
         updateSubmitBtn.textContent = "Start Update";
       }
       if (updateCloseBtn) updateCloseBtn.textContent = "Cancel";
       if (updateModalTitle) updateModalTitle.textContent = "Start System Update";
+      const selected = selectedCommitDetails();
       if (updateConfirmLabel) {
-        if (latestCheck && latestCheck.has_update) {
-          updateConfirmLabel.textContent = `Install ${String(latestCheck.behind || 0)} pending commit(s) on ${latestCheck.branch || "master"}?`;
-        } else if (latestCheck && latestCheck.is_dirty) {
-          updateConfirmLabel.textContent = "Update blocked by tracked local changes.";
+        if (selected && canStartSelectedUpdate()) {
+          updateConfirmLabel.textContent = `${selected.state === "older" ? "Revert" : "Update"} this server to ${selected.short || "selected commit"}?`;
+        } else if (selectedUpdateCommit && selectedUpdateCommit === currentInstalledCommit()) {
+          updateConfirmLabel.textContent = "The selected commit is already installed.";
         } else {
-          updateConfirmLabel.textContent = "Check for updates first.";
+          updateConfirmLabel.textContent = "Select a commit first.";
         }
       }
       if (updateConfirmSummary) {
-        if (latestCheck && latestCheck.has_update) {
-          updateConfirmSummary.textContent = `Current ${latestCheck.current?.short || "n/a"} will update to ${latestCheck.latest?.short || "n/a"} on branch ${latestCheck.branch || "master"}. The service will rebuild and restart during this process.`;
-        } else if (latestCheck && latestCheck.is_dirty) {
-          updateConfirmSummary.textContent = "Commit or stash the tracked local changes shown in this tab before running an in-app update.";
+        if (selected && canStartSelectedUpdate()) {
+          const overwriteNote = latestCheck && latestCheck.is_dirty
+            ? " Tracked local changes listed in this tab will be overwritten."
+            : "";
+          updateConfirmSummary.textContent = `Current ${latestCheck?.current?.short || "n/a"} will switch to ${selected.short || "n/a"} on branch ${latestCheck?.branch || "master"}. The service will rebuild and restart during this process.${overwriteNote}`;
+        } else if (selectedUpdateCommit && selectedUpdateCommit === currentInstalledCommit()) {
+          updateConfirmSummary.textContent = "Choose a different commit from the list to update or revert this server.";
         } else {
-          updateConfirmSummary.textContent = "Load the latest remote commit list first so the updater can confirm what will be installed.";
+          updateConfirmSummary.textContent = "Load the remote commit list and choose a target commit first.";
         }
       }
       if (updatePassword) updatePassword.value = "";
       setModalError("");
+      if (updateTargetInput) updateTargetInput.value = selectedUpdateCommit || "";
     };
 
     const showUpdateProgress = () => {
@@ -2206,6 +2268,15 @@
     if (updateCheckBtn) {
       updateCheckBtn.addEventListener("click", () => {
         fetchUpdateCheck();
+      });
+    }
+
+    if (updateCommitBody) {
+      updateCommitBody.addEventListener("change", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLInputElement) || !target.classList.contains("system-update-commit-radio")) return;
+        selectedUpdateCommit = String(target.value || "").trim();
+        refreshUpdateActionNote();
       });
     }
 

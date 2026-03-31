@@ -8,6 +8,8 @@ REPO_URL=${THREEJ_REPO_URL:-}
 GIT_USER=root
 SKIP_REBUILD=${THREEJ_SKIP_REBUILD:-0}
 FORCE_REBUILD=${THREEJ_FORCE_REBUILD:-0}
+TARGET_COMMIT=${THREEJ_TARGET_COMMIT:-}
+ALLOW_DIRTY=${THREEJ_ALLOW_DIRTY:-0}
 STATUS_FILE=${THREEJ_STATUS_FILE:-${INSTALL_DIR}/data/system_update_status.json}
 UPDATE_TRIGGER=${THREEJ_UPDATE_TRIGGER:-manual}
 STATUS_TOTAL_STEPS=5
@@ -162,6 +164,11 @@ ensure_clean_repo() {
   local tracked_status
   tracked_status=$(git_repo status --porcelain=v1 --untracked-files=no | awk 'substr($0,4) != ".threej_version"' || true)
   if [ -n "${tracked_status}" ]; then
+    if [ "${ALLOW_DIRTY}" = "1" ]; then
+      log "Tracked local changes will be overwritten by the selected update:"
+      printf "%s\n" "${tracked_status}"
+      return
+    fi
     log "Tracked local changes were found in ${INSTALL_DIR}:"
     printf "%s\n" "${tracked_status}"
     fail "Update stopped. Commit or stash local changes first."
@@ -189,9 +196,16 @@ run_update() {
   set_phase 1 "fetching" "Fetching latest ${BRANCH}..."
   log "Fetching ${BRANCH}..."
   git_repo fetch --quiet "${source_ref}" "${BRANCH}"
-  set_phase 2 "pulling" "Pulling latest ${BRANCH}..."
-  log "Pulling latest ${BRANCH}..."
-  git_repo pull --ff-only "${source_ref}" "${BRANCH}"
+  if [ -n "${TARGET_COMMIT}" ]; then
+    set_phase 2 "switching_commit" "Switching to selected commit..."
+    log "Switching to selected commit ${TARGET_COMMIT}..."
+    git_repo cat-file -e "${TARGET_COMMIT}^{commit}" >/dev/null 2>&1 || fail "Selected commit ${TARGET_COMMIT} was not found after fetch."
+    git_repo checkout -f -B "${BRANCH}" "${TARGET_COMMIT}"
+  else
+    set_phase 2 "pulling" "Pulling latest ${BRANCH}..."
+    log "Pulling latest ${BRANCH}..."
+    git_repo pull --ff-only "${source_ref}" "${BRANCH}"
+  fi
   new_commit=$(git_repo rev-parse HEAD)
   STATUS_NEW_COMMIT=${new_commit}
 
