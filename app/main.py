@@ -1202,6 +1202,10 @@ def _auth_permission_section_meta(code: str):
         return ("settings.routers", "Settings · Routers")
 
     if root == "system":
+        if second == "general" and len(parts) >= 3 and parts[2].lower() == "telegram":
+            return ("telegram", "Telegram Commands")
+        if second == "general" and len(parts) >= 3 and parts[2].lower() == "branding":
+            return ("general.branding", "General · Branding")
         if second in {"general", "routers", "access", "backup", "danger"}:
             if len(parts) >= 3:
                 third = parts[2].lower()
