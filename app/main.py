@@ -8604,6 +8604,31 @@ def _prewarm_optical_status_cache():
     build_optical_status(settings, window_hours=24, limit=50)
 
 
+def render_optical_settings_response(request, settings, message="", active_tab="settings", settings_tab="general", window_hours=24):
+    job_status = {item["job_name"]: dict(item) for item in get_job_status()}
+    optical_job = job_status.get("optical", {})
+    optical_job = {
+        "last_run_at_ph": format_ts_ph(optical_job.get("last_run_at")),
+        "last_success_at_ph": format_ts_ph(optical_job.get("last_success_at")),
+    }
+    optical_status = build_optical_status(settings, window_hours)
+    return templates.TemplateResponse(
+        "settings_optical.html",
+        make_context(
+            request,
+            {
+                "settings": settings,
+                "message": message,
+                "optical_status": optical_status,
+                "optical_window_options": OPTICAL_WINDOW_OPTIONS,
+                "optical_job": optical_job,
+                "active_tab": active_tab,
+                "settings_tab": settings_tab,
+            },
+        ),
+    )
+
+
 @app.get("/settings/optical", response_class=HTMLResponse)
 async def optical_settings(request: Request):
     settings = get_settings("optical", OPTICAL_DEFAULTS)
@@ -8847,7 +8872,24 @@ async def optical_settings_save(request: Request):
 
 @app.post("/settings/optical/test", response_class=HTMLResponse)
 async def optical_settings_test(request: Request):
+    form = await request.form()
     settings = get_settings("optical", OPTICAL_DEFAULTS)
+    telegram = settings.get("telegram") if isinstance(settings.get("telegram"), dict) else {}
+    settings["telegram"] = telegram
+    general = settings.get("general") if isinstance(settings.get("general"), dict) else {}
+    settings["general"] = general
+
+    telegram["bot_token"] = form.get("telegram_bot_token", telegram.get("bot_token", ""))
+    telegram["chat_id"] = form.get("telegram_chat_id", telegram.get("chat_id", ""))
+    general["message_title"] = form.get(
+        "message_title", general.get("message_title", "Optical Power Alert")
+    )
+    general["include_header"] = parse_bool(form, "include_header")
+    general["max_chars"] = parse_int(form, "max_chars", general.get("max_chars", 3800))
+    general["schedule_time_ph"] = form.get(
+        "schedule_time_ph", general.get("schedule_time_ph", "07:00")
+    )
+
     message = ""
     try:
         token = settings["telegram"].get("bot_token", "")
@@ -8856,23 +8898,12 @@ async def optical_settings_test(request: Request):
         message = "Test message sent."
     except TelegramError as exc:
         message = str(exc)
-    return templates.TemplateResponse(
-        "settings_optical.html",
-        make_context(
-            request,
-            {
-                "settings": settings,
-                "message": message,
-                "optical_status": build_optical_status(settings, 24),
-                "optical_window_options": OPTICAL_WINDOW_OPTIONS,
-                "optical_job": {
-                    "last_run_at_ph": None,
-                    "last_success_at_ph": None,
-                },
-                "active_tab": "settings",
-                "settings_tab": "general",
-            },
-        ),
+    return render_optical_settings_response(
+        request,
+        settings,
+        message=message,
+        active_tab="settings",
+        settings_tab="notifications",
     )
 
 
@@ -18423,6 +18454,34 @@ async def wan_settings_save_telegram(request: Request):
     }
     save_settings("wan_ping", wan_settings_data)
     return render_wan_ping_response(request, pulse_settings, wan_settings_data, "Telegram settings saved.", "settings", wan_settings_tab="telegram")
+
+
+@app.post("/settings/wan/telegram/test", response_class=HTMLResponse)
+async def wan_settings_test_telegram(request: Request):
+    form = await request.form()
+    pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    wan_settings_data["telegram"] = {
+        "bot_token": form.get("telegram_bot_token", ""),
+        "chat_id": form.get("telegram_chat_id", ""),
+    }
+    try:
+        send_telegram(
+            wan_settings_data["telegram"].get("bot_token", ""),
+            wan_settings_data["telegram"].get("chat_id", ""),
+            "ThreeJ WAN Ping Telegram test message.",
+        )
+        message = "Test message sent."
+    except TelegramError as exc:
+        message = str(exc)
+    return render_wan_ping_response(
+        request,
+        pulse_settings,
+        wan_settings_data,
+        message,
+        "settings",
+        wan_settings_tab="telegram",
+    )
 
 
 @app.post("/settings/wan/targets", response_class=HTMLResponse)

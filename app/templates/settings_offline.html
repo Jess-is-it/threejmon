@@ -821,7 +821,7 @@
     let offlineNewSeenInFlight = false;
     let offlineNewSeenDueAt = 0;
     let offlineNewSeenSignature = "";
-    let offlineNewFocusSignature = "";
+    let offlineNewAutoFocusAppliedSignature = "";
 
     const radiusAccountsSearchKey = "offline_radius_accounts_search_v1";
     const radiusAccountsStatusKey = "offline_radius_accounts_status_v1";
@@ -1427,19 +1427,14 @@
       let focusNewAfterRender = false;
       if (firstNewTarget) {
         const signature = `${firstNewTarget.ruleId}:${firstNewTarget.entryId}`;
-        if (
-          offlineNewFocusSignature !== signature ||
-          activeStatusView.type !== "rule" ||
-          activeStatusView.ruleId !== firstNewTarget.ruleId ||
-          currentPage !== 1
-        ) {
-          offlineNewFocusSignature = signature;
+        if (offlineNewAutoFocusAppliedSignature !== signature) {
+          offlineNewAutoFocusAppliedSignature = signature;
           activeStatusView = { type: "rule", ruleId: firstNewTarget.ruleId };
           currentPage = 1;
           focusNewAfterRender = true;
         }
       } else if (allowNewFocus) {
-        offlineNewFocusSignature = "";
+        offlineNewAutoFocusAppliedSignature = "";
       }
       ensureActiveStatusView();
       const activeRule = getActiveRule();
