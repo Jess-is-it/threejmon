@@ -3577,7 +3577,89 @@ def _system_update_preferred_source(remote_url: str = "") -> str:
     if override:
         return override
     normalized = _system_update_normalize_remote_url(remote_url)
-    return normalized or str(remote_url or "").strip() or "origin"
+    return normalized or str(remote_url or "").strip() or "https://github.com/Jess-is-it/threejmon.git"
+
+
+def _system_update_branch_name() -> str:
+    return (str(os.environ.get("THREEJ_BRANCH") or "").strip() or "master")
+
+
+def _system_update_installed_version() -> dict:
+    version = (str(os.environ.get("THREEJ_VERSION") or "").strip() or "unknown")
+    version_date = (str(os.environ.get("THREEJ_VERSION_DATE") or "").strip() or "unknown")
+    status = _read_system_update_status()
+    if version in ("", "unknown"):
+        fallback_full = str(status.get("new_commit") or "").strip() or str(status.get("old_commit") or "").strip()
+        if fallback_full:
+            version = fallback_full[:7]
+            if version_date in ("", "unknown"):
+                version_date = (status.get("updated_at") or "")[:10] or "unknown"
+    return {
+        "full": version,
+        "short": version[:7] if version and version != "unknown" else version,
+        "date": version_date if version_date not in ("", "unknown") else "",
+    }
+
+
+def _system_update_github_repo(source_url: str) -> tuple[str, str]:
+    normalized = _system_update_normalize_remote_url(source_url)
+    if not normalized:
+        return "", ""
+    parsed = urllib.parse.urlparse(normalized)
+    host = (parsed.netloc or "").strip().lower()
+    path = (parsed.path or "").strip().lstrip("/")
+    if path.endswith(".git"):
+        path = path[:-4]
+    parts = [item for item in path.split("/") if item]
+    if host != "github.com" or len(parts) < 2:
+        return "", ""
+    return parts[0], parts[1]
+
+
+def _system_update_fetch_github_commits(source_url: str, branch: str, limit: int):
+    owner, repo = _system_update_github_repo(source_url)
+    if not owner or not repo:
+        raise RuntimeError("Only GitHub repositories are supported for remote commit listing.")
+    api_url = (
+        f"https://api.github.com/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}/commits"
+        f"?sha={urllib.parse.quote(branch)}&per_page={max(min(int(limit or 50), 100), 1)}"
+    )
+    request = urllib.request.Request(
+        api_url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "ThreeJNotifier-SystemUpdate",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace").strip()
+        raise RuntimeError(detail or f"GitHub API returned HTTP {exc.code}.") from exc
+    except Exception as exc:
+        raise RuntimeError(f"Failed to fetch remote commits: {exc}") from exc
+    if not isinstance(payload, list):
+        raise RuntimeError("GitHub API returned an unexpected response.")
+    commits = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        full_sha = str(item.get("sha") or "").strip()
+        commit_obj = item.get("commit") if isinstance(item.get("commit"), dict) else {}
+        author_obj = commit_obj.get("author") if isinstance(commit_obj.get("author"), dict) else {}
+        message = str(commit_obj.get("message") or "").strip()
+        subject = message.splitlines()[0].strip() if message else "No commit subject."
+        commits.append(
+            {
+                "full": full_sha,
+                "short": full_sha[:7] if full_sha else "",
+                "date": str(author_obj.get("date") or "").strip()[:10],
+                "author": str(author_obj.get("name") or "").strip(),
+                "subject": subject,
+            }
+        )
+    return commits
 
 
 def _default_system_update_status():
@@ -3786,111 +3868,58 @@ def _system_update_parse_check_output(output: str):
 
 
 def _system_update_check_remote():
-    repo = _system_update_host_repo()
-    limit = SYSTEM_UPDATE_CHECK_LIMIT
-    script = f"""
-set -eu
-REPO={shlex.quote(repo)}
-OVERRIDE_SOURCE={shlex.quote(str(os.environ.get("THREEJ_REPO_URL") or "").strip())}
-CHECK_REF=refs/threejmon-system-update/check
-GIT_USER=root
-GIT_HOME=/root
-if [ -d "$REPO/.git" ]; then
-  chown -R root:root "$REPO/.git"
-  find "$REPO/.git" -type d -exec chmod u+rwx {{}} \\; >/dev/null 2>&1 || true
-  find "$REPO/.git" -type f -exec chmod u+rw {{}} \\; >/dev/null 2>&1 || true
-fi
-git_repo() {{
-  HOME="$GIT_HOME" USER="$GIT_USER" LOGNAME="$GIT_USER" git -c safe.directory="$REPO" -C "$REPO" "$@"
-}}
-normalize_source_url() {{
-  local raw
-  raw=${{1:-}}
-  case "$raw" in
-    http://*|https://*)
-      printf '%s' "$raw"
-      return
-      ;;
-    git@*:* )
-      local host path
-      host=${{raw#git@}}
-      host=${{host%%:*}}
-      path=${{raw#*:}}
-      path=${{path#/}}
-      if [ -n "$host" ] && [ -n "$path" ]; then
-        printf 'https://%s/%s' "$host" "$path"
-        return
-      fi
-      ;;
-    ssh://*)
-      local rest host path
-      rest=${{raw#ssh://}}
-      host=${{rest%%/*}}
-      host=${{host#*@}}
-      path=${{rest#*/}}
-      path=${{path#/}}
-      if [ -n "$host" ] && [ -n "$path" ] && [ "$rest" != "$path" ]; then
-        printf 'https://%s/%s' "$host" "$path"
-        return
-      fi
-      ;;
-  esac
-  printf '%s' "$raw"
-}}
-branch=$(git_repo rev-parse --abbrev-ref HEAD 2>/dev/null || true)
-if [ -z "$branch" ] || [ "$branch" = "HEAD" ]; then
-  branch=master
-fi
-origin_url=$(git_repo remote get-url origin 2>/dev/null || true)
-source_url="$OVERRIDE_SOURCE"
-if [ -z "$source_url" ]; then
-  source_url=$(normalize_source_url "$origin_url")
-fi
-if [ -z "$source_url" ]; then
-  source_url=origin
-fi
-git_repo fetch --quiet --no-write-fetch-head "$source_url" "$branch:$CHECK_REF"
-remote_ref="$CHECK_REF"
-local_full=$(git_repo rev-parse HEAD)
-local_short=$(git_repo rev-parse --short HEAD)
-local_date=$(git_repo log -1 --format=%cs HEAD)
-remote_full=$(git_repo rev-parse "$remote_ref")
-remote_short=$(git_repo rev-parse --short "$remote_ref")
-remote_date=$(git_repo log -1 --format=%cs "$remote_ref")
-ahead=$(git_repo rev-list --count "$remote_ref"..HEAD)
-behind=$(git_repo rev-list --count HEAD.."$remote_ref")
-dirty=0
-dirty_lines=$(git_repo status --porcelain=v1 --untracked-files=no | awk 'substr($0,4) != ".threej_version"' || true)
-if [ -n "$dirty_lines" ]; then
-  dirty=1
-fi
-printf 'META\\x1fbranch\\x1f%s\\n' "$branch"
-printf 'META\\x1fremote_url\\x1f%s\\n' "$source_url"
-printf 'META\\x1forigin_url\\x1f%s\\n' "$origin_url"
-printf 'META\\x1fsource_url\\x1f%s\\n' "$source_url"
-printf 'META\\x1flocal_full\\x1f%s\\n' "$local_full"
-printf 'META\\x1flocal_short\\x1f%s\\n' "$local_short"
-printf 'META\\x1flocal_date\\x1f%s\\n' "$local_date"
-printf 'META\\x1fremote_full\\x1f%s\\n' "$remote_full"
-printf 'META\\x1fremote_short\\x1f%s\\n' "$remote_short"
-printf 'META\\x1fremote_date\\x1f%s\\n' "$remote_date"
-printf 'META\\x1fahead\\x1f%s\\n' "$ahead"
-printf 'META\\x1fbehind\\x1f%s\\n' "$behind"
-printf 'META\\x1fdirty\\x1f%s\\n' "$dirty"
-if [ -n "$dirty_lines" ]; then
-  printf '%s\\n' "$dirty_lines" | head -n 20 | while IFS= read -r line; do
-    printf 'DIRTY\\x1f%s\\n' "$line"
-  done
-fi
-git_repo log --date=short --pretty=format:'COMMIT%x1f%H%x1f%h%x1f%cs%x1f%an%x1f%s' -n {limit} "$remote_ref"
-"""
-    ok, output = run_host_command(script, timeout_seconds=120)
-    if not ok:
-        return False, str(output or "").strip() or "Unable to check updates."
+    branch = _system_update_branch_name()
+    source_url = _system_update_preferred_source("")
+    current = _system_update_installed_version()
     try:
-        return True, _system_update_parse_check_output(output)
+        commits = _system_update_fetch_github_commits(source_url, branch, SYSTEM_UPDATE_CHECK_LIMIT)
     except Exception as exc:
-        return False, f"Failed to parse update check output: {exc}"
+        return False, str(exc or "").strip() or "Unable to check updates."
+    latest = commits[0] if commits else {"full": "", "short": "", "date": ""}
+    current_full = str(current.get("full") or "").strip()
+    current_short = str(current.get("short") or "").strip()
+    has_update = bool(latest.get("full")) and not (
+        (current_full and current_full == latest.get("full"))
+        or (current_short and current_short == str(latest.get("short") or "").strip())
+    )
+    current_index = -1
+    if current_full or current_short:
+        for idx, item in enumerate(commits):
+            full = str(item.get("full") or "").strip()
+            short = str(item.get("short") or "").strip()
+            if (current_full and full == current_full) or (current_short and short == current_short):
+                current_index = idx
+                break
+    for idx, item in enumerate(commits):
+        full = str(item.get("full") or "").strip()
+        short = str(item.get("short") or "").strip()
+        is_current = bool((current_full and full == current_full) or (current_short and short == current_short))
+        item["is_current"] = is_current
+        item["is_latest"] = idx == 0
+        if is_current:
+            item["state"] = "installed"
+        elif current_index >= 0:
+            item["state"] = "newer" if idx < current_index else "older"
+        elif idx == 0:
+            item["state"] = "latest"
+        else:
+            item["state"] = "available"
+    info = {
+        "repo_path": _system_update_host_repo(),
+        "branch": branch,
+        "remote_url": source_url,
+        "origin_url": source_url,
+        "source_url": source_url,
+        "current": current,
+        "latest": latest,
+        "ahead": 0,
+        "behind": 0,
+        "has_update": has_update,
+        "is_dirty": False,
+        "dirty_files": [],
+        "commits": commits,
+    }
+    return True, info
 
 
 def _system_update_docker_path() -> str:
