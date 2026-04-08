@@ -45,7 +45,7 @@ from .db import (
     clear_surveillance_audit_logs,
     clear_surveillance_history,
     clear_wan_history,
-    count_offline_history_since,
+    count_offline_history_accounts_since,
     count_usage_modem_reboot_history,
     create_auth_permission,
     create_auth_role,
@@ -80,8 +80,10 @@ from .db import (
     get_latest_optical_by_pppoe,
     get_latest_optical_device_for_ip,
     get_latest_optical_identity,
+    get_offline_history_accounts_page_since,
+    list_offline_history_account_stats_map,
+    get_offline_history_for_account,
     get_offline_history_for_pppoe,
-    get_offline_history_page_since,
     get_latest_pppoe_usage_snapshot,
     get_recent_surveillance_sessions_for_pppoe,
     get_surveillance_fixed_cycles_map,
@@ -2246,6 +2248,106 @@ def _offline_nav_entry_id(row):
     router_id = (row.get("router_id") or "").strip().lower()
     mode = (row.get("mode") or "offline").strip().lower()
     return f"{router_id or mode}|{pppoe}"
+
+
+def _offline_account_matches(row, pppoe, router_id="", mode=""):
+    if not isinstance(row, dict):
+        return False
+    pppoe_key = (pppoe or "").strip().lower()
+    if not pppoe_key or (row.get("pppoe") or "").strip().lower() != pppoe_key:
+        return False
+    router_key = (router_id or "").strip().lower()
+    row_router_key = (row.get("router_id") or "").strip().lower()
+    if router_key:
+        return row_router_key == router_key
+    if row_router_key:
+        return False
+    mode_key = (mode or "offline").strip().lower() or "offline"
+    row_mode_key = (row.get("mode") or "offline").strip().lower() or "offline"
+    return row_mode_key == mode_key
+
+
+def _collect_offline_current_keyed_map(offline_state):
+    state = offline_state if isinstance(offline_state, dict) else {}
+    tracker = state.get("tracker") if isinstance(state.get("tracker"), dict) else {}
+    current_rows = state.get("rows") if isinstance(state.get("rows"), list) else []
+    merged = {}
+
+    def _merge_candidate(candidate):
+        if not isinstance(candidate, dict):
+            return
+        entry_id = _offline_nav_entry_id(candidate)
+        if not entry_id:
+            return
+        row = {
+            "pppoe": (candidate.get("pppoe") or "").strip(),
+            "router_id": (candidate.get("router_id") or "").strip(),
+            "router_name": (candidate.get("router_name") or candidate.get("router_id") or "").strip(),
+            "mode": (candidate.get("mode") or state.get("mode") or "").strip() or "secrets",
+            "service_profile": (candidate.get("profile") or "").strip(),
+            "disabled": bool(candidate.get("disabled")) if candidate.get("disabled") is not None else None,
+            "last_logged_out": (candidate.get("last_logged_out") or "").strip(),
+            "radius_status": (candidate.get("radius_status") or "").strip(),
+            "offline_since_iso": (candidate.get("offline_since") or "").strip(),
+            "last_offline_at_iso": (candidate.get("last_offline_at") or "").strip(),
+            "listed": bool(candidate.get("listed")),
+            "status": "offline" if bool(candidate.get("listed")) else "tracking",
+        }
+        existing = merged.get(entry_id)
+        if not existing:
+            merged[entry_id] = row
+            return
+        existing_score = (
+            1 if existing.get("listed") else 0,
+            existing.get("offline_since_iso") or "",
+            existing.get("last_offline_at_iso") or "",
+        )
+        row_score = (
+            1 if row.get("listed") else 0,
+            row.get("offline_since_iso") or "",
+            row.get("last_offline_at_iso") or "",
+        )
+        if row_score > existing_score:
+            merged[entry_id] = row
+            return
+        for field in (
+            "router_id",
+            "router_name",
+            "mode",
+            "service_profile",
+            "last_logged_out",
+            "radius_status",
+            "offline_since_iso",
+            "last_offline_at_iso",
+        ):
+            if row.get(field) and not existing.get(field):
+                existing[field] = row.get(field)
+        if existing.get("disabled") is None and row.get("disabled") is not None:
+            existing["disabled"] = row.get("disabled")
+        if row.get("listed"):
+            existing["listed"] = True
+            existing["status"] = "offline"
+
+    for item in tracker.values():
+        if not isinstance(item, dict):
+            continue
+        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        _merge_candidate(
+            {
+                **meta,
+                "mode": item.get("mode") or state.get("mode") or "",
+                "offline_since": item.get("first_offline_at"),
+                "last_offline_at": item.get("last_offline_at"),
+                "listed": bool(item.get("listed")),
+            }
+        )
+
+    for row in current_rows:
+        if not isinstance(row, dict):
+            continue
+        _merge_candidate({**row, "listed": True})
+
+    return merged
 
 
 def _usage_nav_entry_id(row):
@@ -7488,6 +7590,7 @@ async def offline_summary(request: Request):
     settings = normalize_offline_settings(get_settings("offline", OFFLINE_DEFAULTS))
     state = get_state("offline_state", {})
     rule_views = _build_offline_rule_views(state, settings)
+    source_accounts = state.get("source_accounts") if isinstance(state.get("source_accounts"), list) else []
     payload_rows = rule_views.get("default_rows") if isinstance(rule_views.get("default_rows"), list) else []
     rules = rule_views.get("rules") if isinstance(rule_views.get("rules"), list) else []
     rows_by_rule = rule_views.get("rows_by_rule") if isinstance(rule_views.get("rows_by_rule"), dict) else {}
@@ -7523,6 +7626,7 @@ async def offline_summary(request: Request):
             "counts": {
                 "active": int(state.get("active_accounts") or 0),
                 "offline": total_offline_count,
+                "accounts": len(source_accounts),
             },
             "rows": annotated_payload_rows,
             "rules": rules,
@@ -7557,14 +7661,14 @@ async def offline_history(request: Request, days: int = 30, limit: str | int = 1
     page = _parse_table_page(page, 1)
     search_query = str(request.query_params.get("q") or "").strip()
     router_filters = [str(item or "").strip() for item in request.query_params.getlist("router") if str(item or "").strip()]
-    sort_key = str(request.query_params.get("sort") or "offline_ended_at").strip() or "offline_ended_at"
+    sort_key = str(request.query_params.get("sort") or "recent_offline_ended_at").strip() or "recent_offline_ended_at"
     sort_dir = str(request.query_params.get("dir") or "desc").strip().lower()
     since_iso = (datetime.utcnow() - timedelta(days=days)).replace(microsecond=0).isoformat() + "Z"
-    total = count_offline_history_since(since_iso, search=search_query, router_names=router_filters)
+    total = count_offline_history_accounts_since(since_iso, search=search_query, router_names=router_filters)
     pages = max((total + limit - 1) // limit, 1)
     page = min(max(page, 1), pages)
     offset = (page - 1) * limit
-    rows = get_offline_history_page_since(
+    rows = get_offline_history_accounts_page_since(
         since_iso,
         limit=limit,
         offset=offset,
@@ -7580,17 +7684,22 @@ async def offline_history(request: Request, days: int = 30, limit: str | int = 1
                 "pppoe": (row.get("pppoe") or "").strip(),
                 "router_id": (row.get("router_id") or "").strip(),
                 "router_name": (row.get("router_name") or row.get("router_id") or "").strip(),
-                "mode": (row.get("mode") or "").strip(),
-                "offline_started_at": row.get("offline_started_at"),
-                "offline_ended_at": row.get("offline_ended_at"),
-                "offline_started": format_ts_ph(row.get("offline_started_at")),
-                "offline_ended": format_ts_ph(row.get("offline_ended_at")),
-                "duration_seconds": row.get("duration_seconds"),
-                "duration": _format_duration_short(row.get("duration_seconds")),
-                "radius_status": (row.get("radius_status") or "").strip(),
-                "disabled": bool(row.get("disabled")) if row.get("disabled") is not None else None,
-                "profile": (row.get("profile") or "").strip(),
-                "last_logged_out": (row.get("last_logged_out") or "").strip(),
+                "mode": (row.get("mode") or "").strip() or "offline",
+                "offline_count": int(row.get("offline_count") or 0),
+                "recent_offline_started_at": row.get("recent_offline_started_at"),
+                "recent_offline_ended_at": row.get("recent_offline_ended_at"),
+                "recent_offline_started": format_ts_ph(row.get("recent_offline_started_at")),
+                "recent_offline_ended": format_ts_ph(row.get("recent_offline_ended_at")),
+                "recent_duration_seconds": row.get("recent_duration_seconds"),
+                "recent_duration": _format_duration_short(row.get("recent_duration_seconds")),
+                "longest_duration_seconds": row.get("longest_duration_seconds"),
+                "longest_duration": _format_duration_short(row.get("longest_duration_seconds")),
+                "first_offline_started_at": row.get("first_offline_started_at"),
+                "first_offline_started": format_ts_ph(row.get("first_offline_started_at")),
+                "latest_radius_status": (row.get("latest_radius_status") or "").strip(),
+                "latest_disabled": bool(row.get("latest_disabled")) if row.get("latest_disabled") is not None else None,
+                "latest_profile": (row.get("latest_profile") or "").strip(),
+                "latest_last_logged_out": (row.get("latest_last_logged_out") or "").strip(),
             }
         )
     return JSONResponse(
@@ -7608,6 +7717,272 @@ async def offline_history(request: Request, days: int = 30, limit: str | int = 1
                 "has_prev": page > 1,
                 "has_next": page < pages,
             },
+        }
+    )
+
+
+@app.get("/offline/accounts", response_class=JSONResponse)
+async def offline_accounts(request: Request, limit: str | int = 100, page: int = 1):
+    limit = _parse_table_limit(limit, default=100)
+    if not limit:
+        limit = TABLE_PAGE_SIZE_OPTIONS[-1]
+    limit = max(min(int(limit or 100), TABLE_PAGE_SIZE_OPTIONS[-1]), 1)
+    page = _parse_table_page(page, 1)
+    search_query = str(request.query_params.get("q") or "").strip().lower()
+    router_filters = [str(item or "").strip().lower() for item in request.query_params.getlist("router") if str(item or "").strip()]
+    sort_key = str(request.query_params.get("sort") or "pppoe").strip() or "pppoe"
+    sort_dir = str(request.query_params.get("dir") or "asc").strip().lower()
+    reverse = sort_dir == "desc"
+
+    state = get_state("offline_state", {})
+    source_accounts = state.get("source_accounts") if isinstance(state.get("source_accounts"), list) else []
+    current_map = _collect_offline_current_keyed_map(state)
+    history_stats_map = list_offline_history_account_stats_map()
+    threshold_minutes = int(
+        state.get("min_offline_minutes")
+        or int((normalize_offline_settings(get_settings("offline", OFFLINE_DEFAULTS)).get("general") or {}).get("min_offline_value", 1) or 1) * 60
+    )
+
+    rows = []
+    for item in source_accounts:
+        if not isinstance(item, dict):
+            continue
+        row = dict(item)
+        entry_id = _offline_nav_entry_id(row)
+        if not entry_id:
+            continue
+        current = current_map.get(entry_id) if isinstance(current_map.get(entry_id), dict) else {}
+        hist = history_stats_map.get(entry_id) if isinstance(history_stats_map.get(entry_id), dict) else {}
+        current_status = ""
+        current_status_label = ""
+        offline_since_iso = ""
+        if current:
+            current_status = (current.get("status") or "").strip().lower()
+            if current_status == "offline":
+                current_status_label = "Offline"
+            elif current_status == "tracking":
+                current_status_label = "Tracking"
+            offline_since_iso = (current.get("offline_since_iso") or "").strip()
+        elif str(row.get("source_status") or "").strip().lower() == "active":
+            current_status = "online"
+            current_status_label = "Online"
+        else:
+            current_status = "inactive"
+            current_status_label = "Inactive"
+
+        row_out = {
+            "pppoe": (row.get("pppoe") or "").strip(),
+            "router_id": (row.get("router_id") or "").strip(),
+            "router_name": (row.get("router_name") or row.get("router_id") or "").strip(),
+            "mode": (row.get("mode") or state.get("mode") or "secrets").strip() or "secrets",
+            "profile": (current.get("service_profile") or row.get("profile") or "").strip(),
+            "disabled": current.get("disabled") if current else row.get("disabled"),
+            "last_logged_out": (current.get("last_logged_out") or row.get("last_logged_out") or "").strip(),
+            "radius_status": (current.get("radius_status") or row.get("radius_status") or "").strip(),
+            "source_status": str(row.get("source_status") or "").strip().lower(),
+            "current_status": current_status,
+            "current_status_label": current_status_label,
+            "offline_since_at": offline_since_iso,
+            "offline_since": format_ts_ph(offline_since_iso) if offline_since_iso else "",
+            "offline_for": _format_duration_short(max(int((datetime.utcnow() - _parse_iso_z(offline_since_iso)).total_seconds()), 0)) if offline_since_iso and _parse_iso_z(offline_since_iso) else "",
+            "threshold_text": _format_duration_short(threshold_minutes * 60) or f"{threshold_minutes}m",
+            "history_count": int(hist.get("offline_count") or 0),
+            "has_history": bool(hist),
+            "recent_offline_started_at": hist.get("recent_offline_started_at"),
+            "recent_offline_started": format_ts_ph(hist.get("recent_offline_started_at")) if hist.get("recent_offline_started_at") else "",
+            "recent_offline_ended_at": hist.get("recent_offline_ended_at"),
+            "recent_offline_ended": format_ts_ph(hist.get("recent_offline_ended_at")) if hist.get("recent_offline_ended_at") else "",
+            "recent_duration_seconds": int(hist.get("recent_duration_seconds") or 0),
+            "recent_duration": _format_duration_short(hist.get("recent_duration_seconds")),
+            "longest_duration_seconds": int(hist.get("longest_duration_seconds") or 0),
+            "longest_duration": _format_duration_short(hist.get("longest_duration_seconds")),
+            "online_since": (row.get("online_since") or "").strip(),
+            "ip": (row.get("ip") or "").strip(),
+        }
+        rows.append(row_out)
+
+    def _matches(row):
+        if router_filters:
+            router_value = str(row.get("router_name") or row.get("router_id") or "").strip().lower()
+            router_id_value = str(row.get("router_id") or "").strip().lower()
+            if router_value not in router_filters and router_id_value not in router_filters:
+                return False
+        if not search_query:
+            return True
+        hay = [
+            row.get("pppoe"),
+            row.get("router_name"),
+            row.get("router_id"),
+            row.get("profile"),
+            row.get("last_logged_out"),
+            row.get("radius_status"),
+            row.get("current_status_label"),
+            row.get("source_status"),
+            row.get("recent_offline_started"),
+            row.get("recent_offline_ended"),
+            row.get("online_since"),
+            row.get("ip"),
+        ]
+        return any(search_query in str(value or "").lower() for value in hay)
+
+    rows = [row for row in rows if _matches(row)]
+
+    def _sort_value(row):
+        if sort_key == "router_name":
+            return str(row.get("router_name") or row.get("router_id") or "").lower()
+        if sort_key == "current_status":
+            order = {"offline": 3, "tracking": 2, "inactive": 1, "online": 0}
+            return order.get(str(row.get("current_status") or "").lower(), -1)
+        if sort_key == "history_count":
+            return int(row.get("history_count") or 0)
+        if sort_key == "has_history":
+            return 1 if row.get("has_history") else 0
+        if sort_key == "recent_offline_ended_at":
+            return str(row.get("recent_offline_ended_at") or "")
+        if sort_key == "recent_offline_started_at":
+            return str(row.get("recent_offline_started_at") or "")
+        if sort_key == "longest_duration_seconds":
+            return int(row.get("longest_duration_seconds") or 0)
+        if sort_key == "offline_since_at":
+            return str(row.get("offline_since_at") or "")
+        return str(row.get("pppoe") or "").lower()
+
+    rows = sorted(rows, key=lambda row: (_sort_value(row), str(row.get("pppoe") or "").lower()), reverse=reverse)
+    total = len(rows)
+    pages = max((total + limit - 1) // limit, 1)
+    page = min(max(page, 1), pages)
+    offset = (page - 1) * limit
+    payload = rows[offset: offset + limit]
+    return JSONResponse(
+        {
+            "count": total,
+            "rows": payload,
+            "pagination": {
+                "page": page,
+                "pages": pages,
+                "limit": limit,
+                "total": total,
+                "start": offset + 1 if total else 0,
+                "end": min(offset + len(payload), total),
+                "has_prev": page > 1,
+                "has_next": page < pages,
+            },
+        }
+    )
+
+
+@app.get("/offline/account-detail", response_class=JSONResponse)
+async def offline_account_detail(pppoe: str, router_id: str = "", mode: str = ""):
+    pppoe_value = (pppoe or "").strip()
+    router_id_value = (router_id or "").strip()
+    mode_value = (mode or "").strip().lower() or "offline"
+    if not pppoe_value:
+        return _json_no_store({"ok": False, "error": "Missing account."}, status_code=400)
+
+    settings = normalize_offline_settings(get_settings("offline", OFFLINE_DEFAULTS))
+    state = get_state("offline_state", {})
+    rule_views = _build_offline_rule_views(state, settings)
+    current_rows_by_rule = rule_views.get("rows_by_rule") if isinstance(rule_views.get("rows_by_rule"), dict) else {}
+    rules = rule_views.get("rules") if isinstance(rule_views.get("rules"), list) else []
+
+    current_row = None
+    current_bucket_label = ""
+    for rule in rules:
+        rule_id = str((rule or {}).get("id") or "").strip()
+        if not rule_id:
+            continue
+        rows = current_rows_by_rule.get(rule_id) if isinstance(current_rows_by_rule.get(rule_id), list) else []
+        for row in rows:
+            if _offline_account_matches(row, pppoe_value, router_id=router_id_value, mode=mode_value):
+                current_row = dict(row)
+                current_bucket_label = str((rule or {}).get("tab_label") or "").strip()
+                break
+        if current_row:
+            break
+
+    history_rows = get_offline_history_for_account(pppoe_value, router_id=router_id_value, mode=mode_value, limit=1000)
+    if not current_row and not history_rows:
+        return _json_no_store({"ok": False, "error": "Account not found."}, status_code=404)
+
+    latest_history = history_rows[0] if history_rows else {}
+    oldest_history = history_rows[-1] if history_rows else {}
+    history_payload = []
+    longest_duration_seconds = 0
+    for row in history_rows:
+        duration_seconds = int(row.get("duration_seconds") or 0)
+        longest_duration_seconds = max(longest_duration_seconds, duration_seconds)
+        history_payload.append(
+            {
+                "offline_started_at": row.get("offline_started_at"),
+                "offline_ended_at": row.get("offline_ended_at"),
+                "offline_started": format_ts_ph(row.get("offline_started_at")),
+                "offline_ended": format_ts_ph(row.get("offline_ended_at")),
+                "duration_seconds": duration_seconds,
+                "duration": _format_duration_short(duration_seconds),
+                "mode": (row.get("mode") or "").strip() or "offline",
+                "radius_status": (row.get("radius_status") or "").strip(),
+                "disabled": bool(row.get("disabled")) if row.get("disabled") is not None else None,
+                "profile": (row.get("profile") or "").strip(),
+                "last_logged_out": (row.get("last_logged_out") or "").strip(),
+            }
+        )
+
+    router_name_value = (
+        (current_row or {}).get("router_name")
+        or (current_row or {}).get("router_id")
+        or (latest_history or {}).get("router_name")
+        or (latest_history or {}).get("router_id")
+        or ""
+    )
+    profile_value = (
+        (current_row or {}).get("profile")
+        or (latest_history or {}).get("profile")
+        or ""
+    )
+    radius_status_value = (
+        (current_row or {}).get("radius_status")
+        or (latest_history or {}).get("radius_status")
+        or ""
+    )
+    last_logged_out_value = (
+        (current_row or {}).get("last_logged_out")
+        or (latest_history or {}).get("last_logged_out")
+        or ""
+    )
+    current_offline_since_iso = (current_row or {}).get("offline_since_ts") if isinstance(current_row, dict) else ""
+    current_offline_duration_seconds = int((current_row or {}).get("offline_duration_seconds") or 0) if current_row else 0
+    recent_duration_seconds = int((latest_history or {}).get("duration_seconds") or 0) if latest_history else 0
+
+    return _json_no_store(
+        {
+            "ok": True,
+            "account": {
+                "pppoe": pppoe_value,
+                "router_id": router_id_value or (current_row or {}).get("router_id") or (latest_history or {}).get("router_id") or "",
+                "router_name": router_name_value,
+                "mode": (current_row or {}).get("mode") or (latest_history or {}).get("mode") or mode_value,
+                "status": "offline" if current_row else "restored",
+                "status_label": "Currently Offline" if current_row else "Restored",
+                "current_bucket_label": current_bucket_label,
+                "history_count": len(history_rows),
+                "longest_duration_seconds": longest_duration_seconds,
+                "longest_duration": _format_duration_short(longest_duration_seconds),
+                "recent_duration_seconds": recent_duration_seconds,
+                "recent_duration": _format_duration_short(recent_duration_seconds),
+                "profile": profile_value,
+                "radius_status": radius_status_value,
+                "last_logged_out": last_logged_out_value,
+                "current_offline_since_at": current_offline_since_iso,
+                "current_offline_since": format_ts_ph(current_offline_since_iso) if current_offline_since_iso else "",
+                "current_offline_duration_seconds": current_offline_duration_seconds,
+                "current_offline_duration": _format_duration_short(current_offline_duration_seconds),
+                "recent_offline_started_at": (latest_history or {}).get("offline_started_at"),
+                "recent_offline_started": format_ts_ph((latest_history or {}).get("offline_started_at")) if latest_history else "",
+                "recent_offline_ended_at": (latest_history or {}).get("offline_ended_at"),
+                "recent_offline_ended": format_ts_ph((latest_history or {}).get("offline_ended_at")) if latest_history else "",
+                "first_recorded_at": format_ts_ph((oldest_history or {}).get("offline_started_at")) if oldest_history else "",
+            },
+            "history": history_payload,
         }
     )
 
@@ -11705,9 +12080,12 @@ async def profile_review(request: Request):
         for row in offline_history_rows:
             offline_history.append(
                 {
+                    "offline_started_at": (row.get("offline_started_at") or "").strip(),
+                    "offline_ended_at": (row.get("offline_ended_at") or "").strip(),
                     "offline_started": format_ts_ph(row.get("offline_started_at")),
                     "offline_ended": format_ts_ph(row.get("offline_ended_at")),
                     "duration": _format_duration_short(row.get("duration_seconds")),
+                    "duration_seconds": int(row.get("duration_seconds") or 0),
                     "router_name": (row.get("router_name") or row.get("router_id") or "").strip(),
                     "mode": (row.get("mode") or "").strip(),
                     "service_profile": (row.get("profile") or "").strip(),
@@ -17172,6 +17550,7 @@ async def surveillance_undo(request: Request):
             under_seconds=under_seconds,
             level2_seconds=level2_seconds,
             observe_seconds=observe_seconds,
+            create_if_missing=False,
         )
     except Exception:
         pass
@@ -17207,6 +17586,7 @@ async def surveillance_remove(request: Request):
                 under_seconds=under_seconds,
                 level2_seconds=level2_seconds,
                 observe_seconds=observe_seconds,
+                create_if_missing=False,
             )
         except Exception:
             pass
@@ -17281,6 +17661,7 @@ async def surveillance_mark_false(request: Request):
                 under_seconds=under_seconds,
                 level2_seconds=level2_seconds,
                 observe_seconds=observe_seconds,
+                create_if_missing=False,
             )
         except Exception:
             pass
@@ -17920,6 +18301,7 @@ async def surveillance_observe_recovered(request: Request):
                 under_seconds=under_seconds,
                 level2_seconds=level2_seconds,
                 observe_seconds=observe_seconds,
+                create_if_missing=False,
             )
         except Exception:
             pass
@@ -17989,6 +18371,7 @@ async def surveillance_remove_many(request: Request):
                 under_seconds=under_seconds,
                 level2_seconds=level2_seconds,
                 observe_seconds=observe_seconds,
+                create_if_missing=False,
             )
         except Exception:
             pass

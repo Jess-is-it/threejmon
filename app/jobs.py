@@ -113,6 +113,63 @@ def _iso_utc(dt):
     return dt.replace(microsecond=0).isoformat() + "Z"
 
 
+def _surveillance_entries_map_from_settings(raw_settings):
+    settings = raw_settings if isinstance(raw_settings, dict) else {}
+    entries = settings.get("entries") if isinstance(settings.get("entries"), list) else []
+    entry_map = {}
+    for raw_entry in entries:
+        if not isinstance(raw_entry, dict):
+            continue
+        pppoe = (raw_entry.get("pppoe") or raw_entry.get("name") or "").strip()
+        if not pppoe:
+            continue
+        entry = dict(raw_entry)
+        entry["pppoe"] = pppoe
+        entry_map[pppoe] = entry
+    return entry_map
+
+
+def _merge_surveillance_job_updates(ip_updates=None, added_entries=None):
+    latest_cfg = get_settings("surveillance", SURVEILLANCE_DEFAULTS)
+    latest_map = _surveillance_entries_map_from_settings(latest_cfg)
+    changed = False
+
+    for raw_pppoe, raw_update in (ip_updates or {}).items():
+        pppoe = str(raw_pppoe or "").strip()
+        if not pppoe:
+            continue
+        entry = latest_map.get(pppoe)
+        if not isinstance(entry, dict):
+            continue
+        update = raw_update if isinstance(raw_update, dict) else {}
+        next_ip = (update.get("ip") or "").strip()
+        next_updated_at = (update.get("updated_at") or "").strip()
+        next_source = (update.get("source") or "").strip()
+        if next_ip and next_ip != (entry.get("ip") or "").strip():
+            entry["ip"] = next_ip
+            changed = True
+        if next_updated_at and next_updated_at != (entry.get("updated_at") or "").strip():
+            entry["updated_at"] = next_updated_at
+            changed = True
+        if next_source and not (entry.get("source") or "").strip():
+            entry["source"] = next_source
+            changed = True
+
+    for raw_pppoe, raw_entry in (added_entries or {}).items():
+        pppoe = str(raw_pppoe or "").strip()
+        if not pppoe or pppoe in latest_map or not isinstance(raw_entry, dict):
+            continue
+        entry = dict(raw_entry)
+        entry["pppoe"] = pppoe
+        latest_map[pppoe] = entry
+        changed = True
+
+    if changed:
+        latest_cfg["entries"] = list(latest_map.values())
+        save_settings("surveillance", latest_cfg)
+    return changed
+
+
 def _usage_live_issue_still_present(cfg, row, now_dt=None):
     cfg = cfg if isinstance(cfg, dict) else {}
     row = row if isinstance(row, dict) else {}
@@ -662,6 +719,8 @@ class JobsManager:
                     status = "under"
                 surv_entries.append({**entry, "pppoe": pppoe, "status": status})
             surv_map = {entry["pppoe"]: entry for entry in surv_entries}
+            surveillance_ip_updates = {}
+            surveillance_added_entries = {}
             has_surveillance_targets = bool(surv_enabled and surv_map)
 
             should_run = bool(cfg.get("enabled") or has_surveillance_targets or auto_add_enabled)
@@ -776,6 +835,11 @@ class JobsManager:
                         if ip and ip != (entry.get("ip") or "").strip():
                             entry["ip"] = ip
                             entry["updated_at"] = now.replace(microsecond=0).isoformat() + "Z"
+                            surveillance_ip_updates[pppoe] = {
+                                "ip": ip,
+                                "updated_at": entry["updated_at"],
+                                "source": (entry.get("source") or "").strip(),
+                            }
                             surv_changed = True
                             try:
                                 touch_surveillance_session(
@@ -1316,6 +1380,7 @@ class JobsManager:
                                         "ai_report_pending_stage": "",
                                     }
                                     surv_map[pppoe] = entry
+                                    surveillance_added_entries[pppoe] = dict(entry)
                                     entries_changed = True
                                     added += 1
                                     try:
@@ -1473,8 +1538,10 @@ class JobsManager:
                                         continue
 
                         if surv_changed or entries_changed:
-                            surv_cfg["entries"] = list(surv_map.values())
-                            save_settings("surveillance", surv_cfg)
+                            _merge_surveillance_job_updates(
+                                ip_updates=surveillance_ip_updates,
+                                added_entries=surveillance_added_entries,
+                            )
 
                         state["surveillance_last_eval_at"] = now_iso
                         save_state("accounts_ping_state", state)
@@ -2494,6 +2561,7 @@ class JobsManager:
             state = get_state("offline_state", {})
             tracker = state.get("tracker") if isinstance(state.get("tracker"), dict) else {}
             offline_rows = []
+            source_accounts_map = {}
             router_status = []
             router_errors = []
             active_users_all = set()
@@ -2520,6 +2588,53 @@ class JobsManager:
 
             loop_cpu_start = time_module.thread_time()
             try:
+                def _source_account_key(row, fallback_mode=""):
+                    if not isinstance(row, dict):
+                        return ""
+                    pppoe = str(row.get("pppoe") or row.get("name") or row.get("username") or "").strip()
+                    if not pppoe:
+                        return ""
+                    router_id = str(row.get("router_id") or "").strip()
+                    mode_key = str(row.get("mode") or fallback_mode or mode or "offline").strip().lower() or "offline"
+                    return f"{router_id or mode_key}|{pppoe.lower()}"
+
+                def _register_source_account(row, *, source_status="", fallback_mode=""):
+                    if not isinstance(row, dict):
+                        return
+                    pppoe = str(row.get("pppoe") or row.get("name") or row.get("username") or "").strip()
+                    if not pppoe:
+                        return
+                    item = {
+                        "pppoe": pppoe,
+                        "router_id": str(row.get("router_id") or "").strip(),
+                        "router_name": str(row.get("router_name") or row.get("router_id") or "").strip(),
+                        "mode": str(row.get("mode") or fallback_mode or mode or "offline").strip().lower() or "offline",
+                        "profile": str(row.get("profile") or row.get("groups") or "").strip(),
+                        "disabled": bool(row.get("disabled")) if row.get("disabled") is not None else None,
+                        "last_logged_out": str(row.get("last_logged_out") or row.get("last_stop") or "").strip(),
+                        "radius_status": str(row.get("radius_status") or row.get("status") or "").strip(),
+                        "source_status": str(source_status or row.get("source_status") or "").strip().lower(),
+                        "online_since": str(row.get("online_since") or "").strip(),
+                        "ip": str(row.get("ip") or row.get("address") or "").strip(),
+                    }
+                    key = _source_account_key(item, fallback_mode=fallback_mode)
+                    if not key:
+                        return
+                    existing = source_accounts_map.get(key)
+                    if not existing:
+                        source_accounts_map[key] = item
+                        return
+                    existing_rank = 1 if str(existing.get("source_status") or "").strip().lower() == "active" else 0
+                    item_rank = 1 if item["source_status"] == "active" else 0
+                    if item_rank > existing_rank:
+                        source_accounts_map[key] = item
+                        return
+                    for field in ("router_name", "profile", "last_logged_out", "radius_status", "online_since", "ip"):
+                        if item.get(field) and not existing.get(field):
+                            existing[field] = item.get(field)
+                    if existing.get("disabled") is None and item.get("disabled") is not None:
+                        existing["disabled"] = item.get("disabled")
+
                 # Retention for history (once per day).
                 try:
                     last_prune = state.get("last_prune_at")
@@ -2540,6 +2655,20 @@ class JobsManager:
                         user = (row.get("pppoe") or row.get("name") or "").strip()
                         if not user:
                             continue
+                        _register_source_account(
+                            {
+                                "pppoe": user,
+                                "router_id": rid,
+                                "router_name": (row.get("router_name") or rid or "").strip(),
+                                "mode": "secrets",
+                                "profile": (row.get("profile") or "").strip(),
+                                "last_logged_out": (row.get("last_logged_out") or "").strip(),
+                                "radius_status": (row.get("status") or "").strip(),
+                                "ip": (row.get("ip") or row.get("address") or "").strip(),
+                            },
+                            source_status="active",
+                            fallback_mode="secrets",
+                        )
                         active_users_all.add(user)
                         active_users_by_router.setdefault(rid, set()).add(user)
                     router_status = [
@@ -2554,6 +2683,8 @@ class JobsManager:
                             for row in (usage_state.get("offline_rows") if isinstance(usage_state.get("offline_rows"), list) else [])
                             if isinstance(row, dict) and (row.get("router_id") or "").strip() in enabled_router_ids
                         ]
+                        for row in offline_rows:
+                            _register_source_account({**row, "mode": "secrets"}, source_status="inactive", fallback_mode="secrets")
                 else:
                     for router in monitored_routers:
                         router_id = (router.get("id") or "").strip()
@@ -2630,6 +2761,17 @@ class JobsManager:
                             user = (row.get("name") or "").strip()
                             if not user:
                                 continue
+                            _register_source_account(
+                                {
+                                    "pppoe": user,
+                                    "router_id": router_id,
+                                    "router_name": router_name,
+                                    "mode": "secrets",
+                                    "ip": (row.get("address") or "").strip(),
+                                },
+                                source_status="active",
+                                fallback_mode="secrets",
+                            )
                             active_set.add(user)
                             active_users_all.add(user)
                             active_users_by_router.setdefault(router_id, set()).add(user)
@@ -2637,6 +2779,19 @@ class JobsManager:
                         if mode == "secrets":
                             for secret in router_secrets:
                                 name = (secret.get("name") or "").strip()
+                                _register_source_account(
+                                    {
+                                        "pppoe": name,
+                                        "router_id": router_id,
+                                        "router_name": router_name,
+                                        "mode": "secrets",
+                                        "disabled": str(secret.get("disabled") or "").strip().lower() in ("yes", "true", "1"),
+                                        "profile": (secret.get("profile") or "").strip(),
+                                        "last_logged_out": (secret.get("last-logged-out") or "").strip(),
+                                    },
+                                    source_status="active" if name in active_set else "inactive",
+                                    fallback_mode="secrets",
+                                )
                                 if not name or name in active_set:
                                     continue
                                 offline_rows.append(
@@ -2688,6 +2843,17 @@ class JobsManager:
                                 radius_accounts = {}
 
                         for user, status in (radius_accounts or {}).items():
+                            _register_source_account(
+                                {
+                                    "pppoe": user,
+                                    "router_id": "",
+                                    "router_name": "Radius",
+                                    "mode": "radius",
+                                    "radius_status": status or "",
+                                },
+                                source_status="active" if user in active_users_all else "inactive",
+                                fallback_mode="radius",
+                            )
                             if user in active_users_all:
                                 continue
                             offline_rows.append(
@@ -2802,6 +2968,13 @@ class JobsManager:
                     {
                         "mode": mode,
                         "rows": offline_rows,
+                        "source_accounts": sorted(
+                            source_accounts_map.values(),
+                            key=lambda item: (
+                                str(item.get("router_name") or item.get("router_id") or "").lower(),
+                                str(item.get("pppoe") or "").lower(),
+                            ),
+                        ),
                         "active_accounts": len(active_users_all),
                         "tracking_rules": tracking_rules,
                         "routers": router_status,

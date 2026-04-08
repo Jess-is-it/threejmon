@@ -12,6 +12,8 @@ _pg_pool = None
 _pg_pool_lock = threading.Lock()
 _retention_prune_lock = threading.Lock()
 _retention_prune_last = {}
+_surveillance_session_locks_guard = threading.Lock()
+_surveillance_session_locks = {}
 
 
 AUTH_DEFAULT_PERMISSIONS = [
@@ -1465,6 +1467,16 @@ _OFFLINE_HISTORY_SORT_COLUMNS = {
     "duration_seconds": "duration_seconds",
 }
 
+_OFFLINE_HISTORY_ACCOUNT_SORT_COLUMNS = {
+    "pppoe": "latest.pppoe",
+    "router_name": "latest.router_name",
+    "offline_count": "aggregated.offline_count",
+    "recent_offline_started_at": "latest.offline_started_at",
+    "recent_offline_ended_at": "latest.offline_ended_at",
+    "recent_duration_seconds": "latest.duration_seconds",
+    "longest_duration_seconds": "aggregated.longest_duration_seconds",
+}
+
 
 def _offline_history_where_clause(since_iso, search="", router_names=None):
     clauses = ["offline_ended_at >= ?"]
@@ -1565,6 +1577,131 @@ def get_offline_history_since(since_iso, limit=500):
     return get_offline_history_page_since(since_iso, limit=limit)
 
 
+def _offline_history_account_base_cte(where_sql):
+    return f"""
+        WITH filtered AS (
+            SELECT
+                id,
+                pppoe,
+                COALESCE(router_id, '') AS router_id,
+                COALESCE(router_name, '') AS router_name,
+                COALESCE(mode, '') AS mode,
+                offline_started_at,
+                offline_ended_at,
+                COALESCE(duration_seconds, 0) AS duration_seconds,
+                COALESCE(radius_status, '') AS radius_status,
+                disabled,
+                COALESCE(profile, '') AS profile,
+                COALESCE(last_logged_out, '') AS last_logged_out,
+                LOWER(TRIM(pppoe)) AS pppoe_key,
+                CASE
+                    WHEN TRIM(COALESCE(router_id, '')) <> '' THEN LOWER(TRIM(router_id))
+                    ELSE LOWER(TRIM(COALESCE(mode, 'offline')))
+                END AS source_key
+            FROM offline_history
+            WHERE {where_sql}
+        ),
+        ranked AS (
+            SELECT
+                filtered.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY filtered.pppoe_key, filtered.source_key
+                    ORDER BY filtered.offline_ended_at DESC, filtered.id DESC
+                ) AS rn
+            FROM filtered
+        ),
+        aggregated AS (
+            SELECT
+                pppoe_key,
+                source_key,
+                COUNT(*) AS offline_count,
+                MAX(duration_seconds) AS longest_duration_seconds,
+                MIN(offline_started_at) AS first_offline_started_at
+            FROM filtered
+            GROUP BY pppoe_key, source_key
+        )
+    """
+
+
+def count_offline_history_accounts_since(since_iso, search="", router_names=None):
+    since_iso = (since_iso or "").strip()
+    if not since_iso:
+        return 0
+    where_sql, params = _offline_history_where_clause(since_iso, search=search, router_names=router_names)
+    sql = _offline_history_account_base_cte(where_sql) + """
+        SELECT COUNT(*) AS total
+        FROM aggregated
+    """
+    conn = get_conn()
+    try:
+        row = conn.execute(sql, tuple(params)).fetchone()
+        if not row:
+            return 0
+        try:
+            total = row["total"]
+        except Exception:
+            total = row[0]
+        return int(total or 0)
+    finally:
+        conn.close()
+
+
+def get_offline_history_accounts_page_since(
+    since_iso,
+    limit=500,
+    offset=0,
+    sort_key="recent_offline_ended_at",
+    sort_dir="desc",
+    search="",
+    router_names=None,
+):
+    since_iso = (since_iso or "").strip()
+    limit = max(min(int(limit or 500), 2000), 1)
+    offset = max(int(offset or 0), 0)
+    if not since_iso:
+        return []
+    sort_column = _OFFLINE_HISTORY_ACCOUNT_SORT_COLUMNS.get(
+        str(sort_key or "").strip(),
+        "latest.offline_ended_at",
+    )
+    order_dir = "ASC" if str(sort_dir or "").strip().lower() == "asc" else "DESC"
+    where_sql, params = _offline_history_where_clause(since_iso, search=search, router_names=router_names)
+    sql = (
+        _offline_history_account_base_cte(where_sql)
+        + f"""
+        SELECT
+            latest.pppoe,
+            latest.router_id,
+            latest.router_name,
+            latest.mode,
+            latest.offline_started_at AS recent_offline_started_at,
+            latest.offline_ended_at AS recent_offline_ended_at,
+            latest.duration_seconds AS recent_duration_seconds,
+            latest.radius_status AS latest_radius_status,
+            latest.disabled AS latest_disabled,
+            latest.profile AS latest_profile,
+            latest.last_logged_out AS latest_last_logged_out,
+            aggregated.offline_count,
+            aggregated.longest_duration_seconds,
+            aggregated.first_offline_started_at
+        FROM ranked AS latest
+        INNER JOIN aggregated
+            ON aggregated.pppoe_key = latest.pppoe_key
+           AND aggregated.source_key = latest.source_key
+        WHERE latest.rn = 1
+        ORDER BY {sort_column} {order_dir}, latest.id DESC
+        LIMIT ?
+        OFFSET ?
+        """
+    )
+    conn = get_conn()
+    try:
+        rows = conn.execute(sql, tuple(params) + (limit, offset)).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
 def get_offline_history_for_pppoe(pppoe, since_iso="", limit=20):
     pppoe = (pppoe or "").strip()
     since_iso = (since_iso or "").strip()
@@ -1603,6 +1740,98 @@ def get_offline_history_for_pppoe(pppoe, since_iso="", limit=20):
                 (pppoe, limit),
             ).fetchall()
         return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_offline_history_for_account(pppoe, router_id="", mode="", since_iso="", limit=200):
+    pppoe = (pppoe or "").strip()
+    router_id = (router_id or "").strip()
+    mode = (mode or "").strip().lower() or "offline"
+    since_iso = (since_iso or "").strip()
+    limit = max(min(int(limit or 200), 2000), 1)
+    if not pppoe:
+        return []
+    clauses = ["LOWER(pppoe) = LOWER(?)"]
+    params = [pppoe]
+    if router_id:
+        clauses.append("LOWER(COALESCE(router_id, '')) = LOWER(?)")
+        params.append(router_id)
+    else:
+        clauses.append("COALESCE(NULLIF(TRIM(router_id), ''), '') = ''")
+        clauses.append("LOWER(COALESCE(mode, 'offline')) = LOWER(?)")
+        params.append(mode)
+    if since_iso:
+        clauses.append("offline_ended_at >= ?")
+        params.append(since_iso)
+    where_sql = " AND ".join(clauses)
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT
+                id, pppoe, router_id, router_name, mode,
+                offline_started_at, offline_ended_at, duration_seconds,
+                radius_status, disabled, profile, last_logged_out
+            FROM offline_history
+            WHERE {where_sql}
+            ORDER BY offline_ended_at DESC, id DESC
+            LIMIT ?
+            """,
+            tuple(params) + (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def list_offline_history_account_stats_map(since_iso=""):
+    since_iso = (since_iso or "").strip()
+    clauses = []
+    params = []
+    if since_iso:
+        clauses.append("offline_ended_at >= ?")
+        params.append(since_iso)
+    where_sql = " AND ".join(clauses) if clauses else "1=1"
+    sql = (
+        _offline_history_account_base_cte(where_sql)
+        + """
+        SELECT
+            latest.pppoe,
+            latest.router_id,
+            latest.router_name,
+            latest.mode,
+            aggregated.offline_count,
+            aggregated.longest_duration_seconds,
+            aggregated.first_offline_started_at,
+            latest.offline_started_at AS recent_offline_started_at,
+            latest.offline_ended_at AS recent_offline_ended_at,
+            latest.duration_seconds AS recent_duration_seconds,
+            latest.radius_status AS latest_radius_status,
+            latest.disabled AS latest_disabled,
+            latest.profile AS latest_profile,
+            latest.last_logged_out AS latest_last_logged_out
+        FROM ranked AS latest
+        INNER JOIN aggregated
+            ON aggregated.pppoe_key = latest.pppoe_key
+           AND aggregated.source_key = latest.source_key
+        WHERE latest.rn = 1
+        """
+    )
+    conn = get_conn()
+    try:
+        rows = conn.execute(sql, tuple(params)).fetchall()
+        out = {}
+        for row in rows:
+            item = dict(row)
+            pppoe = str(item.get("pppoe") or "").strip().lower()
+            if not pppoe:
+                continue
+            router_id = str(item.get("router_id") or "").strip().lower()
+            mode = str(item.get("mode") or "offline").strip().lower() or "offline"
+            key = f"{router_id or mode}|{pppoe}"
+            out[key] = item
+        return out
     finally:
         conn.close()
 
@@ -1677,6 +1906,18 @@ def _get_active_surveillance_session(pppoe):
         conn.close()
 
 
+def _surveillance_session_lock(pppoe):
+    key = (pppoe or "").strip().lower()
+    if not key:
+        return _surveillance_session_locks_guard
+    with _surveillance_session_locks_guard:
+        lock = _surveillance_session_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _surveillance_session_locks[key] = lock
+        return lock
+
+
 def get_active_surveillance_session(pppoe):
     return _get_active_surveillance_session(pppoe)
 
@@ -1736,47 +1977,48 @@ def ensure_surveillance_session(pppoe, started_at=None, source="", ip="", state=
     pppoe = (pppoe or "").strip()
     if not pppoe:
         return None
-    existing = _get_active_surveillance_session(pppoe)
-    if existing:
-        return existing
-    now_iso = utc_now_iso()
-    started_at = (started_at or "").strip() or now_iso
-    state = (state or "under").strip().lower() or "under"
-    if state not in ("under", "level2"):
-        state = "under"
-    observed_total = None
-    try:
-        if observed_total_hint is not None:
-            observed_total = max(int(observed_total_hint or 0), 0)
-    except Exception:
+    with _surveillance_session_lock(pppoe):
+        existing = _get_active_surveillance_session(pppoe)
+        if existing:
+            return existing
+        now_iso = utc_now_iso()
+        started_at = (started_at or "").strip() or now_iso
+        state = (state or "under").strip().lower() or "under"
+        if state not in ("under", "level2"):
+            state = "under"
         observed_total = None
-    if observed_total is None:
-        observed_total = _get_surveillance_observed_total(pppoe)
-    conn = get_conn()
-    try:
-        with conn:
-            conn.execute(
-                """
-                INSERT INTO surveillance_sessions (
-                    pppoe, source, started_at, ended_at, end_reason, end_note,
-                    under_seconds, level2_seconds, observe_seconds,
-                    observed_count, last_state, last_ip, updated_at
+        try:
+            if observed_total_hint is not None:
+                observed_total = max(int(observed_total_hint or 0), 0)
+        except Exception:
+            observed_total = None
+        if observed_total is None:
+            observed_total = _get_surveillance_observed_total(pppoe)
+        conn = get_conn()
+        try:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO surveillance_sessions (
+                        pppoe, source, started_at, ended_at, end_reason, end_note,
+                        under_seconds, level2_seconds, observe_seconds,
+                        observed_count, last_state, last_ip, updated_at
+                    )
+                    VALUES (?, ?, ?, NULL, NULL, NULL, 0, 0, 0, ?, ?, ?, ?)
+                    """,
+                    (
+                        pppoe,
+                        (source or "").strip(),
+                        started_at,
+                        observed_total,
+                        state,
+                        (ip or "").strip(),
+                        now_iso,
+                    ),
                 )
-                VALUES (?, ?, ?, NULL, NULL, NULL, 0, 0, 0, ?, ?, ?, ?)
-                """,
-                (
-                    pppoe,
-                    (source or "").strip(),
-                    started_at,
-                    observed_total,
-                    state,
-                    (ip or "").strip(),
-                    now_iso,
-                ),
-            )
-    finally:
-        conn.close()
-    return _get_active_surveillance_session(pppoe)
+        finally:
+            conn.close()
+        return _get_active_surveillance_session(pppoe)
 
 
 def touch_surveillance_session(pppoe, source="", ip="", state=None):
@@ -1867,6 +2109,7 @@ def end_surveillance_session(
     under_seconds=None,
     level2_seconds=None,
     observe_seconds=None,
+    create_if_missing=True,
 ):
     """
     Ends the active session, setting ended_at + end_reason.
@@ -1875,7 +2118,10 @@ def end_surveillance_session(
     end_reason = (end_reason or "").strip().lower()
     if end_reason not in ("healed", "removed", "fixed", "false", "recovered"):
         end_reason = "removed"
-    session = ensure_surveillance_session(pppoe, started_at=started_at, source=source, ip=ip, state="under")
+    if create_if_missing:
+        session = ensure_surveillance_session(pppoe, started_at=started_at, source=source, ip=ip, state="under")
+    else:
+        session = _get_active_surveillance_session(pppoe)
     if not session:
         return None
     session_id = session.get("id")

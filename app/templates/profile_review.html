@@ -411,6 +411,11 @@
               </div>
             </div>
             <div class="text-muted small mb-3">{{ profile.offline.status_hint }}</div>
+            {% if profile.offline.history or profile.offline.offline_since_iso %}
+              <div class="border rounded p-2 mb-3">
+                <div id="profile-offline-chart" style="height: 220px;"></div>
+              </div>
+            {% endif %}
             {% if profile.offline.history %}
               <div class="fw-semibold mb-2">Recent Offline History</div>
               <div class="table-responsive" style="max-height: 220px; overflow: auto;">
@@ -1269,6 +1274,7 @@
     const profileAccPingState = { chart: null };
     const profileOpticalState = { chart: null };
     const profileUsageState = { chart: null };
+    const profileOfflineState = { chart: null };
 
     const resetChartState = (state, el, message) => {
       if (state?.chart) {
@@ -1720,6 +1726,89 @@
 	      return `${size.toFixed(2)} ${units[idx]}`;
 	    };
 
+    const buildOfflineTimelineSeries = () => {
+      const offline = profile?.offline;
+      if (!offline || (!Array.isArray(offline.history) && !offline.offline_since_iso)) return [];
+      const events = [];
+      const pushWindow = (startIso, endIso) => {
+        const startMs = Date.parse(String(startIso || ""));
+        if (!Number.isFinite(startMs)) return;
+        const endRaw = Date.parse(String(endIso || ""));
+        const endMs = Number.isFinite(endRaw) ? endRaw : Date.now();
+        const safeEnd = Math.max(endMs, startMs);
+        events.push({ x: Math.max(startMs - 1000, 0), y: 0 });
+        events.push({ x: startMs, y: 1 });
+        events.push({ x: safeEnd, y: 1 });
+        events.push({ x: safeEnd + 1000, y: 0 });
+      };
+      const history = Array.isArray(offline.history) ? offline.history.slice().reverse() : [];
+      history.forEach((item) => pushWindow(item?.offline_started_at, item?.offline_ended_at));
+      if ((offline.status === "offline" || offline.status === "tracking") && offline.offline_since_iso) {
+        pushWindow(offline.offline_since_iso, "");
+      }
+      events.sort((a, b) => a.x - b.x || a.y - b.y);
+      const deduped = [];
+      for (const point of events) {
+        const prev = deduped[deduped.length - 1];
+        if (prev && prev.x === point.x && prev.y === point.y) continue;
+        deduped.push(point);
+      }
+      return deduped;
+    };
+
+    const renderOfflineChart = async () => {
+      const el = document.getElementById("profile-offline-chart");
+      if (!el || !profile?.offline) return;
+      resetChartState(profileOfflineState, el, "Loading offline timeline...");
+      const points = buildOfflineTimelineSeries();
+      if (!points.length) {
+        setChartPlaceholder(el, "No offline timeline available for this account.");
+        return;
+      }
+      if (!window.ApexCharts) {
+        setChartPlaceholder(el, "Chart library unavailable.");
+        return;
+      }
+      el.innerHTML = "";
+      const chart = new window.ApexCharts(el, {
+        chart: {
+          type: "line",
+          height: 220,
+          toolbar: zoomToolbarOptions,
+          zoom: { enabled: true, type: "x", autoScaleYaxis: false },
+          animations: { enabled: false },
+        },
+        series: [{ name: "Offline State", data: points }],
+        colors: ["#d63939"],
+        stroke: { width: 3, curve: "stepline" },
+        markers: { size: 0 },
+        xaxis: { type: "datetime" },
+        yaxis: {
+          min: 0,
+          max: 1,
+          tickAmount: 1,
+          labels: {
+            formatter: (val) => (Number(val) >= 0.5 ? "Offline" : "Online"),
+          },
+        },
+        tooltip: {
+          shared: false,
+          intersect: false,
+          followCursor: true,
+          x: {
+            formatter: (value) => formatTsPHT(value),
+          },
+          y: {
+            formatter: (val) => (Number(val) >= 0.5 ? "Offline" : "Online"),
+          },
+        },
+        grid: { borderColor: "#e9ecef" },
+        legend: { position: "top" },
+      });
+      profileOfflineState.chart = chart;
+      await chart.render();
+    };
+
 	    const renderUsageChart = async () => {
 	      const el = document.getElementById("profile-usage-chart");
 	      if (!el || !profile?.pppoe || !profile?.usage?.enabled || !profile?.usage?.active) return;
@@ -1846,6 +1935,7 @@
 	      }
 	    };
 
+      void renderOfflineChart();
 	    void refreshCurrentDiagnostics();
 
 	    if (top10Wrap && !profile?.ip && !profile?.device_id) {

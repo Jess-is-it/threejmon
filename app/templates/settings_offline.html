@@ -59,8 +59,16 @@
     width: 6.25rem;
   }
 
+  .offline-status-table .off-col-offline-count {
+    width: 6rem;
+  }
+
+  .offline-status-table .off-col-longest {
+    width: 7rem;
+  }
+
   .offline-status-table .off-col-actions {
-    width: 5rem;
+    width: 7rem;
   }
 
   .offline-status-label,
@@ -233,7 +241,16 @@
           </li>
           {% endfor %}
           <li class="nav-item">
-            <a href="#" class="nav-link {% if not offline_rules %}active{% endif %}" data-offline-view="history">History</a>
+            <a href="#" class="nav-link {% if not offline_rules %}active{% endif %}" data-offline-view="history">
+              <span>History</span>
+              <span class="badge bg-secondary-lt text-secondary ms-2" id="offline-history-tab-count">0</span>
+            </a>
+          </li>
+          <li class="nav-item">
+            <a href="#" class="nav-link" data-offline-view="accounts">
+              <span>Accounts</span>
+              <span class="badge bg-azure-lt text-azure ms-2" id="offline-accounts-tab-count">0</span>
+            </a>
           </li>
           <li class="nav-item ms-auto">
             <div class="px-2 py-2">
@@ -288,15 +305,16 @@
                     <tr>
                       <th class="rto-sort off-col-pppoe off-priority-0" data-table="history" data-sort-key="pppoe" aria-sort="none">PPPoE <span class="rto-sort-indicator" aria-hidden="true"></span></th>
                       <th class="rto-sort off-col-router off-priority-2" data-table="history" data-sort-key="router_name" aria-sort="none">Router <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                      <th class="rto-sort off-col-mode off-priority-5" data-table="history" data-sort-key="mode" aria-sort="none">Mode <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                      <th class="rto-sort off-col-offline-since off-priority-4" data-table="history" data-sort-key="offline_started_at" aria-sort="none">Offline Since <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                      <th class="rto-sort off-col-back-online off-priority-3" data-table="history" data-sort-key="offline_ended_at" aria-sort="none">Back Online <span class="rto-sort-indicator" aria-hidden="true"></span></th>
-                      <th class="rto-sort off-col-duration off-priority-1" data-table="history" data-sort-key="duration_seconds" aria-sort="none">Duration <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort off-col-offline-count off-priority-1" data-table="history" data-sort-key="offline_count" aria-sort="none">Offline Count <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort off-col-offline-since off-priority-4" data-table="history" data-sort-key="recent_offline_started_at" aria-sort="none">Recent Offline <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort off-col-back-online off-priority-3" data-table="history" data-sort-key="recent_offline_ended_at" aria-sort="none">Last Restored <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort off-col-duration off-priority-5" data-table="history" data-sort-key="recent_duration_seconds" aria-sort="none">Recent Duration <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort off-col-longest off-priority-6" data-table="history" data-sort-key="longest_duration_seconds" aria-sort="none">Longest Offline <span class="rto-sort-indicator" aria-hidden="true"></span></th>
                       <th class="text-end off-col-actions off-priority-0">Actions</th>
                     </tr>
                   </thead>
                   <tbody id="offline-history-body">
-                    <tr><td colspan="7" class="text-muted">Loading…</td></tr>
+                    <tr><td colspan="8" class="text-muted">Loading…</td></tr>
                   </tbody>
                 </table>
               </div>
@@ -308,7 +326,39 @@
                   <button type="button" class="btn btn-outline-secondary" id="offline-history-next">Next</button>
                 </div>
               </div>
-              <div class="text-muted small mt-2">History shows accounts that stayed offline past the earliest enabled tracking rule and later became active again.</div>
+              <div class="text-muted small mt-2">History groups one row per account. Open View Details to review the full offline timeline for that account.</div>
+            </div>
+          </div>
+
+          <div id="offline-accounts-pane" class="d-none">
+            <div class="rto-table-shell">
+              <div class="rto-table-wrap offline-status-table-wrap" id="offline-accounts-table">
+                <table class="table table-vcenter rto-table offline-status-table">
+                  <thead>
+                    <tr>
+                      <th class="rto-sort off-col-pppoe off-priority-0" data-table="accounts" data-sort-key="pppoe" aria-sort="none">PPPoE <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort off-col-router off-priority-2" data-table="accounts" data-sort-key="router_name" aria-sort="none">Router <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort off-col-status off-priority-1" data-table="accounts" data-sort-key="current_status" aria-sort="none">Current <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort off-col-offline-count off-priority-4" data-table="accounts" data-sort-key="history_count" aria-sort="none">Offline Count <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort off-col-back-online off-priority-3" data-table="accounts" data-sort-key="recent_offline_ended_at" aria-sort="none">Last Restored <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="rto-sort off-col-longest off-priority-6" data-table="accounts" data-sort-key="longest_duration_seconds" aria-sort="none">Longest Offline <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                      <th class="text-end off-col-actions off-priority-0">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="offline-accounts-body">
+                    <tr><td colspan="7" class="text-muted">Loading…</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="rto-resize-handle" data-target="offline-accounts-table"></div>
+              <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mt-3" id="offline-accounts-pagination">
+                <div class="text-muted small" id="offline-accounts-page-info">Page 1 of 1 · 0 total</div>
+                <div class="btn-group btn-group-sm">
+                  <button type="button" class="btn btn-outline-secondary" id="offline-accounts-prev">Prev</button>
+                  <button type="button" class="btn btn-outline-secondary" id="offline-accounts-next">Next</button>
+                </div>
+              </div>
+              <div class="text-muted small mt-2">Accounts lists all accounts from the current Offline source and shows whether each one has offline history, the latest restore, and the longest recorded outage.</div>
             </div>
           </div>
         </div>
@@ -730,6 +780,23 @@
   </div>
 </div>
 
+<div class="modal modal-blur fade" id="offline-account-detail-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div>
+          <h5 class="modal-title" id="offline-account-detail-title">Offline Account Details</h5>
+          <div class="text-muted small" id="offline-account-detail-subtitle">Reviewing account offline history.</div>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body" id="offline-account-detail-body">
+        <div class="text-muted">Select an account to load offline details.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
   document.addEventListener("DOMContentLoaded", () => {
     const escMap = { "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" };
@@ -741,10 +808,13 @@
     const statusPaneEl = document.getElementById("offline-status");
     const currentBody = document.getElementById("offline-current-body");
     const historyBody = document.getElementById("offline-history-body");
+    const accountsBody = document.getElementById("offline-accounts-body");
     const currentPane = document.getElementById("offline-current-pane");
     const historyPane = document.getElementById("offline-history-pane");
+    const accountsPane = document.getElementById("offline-accounts-pane");
     const currentTableWrap = document.getElementById("offline-current-table");
     const historyTableWrap = document.getElementById("offline-history-table");
+    const accountsTableWrap = document.getElementById("offline-accounts-table");
     const activeCountEl = document.getElementById("offline-active-count");
     const countEl = document.getElementById("offline-count");
     const currentPaginationEl = document.getElementById("offline-current-pagination");
@@ -752,10 +822,16 @@
     const currentPrevBtn = document.getElementById("offline-current-prev");
     const currentNextBtn = document.getElementById("offline-current-next");
     const historyCountEl = document.getElementById("offline-history-count");
+    const historyTabCountEl = document.getElementById("offline-history-tab-count");
+    const accountsTabCountEl = document.getElementById("offline-accounts-tab-count");
     const historyPaginationEl = document.getElementById("offline-history-pagination");
     const historyPageInfoEl = document.getElementById("offline-history-page-info");
     const historyPrevBtn = document.getElementById("offline-history-prev");
     const historyNextBtn = document.getElementById("offline-history-next");
+    const accountsPaginationEl = document.getElementById("offline-accounts-pagination");
+    const accountsPageInfoEl = document.getElementById("offline-accounts-page-info");
+    const accountsPrevBtn = document.getElementById("offline-accounts-prev");
+    const accountsNextBtn = document.getElementById("offline-accounts-next");
     const lastCheckEl = document.getElementById("offline-last-check");
     const modeEl = document.getElementById("offline-mode");
     const minEl = document.getElementById("offline-min");
@@ -769,6 +845,14 @@
     const filterButton = document.getElementById("offline-filter-button");
     const filterRouters = document.getElementById("offline-filter-routers");
     const filterClear = document.getElementById("offline-filter-clear");
+    const offlineDetailModalEl = document.getElementById("offline-account-detail-modal");
+    const offlineDetailTitleEl = document.getElementById("offline-account-detail-title");
+    const offlineDetailSubtitleEl = document.getElementById("offline-account-detail-subtitle");
+    const offlineDetailBodyEl = document.getElementById("offline-account-detail-body");
+    const offlineModalCtor = () => window.bootstrap?.Modal || window.tabler?.Modal || window.tabler?.bootstrap?.Modal || null;
+    const offlineDetailModal = (offlineDetailModalEl && offlineModalCtor())
+      ? new (offlineModalCtor())(offlineDetailModalEl)
+      : null;
 
     const radiusAccountsBody = document.getElementById("offline-radius-accounts-body");
     const radiusAccountsCountEl = document.getElementById("offline-radius-accounts-count");
@@ -791,6 +875,7 @@
     const activeStatusViewKey = "offline_status_active_view_v1";
     const currentPageKey = "offline_current_page_v1";
     const historyPageKey = "offline_history_page_v1";
+    const accountsPageKey = "offline_accounts_page_v1";
 
     const numericKeys = new Set(["duration_seconds", "uptime_sec"]);
     const booleanKeys = new Set(["disabled", "online"]);
@@ -807,6 +892,13 @@
     let historyLoading = false;
     let historyRefreshSeq = 0;
     let historyNeedsRefresh = true;
+    let accountsData = [];
+    let accountsPage = 1;
+    let accountsPagination = { page: 1, pages: 1, total: 0, has_prev: false, has_next: false, start: 0, end: 0, limit: 100 };
+    let accountsLoaded = false;
+    let accountsLoading = false;
+    let accountsRefreshSeq = 0;
+    let accountsNeedsRefresh = true;
     let radiusAccountsData = [];
     let searchQuery = "";
     let showLimit = 100;
@@ -821,11 +913,22 @@
     let offlineNewSeenInFlight = false;
     let offlineNewSeenDueAt = 0;
     let offlineNewSeenSignature = "";
-    let offlineNewAutoFocusAppliedSignature = "";
+    let offlineDetailChart = null;
+    let offlineDetailHistoryPage = 1;
+    let offlineDetailPayload = null;
+    const offlineDetailHistoryPageSize = 10;
 
     const radiusAccountsSearchKey = "offline_radius_accounts_search_v1";
     const radiusAccountsStatusKey = "offline_radius_accounts_status_v1";
     const radiusAccountsLimitKey = "offline_radius_accounts_limit_v1";
+
+    if (offlineDetailModalEl) {
+      offlineDetailModalEl.addEventListener("hidden.bs.modal", () => {
+        destroyOfflineDetailChart();
+        offlineDetailPayload = null;
+        offlineDetailHistoryPage = 1;
+      });
+    }
 
     function loadJson(key, fallback) {
       try {
@@ -859,8 +962,12 @@
       url.searchParams.set("limit", String(showLimit));
       url.searchParams.set("status_page", String(currentPage));
       url.searchParams.set("history_page", String(historyPage));
+      url.searchParams.set("accounts_page", String(accountsPage));
       if (activeStatusView.type === "history") {
         url.searchParams.set("status_view", "history");
+        url.searchParams.delete("status_rule");
+      } else if (activeStatusView.type === "accounts") {
+        url.searchParams.set("status_view", "accounts");
         url.searchParams.delete("status_rule");
       } else {
         url.searchParams.set("status_view", "rule");
@@ -898,15 +1005,26 @@
     }
 
     async function applyStatusNavigation(message, options = {}) {
-      const { refreshSummary = true, refreshHistoryData = true, forceSearchFocus = false, resetScroll = false } = options;
+      const {
+        refreshSummary = true,
+        refreshHistoryData = true,
+        refreshAccountsData = true,
+        forceSearchFocus = false,
+        resetScroll = false,
+      } = options;
       showLoadingBanner(message);
       try {
         setUrlState();
         const tasks = [];
         if (refreshSummary) tasks.push(refresh());
         if (refreshHistoryData) tasks.push(refreshHistory({ backgroundOnly: activeStatusView.type !== "history", forceSearchFocus, resetScroll }));
+        if (refreshAccountsData) tasks.push(refreshAccounts({ backgroundOnly: activeStatusView.type !== "accounts", forceSearchFocus, resetScroll }));
         if (tasks.length) await Promise.all(tasks);
-        else renderAllTables(forceSearchFocus, { resetCurrentScroll: resetScroll, resetHistoryScroll: resetScroll });
+        else renderAllTables(forceSearchFocus, {
+          resetCurrentScroll: resetScroll,
+          resetHistoryScroll: resetScroll,
+          resetAccountsScroll: resetScroll,
+        });
       } finally {
         hideLoadingBanner();
       }
@@ -939,6 +1057,7 @@
     function updateStatusTabState() {
       if (currentPane) currentPane.classList.toggle("d-none", activeStatusView.type !== "rule");
       if (historyPane) historyPane.classList.toggle("d-none", activeStatusView.type !== "history");
+      if (accountsPane) accountsPane.classList.toggle("d-none", activeStatusView.type !== "accounts");
       if (statusTabs) {
         statusTabs.querySelectorAll("[data-offline-view]").forEach((link) => {
           const viewType = String(link.getAttribute("data-offline-view") || "").trim();
@@ -960,6 +1079,8 @@
         const rule = currentRules.find((item) => String(item?.id || "") === ruleId);
         badge.textContent = String(rule?.count ?? 0);
       });
+      if (historyTabCountEl) historyTabCountEl.textContent = String(historyMatchCount || 0);
+      if (accountsTabCountEl) accountsTabCountEl.textContent = String(accountsPagination?.total || 0);
     }
 
     function updateOfflineBucketNote() {
@@ -985,7 +1106,7 @@
         } else {
           activeStatusView = { type: "history", ruleId: "" };
         }
-      } else if (activeStatusView.type !== "history") {
+      } else if (activeStatusView.type !== "history" && activeStatusView.type !== "accounts") {
         activeStatusView = { type: currentRules.length ? "rule" : "history", ruleId: currentRules.length ? String(currentRules[0].id || "") : "" };
       }
       updateStatusTabState();
@@ -1020,9 +1141,17 @@
         historyNeedsRefresh = true;
         saveJson(historyPageKey, historyPage);
       }
+      if (table === "accounts") {
+        accountsPage = 1;
+        accountsNeedsRefresh = true;
+        saveJson(accountsPageKey, accountsPage);
+      }
       updateSortIndicators();
       setUrlState();
-      renderAllTables(false, { resetCurrentScroll: table === "current" });
+      renderAllTables(false, {
+        resetCurrentScroll: table === "current",
+        resetAccountsScroll: table === "accounts",
+      });
     }
 
     function updateSortIndicators() {
@@ -1120,6 +1249,29 @@
       return `<a class="badge bg-azure-lt text-azure header-icon-badge" href="${esc(href)}" target="_blank" rel="noopener" title="Profile Review" aria-label="Profile Review"><i class="ti ti-user"></i></a>`;
     }
 
+    function renderOfflineDetailAction(item) {
+      const pppoe = String(item?.pppoe || "").trim();
+      if (!pppoe) return "";
+      const routerId = String(item?.router_id || "").trim();
+      const mode = String(item?.mode || "offline").trim().toLowerCase() || "offline";
+      const routerName = String(item?.router_name || "").trim();
+      return `
+        <button
+          type="button"
+          class="badge bg-secondary-lt text-secondary border-0 header-icon-badge"
+          data-offline-detail-view="1"
+          data-pppoe="${esc(pppoe)}"
+          data-router-id="${esc(routerId)}"
+          data-mode="${esc(mode)}"
+          data-router-name="${esc(routerName)}"
+          title="View Offline Details"
+          aria-label="View Offline Details"
+        >
+          <i class="ti ti-eye"></i>
+        </button>
+      `;
+    }
+
     function rowMatchesRouters(row) {
       if (!selectedRouters.length) return true;
       const r = getRowRouterName(row);
@@ -1140,6 +1292,14 @@
         row?.offline_started,
         row?.offline_ended,
         row?.duration,
+        row?.offline_count,
+        row?.recent_offline_started,
+        row?.recent_offline_ended,
+        row?.recent_duration,
+        row?.longest_duration,
+        row?.latest_profile,
+        row?.latest_radius_status,
+        row?.latest_last_logged_out,
       ];
       return hay
         .filter((x) => x !== null && x !== undefined)
@@ -1164,7 +1324,7 @@
       if (!filterRouters) return;
       const routers = Array.from(new Set([
         ...selectedRouters,
-        ...uniqueRouters([...flattenCurrentRows(), ...historyData]),
+        ...uniqueRouters([...flattenCurrentRows(), ...historyData, ...accountsData]),
       ])).sort((a, b) => a.localeCompare(b));
       if (!routers.length) {
         filterRouters.innerHTML = '<div class="text-muted small">No routers yet.</div>';
@@ -1289,6 +1449,7 @@
       const status = String(row.radius_status || "").trim();
       const statusCell = status ? `<span class="badge bg-secondary-lt">${esc(status)}</span>` : '<span class="text-muted small">—</span>';
       const since = row.offline_since ? esc(row.offline_since) : "—";
+      const detailAction = renderOfflineDetailAction(row);
       const profileAction = renderProfileReviewAction({ pppoe: row.pppoe });
       const entryId = String(row.entry_id || "").trim();
       const newBadge = row.is_new ? '<span class="badge bg-yellow-lt text-yellow ms-2" data-offline-new-badge title="New Offline account for your view">New</span>' : "";
@@ -1301,26 +1462,396 @@
           <td class="text-muted off-col-profile off-priority-5"><span class="offline-status-cell-truncate" title="${esc(row.profile || "—")}">${esc(row.profile || "—")}</span></td>
           <td class="text-muted off-col-last-logout off-priority-4"><span class="offline-status-cell-truncate" title="${esc(row.last_logged_out || "—")}">${esc(row.last_logged_out || "—")}</span></td>
           <td class="text-muted off-col-offline-since off-priority-3"><span class="offline-status-cell-truncate" title="${since}">${since}</span></td>
-          <td class="text-end off-col-actions off-priority-0"><span class="off-actions">${profileAction}</span></td>
+          <td class="text-end off-col-actions off-priority-0"><span class="off-actions">${detailAction}${profileAction}</span></td>
         </tr>
       `;
     }
 
     function renderHistoryRow(row) {
-      const mode = String(row.mode || "").trim() || "—";
-      const duration = String(row.duration || "").trim() || "—";
+      const detailAction = renderOfflineDetailAction(row);
       const profileAction = renderProfileReviewAction({ pppoe: row.pppoe });
+      const latestStatus = String(row.latest_radius_status || "").trim();
+      const latestProfile = String(row.latest_profile || "").trim();
+      const summaryTitleParts = [
+        latestStatus ? `Status: ${latestStatus}` : "",
+        latestProfile ? `Profile: ${latestProfile}` : "",
+        row.first_offline_started ? `First recorded: ${row.first_offline_started}` : "",
+      ].filter(Boolean);
+      const offlineCount = Number(row.offline_count || 0);
       return `
         <tr>
-          <td class="fw-semibold off-col-pppoe off-priority-0"><span class="offline-status-label" title="${esc(row.pppoe || "")}">${esc(row.pppoe || "")}</span></td>
+          <td class="fw-semibold off-col-pppoe off-priority-0">
+            <span class="offline-status-label" title="${esc(summaryTitleParts.join(" · ") || row.pppoe || "")}">${esc(row.pppoe || "")}</span>
+          </td>
           <td class="text-muted off-col-router off-priority-2"><span class="offline-status-cell-truncate" title="${esc(row.router_name || row.router_id || "")}">${esc(row.router_name || row.router_id || "")}</span></td>
-          <td class="off-col-mode off-priority-5"><span class="badge bg-secondary-lt">${esc(mode)}</span></td>
-          <td class="text-muted off-col-offline-since off-priority-4"><span class="offline-status-cell-truncate" title="${esc(row.offline_started || "—")}">${esc(row.offline_started || "—")}</span></td>
-          <td class="text-muted off-col-back-online off-priority-3"><span class="offline-status-cell-truncate" title="${esc(row.offline_ended || "—")}">${esc(row.offline_ended || "—")}</span></td>
-          <td class="text-muted off-col-duration off-priority-1"><span class="offline-status-cell-truncate" title="${esc(duration)}">${esc(duration)}</span></td>
-          <td class="text-end off-col-actions off-priority-0"><span class="off-actions">${profileAction}</span></td>
+          <td class="off-col-offline-count off-priority-1"><span class="badge bg-secondary-lt">${offlineCount}</span></td>
+          <td class="text-muted off-col-offline-since off-priority-4"><span class="offline-status-cell-truncate" title="${esc(row.recent_offline_started || "—")}">${esc(row.recent_offline_started || "—")}</span></td>
+          <td class="text-muted off-col-back-online off-priority-3"><span class="offline-status-cell-truncate" title="${esc(row.recent_offline_ended || "—")}">${esc(row.recent_offline_ended || "—")}</span></td>
+          <td class="text-muted off-col-duration off-priority-5"><span class="offline-status-cell-truncate" title="${esc(row.recent_duration || "—")}">${esc(row.recent_duration || "—")}</span></td>
+          <td class="text-muted off-col-longest off-priority-6"><span class="offline-status-cell-truncate" title="${esc(row.longest_duration || "—")}">${esc(row.longest_duration || "—")}</span></td>
+          <td class="text-end off-col-actions off-priority-0"><span class="off-actions">${detailAction}${profileAction}</span></td>
         </tr>
       `;
+    }
+
+    function renderAccountsRow(row) {
+      const detailAction = renderOfflineDetailAction(row);
+      const profileAction = renderProfileReviewAction({ pppoe: row.pppoe, ip: row.ip || "" });
+      const currentStatus = String(row.current_status || "").trim().toLowerCase();
+      let currentBadge = '<span class="badge bg-secondary-lt">Inactive</span>';
+      if (currentStatus === "offline") currentBadge = '<span class="badge bg-red-lt text-red">Offline</span>';
+      else if (currentStatus === "tracking") currentBadge = `<span class="badge bg-yellow-lt text-yellow">Tracking${row.threshold_text ? ` · ${esc(row.threshold_text)}` : ""}</span>`;
+      else if (currentStatus === "online") currentBadge = '<span class="badge bg-green-lt text-green">Online</span>';
+      const currentSubtitle = currentStatus === "offline" && row.offline_since
+        ? `<div class="text-muted small mt-1">Since ${esc(row.offline_since)}${row.offline_for ? ` · ${esc(row.offline_for)}` : ""}</div>`
+        : (currentStatus === "online" && row.online_since
+          ? `<div class="text-muted small mt-1">Online since ${esc(row.online_since)}</div>`
+          : "");
+      const offlineCount = Number(row.history_count || 0);
+      const offlineCountCell = offlineCount > 0
+        ? `<span class="badge bg-azure-lt text-azure">${esc(offlineCount)} records</span>`
+        : '<span class="badge bg-secondary-lt">0</span>';
+      return `
+        <tr>
+          <td class="fw-semibold off-col-pppoe off-priority-0">
+            <span class="offline-status-label" title="${esc(row.pppoe || "")}">${esc(row.pppoe || "")}</span>
+          </td>
+          <td class="text-muted off-col-router off-priority-2"><span class="offline-status-cell-truncate" title="${esc(row.router_name || row.router_id || "")}">${esc(row.router_name || row.router_id || "")}</span></td>
+          <td class="off-col-status off-priority-1">${currentBadge}${currentSubtitle}</td>
+          <td class="off-col-offline-count off-priority-4">${offlineCountCell}</td>
+          <td class="text-muted off-col-back-online off-priority-3"><span class="offline-status-cell-truncate" title="${esc(row.recent_offline_ended || "—")}">${esc(row.recent_offline_ended || "—")}</span></td>
+          <td class="text-muted off-col-longest off-priority-6"><span class="offline-status-cell-truncate" title="${esc(row.longest_duration || "—")}">${esc(row.longest_duration || "—")}</span></td>
+          <td class="text-end off-col-actions off-priority-0"><span class="off-actions">${detailAction}${profileAction}</span></td>
+        </tr>
+      `;
+    }
+
+    function renderOfflineDetailHistoryRows(rows, page = 1) {
+      const allRows = Array.isArray(rows) ? rows : [];
+      if (!allRows.length) {
+        return {
+          html: '<tr><td colspan="6" class="text-muted">No offline history recorded for this account yet.</td></tr>',
+          page: 1,
+          pages: 1,
+          total: 0,
+          start: 0,
+          end: 0,
+        };
+      }
+      const pages = Math.max(Math.ceil(allRows.length / offlineDetailHistoryPageSize), 1);
+      const safePage = Math.min(Math.max(Number(page || 1) || 1, 1), pages);
+      const startIndex = (safePage - 1) * offlineDetailHistoryPageSize;
+      const visibleRows = allRows.slice(startIndex, startIndex + offlineDetailHistoryPageSize);
+      return {
+        html: visibleRows.map((row) => {
+        const status = String(row?.radius_status || "").trim();
+        const statusCell = status ? `<span class="badge bg-secondary-lt">${esc(status)}</span>` : '<span class="text-muted small">—</span>';
+        const profile = String(row?.profile || "").trim() || "—";
+        const lastLoggedOut = String(row?.last_logged_out || "").trim() || "—";
+        return `
+          <tr>
+            <td class="text-muted"><span class="offline-status-cell-truncate" title="${esc(row?.offline_started || "—")}">${esc(row?.offline_started || "—")}</span></td>
+            <td class="text-muted"><span class="offline-status-cell-truncate" title="${esc(row?.offline_ended || "—")}">${esc(row?.offline_ended || "—")}</span></td>
+            <td class="text-muted">${esc(row?.duration || "—")}</td>
+            <td>${statusCell}</td>
+            <td class="text-muted"><span class="offline-status-cell-truncate" title="${esc(profile)}">${esc(profile)}</span></td>
+            <td class="text-muted"><span class="offline-status-cell-truncate" title="${esc(lastLoggedOut)}">${esc(lastLoggedOut)}</span></td>
+          </tr>
+        `;
+        }).join(""),
+        page: safePage,
+        pages,
+        total: allRows.length,
+        start: allRows.length ? startIndex + 1 : 0,
+        end: allRows.length ? Math.min(startIndex + offlineDetailHistoryPageSize, allRows.length) : 0,
+      };
+    }
+
+    function destroyOfflineDetailChart() {
+      if (offlineDetailChart && typeof offlineDetailChart.destroy === "function") {
+        try { offlineDetailChart.destroy(); } catch {}
+      }
+      offlineDetailChart = null;
+    }
+
+    function buildOfflineTimelineSeries(payload) {
+      const account = payload?.account && typeof payload.account === "object" ? payload.account : {};
+      const history = Array.isArray(payload?.history) ? payload.history : [];
+      const events = [];
+      const pushWindow = (startIso, endIso) => {
+        const startMs = Date.parse(String(startIso || "").trim());
+        if (!Number.isFinite(startMs)) return;
+        const endMsRaw = Date.parse(String(endIso || "").trim());
+        const endMs = Number.isFinite(endMsRaw) ? endMsRaw : Date.now();
+        const safeEnd = Math.max(endMs, startMs);
+        events.push({ x: Math.max(startMs - 1000, 0), y: 0 });
+        events.push({ x: startMs, y: 1 });
+        events.push({ x: safeEnd, y: 1 });
+        events.push({ x: safeEnd + 1000, y: 0 });
+      };
+      history
+        .slice()
+        .reverse()
+        .forEach((row) => pushWindow(row?.offline_started_at, row?.offline_ended_at));
+      if (String(account.status || "").trim().toLowerCase() === "offline" && account.current_offline_since_at) {
+        pushWindow(account.current_offline_since_at, "");
+      }
+      events.sort((a, b) => a.x - b.x || a.y - b.y);
+      const deduped = [];
+      for (const point of events) {
+        const prev = deduped[deduped.length - 1];
+        if (prev && prev.x === point.x && prev.y === point.y) continue;
+        deduped.push(point);
+      }
+      return deduped;
+    }
+
+    function renderOfflineDetailChart(payload) {
+      destroyOfflineDetailChart();
+      const chartEl = document.getElementById("offline-detail-chart");
+      const emptyEl = document.getElementById("offline-detail-chart-empty");
+      if (!chartEl || !emptyEl || typeof ApexCharts === "undefined") return;
+      const seriesData = buildOfflineTimelineSeries(payload);
+      if (!seriesData.length) {
+        chartEl.classList.add("d-none");
+        emptyEl.classList.remove("d-none");
+        return;
+      }
+      chartEl.classList.remove("d-none");
+      emptyEl.classList.add("d-none");
+      offlineDetailChart = new ApexCharts(chartEl, {
+        chart: {
+          type: "line",
+          height: 280,
+          zoom: { enabled: true, type: "x", autoScaleYaxis: false },
+          toolbar: {
+            show: true,
+            tools: {
+              download: false,
+              selection: true,
+              zoom: true,
+              zoomin: true,
+              zoomout: true,
+              pan: true,
+              reset: true,
+            },
+          },
+          animations: { enabled: false },
+        },
+        series: [{ name: "Offline State", data: seriesData }],
+        stroke: { curve: "stepline", width: 3, colors: ["#d63939"] },
+        markers: { size: 0 },
+        dataLabels: { enabled: false },
+        xaxis: {
+          type: "datetime",
+          labels: { datetimeUTC: false },
+        },
+        yaxis: {
+          min: 0,
+          max: 1,
+          tickAmount: 1,
+          labels: {
+            formatter: (value) => (Number(value) >= 0.5 ? "Offline" : "Online"),
+          },
+        },
+        grid: { borderColor: "rgba(98,105,118,.16)" },
+        tooltip: {
+          x: {
+            formatter: (value) => {
+              const d = new Date(value);
+              return d.toLocaleString();
+            },
+          },
+          y: {
+            formatter: (value) => (Number(value) >= 0.5 ? "Offline" : "Online"),
+          },
+        },
+        noData: { text: "No offline timeline data available." },
+      });
+      offlineDetailChart.render();
+    }
+
+    function renderOfflineDetail(payload) {
+      const account = payload?.account && typeof payload.account === "object" ? payload.account : {};
+      const history = Array.isArray(payload?.history) ? payload.history : [];
+      const isOffline = String(account.status || "").trim().toLowerCase() === "offline";
+      const statusBadge = isOffline
+        ? '<span class="badge bg-red-lt text-red">Currently Offline</span>'
+        : '<span class="badge bg-green-lt text-green">Restored</span>';
+      const bucketBadge = account.current_bucket_label
+        ? `<span class="badge bg-azure-lt text-azure">${esc(account.current_bucket_label)}</span>`
+        : "";
+      const modeBadge = account.mode ? `<span class="badge bg-secondary-lt">${esc(account.mode)}</span>` : "";
+      const historyTable = renderOfflineDetailHistoryRows(history, offlineDetailHistoryPage);
+      offlineDetailHistoryPage = historyTable.page;
+      return `
+        <div class="row g-3 mb-3">
+          <div class="col-md-3 col-sm-6">
+            <div class="card">
+              <div class="card-body">
+                <div class="text-muted small">Status</div>
+                <div class="d-flex flex-wrap gap-2 mt-2">${statusBadge}${bucketBadge}</div>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-3 col-sm-6">
+            <div class="card">
+              <div class="card-body">
+                <div class="text-muted small">Offline Count</div>
+                <div class="fs-3 fw-semibold mt-1">${esc(account.history_count || 0)}</div>
+                <div class="text-muted small mt-1">Recorded offline events</div>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-3 col-sm-6">
+            <div class="card">
+              <div class="card-body">
+                <div class="text-muted small">Longest Offline</div>
+                <div class="fs-3 fw-semibold mt-1">${esc(account.longest_duration || "—")}</div>
+                <div class="text-muted small mt-1">Longest restored outage</div>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-3 col-sm-6">
+            <div class="card">
+              <div class="card-body">
+                <div class="text-muted small">Most Recent Duration</div>
+                <div class="fs-3 fw-semibold mt-1">${esc(account.recent_duration || "—")}</div>
+                <div class="text-muted small mt-1">Latest restored outage</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card mb-3">
+          <div class="card-body">
+            <div class="row g-3">
+              <div class="col-md-6">
+                <div class="text-muted small">Router</div>
+                <div class="fw-semibold">${esc(account.router_name || account.router_id || "—")}</div>
+              </div>
+              <div class="col-md-6">
+                <div class="text-muted small">Mode</div>
+                <div class="fw-semibold">${modeBadge || "—"}</div>
+              </div>
+              <div class="col-md-6">
+                <div class="text-muted small">Current Offline Since</div>
+                <div class="fw-semibold">${esc(account.current_offline_since || "—")}</div>
+                <div class="text-muted small">${esc(account.current_offline_duration || "—")}</div>
+              </div>
+              <div class="col-md-6">
+                <div class="text-muted small">Last Restored</div>
+                <div class="fw-semibold">${esc(account.recent_offline_ended || "—")}</div>
+                <div class="text-muted small">Recent offline started ${esc(account.recent_offline_started || "—")}</div>
+              </div>
+              <div class="col-md-4">
+                <div class="text-muted small">Radius Status</div>
+                <div class="fw-semibold">${esc(account.radius_status || "—")}</div>
+              </div>
+              <div class="col-md-4">
+                <div class="text-muted small">Profile</div>
+                <div class="fw-semibold">${esc(account.profile || "—")}</div>
+              </div>
+              <div class="col-md-4">
+                <div class="text-muted small">Last Logged Out</div>
+                <div class="fw-semibold">${esc(account.last_logged_out || "—")}</div>
+              </div>
+              <div class="col-md-6">
+                <div class="text-muted small">First Recorded Offline</div>
+                <div class="fw-semibold">${esc(account.first_recorded_at || "—")}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title mb-0">Offline Timeline</h3>
+          </div>
+          <div class="card-body border-bottom">
+            <div id="offline-detail-chart"></div>
+            <div id="offline-detail-chart-empty" class="text-muted d-none">No offline timeline data available.</div>
+          </div>
+          <div class="table-responsive">
+            <table class="table table-vcenter card-table">
+              <thead>
+                <tr>
+                  <th>Offline Since</th>
+                  <th>Back Online</th>
+                  <th>Duration</th>
+                  <th>Status</th>
+                  <th>Profile</th>
+                  <th>Last Logged Out</th>
+                </tr>
+              </thead>
+              <tbody>${historyTable.html}</tbody>
+            </table>
+          </div>
+          <div class="card-footer d-flex flex-wrap align-items-center justify-content-between gap-2">
+            <div class="text-muted small">
+              Showing ${historyTable.start}-${historyTable.end} of ${historyTable.total}
+            </div>
+            <div class="d-flex align-items-center gap-2">
+              <span class="text-muted small">Page ${historyTable.page} of ${historyTable.pages}</span>
+              <div class="pagination pagination-sm mb-0">
+                <button type="button" class="page-link" data-offline-detail-history-prev ${historyTable.page <= 1 ? "disabled" : ""}>Prev</button>
+                <button type="button" class="page-link" data-offline-detail-history-next ${historyTable.page >= historyTable.pages ? "disabled" : ""}>Next</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function rerenderOfflineDetail() {
+      if (!offlineDetailPayload || !offlineDetailBodyEl) return;
+      offlineDetailBodyEl.innerHTML = renderOfflineDetail(offlineDetailPayload);
+      renderOfflineDetailChart(offlineDetailPayload);
+    }
+
+    async function openOfflineDetail(item) {
+      if (!offlineDetailModalEl || !offlineDetailBodyEl) return;
+      const pppoe = String(item?.pppoe || "").trim();
+      const routerId = String(item?.routerId || "").trim();
+      const mode = String(item?.mode || "offline").trim().toLowerCase() || "offline";
+      const routerName = String(item?.routerName || "").trim();
+      if (!pppoe) return;
+      if (offlineDetailTitleEl) offlineDetailTitleEl.textContent = `Offline Details · ${pppoe}`;
+      if (offlineDetailSubtitleEl) {
+        offlineDetailSubtitleEl.textContent = routerName
+          ? `${routerName}${routerId ? ` · ${routerId}` : ""}`
+          : (routerId || "Loading offline account details.");
+      }
+      offlineDetailBodyEl.innerHTML = '<div class="text-muted">Loading offline account details…</div>';
+      offlineDetailPayload = null;
+      offlineDetailHistoryPage = 1;
+      if (offlineDetailModal?.show) offlineDetailModal.show();
+      else offlineDetailModalEl.classList.add("show");
+      try {
+        const params = new URLSearchParams();
+        params.set("pppoe", pppoe);
+        if (routerId) params.set("router_id", routerId);
+        if (mode) params.set("mode", mode);
+        const res = await fetch(`/offline/account-detail?${params.toString()}`, { headers: { "Accept": "application/json" } });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data?.ok) {
+          const errorText = String(data?.error || `HTTP ${res.status}`).trim() || "Failed to load offline account details.";
+          offlineDetailBodyEl.innerHTML = `<div class="alert alert-danger mb-0">${esc(errorText)}</div>`;
+          return;
+        }
+        const account = data?.account && typeof data.account === "object" ? data.account : {};
+        if (offlineDetailSubtitleEl) {
+          const subtitleParts = [
+            String(account.router_name || account.router_id || "").trim(),
+            String(account.current_bucket_label || "").trim(),
+          ].filter(Boolean);
+          offlineDetailSubtitleEl.textContent = subtitleParts.join(" · ") || "Reviewing offline account history.";
+        }
+        offlineDetailPayload = data;
+        rerenderOfflineDetail();
+      } catch (_err) {
+        offlineDetailBodyEl.innerHTML = '<div class="alert alert-danger mb-0">Failed to load offline account details.</div>';
+      }
     }
 
     function renderCurrentPagination() {
@@ -1345,7 +1876,18 @@
       if (historyNextBtn) historyNextBtn.disabled = !historyPagination?.has_next;
     }
 
-    function syncOfflineSearchTabs(filteredByRule, historyResultCount, forceFocus = false) {
+    function renderAccountsPagination() {
+      if (!accountsPaginationEl || !accountsPageInfoEl) return;
+      const total = Number(accountsPagination?.total || 0);
+      const page = Number(accountsPagination?.page || 1);
+      const pages = Number(accountsPagination?.pages || 1);
+      accountsPageInfoEl.textContent = `Page ${page} of ${pages} · ${total} total`;
+      accountsPaginationEl.classList.toggle("d-none", total <= 0);
+      if (accountsPrevBtn) accountsPrevBtn.disabled = !accountsPagination?.has_prev;
+      if (accountsNextBtn) accountsNextBtn.disabled = !accountsPagination?.has_next;
+    }
+
+    function syncOfflineSearchTabs(filteredByRule, historyResultCount, accountsResultCount, forceFocus = false) {
       const hasSearch = Boolean((searchQuery || "").trim());
       let firstMatch = null;
       const matchedViews = [];
@@ -1353,89 +1895,50 @@
         statusTabs.querySelectorAll("[data-offline-view]").forEach((link) => {
           const viewType = String(link.getAttribute("data-offline-view") || "").trim();
           const ruleId = String(link.getAttribute("data-offline-rule") || "").trim();
-          const viewKey = viewType === "rule" ? `rule:${ruleId}` : "history";
+          const viewKey = viewType === "rule" ? `rule:${ruleId}` : viewType;
           let count = 0;
           if (viewType === "rule") {
             count = Array.isArray(filteredByRule?.[ruleId]) ? filteredByRule[ruleId].length : 0;
           } else if (viewType === "history") {
             count = Math.max(Number(historyResultCount || 0), 0);
+          } else if (viewType === "accounts") {
+            count = Math.max(Number(accountsResultCount || 0), 0);
           }
           const hasMatch = count > 0;
           link.classList.toggle("threej-search-hit-tab", hasSearch && hasMatch);
           if (!firstMatch && hasMatch) {
-            firstMatch = viewType === "rule" ? { type: "rule", ruleId } : { type: "history", ruleId: "" };
+            firstMatch = viewType === "rule" ? { type: "rule", ruleId } : { type: viewType, ruleId: "" };
           }
           if (hasMatch) matchedViews.push(viewKey);
         });
       }
       if (!hasSearch || !firstMatch) return;
-      const currentViewKey = activeStatusView.type === "rule" ? `rule:${String(activeStatusView.ruleId || "")}` : "history";
+      const currentViewKey = activeStatusView.type === "rule" ? `rule:${String(activeStatusView.ruleId || "")}` : activeStatusView.type;
       if (forceFocus || !matchedViews.includes(currentViewKey)) {
         activeStatusView = firstMatch;
       }
     }
 
-    function findFirstNewOfflineTarget(filteredByRule) {
-      for (const rule of currentRules) {
-        const ruleId = String(rule?.id || "").trim();
-        if (!ruleId) continue;
-        const rows = Array.isArray(filteredByRule?.[ruleId]) ? filteredByRule[ruleId] : [];
-        const row = rows.find((item) => item?.is_new);
-        if (!row) continue;
-        return {
-          ruleId,
-          entryId: String(row.entry_id || "").trim(),
-        };
-      }
-      return null;
-    }
-
-    function focusOfflineNewRow(target) {
-      if (!target || !currentBody) return;
-      const entryId = String(target.entryId || "").trim();
-      let rowEl = null;
-      if (entryId) {
-        rowEl = currentBody.querySelector(`[data-offline-entry-id="${CSS.escape(entryId)}"]`);
-      }
-      if (!rowEl) {
-        rowEl = currentBody.querySelector('[data-offline-entry-id][data-offline-new-entry="1"]');
-      }
-      if (!rowEl) return;
-      rowEl.scrollIntoView({ block: "center", behavior: "smooth" });
-      rowEl.classList.add("table-primary");
-      window.setTimeout(() => rowEl.classList.remove("table-primary"), 4000);
-    }
-
     function renderAllTables(forceSearchFocus = false, options = {}) {
       const skipCurrentRender = !!options.skipCurrentRender;
       const skipHistoryRender = !!options.skipHistoryRender;
+      const skipAccountsRender = !!options.skipAccountsRender;
       const resetCurrentScroll = !!options.resetCurrentScroll;
       const resetHistoryScroll = !!options.resetHistoryScroll;
+      const resetAccountsScroll = !!options.resetAccountsScroll;
       const currentScrollTop = currentTableWrap ? currentTableWrap.scrollTop : 0;
       const currentScrollLeft = currentTableWrap ? currentTableWrap.scrollLeft : 0;
       const historyScrollTop = historyTableWrap ? historyTableWrap.scrollTop : 0;
       const historyScrollLeft = historyTableWrap ? historyTableWrap.scrollLeft : 0;
+      const accountsScrollTop = accountsTableWrap ? accountsTableWrap.scrollTop : 0;
+      const accountsScrollLeft = accountsTableWrap ? accountsTableWrap.scrollLeft : 0;
       const filteredByRule = {};
       currentRules.forEach((rule) => {
         const ruleId = String(rule?.id || "").trim();
         const rows = currentRowsByRule?.[ruleId];
         filteredByRule[ruleId] = sortRows(filterRows(Array.isArray(rows) ? rows : []), "current");
       });
-      syncOfflineSearchTabs(filteredByRule, historyMatchCount, forceSearchFocus);
-      const allowNewFocus = !forceSearchFocus && !String(searchQuery || "").trim();
-      const firstNewTarget = allowNewFocus ? findFirstNewOfflineTarget(filteredByRule) : null;
-      let focusNewAfterRender = false;
-      if (firstNewTarget) {
-        const signature = `${firstNewTarget.ruleId}:${firstNewTarget.entryId}`;
-        if (offlineNewAutoFocusAppliedSignature !== signature) {
-          offlineNewAutoFocusAppliedSignature = signature;
-          activeStatusView = { type: "rule", ruleId: firstNewTarget.ruleId };
-          currentPage = 1;
-          focusNewAfterRender = true;
-        }
-      } else if (allowNewFocus) {
-        offlineNewAutoFocusAppliedSignature = "";
-      }
+      syncOfflineSearchTabs(filteredByRule, historyMatchCount, accountsPagination?.total || 0, forceSearchFocus);
       ensureActiveStatusView();
       const activeRule = getActiveRule();
       const currentRows = activeRule ? (filteredByRule[String(activeRule.id || "").trim()] || []) : [];
@@ -1447,11 +1950,16 @@
         currentBody.innerHTML = pagedCurrent.items.length ? pagedCurrent.items.map(renderCurrentRow).join("") : '<tr><td colspan="8" class="text-muted">No offline accounts found.</td></tr>';
       }
       if (!skipHistoryRender && historyBody) {
-        historyBody.innerHTML = historyData.length ? historyData.map(renderHistoryRow).join("") : '<tr><td colspan="7" class="text-muted">No history yet.</td></tr>';
+        historyBody.innerHTML = historyData.length ? historyData.map(renderHistoryRow).join("") : '<tr><td colspan="8" class="text-muted">No history yet.</td></tr>';
+      }
+      if (!skipAccountsRender && accountsBody) {
+        accountsBody.innerHTML = accountsData.length ? accountsData.map(renderAccountsRow).join("") : '<tr><td colspan="7" class="text-muted">No accounts found.</td></tr>';
       }
       if (countEl) {
         if (activeStatusView.type === "history") {
           countEl.textContent = `History: ${historyMatchCount}`;
+        } else if (activeStatusView.type === "accounts") {
+          countEl.textContent = `Accounts: ${accountsPagination?.total || 0}`;
         } else {
           const label = String(activeRule?.label || "Offline").trim() || "Offline";
           countEl.textContent = `${label}: ${currentRows.length}`;
@@ -1462,6 +1970,7 @@
       updateOfflineBucketNote();
       renderCurrentPagination();
       renderHistoryPagination();
+      renderAccountsPagination();
       renderRadiusAccountsTable();
       updateSortIndicators();
       scheduleOfflineNewSeenAck();
@@ -1473,8 +1982,9 @@
         historyTableWrap.scrollTop = resetHistoryScroll ? 0 : historyScrollTop;
         historyTableWrap.scrollLeft = resetHistoryScroll ? 0 : historyScrollLeft;
       }
-      if (focusNewAfterRender && !skipCurrentRender) {
-        focusOfflineNewRow(firstNewTarget);
+      if (!skipAccountsRender && accountsTableWrap) {
+        accountsTableWrap.scrollTop = resetAccountsScroll ? 0 : accountsScrollTop;
+        accountsTableWrap.scrollLeft = resetAccountsScroll ? 0 : accountsScrollLeft;
       }
     }
 
@@ -1570,11 +2080,15 @@
       if (!Number.isFinite(currentPage) || currentPage <= 0) currentPage = 1;
       historyPage = Number(url.searchParams.get("history_page") || loadJson(historyPageKey, 1));
       if (!Number.isFinite(historyPage) || historyPage <= 0) historyPage = 1;
+      accountsPage = Number(url.searchParams.get("accounts_page") || loadJson(accountsPageKey, 1));
+      if (!Number.isFinite(accountsPage) || accountsPage <= 0) accountsPage = 1;
       const storedStatusView = loadJson(activeStatusViewKey, activeStatusView);
       const urlStatusView = String(url.searchParams.get("status_view") || "").trim().toLowerCase();
       const urlStatusRule = String(url.searchParams.get("status_rule") || "").trim();
       if (urlStatusView === "history") {
         activeStatusView = { type: "history", ruleId: "" };
+      } else if (urlStatusView === "accounts") {
+        activeStatusView = { type: "accounts", ruleId: "" };
       } else if (urlStatusView === "rule") {
         activeStatusView = { type: "rule", ruleId: urlStatusRule };
       } else if (storedStatusView && typeof storedStatusView === "object") {
@@ -1589,6 +2103,7 @@
       saveJson(routerFilterKey, selectedRouters);
       saveJson(currentPageKey, currentPage);
       saveJson(historyPageKey, historyPage);
+      saveJson(accountsPageKey, accountsPage);
       updateLimitButton();
       updateFilterButton();
       ensureActiveStatusView();
@@ -1613,7 +2128,11 @@
         currentRules = Array.isArray(data.rules) && data.rules.length ? data.rules : currentRules;
         currentRowsByRule = (data.rows_by_rule && typeof data.rows_by_rule === "object") ? data.rows_by_rule : {};
         if (minEl) minEl.textContent = String(data.tracking_rules_summary || "").trim() || "n/a";
-        if (String(data.default_rule_id || "").trim() && (!activeStatusView.ruleId || !getActiveRule())) {
+        if (
+          activeStatusView.type === "rule"
+          && String(data.default_rule_id || "").trim()
+          && (!activeStatusView.ruleId || !getActiveRule())
+        ) {
           activeStatusView = { type: "rule", ruleId: String(data.default_rule_id || "").trim() };
         }
         ensureActiveStatusView();
@@ -1645,7 +2164,7 @@
       const requestSeq = ++historyRefreshSeq;
       if (!backgroundOnly && historyBody) {
         historyLoading = true;
-        historyBody.innerHTML = '<tr><td colspan="7" class="text-muted">Loading…</td></tr>';
+        historyBody.innerHTML = '<tr><td colspan="8" class="text-muted">Loading…</td></tr>';
       }
       try {
         const res = await fetch(`/offline/history?${params.toString()}`, { headers: { "Accept": "application/json" } });
@@ -1684,9 +2203,88 @@
           historyTableWrap.scrollLeft = 0;
         }
       } catch (err) {
-        if (!backgroundOnly && historyBody) historyBody.innerHTML = '<tr><td colspan="7" class="text-danger">Failed to load offline history.</td></tr>';
+        if (!backgroundOnly && historyBody) historyBody.innerHTML = '<tr><td colspan="8" class="text-danger">Failed to load offline history.</td></tr>';
       } finally {
         if (!backgroundOnly) historyLoading = false;
+      }
+    }
+
+    async function refreshAccounts(options = {}) {
+      const backgroundOnly = !!options.backgroundOnly;
+      const forceSearchFocus = !!options.forceSearchFocus;
+      const resetScroll = !!options.resetScroll;
+      const fetchLimit = backgroundOnly ? 1 : showLimit;
+      const page = backgroundOnly ? 1 : accountsPage;
+      const sort = getSort("accounts");
+      const params = new URLSearchParams();
+      params.set("limit", String(fetchLimit));
+      params.set("page", String(page));
+      if (searchQuery.trim()) params.set("q", searchQuery.trim());
+      if (sort.key) params.set("sort", sort.key);
+      if (sort.dir) params.set("dir", sort.dir);
+      selectedRouters.forEach((router) => {
+        const value = String(router || "").trim();
+        if (value) params.append("router", value);
+      });
+      const requestSeq = ++accountsRefreshSeq;
+      if (!backgroundOnly && accountsBody) {
+        accountsLoading = true;
+        accountsBody.innerHTML = '<tr><td colspan="8" class="text-muted">Loading…</td></tr>';
+      }
+      try {
+        const res = await fetch(`/offline/accounts?${params.toString()}`, { headers: { "Accept": "application/json" } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (requestSeq !== accountsRefreshSeq) return;
+        const total = Math.max(Number(data?.pagination?.total ?? data?.count ?? 0) || 0, 0);
+        if (backgroundOnly) {
+          accountsPagination = {
+            ...(accountsPagination || {}),
+            total,
+          };
+          updateStatusTabBadges();
+          renderAllTables(forceSearchFocus, {
+            skipAccountsRender: true,
+            resetCurrentScroll: resetScroll,
+            resetHistoryScroll: resetScroll,
+          });
+          if (activeStatusView.type === "accounts" && (accountsNeedsRefresh || !accountsLoaded)) {
+            await refreshAccounts({ backgroundOnly: false, forceSearchFocus, resetScroll: true });
+          }
+          return;
+        }
+        accountsData = Array.isArray(data.rows) ? data.rows : [];
+        const meta = data?.pagination && typeof data.pagination === "object" ? data.pagination : {};
+        accountsPagination = {
+          page: Number(meta.page || 1) || 1,
+          pages: Math.max(Number(meta.pages || 1) || 1, 1),
+          total,
+          has_prev: !!meta.has_prev,
+          has_next: !!meta.has_next,
+          start: Number(meta.start || 0) || 0,
+          end: Number(meta.end || 0) || 0,
+          limit: fetchLimit,
+        };
+        accountsPage = accountsPagination.page;
+        saveJson(accountsPageKey, accountsPage);
+        accountsLoaded = true;
+        accountsNeedsRefresh = false;
+        renderRouterFilterMenu();
+        renderAllTables(forceSearchFocus, {
+          resetCurrentScroll: resetScroll,
+          resetHistoryScroll: resetScroll,
+          resetAccountsScroll: resetScroll,
+        });
+        if (resetScroll && accountsTableWrap) {
+          accountsTableWrap.scrollTop = 0;
+          accountsTableWrap.scrollLeft = 0;
+        }
+      } catch (_err) {
+        if (!backgroundOnly && accountsBody) {
+          accountsBody.innerHTML = '<tr><td colspan="8" class="text-danger">Failed to load offline accounts.</td></tr>';
+        }
+      } finally {
+        if (!backgroundOnly) accountsLoading = false;
       }
     }
 
@@ -1788,6 +2386,44 @@
           saveJson(historyPageKey, historyPage);
           refreshHistory({ backgroundOnly: activeStatusView.type !== "history", resetScroll: true });
         }
+        if (table === "accounts") {
+          accountsPage = 1;
+          accountsNeedsRefresh = true;
+          saveJson(accountsPageKey, accountsPage);
+          refreshAccounts({ backgroundOnly: activeStatusView.type !== "accounts", resetScroll: true });
+        }
+        return;
+      }
+
+      const detailLink = event.target.closest("[data-offline-detail-view]");
+      if (detailLink) {
+        event.preventDefault();
+        openOfflineDetail({
+          pppoe: String(detailLink.getAttribute("data-pppoe") || "").trim(),
+          routerId: String(detailLink.getAttribute("data-router-id") || "").trim(),
+          mode: String(detailLink.getAttribute("data-mode") || "").trim(),
+          routerName: String(detailLink.getAttribute("data-router-name") || "").trim(),
+        });
+        return;
+      }
+
+      const detailPrev = event.target.closest("[data-offline-detail-history-prev]");
+      if (detailPrev) {
+        event.preventDefault();
+        if (detailPrev.disabled || offlineDetailHistoryPage <= 1) return;
+        offlineDetailHistoryPage = Math.max(offlineDetailHistoryPage - 1, 1);
+        rerenderOfflineDetail();
+        return;
+      }
+
+      const detailNext = event.target.closest("[data-offline-detail-history-next]");
+      if (detailNext) {
+        event.preventDefault();
+        const totalRows = Array.isArray(offlineDetailPayload?.history) ? offlineDetailPayload.history.length : 0;
+        const totalPages = Math.max(Math.ceil(totalRows / offlineDetailHistoryPageSize), 1);
+        if (detailNext.disabled || offlineDetailHistoryPage >= totalPages) return;
+        offlineDetailHistoryPage = Math.min(offlineDetailHistoryPage + 1, totalPages);
+        rerenderOfflineDetail();
         return;
       }
 
@@ -1797,6 +2433,10 @@
         const viewType = String(statusLink.getAttribute("data-offline-view") || "").trim();
         if (viewType === "history") {
           activeStatusView = { type: "history", ruleId: "" };
+        } else if (viewType === "accounts") {
+          accountsPage = 1;
+          saveJson(accountsPageKey, accountsPage);
+          activeStatusView = { type: "accounts", ruleId: "" };
         } else if (viewType === "rule") {
           currentPage = 1;
           saveJson(currentPageKey, currentPage);
@@ -1808,7 +2448,10 @@
         ensureActiveStatusView();
         if (activeStatusView.type === "history") {
           historyNeedsRefresh = true;
-          applyStatusNavigation("Loading offline history...", { refreshSummary: false, refreshHistoryData: true, resetScroll: true });
+          applyStatusNavigation("Loading offline history...", { refreshSummary: false, refreshHistoryData: true, refreshAccountsData: false, resetScroll: true });
+        } else if (activeStatusView.type === "accounts") {
+          accountsNeedsRefresh = true;
+          applyStatusNavigation("Loading offline accounts...", { refreshSummary: false, refreshHistoryData: false, refreshAccountsData: true, resetScroll: true });
         } else {
           renderAllTables(false, { resetCurrentScroll: true });
         }
@@ -1823,9 +2466,12 @@
         saveJson(searchStateKey, searchQuery);
         currentPage = 1;
         historyPage = 1;
+        accountsPage = 1;
         historyNeedsRefresh = true;
+        accountsNeedsRefresh = true;
         saveJson(currentPageKey, currentPage);
         saveJson(historyPageKey, historyPage);
+        saveJson(accountsPageKey, accountsPage);
         await applyStatusNavigation(q ? "Searching offline results..." : "Loading offline results...", { forceSearchFocus: true, resetScroll: true });
       };
       searchInput.addEventListener("input", () => {
@@ -1848,10 +2494,13 @@
         showLimit = n;
         currentPage = 1;
         historyPage = 1;
+        accountsPage = 1;
         historyNeedsRefresh = true;
+        accountsNeedsRefresh = true;
         saveJson(limitStateKey, showLimit);
         saveJson(currentPageKey, currentPage);
         saveJson(historyPageKey, historyPage);
+        saveJson(accountsPageKey, accountsPage);
         updateLimitButton();
         await applyStatusNavigation("Loading offline results...", { resetScroll: true });
       });
@@ -1880,7 +2529,7 @@
         historyPage = Math.max(Number(historyPage || 1) - 1, 1);
         historyNeedsRefresh = true;
         saveJson(historyPageKey, historyPage);
-        await applyStatusNavigation("Loading offline history...", { refreshSummary: false, refreshHistoryData: true, resetScroll: true });
+        await applyStatusNavigation("Loading offline history...", { refreshSummary: false, refreshHistoryData: true, refreshAccountsData: false, resetScroll: true });
       });
     }
     if (historyNextBtn) {
@@ -1889,7 +2538,25 @@
         historyPage = Math.min(Number(historyPage || 1) + 1, Number(historyPagination?.pages || 1) || 1);
         historyNeedsRefresh = true;
         saveJson(historyPageKey, historyPage);
-        await applyStatusNavigation("Loading offline history...", { refreshSummary: false, refreshHistoryData: true, resetScroll: true });
+        await applyStatusNavigation("Loading offline history...", { refreshSummary: false, refreshHistoryData: true, refreshAccountsData: false, resetScroll: true });
+      });
+    }
+    if (accountsPrevBtn) {
+      accountsPrevBtn.addEventListener("click", async () => {
+        if (!accountsPagination?.has_prev || accountsLoading) return;
+        accountsPage = Math.max(Number(accountsPage || 1) - 1, 1);
+        accountsNeedsRefresh = true;
+        saveJson(accountsPageKey, accountsPage);
+        await applyStatusNavigation("Loading offline accounts...", { refreshSummary: false, refreshHistoryData: false, refreshAccountsData: true, resetScroll: true });
+      });
+    }
+    if (accountsNextBtn) {
+      accountsNextBtn.addEventListener("click", async () => {
+        if (!accountsPagination?.has_next || accountsLoading) return;
+        accountsPage = Math.min(Number(accountsPage || 1) + 1, Number(accountsPagination?.pages || 1) || 1);
+        accountsNeedsRefresh = true;
+        saveJson(accountsPageKey, accountsPage);
+        await applyStatusNavigation("Loading offline accounts...", { refreshSummary: false, refreshHistoryData: false, refreshAccountsData: true, resetScroll: true });
       });
     }
 
@@ -1905,10 +2572,13 @@
         selectedRouters = Array.from(next);
         currentPage = 1;
         historyPage = 1;
+        accountsPage = 1;
         historyNeedsRefresh = true;
+        accountsNeedsRefresh = true;
         saveJson(routerFilterKey, selectedRouters);
         saveJson(currentPageKey, currentPage);
         saveJson(historyPageKey, historyPage);
+        saveJson(accountsPageKey, accountsPage);
         updateFilterButton();
         await applyStatusNavigation("Loading offline results...", { resetScroll: true });
       });
@@ -1919,10 +2589,13 @@
         selectedRouters = [];
         currentPage = 1;
         historyPage = 1;
+        accountsPage = 1;
         historyNeedsRefresh = true;
+        accountsNeedsRefresh = true;
         saveJson(routerFilterKey, selectedRouters);
         saveJson(currentPageKey, currentPage);
         saveJson(historyPageKey, historyPage);
+        saveJson(accountsPageKey, accountsPage);
         updateFilterButton();
         renderRouterFilterMenu();
         await applyStatusNavigation("Loading offline results...", { resetScroll: true });
@@ -2078,15 +2751,19 @@
     renderAllTables();
     refresh();
     const pollHistory = () => refreshHistory({ backgroundOnly: true });
+    const pollAccounts = () => refreshAccounts({ backgroundOnly: true });
     refreshHistory({ backgroundOnly: activeStatusView.type !== "history" });
+    refreshAccounts({ backgroundOnly: activeStatusView.type !== "accounts" });
     if (window.ThreeJPolling?.createTask) {
       window.ThreeJPolling.createTask(refresh, { intervalMs: 5000, resumeDelayMs: 200 });
       window.ThreeJPolling.createTask(pollHistory, { intervalMs: 15000, resumeDelayMs: 900 });
+      window.ThreeJPolling.createTask(pollAccounts, { intervalMs: 15000, resumeDelayMs: 1000 });
       window.ThreeJPolling.createTask(() => refreshRadiusAccounts(false), { intervalMs: 60000, resumeDelayMs: 1800 });
     } else {
       refreshRadiusAccounts();
       setInterval(refresh, 5000);
       setInterval(pollHistory, 15000);
+      setInterval(pollAccounts, 15000);
       setInterval(() => refreshRadiusAccounts(false), 60000);
     }
   });
