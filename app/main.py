@@ -10408,7 +10408,7 @@ def _profile_search_items(query, limit=12):
     tx_realistic_min = float(optical_class.get("tx_realistic_min_dbm", OPTICAL_DEFAULTS["classification"]["tx_realistic_min_dbm"]))
     tx_realistic_max = float(optical_class.get("tx_realistic_max_dbm", OPTICAL_DEFAULTS["classification"]["tx_realistic_max_dbm"]))
 
-    ping_class = accounts_ping_settings.get("classification", {}) or {}
+    ping_class = _accounts_ping_applied_classification(accounts_ping_settings)
     issue_loss_pct = float(ping_class.get("issue_loss_pct", ACCOUNTS_PING_DEFAULTS["classification"]["issue_loss_pct"]) or 20.0)
     issue_latency_ms = float(ping_class.get("issue_latency_ms", ACCOUNTS_PING_DEFAULTS["classification"]["issue_latency_ms"]) or 200.0)
     stable_fail_pct = float(ping_class.get("stable_rto_pct", ACCOUNTS_PING_DEFAULTS["classification"]["stable_rto_pct"]) or 2.0)
@@ -11244,7 +11244,7 @@ async def profile_review_suggest(q: str = "", limit: int = 12):
         devices = _accounts_ping_state_devices(ping_state)
         state_accounts = ping_state.get("accounts") if isinstance(ping_state.get("accounts"), dict) else {}
 
-        cls = accounts_ping_settings.get("classification", {}) or {}
+        cls = _accounts_ping_applied_classification(accounts_ping_settings)
         issue_loss_pct = float(cls.get("issue_loss_pct", ACCOUNTS_PING_DEFAULTS["classification"]["issue_loss_pct"]) or 20.0)
         issue_latency_ms = float(cls.get("issue_latency_ms", ACCOUNTS_PING_DEFAULTS["classification"]["issue_latency_ms"]) or 200.0)
         stable_fail_pct = float(cls.get("stable_rto_pct", ACCOUNTS_PING_DEFAULTS["classification"]["stable_rto_pct"]) or 2.0)
@@ -11734,7 +11734,7 @@ async def profile_review(request: Request):
         }
 
     if profile["pppoe"]:
-        cls = accounts_ping_settings.get("classification", {}) or {}
+        cls = _accounts_ping_applied_classification(accounts_ping_settings)
         issue_loss_pct = float(cls.get("issue_loss_pct", ACCOUNTS_PING_DEFAULTS["classification"]["issue_loss_pct"]) or 20.0)
         issue_latency_ms = float(cls.get("issue_latency_ms", ACCOUNTS_PING_DEFAULTS["classification"]["issue_latency_ms"]) or 200.0)
         stable_fail_pct = float(cls.get("stable_rto_pct", ACCOUNTS_PING_DEFAULTS["classification"]["stable_rto_pct"]) or 2.0)
@@ -12499,7 +12499,7 @@ def _accounts_missing_detail_payload(pppoe):
     )
 
     ping_settings = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
-    ping_class = ping_settings.get("classification", {}) or {}
+    ping_class = _accounts_ping_applied_classification(ping_settings)
     ping_state = get_state("accounts_ping_state", {"accounts": {}, "devices": []})
     ping_devices = _accounts_ping_state_devices(ping_state)
     ping_accounts = ping_state.get("accounts") if isinstance(ping_state.get("accounts"), dict) else {}
@@ -13297,6 +13297,84 @@ def _format_duration_short(seconds):
     return f"{minutes}m"
 
 
+ACCOUNTS_PING_CLASSIFICATION_LABELS = {
+    "issue_loss_pct": "Issue Loss %",
+    "issue_latency_ms": "Issue Latency",
+    "down_loss_pct": "Down Loss %",
+    "stable_rto_pct": "Stable Fail %",
+    "issue_rto_pct": "Issue Fail %",
+    "issue_streak": "Issue Streak",
+}
+
+
+def _normalize_accounts_ping_classification(raw):
+    defaults = ACCOUNTS_PING_DEFAULTS.get("classification", {}) or {}
+    source = raw if isinstance(raw, dict) else {}
+    return {
+        "issue_loss_pct": parse_float(source, "issue_loss_pct", defaults.get("issue_loss_pct", 20.0)),
+        "issue_latency_ms": parse_float(source, "issue_latency_ms", defaults.get("issue_latency_ms", 200.0)),
+        "down_loss_pct": parse_float(source, "down_loss_pct", defaults.get("down_loss_pct", 100.0)),
+        "stable_rto_pct": parse_float(source, "stable_rto_pct", defaults.get("stable_rto_pct", 2.0)),
+        "issue_rto_pct": parse_float(source, "issue_rto_pct", defaults.get("issue_rto_pct", 5.0)),
+        "issue_streak": parse_int(source, "issue_streak", defaults.get("issue_streak", 2)),
+    }
+
+
+def _accounts_ping_applied_classification(settings=None, state=None):
+    settings = settings if isinstance(settings, dict) else get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
+    saved = _normalize_accounts_ping_classification(settings.get("classification"))
+    state = state if isinstance(state, dict) else get_state("accounts_ping_state", {})
+    applied = state.get("classification_applied") if isinstance(state.get("classification_applied"), dict) else {}
+    if not applied:
+        return dict(saved)
+    return _normalize_accounts_ping_classification(applied)
+
+
+def _accounts_ping_settings_with_classification(settings, classification):
+    merged = copy.deepcopy(settings or {})
+    merged["classification"] = _normalize_accounts_ping_classification(classification)
+    return merged
+
+
+def _format_accounts_ping_classification_value(key, value):
+    if value is None:
+        return "n/a"
+    if key == "issue_streak":
+        try:
+            return str(int(value))
+        except Exception:
+            return str(value)
+    try:
+        numeric = float(value)
+    except Exception:
+        return str(value)
+    if key.endswith("_ms"):
+        return f"{numeric:g} ms"
+    if key.endswith("_pct"):
+        return f"{numeric:g}%"
+    return f"{numeric:g}"
+
+
+def _accounts_ping_classification_changes(saved, applied):
+    saved = _normalize_accounts_ping_classification(saved)
+    applied = _normalize_accounts_ping_classification(applied)
+    changes = []
+    for key, label in ACCOUNTS_PING_CLASSIFICATION_LABELS.items():
+        old_value = applied.get(key)
+        new_value = saved.get(key)
+        if old_value == new_value:
+            continue
+        changes.append(
+            {
+                "key": key,
+                "label": label,
+                "from": _format_accounts_ping_classification_value(key, old_value),
+                "to": _format_accounts_ping_classification_value(key, new_value),
+            }
+        )
+    return changes
+
+
 def build_accounts_ping_status(
     settings,
     window_hours=24,
@@ -13308,6 +13386,7 @@ def build_accounts_ping_status(
     stable_sort="",
     stable_dir="",
     query="",
+    include_sparklines=True,
 ):
     window_hours = max(int(window_hours or 24), 1)
     limit = _parse_table_limit(limit, default=50)
@@ -13339,12 +13418,13 @@ def build_accounts_ping_status(
 
     state_accounts = state.get("accounts") if isinstance(state.get("accounts"), dict) else {}
 
-    cls = settings.get("classification", {}) or {}
+    cls = _normalize_accounts_ping_classification(settings.get("classification"))
     issue_loss_pct = float(cls.get("issue_loss_pct", 20.0) or 20.0)
     issue_latency_ms = float(cls.get("issue_latency_ms", 200.0) or 200.0)
     stable_rto_pct = float(cls.get("stable_rto_pct", 2.0) or 2.0)
     issue_rto_pct = float(cls.get("issue_rto_pct", 5.0) or 5.0)
     issue_streak = int(cls.get("issue_streak", 2) or 2)
+    down_loss_pct = float(cls.get("down_loss_pct", 100.0) or 100.0)
 
     chosen_ip_map = {}
     for account in account_rows:
@@ -13364,6 +13444,12 @@ def build_accounts_ping_status(
         avg_ms = st.get("last_avg_ms")
         has_recent = bool(st.get("last_check_at"))
         last_ok = bool(st.get("last_ok")) if has_recent else True
+        if has_recent and last_ok and loss is not None:
+            try:
+                if float(loss) >= down_loss_pct:
+                    last_ok = False
+            except Exception:
+                pass
         last_seen = format_ts_ph(st.get("last_check_at")) if has_recent else "n/a"
         last_seen_raw = (st.get("last_check_at") or "").strip()
 
@@ -13545,22 +13631,23 @@ def build_accounts_ping_status(
     paged_issue, issue_page_meta = _paginate_items(issue_rows, issues_page, limit)
     paged_stable, stable_page_meta = _paginate_items(stable_rows, stable_page, limit)
 
-    paged_ids = sorted({row["id"] for row in (paged_issue + paged_stable) if row.get("id")})
     spark_map = {}
-    if paged_ids:
-        spark_since_iso = (datetime.utcnow() - timedelta(hours=24)).replace(microsecond=0).isoformat() + "Z"
-        spark_rows = get_accounts_ping_rollups_since(spark_since_iso, paged_ids)
-        for row in spark_rows:
-            aid = (row.get("account_id") or "").strip()
-            if not aid:
-                continue
-            chosen_ip = chosen_ip_map.get(aid) or ""
-            if chosen_ip and (row.get("ip") or "").strip() != chosen_ip:
-                continue
-            sample_count = int(row.get("sample_count") or 0)
-            ok_count = int(row.get("ok_count") or 0)
-            pct = (ok_count / sample_count) * 100.0 if sample_count > 0 else 0.0
-            spark_map.setdefault(aid, []).append(pct)
+    if include_sparklines:
+        paged_ids = sorted({row["id"] for row in (paged_issue + paged_stable) if row.get("id")})
+        if paged_ids:
+            spark_since_iso = (datetime.utcnow() - timedelta(hours=24)).replace(microsecond=0).isoformat() + "Z"
+            spark_rows = get_accounts_ping_rollups_since(spark_since_iso, paged_ids)
+            for row in spark_rows:
+                aid = (row.get("account_id") or "").strip()
+                if not aid:
+                    continue
+                chosen_ip = chosen_ip_map.get(aid) or ""
+                if chosen_ip and (row.get("ip") or "").strip() != chosen_ip:
+                    continue
+                sample_count = int(row.get("sample_count") or 0)
+                ok_count = int(row.get("ok_count") or 0)
+                pct = (ok_count / sample_count) * 100.0 if sample_count > 0 else 0.0
+                spark_map.setdefault(aid, []).append(pct)
 
     def with_spark(row):
         aid = row.get("id")
@@ -13612,11 +13699,114 @@ def build_accounts_ping_status(
         "rules": {
             "issue_loss_pct": issue_loss_pct,
             "issue_latency_ms": issue_latency_ms,
+            "down_loss_pct": down_loss_pct,
             "stable_rto_pct": stable_rto_pct,
             "issue_rto_pct": issue_rto_pct,
             "issue_streak": issue_streak,
         },
     }
+
+
+def _build_accounts_ping_classification_patch_context(settings, window_hours):
+    state = get_state("accounts_ping_state", {})
+    saved_classification = _normalize_accounts_ping_classification(settings.get("classification"))
+    applied_classification = _accounts_ping_applied_classification(settings, state)
+    patch_available = saved_classification != applied_classification
+    context = {
+        "patch_available": patch_available,
+        "saved_classification": saved_classification,
+        "applied_classification": applied_classification,
+        "changes": _accounts_ping_classification_changes(saved_classification, applied_classification),
+        "applied_at": format_ts_ph((state.get("classification_applied_at") or "").strip()),
+        "window_label": next(
+            (label for label, hours in WAN_STATUS_WINDOW_OPTIONS if int(hours or 0) == int(window_hours or 24)),
+            f"{int(window_hours or 24)}h",
+        ),
+        "preview": None,
+    }
+    if not patch_available:
+        return context
+
+    before_status = build_accounts_ping_status(
+        _accounts_ping_settings_with_classification(settings, applied_classification),
+        window_hours,
+        limit=0,
+        query="",
+        include_sparklines=False,
+    )
+    after_status = build_accounts_ping_status(
+        _accounts_ping_settings_with_classification(settings, saved_classification),
+        window_hours,
+        limit=0,
+        query="",
+        include_sparklines=False,
+    )
+    before_rows = (before_status.get("issue_rows") or []) + (before_status.get("stable_rows") or [])
+    after_rows = (after_status.get("issue_rows") or []) + (after_status.get("stable_rows") or [])
+    before_map = {str(row.get("id") or ""): row for row in before_rows if str(row.get("id") or "")}
+    after_map = {str(row.get("id") or ""): row for row in after_rows if str(row.get("id") or "")}
+    affected_rows = []
+    moved_to_stable = 0
+    moved_to_issues = 0
+    moved_to_down = 0
+    moved_out_of_down = 0
+    for account_id in sorted(set(before_map.keys()) | set(after_map.keys())):
+        before_row = before_map.get(account_id) or {}
+        after_row = after_map.get(account_id) or {}
+        before_status_name = (before_row.get("status") or "pending").strip().lower()
+        after_status_name = (after_row.get("status") or "pending").strip().lower()
+        if before_status_name == after_status_name:
+            continue
+        before_issue = before_status_name in ("down", "monitor")
+        after_issue = after_status_name in ("down", "monitor")
+        if before_issue and not after_issue:
+            moved_to_stable += 1
+        elif (not before_issue) and after_issue:
+            moved_to_issues += 1
+        if before_status_name != "down" and after_status_name == "down":
+            moved_to_down += 1
+        elif before_status_name == "down" and after_status_name != "down":
+            moved_out_of_down += 1
+        affected_rows.append(
+            {
+                "name": after_row.get("display_name") or before_row.get("display_name") or after_row.get("name") or before_row.get("name") or account_id,
+                "from_status": before_status_name,
+                "to_status": after_status_name,
+                "from_fail_pct": float(before_row.get("rto_pct") or 0.0),
+                "to_fail_pct": float(after_row.get("rto_pct") or 0.0),
+            }
+        )
+    status_order = {"down": 0, "monitor": 1, "up": 2, "pending": 3}
+    affected_rows.sort(
+        key=lambda row: (
+            status_order.get(row.get("to_status"), 9),
+            status_order.get(row.get("from_status"), 9),
+            (row.get("name") or "").lower(),
+        )
+    )
+    context["preview"] = {
+        "affected_total": len(affected_rows),
+        "moved_to_stable": moved_to_stable,
+        "moved_to_issues": moved_to_issues,
+        "moved_to_down": moved_to_down,
+        "moved_out_of_down": moved_out_of_down,
+        "before": {
+            "issue_total": int(before_status.get("issue_total") or 0),
+            "stable_total": int(before_status.get("stable_total") or 0),
+            "down_total": int(before_status.get("down_total") or 0),
+            "monitor_total": int(before_status.get("monitor_total") or 0),
+            "pending_total": int(before_status.get("pending_total") or 0),
+        },
+        "after": {
+            "issue_total": int(after_status.get("issue_total") or 0),
+            "stable_total": int(after_status.get("stable_total") or 0),
+            "down_total": int(after_status.get("down_total") or 0),
+            "monitor_total": int(after_status.get("monitor_total") or 0),
+            "pending_total": int(after_status.get("pending_total") or 0),
+        },
+        "sample_rows": affected_rows[:8],
+    }
+    return context
 
 
 def render_accounts_ping_response(
@@ -13640,6 +13830,8 @@ def render_accounts_ping_response(
     if settings_tab not in ("general", "source", "classification", "storage"):
         settings_tab = "general"
     settings, tuning = _accounts_ping_tuning_context(settings)
+    applied_classification = _accounts_ping_applied_classification(settings)
+    status_settings = _accounts_ping_settings_with_classification(settings, applied_classification)
     status_map = {item["job_name"]: dict(item) for item in get_job_status()}
     job_status = status_map.get("accounts_ping", {})
     job_status["last_run_at_ph"] = format_ts_ph(job_status.get("last_run_at"))
@@ -13661,7 +13853,7 @@ def render_accounts_ping_response(
     if not query:
         query = (request.query_params.get("q") or "").strip()
     status = build_accounts_ping_status(
-        settings,
+        status_settings,
         window_hours,
         limit=limit,
         issues_page=issues_page,
@@ -13672,6 +13864,7 @@ def render_accounts_ping_response(
         stable_dir=stable_dir,
         query=query,
     )
+    classification_patch = _build_accounts_ping_classification_patch_context(settings, window_hours)
     ping_state = get_state("accounts_ping_state", {})
     router_state_rows = ping_state.get("router_status") if isinstance(ping_state.get("router_status"), list) else []
     router_state_map = {
@@ -13695,9 +13888,33 @@ def render_accounts_ping_response(
                 "can_run_danger_actions": can_run_danger_actions,
                 "wan_settings": normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS)),
                 "accounts_ping_router_state": router_state_map,
+                "accounts_ping_classification_patch": classification_patch,
             },
         ),
     )
+
+
+def _accounts_ping_render_params_from_form(request: Request, form) -> dict:
+    window_hours = _normalize_wan_window((form.get("window") or "").strip() or request.query_params.get("window"))
+    limit = _parse_table_limit(form.get("limit"), default=_parse_table_limit(request.query_params.get("limit"), default=50))
+    issues_page = _parse_table_page(form.get("issues_page"), default=_parse_table_page(request.query_params.get("issues_page"), default=1))
+    stable_page = _parse_table_page(form.get("stable_page"), default=_parse_table_page(request.query_params.get("stable_page"), default=1))
+    issues_sort = (form.get("issues_sort") or request.query_params.get("issues_sort") or "").strip()
+    issues_dir = (form.get("issues_dir") or request.query_params.get("issues_dir") or "").strip().lower()
+    stable_sort = (form.get("stable_sort") or request.query_params.get("stable_sort") or "").strip()
+    stable_dir = (form.get("stable_dir") or request.query_params.get("stable_dir") or "").strip().lower()
+    query = (form.get("q") or request.query_params.get("q") or "").strip()
+    return {
+        "window_hours": window_hours,
+        "limit": limit,
+        "issues_page": issues_page,
+        "stable_page": stable_page,
+        "issues_sort": issues_sort,
+        "issues_dir": issues_dir,
+        "stable_sort": stable_sort,
+        "stable_dir": stable_dir,
+        "query": query,
+    }
 
 
 def _accounts_ping_state_devices(state=None):
@@ -13957,16 +14174,27 @@ def _accounts_ping_settings_from_form(form):
 @app.post("/settings/accounts-ping", response_class=HTMLResponse)
 async def accounts_ping_settings_save(request: Request):
     form = await request.form()
+    existing_settings = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
+    existing_settings, _ = _accounts_ping_tuning_context(existing_settings)
+    state = get_state("accounts_ping_state", {})
+    settings_tab = (form.get("settings_tab") or "general").strip().lower()
+    if settings_tab == "classification" and not isinstance(state.get("classification_applied"), dict):
+        state["classification_applied"] = _normalize_accounts_ping_classification(existing_settings.get("classification"))
+        state["classification_applied_at"] = (state.get("classification_applied_at") or "").strip() or utc_now_iso()
+        save_state("accounts_ping_state", state)
     settings = _accounts_ping_settings_from_form(form)
     settings, tuning = _accounts_ping_tuning_context(settings)
     save_settings("accounts_ping", settings)
-    window_hours = _normalize_wan_window(request.query_params.get("window"))
+    render_params = _accounts_ping_render_params_from_form(request, form)
     active_tab = form.get("active_tab", "settings")
-    settings_tab = (form.get("settings_tab") or "general").strip().lower()
     if settings_tab not in ("general", "source", "classification", "storage"):
         settings_tab = "general"
-    message = "Accounts Ping settings saved."
-    return render_accounts_ping_response(request, settings, message, active_tab, settings_tab, window_hours)
+    applied_classification = _accounts_ping_applied_classification(settings, state)
+    if settings_tab == "classification" and _normalize_accounts_ping_classification(settings.get("classification")) != applied_classification:
+        message = "Accounts Ping settings saved. Patch Classification to apply the new rules to live results."
+    else:
+        message = "Accounts Ping settings saved."
+    return render_accounts_ping_response(request, settings, message, active_tab, settings_tab, **render_params)
 
 
 @app.post("/settings/accounts-ping/test", response_class=HTMLResponse)
@@ -13974,6 +14202,7 @@ async def accounts_ping_settings_test(request: Request):
     form = await request.form()
     cfg = _accounts_ping_settings_from_form(form)
     cfg, _ = _accounts_ping_tuning_context(cfg)
+    render_params = _accounts_ping_render_params_from_form(request, form)
     message = ""
     try:
         state = get_state("accounts_ping_state", {"accounts": {}, "devices": []})
@@ -14001,8 +14230,23 @@ async def accounts_ping_settings_test(request: Request):
             message = f"SSH OK. Loaded {len(state['devices'])} accounts from CSV."
     except Exception as exc:
         message = f"Accounts Ping source test failed: {exc}"
-    window_hours = _normalize_wan_window(request.query_params.get("window"))
-    return render_accounts_ping_response(request, cfg, message, "settings", "source", window_hours)
+    return render_accounts_ping_response(request, cfg, message, "settings", "source", **render_params)
+
+
+@app.post("/settings/accounts-ping/patch-classification", response_class=HTMLResponse)
+async def accounts_ping_patch_classification(request: Request):
+    form = await request.form()
+    settings = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
+    settings, _ = _accounts_ping_tuning_context(settings)
+    state = get_state("accounts_ping_state", {})
+    state["classification_applied"] = _normalize_accounts_ping_classification(settings.get("classification"))
+    state["classification_applied_at"] = utc_now_iso()
+    save_state("accounts_ping_state", state)
+    render_params = _accounts_ping_render_params_from_form(request, form)
+    window_hours = int(render_params.get("window_hours") or 24)
+    window_label = next((label for label, hours in WAN_STATUS_WINDOW_OPTIONS if int(hours or 0) == window_hours), f"{window_hours}h")
+    message = f"Accounts Ping classification patched for the current {window_label} window."
+    return render_accounts_ping_response(request, settings, message, "status", "classification", **render_params)
 
 
 @app.post("/settings/accounts-ping/format", response_class=HTMLResponse)

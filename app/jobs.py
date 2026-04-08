@@ -113,6 +113,29 @@ def _iso_utc(dt):
     return dt.replace(microsecond=0).isoformat() + "Z"
 
 
+def _normalize_accounts_ping_classification(raw):
+    defaults = ACCOUNTS_PING_DEFAULTS.get("classification", {}) or {}
+    source = raw if isinstance(raw, dict) else {}
+    return {
+        "issue_loss_pct": float(source.get("issue_loss_pct", defaults.get("issue_loss_pct", 20.0)) or 20.0),
+        "issue_latency_ms": float(source.get("issue_latency_ms", defaults.get("issue_latency_ms", 200.0)) or 200.0),
+        "down_loss_pct": float(source.get("down_loss_pct", defaults.get("down_loss_pct", 100.0)) or 100.0),
+        "stable_rto_pct": float(source.get("stable_rto_pct", defaults.get("stable_rto_pct", 2.0)) or 2.0),
+        "issue_rto_pct": float(source.get("issue_rto_pct", defaults.get("issue_rto_pct", 5.0)) or 5.0),
+        "issue_streak": int(source.get("issue_streak", defaults.get("issue_streak", 2)) or 2),
+    }
+
+
+def _accounts_ping_applied_classification(settings=None, state=None):
+    settings = settings if isinstance(settings, dict) else get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
+    saved = _normalize_accounts_ping_classification(settings.get("classification"))
+    state = state if isinstance(state, dict) else get_state("accounts_ping_state", {})
+    applied = state.get("classification_applied") if isinstance(state.get("classification_applied"), dict) else {}
+    if not applied:
+        return saved
+    return _normalize_accounts_ping_classification(applied)
+
+
 def _surveillance_entries_map_from_settings(raw_settings):
     settings = raw_settings if isinstance(raw_settings, dict) else {}
     entries = settings.get("entries") if isinstance(settings.get("entries"), list) else []
@@ -906,7 +929,7 @@ class JobsManager:
                 burst_count = max(int(surv_ping_cfg.get("burst_count", 1) or 1), 1)
                 burst_timeout_seconds = max(int(surv_ping_cfg.get("burst_timeout_seconds", 1) or 1), 1)
 
-                cls = cfg.get("classification", {}) or {}
+                cls = _accounts_ping_applied_classification(cfg, state)
                 issue_loss_pct = float(cls.get("issue_loss_pct", 20.0) or 20.0)
                 issue_latency_ms = float(cls.get("issue_latency_ms", 200.0) or 200.0)
                 down_loss_pct = float(cls.get("down_loss_pct", 100.0) or 100.0)

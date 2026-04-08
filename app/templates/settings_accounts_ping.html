@@ -568,7 +568,7 @@
 	              </div>
 	              <div class="modal-body">
 	                <div id="accounts-ping-spark-modal-chart" style="height: 260px;"></div>
-	                <div class="text-muted small mt-2">Latency and loss history based on raw ping results for the selected window.</div>
+	                <div class="text-muted small mt-2">Latency and loss history based on raw ping results for the selected window. Use the toolbar to zoom, pan, and reset the chart.</div>
 	              </div>
 	            </div>
 	          </div>
@@ -579,6 +579,15 @@
         <form method="post" action="/settings/accounts-ping" id="accounts-ping-form">
           <input type="hidden" name="active_tab" value="settings" />
           <input type="hidden" name="settings_tab" id="accounts-ping-settings-tab" value="{{ settings_tab or 'general' }}" />
+          <input type="hidden" name="window" value="{{ accounts_ping_status.window_hours }}" />
+          <input type="hidden" name="limit" value="{{ accounts_ping_status.pagination.limit }}" />
+          <input type="hidden" name="issues_page" value="{{ accounts_ping_status.pagination.issues.page }}" />
+          <input type="hidden" name="stable_page" value="{{ accounts_ping_status.pagination.stable.page }}" />
+          <input type="hidden" name="issues_sort" value="{{ accounts_ping_status.sort.issues.key }}" />
+          <input type="hidden" name="issues_dir" value="{{ accounts_ping_status.sort.issues.dir }}" />
+          <input type="hidden" name="stable_sort" value="{{ accounts_ping_status.sort.stable.key }}" />
+          <input type="hidden" name="stable_dir" value="{{ accounts_ping_status.sort.stable.dir }}" />
+          <input type="hidden" name="q" value="{{ accounts_ping_status.query or '' }}" />
 
           <ul class="nav nav-tabs" data-bs-toggle="tabs">
             <li class="nav-item"><a href="#accounts-ping-general" class="nav-link {% if settings_tab == 'general' %}active{% endif %}" data-bs-toggle="tab">General</a></li>
@@ -835,6 +844,64 @@
               <div class="card mb-3">
                 <div class="card-body">
                   <h5 class="mb-3">Classification</h5>
+                  {% set patch_ctx = accounts_ping_classification_patch or {} %}
+                  {% set patch_preview = patch_ctx.preview or {} %}
+                  <div class="alert alert-info mb-3">
+                    <div class="d-flex align-items-start">
+                      <span class="me-2"><i class="ti ti-info-circle"></i></span>
+                      <div>
+                        <strong>How Classification works in plain language:</strong>
+                        Accounts Ping uses two kinds of judgment at the same time.
+                        First, it checks the latest live ping result to know whether the account is currently up or down.
+                        Second, it looks at the selected page window, such as <strong>1h</strong>, <strong>6h</strong>, <strong>24h</strong>, or <strong>7d</strong>, and calculates how often that account failed during that period.
+                        The Fail % is based on that selected window, not only on the latest ping.
+                        <div class="mt-2">
+                          This creates three practical bands:
+                          <strong>Stable</strong> when the account is up and its Fail % stays at or below <strong>Stable Fail %</strong>;
+                          <strong>Monitor</strong> when the account is still up but its Fail % rises above <strong>Stable Fail %</strong>;
+                          and <strong>Issue-level Monitor / Down</strong> when the account is currently down or its Fail % reaches <strong>Issue Fail %</strong>, or its latest loss/latency crosses the issue thresholds.
+                        </div>
+                        <div class="mt-2">
+                          <strong>About the thresholds that may look similar:</strong>
+                          <strong>Stable Fail %</strong> and <strong>Issue Fail %</strong> are not two different measurements.
+                          They are two levels of the same Fail % score.
+                          Stable Fail % is the warning line.
+                          Issue Fail % is the more serious line.
+                          So they are related, but not redundant.
+                        </div>
+                        <div class="mt-2">
+                          <strong>About Down Loss % vs Issue Loss %:</strong>
+                          these also work differently.
+                          <strong>Down Loss %</strong> is used by the live checker to decide whether the account should be treated as currently down for that ping cycle.
+                          <strong>Issue Loss %</strong> is the warning or issue threshold shown in the UI when the account is still being evaluated for health quality.
+                          In most deployments Down Loss % stays at <strong>100%</strong>, while Issue Loss % is lower so the portal can flag bad quality before full failure.
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="alert {% if patch_ctx.patch_available %}alert-warning{% else %}alert-secondary{% endif %} mb-3">
+                    <div class="d-flex align-items-start">
+                      <span class="me-2">
+                        <i class="ti {% if patch_ctx.patch_available %}ti-adjustments-horizontal{% else %}ti-check{% endif %}"></i>
+                      </span>
+                      <div>
+                        {% if patch_ctx.patch_available %}
+                          <strong>Saved rules are waiting to be applied.</strong>
+                          The table is still using the last patched classification for the current <strong>{{ patch_ctx.window_label }}</strong> window.
+                          Save first, then use <strong>Patch Classification</strong> to apply the saved rules immediately.
+                          {% if patch_ctx.applied_at %}
+                            <div class="mt-1 text-muted small">Last patched: {{ patch_ctx.applied_at }}</div>
+                          {% endif %}
+                        {% else %}
+                          <strong>Live classification is already up to date.</strong>
+                          The current table already matches the saved classification values.
+                          {% if patch_ctx.applied_at %}
+                            <div class="mt-1 text-muted small">Last patched: {{ patch_ctx.applied_at }}</div>
+                          {% endif %}
+                        {% endif %}
+                      </div>
+                    </div>
+                  </div>
 	                  <div class="row g-3">
 	                    <div class="col-md-4">
 	                      <label class="form-label">Issue Loss % (min) <span class="info" data-tip="Minimum packet loss percentage to classify a connection as an issue/monitor.">i</span></label>
@@ -887,12 +954,176 @@
             </div>
           </div>
 
-	          <div class="d-flex justify-content-end gap-2">
+          <div class="d-flex justify-content-end gap-2">
+              <button
+                type="button"
+                class="btn btn-outline-primary{% if settings_tab != 'classification' %} d-none{% endif %}"
+                id="accounts-ping-classification-patch-button"
+                data-bs-toggle="modal"
+                data-bs-target="#accounts-ping-classification-patch-modal"
+                data-patch-available="{{ 'true' if accounts_ping_classification_patch.patch_available else 'false' }}"
+                {% if not accounts_ping_classification_patch.patch_available %}disabled{% endif %}
+              >
+                Patch Classification
+              </button>
 	            <button type="submit" class="btn btn-primary">Save Accounts Ping Settings</button>
-	            <button type="submit" class="btn btn-outline-secondary" formaction="/settings/accounts-ping/test" formmethod="post" data-source-test-button data-label-ssh="Test SSH / CSV Source" data-label-mikrotik="Test MikroTik Routers">
+	            <button type="submit" class="btn btn-outline-secondary{% if settings_tab != 'source' %} d-none{% endif %}" id="accounts-ping-source-test-button" formaction="/settings/accounts-ping/test" formmethod="post" data-source-test-button data-label-ssh="Test SSH / CSV Source" data-label-mikrotik="Test MikroTik Routers">
 	              {% if settings.source.mode == 'mikrotik_routers' %}Test MikroTik Routers{% else %}Test SSH / CSV Source{% endif %}
 	            </button>
 	          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% set patch_ctx = accounts_ping_classification_patch or {} %}
+{% set patch_preview = patch_ctx.preview or {} %}
+<div class="modal fade" id="accounts-ping-classification-patch-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Patch Accounts Ping Classification</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="alert alert-info">
+          <div class="d-flex align-items-start">
+            <span class="me-2"><i class="ti ti-info-circle"></i></span>
+            <div>
+              This preview compares the <strong>last patched</strong> classification against the <strong>currently saved</strong> classification for the active <strong>{{ patch_ctx.window_label or accounts_ping_status.window_label }}</strong> window.
+              Accounts Ping will keep using the old classification until you confirm this patch.
+            </div>
+          </div>
+        </div>
+        {% if patch_ctx.changes %}
+          <h6 class="mb-2">Saved Classification Changes</h6>
+          <div class="table-responsive mb-3">
+            <table class="table table-sm table-vcenter">
+              <thead>
+                <tr>
+                  <th>Rule</th>
+                  <th>Current Live</th>
+                  <th>Saved</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for item in patch_ctx.changes %}
+                  <tr>
+                    <td class="fw-semibold">{{ item.label }}</td>
+                    <td>{{ item.from }}</td>
+                    <td>{{ item.to }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <div class="text-muted mb-3">No saved classification changes are waiting to be patched.</div>
+        {% endif %}
+
+        {% if patch_preview %}
+          <h6 class="mb-2">Impact Preview</h6>
+          <div class="row g-3 mb-3">
+            <div class="col-md-3 col-6">
+              <div class="card">
+                <div class="card-body py-3">
+                  <div class="text-muted small text-uppercase">Affected Accounts</div>
+                  <div class="fs-3 fw-bold">{{ patch_preview.affected_total }}</div>
+                </div>
+              </div>
+            </div>
+            <div class="col-md-3 col-6">
+              <div class="card">
+                <div class="card-body py-3">
+                  <div class="text-muted small text-uppercase">Move To Stable</div>
+                  <div class="fs-3 fw-bold text-success">{{ patch_preview.moved_to_stable }}</div>
+                </div>
+              </div>
+            </div>
+            <div class="col-md-3 col-6">
+              <div class="card">
+                <div class="card-body py-3">
+                  <div class="text-muted small text-uppercase">Move To Issues</div>
+                  <div class="fs-3 fw-bold text-danger">{{ patch_preview.moved_to_issues }}</div>
+                </div>
+              </div>
+            </div>
+            <div class="col-md-3 col-6">
+              <div class="card">
+                <div class="card-body py-3">
+                  <div class="text-muted small text-uppercase">Move To Down</div>
+                  <div class="fs-3 fw-bold text-warning">{{ patch_preview.moved_to_down }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="row g-3 mb-3">
+            <div class="col-md-6">
+              <div class="card">
+                <div class="card-header"><h3 class="card-title">Current Live Counts</h3></div>
+                <div class="card-body py-2">
+                  <div class="d-flex justify-content-between py-1"><span>Issues</span><strong>{{ patch_preview.before.issue_total }}</strong></div>
+                  <div class="d-flex justify-content-between py-1"><span>Stable</span><strong>{{ patch_preview.before.stable_total }}</strong></div>
+                  <div class="d-flex justify-content-between py-1"><span>Down</span><strong>{{ patch_preview.before.down_total }}</strong></div>
+                  <div class="d-flex justify-content-between py-1"><span>Monitor</span><strong>{{ patch_preview.before.monitor_total }}</strong></div>
+                  <div class="d-flex justify-content-between py-1"><span>Pending</span><strong>{{ patch_preview.before.pending_total }}</strong></div>
+                </div>
+              </div>
+            </div>
+            <div class="col-md-6">
+              <div class="card">
+                <div class="card-header"><h3 class="card-title">After Patch</h3></div>
+                <div class="card-body py-2">
+                  <div class="d-flex justify-content-between py-1"><span>Issues</span><strong>{{ patch_preview.after.issue_total }}</strong></div>
+                  <div class="d-flex justify-content-between py-1"><span>Stable</span><strong>{{ patch_preview.after.stable_total }}</strong></div>
+                  <div class="d-flex justify-content-between py-1"><span>Down</span><strong>{{ patch_preview.after.down_total }}</strong></div>
+                  <div class="d-flex justify-content-between py-1"><span>Monitor</span><strong>{{ patch_preview.after.monitor_total }}</strong></div>
+                  <div class="d-flex justify-content-between py-1"><span>Pending</span><strong>{{ patch_preview.after.pending_total }}</strong></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          {% if patch_preview.sample_rows %}
+            <h6 class="mb-2">Sample Accounts That Will Move</h6>
+            <div class="table-responsive">
+              <table class="table table-sm table-vcenter">
+                <thead>
+                  <tr>
+                    <th>Account</th>
+                    <th>Current Live</th>
+                    <th>After Patch</th>
+                    <th>Fail %</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for row in patch_preview.sample_rows %}
+                    <tr>
+                      <td class="fw-semibold">{{ row.name }}</td>
+                      <td>{{ row.from_status|replace('_', ' ')|title }}</td>
+                      <td>{{ row.to_status|replace('_', ' ')|title }}</td>
+                      <td>{{ '%.1f'|format(row.from_fail_pct) }}% → {{ '%.1f'|format(row.to_fail_pct) }}%</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          {% endif %}
+        {% endif %}
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-link link-secondary" data-bs-dismiss="modal">Cancel</button>
+        <form method="post" action="/settings/accounts-ping/patch-classification" class="m-0">
+          <input type="hidden" name="window" value="{{ accounts_ping_status.window_hours }}" />
+          <input type="hidden" name="limit" value="{{ accounts_ping_status.pagination.limit }}" />
+          <input type="hidden" name="issues_page" value="{{ accounts_ping_status.pagination.issues.page }}" />
+          <input type="hidden" name="stable_page" value="{{ accounts_ping_status.pagination.stable.page }}" />
+          <input type="hidden" name="issues_sort" value="{{ accounts_ping_status.sort.issues.key }}" />
+          <input type="hidden" name="issues_dir" value="{{ accounts_ping_status.sort.issues.dir }}" />
+          <input type="hidden" name="stable_sort" value="{{ accounts_ping_status.sort.stable.key }}" />
+          <input type="hidden" name="stable_dir" value="{{ accounts_ping_status.sort.stable.dir }}" />
+          <input type="hidden" name="q" value="{{ accounts_ping_status.query }}" />
+          <button type="submit" class="btn btn-primary" {% if not patch_ctx.patch_available %}disabled{% endif %}>Apply Patch Now</button>
         </form>
       </div>
     </div>
@@ -906,7 +1137,46 @@
       const sourceHelpMikrotik = document.getElementById("accounts-ping-source-help-mikrotik");
       const sourceSshCard = document.getElementById("accounts-ping-source-ssh-card");
       const sourceMikrotikCard = document.getElementById("accounts-ping-source-mikrotik-card");
-      const sourceTestButton = document.querySelector("[data-source-test-button]");
+      const sourceTestButton = document.getElementById("accounts-ping-source-test-button");
+      const classificationPatchButton = document.getElementById("accounts-ping-classification-patch-button");
+      const settingsTabInput = document.getElementById("accounts-ping-settings-tab");
+      const classificationFieldNames = [
+        "issue_loss_pct",
+        "issue_latency_ms",
+        "down_loss_pct",
+        "stable_rto_pct",
+        "issue_rto_pct",
+        "issue_streak",
+      ];
+      const classificationInputs = classificationFieldNames
+        .map((name) => document.querySelector(`#accounts-ping-form [name="${name}"]`))
+        .filter(Boolean);
+      const classificationPatchAvailable = classificationPatchButton ? classificationPatchButton.dataset.patchAvailable === "true" : false;
+      const settingsTabLinks = document.querySelectorAll('#accounts-ping-settings > form > .nav.nav-tabs a[data-bs-toggle="tab"][href^="#accounts-ping-"]');
+      const syncSourceTestButtonVisibility = () => {
+        if (!sourceTestButton) return;
+        const sourcePane = document.getElementById("accounts-ping-source");
+        const sourceActive = !!(sourcePane && sourcePane.classList.contains("active"));
+        sourceTestButton.classList.toggle("d-none", !sourceActive);
+      };
+      const syncSettingsButtonsVisibility = () => {
+        syncSourceTestButtonVisibility();
+        if (!classificationPatchButton) return;
+        const classificationPane = document.getElementById("accounts-ping-classification");
+        const classificationActive = !!(classificationPane && classificationPane.classList.contains("active"));
+        classificationPatchButton.classList.toggle("d-none", !classificationActive);
+      };
+      const initialClassificationState = new Map(
+        classificationInputs.map((input) => [input.name, String(input.value ?? "")])
+      );
+      const syncClassificationPatchButton = () => {
+        if (!classificationPatchButton) return;
+        const dirty = classificationInputs.some((input) => String(input.value ?? "") !== String(initialClassificationState.get(input.name) ?? ""));
+        classificationPatchButton.disabled = dirty || !classificationPatchAvailable;
+        classificationPatchButton.title = dirty
+          ? "Save classification changes first to refresh the patch preview."
+          : (classificationPatchAvailable ? "" : "No saved classification changes are waiting to be patched.");
+      };
       const readSourceMode = () => sourceModeInput ? sourceModeInput.value : "ssh_csv";
       const syncSourceModeUi = () => {
         const mode = readSourceMode();
@@ -922,7 +1192,26 @@
         }
       };
       if (sourceModeInput) sourceModeInput.addEventListener("change", syncSourceModeUi);
+      settingsTabLinks.forEach((tab) => tab.addEventListener("shown.bs.tab", (event) => {
+        const href = String(event.target.getAttribute("href") || "").trim();
+        if (settingsTabInput) {
+          settingsTabInput.value = href === "#accounts-ping-source"
+            ? "source"
+            : href === "#accounts-ping-classification"
+              ? "classification"
+              : href === "#accounts-ping-storage"
+                ? "storage"
+                : "general";
+        }
+        syncSettingsButtonsVisibility();
+      }));
+      classificationInputs.forEach((input) => {
+        input.addEventListener("input", syncClassificationPatchButton);
+        input.addEventListener("change", syncClassificationPatchButton);
+      });
       syncSourceModeUi();
+      syncSettingsButtonsVisibility();
+      syncClassificationPatchButton();
 
       const tabLinks = document.querySelectorAll('#accounts-ping-status-tabs a[data-bs-toggle="tab"]');
       const tabKey = "accounts_ping_active_tab";
@@ -1200,7 +1489,32 @@
         const windowEndMs = nowMs;
         modalChart.innerHTML = "";
 	        chart = new window.ApexCharts(modalChart, {
-	          chart: { type: "line", height: 260, toolbar: { show: false }, zoom: { enabled: false } },
+	          chart: {
+              type: "line",
+              height: 260,
+              toolbar: {
+                show: true,
+                tools: {
+                  download: false,
+                  selection: true,
+                  zoom: true,
+                  zoomin: true,
+                  zoomout: true,
+                  pan: true,
+                  reset: true,
+                },
+                autoSelected: "zoom",
+              },
+              zoom: {
+                enabled: true,
+                type: "x",
+                autoScaleYaxis: true,
+              },
+              selection: {
+                enabled: true,
+                type: "x",
+              },
+            },
 	          stroke: { width: 2 },
 	          markers: { size: 0 },
           series: [
