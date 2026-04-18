@@ -112,6 +112,17 @@ def normalize_usage_modem_reboot_settings(raw_settings):
     except Exception:
         settings["verify_after_minutes"] = 5
     try:
+        settings["max_attempts"] = max(int(settings.get("max_attempts", 50) or 50), 1)
+    except Exception:
+        settings["max_attempts"] = 50
+    try:
+        settings["unrebootable_check_interval_days"] = max(
+            int(settings.get("unrebootable_check_interval_days", 14) or 14),
+            1,
+        )
+    except Exception:
+        settings["unrebootable_check_interval_days"] = 14
+    try:
         settings["history_retention_days"] = max(int(settings.get("history_retention_days", 180) or 180), 1)
     except Exception:
         settings["history_retention_days"] = 180
@@ -198,6 +209,17 @@ def _reboot_badge_for_cycle(cycle, now_dt=None):
     success_at = str(cycle.get("success_at") or "").strip()
     last_error = str(cycle.get("last_error") or "").strip()
     attempt_count = int(cycle.get("attempt_count", 0) or 0)
+
+    if last_status == "unrebootable":
+        title = last_error or "This account exceeded the configured failed reboot attempt limit."
+        if next_retry_dt and next_retry_dt > now_dt:
+            title = f"{title} Next checker attempt: {format_ts_ph(_iso_utc(next_retry_dt))}."
+        return {
+            "label": "Reboot Blocked",
+            "class": "bg-red-lt text-red",
+            "icon": "ti ti-ban",
+            "title": title,
+        }
 
     if next_retry_dt and next_retry_dt > now_dt and not success_at:
         retry_label = format_ts_ph(_iso_utc(next_retry_dt))

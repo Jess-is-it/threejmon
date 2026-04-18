@@ -7493,6 +7493,21 @@ def _usage_account_key(router_id, pppoe):
     return f"{(router_id or '').strip()}|{(pppoe or '').strip().lower()}"
 
 
+def _usage_parse_iso_utc(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        if raw.endswith("Z"):
+            raw = raw[:-1]
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
 def _usage_status_rank(status):
     ranks = {
         "issue": 4,
@@ -7513,9 +7528,12 @@ def _usage_status_label(status):
     return labels.get((status or "").strip().lower(), "Unknown")
 
 
-def _build_usage_accounts_rows(summary, reboot_stats=None):
+def _build_usage_accounts_rows(summary, reboot_stats=None, reboot_settings=None):
     summary = summary if isinstance(summary, dict) else {}
     reboot_stats = reboot_stats if isinstance(reboot_stats, list) else []
+    reboot_settings = normalize_usage_modem_reboot_settings({"modem_reboot": reboot_settings or {}})
+    max_attempts = max(int(reboot_settings.get("max_attempts", 50) or 50), 1)
+    checker_days = max(int(reboot_settings.get("unrebootable_check_interval_days", 14) or 14), 1)
     accounts = {}
 
     def _base_for(row, status):
@@ -7552,6 +7570,14 @@ def _build_usage_accounts_rows(summary, reboot_stats=None):
                 "reboot_no_tr069_count": 0,
                 "reboot_verification_passed_count": 0,
                 "reboot_verification_failed_count": 0,
+                "reboot_failed_total_count": 0,
+                "reboot_blocked": False,
+                "reboot_blocked_label": "",
+                "reboot_blocked_reason": "",
+                "reboot_next_check_at": "",
+                "reboot_next_check_at_ph": "",
+                "reboot_max_attempts": max_attempts,
+                "reboot_check_interval_days": checker_days,
                 "last_reboot_at": "",
                 "last_reboot_at_ph": "",
                 "last_reboot_verified_at": "",
@@ -7602,6 +7628,7 @@ def _build_usage_accounts_rows(summary, reboot_stats=None):
         item["reboot_no_tr069_count"] = int(stat.get("no_tr069_count") or 0)
         item["reboot_verification_passed_count"] = int(stat.get("verification_passed_count") or 0)
         item["reboot_verification_failed_count"] = int(stat.get("verification_failed_count") or 0)
+        item["reboot_failed_total_count"] = item["reboot_failed_count"] + item["reboot_verification_failed_count"]
         item["last_reboot_at"] = stat.get("latest_attempted_at") or ""
         item["last_reboot_at_ph"] = format_ts_ph(stat.get("latest_attempted_at"))
         item["last_reboot_verified_at"] = stat.get("latest_verified_at") or ""
@@ -7610,6 +7637,17 @@ def _build_usage_accounts_rows(summary, reboot_stats=None):
         item["last_reboot_verification_status"] = (stat.get("latest_verification_status") or "").strip()
         item["last_reboot_error"] = (stat.get("latest_error_message") or "").strip()
         item["last_reboot_detail"] = (stat.get("latest_detail") or "").strip()
+        if item["reboot_failed_total_count"] >= max_attempts:
+            item["reboot_blocked"] = True
+            item["reboot_blocked_label"] = "Reboot Blocked"
+            latest_dt = _usage_parse_iso_utc(item.get("last_reboot_at"))
+            next_check_dt = latest_dt + timedelta(days=checker_days) if latest_dt else None
+            item["reboot_next_check_at"] = next_check_dt.isoformat().replace("+00:00", "Z") if next_check_dt else ""
+            item["reboot_next_check_at_ph"] = format_ts_ph(item["reboot_next_check_at"]) if item["reboot_next_check_at"] else ""
+            item["reboot_blocked_reason"] = (
+                f"{item['reboot_failed_total_count']} failed reboot checks reached the configured maximum "
+                f"of {max_attempts}."
+            )
 
     return sorted(
         accounts.values(),
@@ -7653,7 +7691,7 @@ async def usage_summary(request: Request):
             item["attempted_at_ph"] = format_ts_ph(item.get("attempted_at"))
             item["verified_at_ph"] = format_ts_ph(item.get("verified_at"))
             reboot_history_rows.append(item)
-    account_rows = _build_usage_accounts_rows(summary, reboot_account_stats)
+    account_rows = _build_usage_accounts_rows(summary, reboot_account_stats, reboot_settings)
     return JSONResponse(
         {
             "updated_at": utc_now_iso(),
@@ -7762,7 +7800,7 @@ async def usage_account_detail(pppoe: str, router_id: str = "", hours: int = 168
     state = get_state("usage_state", {})
     summary = _build_usage_summary_data(settings, state)
     reboot_stats = list_usage_modem_reboot_account_stats()
-    accounts = _build_usage_accounts_rows(summary, reboot_stats)
+    accounts = _build_usage_accounts_rows(summary, reboot_stats, normalize_usage_modem_reboot_settings(settings))
     account_key = _usage_account_key(router_id_value, pppoe_value)
     account = next(
         (row for row in accounts if _usage_account_key(row.get("router_id"), row.get("pppoe")) == account_key),
@@ -9729,6 +9767,7 @@ async def usage_settings(request: Request):
         _build_usage_accounts_rows(
             usage_summary_data,
             list_usage_modem_reboot_account_stats() if can_view_reboot_history else [],
+            normalize_usage_modem_reboot_settings(settings),
         )
     )
     wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
@@ -9990,6 +10029,21 @@ async def usage_settings_save(request: Request):
                     )
                 ),
             )
+            settings["modem_reboot"]["max_attempts"] = parse_int(
+                form,
+                "modem_reboot_max_attempts",
+                int((settings.get("modem_reboot") or {}).get("max_attempts", USAGE_DEFAULTS["modem_reboot"]["max_attempts"])),
+            )
+            settings["modem_reboot"]["unrebootable_check_interval_days"] = parse_int(
+                form,
+                "modem_reboot_unrebootable_check_interval_days",
+                int(
+                    (settings.get("modem_reboot") or {}).get(
+                        "unrebootable_check_interval_days",
+                        USAGE_DEFAULTS["modem_reboot"]["unrebootable_check_interval_days"],
+                    )
+                ),
+            )
             message = "Modem Auto Reboot settings saved."
         else:
             message = "Settings saved."
@@ -10012,6 +10066,7 @@ async def usage_settings_save(request: Request):
         _build_usage_accounts_rows(
             usage_summary_data,
             list_usage_modem_reboot_account_stats() if can_view_reboot_history else [],
+            normalize_usage_modem_reboot_settings(settings),
         )
     )
     wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
@@ -10102,6 +10157,7 @@ async def usage_test_genieacs(request: Request):
         _build_usage_accounts_rows(
             usage_summary_data,
             list_usage_modem_reboot_account_stats() if can_view_reboot_history else [],
+            normalize_usage_modem_reboot_settings(settings),
         )
     )
     wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))

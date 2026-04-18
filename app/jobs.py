@@ -21,6 +21,7 @@ from .db import (
     insert_pppoe_usage_sample,
     insert_usage_modem_reboot_history,
     insert_offline_history_event,
+    list_usage_modem_reboot_account_stats,
     update_job_status,
     update_usage_modem_reboot_history,
     utc_now_iso,
@@ -65,6 +66,7 @@ from .settings_store import get_settings, get_state, save_settings, save_state
 from .telegram_commands import handle_telegram_command
 from .usage_logic import (
     build_usage_summary_data,
+    format_ts_ph,
     normalize_usage_modem_reboot_settings,
     normalize_usage_modem_reboot_state,
     usage_issue_key,
@@ -299,6 +301,16 @@ def _process_usage_modem_reboots(cfg, state, summary, now, now_iso):
     suppression = (
         reboot_state.get("issue_suppression") if isinstance(reboot_state.get("issue_suppression"), dict) else {}
     )
+    max_attempts = max(int(reboot_cfg.get("max_attempts", 50) or 50), 1)
+    checker_days = max(int(reboot_cfg.get("unrebootable_check_interval_days", 14) or 14), 1)
+    reboot_stats_map = {}
+    try:
+        for stat in list_usage_modem_reboot_account_stats():
+            stat_key = usage_issue_key(stat.get("router_id"), stat.get("pppoe"))
+            if stat_key:
+                reboot_stats_map[stat_key] = stat
+    except Exception:
+        reboot_stats_map = {}
 
     for key in list(suppression.keys()):
         until_dt = _parse_iso_utc((suppression.get(key) or {}).get("until"))
@@ -438,6 +450,32 @@ def _process_usage_modem_reboots(cfg, state, summary, now, now_iso):
         cycle["http_status"] = http_status
         _schedule_retry(cycle, detail or "GenieACS reboot task failed.")
 
+    def _unrebootable_block_active(key, cycle):
+        stat = reboot_stats_map.get(key) if isinstance(reboot_stats_map, dict) else {}
+        if not isinstance(stat, dict):
+            return False
+        failed_count = int(stat.get("failed_count") or 0)
+        verification_failed_count = int(stat.get("verification_failed_count") or 0)
+        counted_attempts = failed_count + verification_failed_count
+        if counted_attempts < max_attempts:
+            return False
+        latest_dt = _parse_iso_utc(stat.get("latest_attempted_at"))
+        if not latest_dt:
+            latest_dt = _parse_iso_utc(cycle.get("last_attempt_at"))
+        next_check_dt = (latest_dt + timedelta(days=checker_days)) if latest_dt else (now + timedelta(days=checker_days))
+        if next_check_dt <= now:
+            return False
+        cycle["last_status"] = "unrebootable"
+        cycle["last_error"] = (
+            f"Reboot Blocked: {counted_attempts} failed reboot attempts reached the "
+            f"configured maximum of {max_attempts}. Next checker attempt: {format_ts_ph(_iso_utc(next_check_dt))}."
+        )
+        cycle["next_retry_at"] = _iso_utc(next_check_dt)
+        cycle["verify_status"] = ""
+        cycle["verify_due_at"] = ""
+        cycle["verify_checked_at"] = ""
+        return True
+
     def _finalize_verification(key, cycle, row):
         history_id = int(cycle.get("latest_history_id", 0) or 0)
         if row and not _usage_live_issue_still_present(cfg, row, now_dt=now):
@@ -529,6 +567,10 @@ def _process_usage_modem_reboots(cfg, state, summary, now, now_iso):
                 cycle["next_retry_at"] = ""
                 current[key] = cycle
                 continue
+
+        if _unrebootable_block_active(key, cycle):
+            current[key] = cycle
+            continue
 
         next_retry_dt = _parse_iso_utc(cycle.get("next_retry_at"))
         if next_retry_dt and next_retry_dt > now:

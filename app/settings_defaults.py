@@ -477,6 +477,8 @@ USAGE_DEFAULTS = {
         "retry_count": 5,
         "retry_delay_minutes": 5,
         "verify_after_minutes": 5,
+        "max_attempts": 50,
+        "unrebootable_check_interval_days": 14,
         "history_retention_days": 180,
     },
 }

@@ -777,6 +777,14 @@
                       </div>
                     </div>
                   </div>
+                  <div class="alert alert-danger mb-3">
+                    <div class="d-flex align-items-start">
+                      <span class="me-2"><i class="ti ti-ban"></i></span>
+                      <div>
+                        Accounts that repeatedly fail reboot attempts are marked <span class="fw-semibold">Reboot Blocked</span>. Once an account reaches the maximum failed checks below, the system stops rapid retries and only performs a checker attempt after the configured interval. This prevents accounts with no TR-069 mapping or rejected reboot commands from creating thousands of failed attempts.
+                      </div>
+                    </div>
+                  </div>
                   <div class="alert alert-info mb-4">
                     <div class="d-flex align-items-start">
                       <span class="me-2"><i class="ti ti-info-circle"></i></span>
@@ -812,6 +820,16 @@
                       <label class="form-label">Retry Delay (minutes)</label>
                       <input class="form-control" type="number" name="modem_reboot_retry_delay_minutes" value="{{ settings.modem_reboot.retry_delay_minutes }}" />
                       <div class="text-muted small mt-1">How long to wait before the next retry after a failed reboot attempt.</div>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Maximum Failed Reboot Checks</label>
+                      <input class="form-control" type="number" name="modem_reboot_max_attempts" value="{{ settings.modem_reboot.max_attempts }}" />
+                      <div class="text-muted small mt-1">When failed/no-TR069 attempts plus failed verifications reach this value, the account is marked Reboot Blocked.</div>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Blocked Account Checker (days)</label>
+                      <input class="form-control" type="number" name="modem_reboot_unrebootable_check_interval_days" value="{{ settings.modem_reboot.unrebootable_check_interval_days }}" />
+                      <div class="text-muted small mt-1">Only applies to Reboot Blocked accounts. Default is once every 14 days.</div>
                     </div>
                     <div class="col-md-4">
                       <label class="form-label">History Retention (days)</label>
@@ -1400,6 +1418,9 @@
             row?.last_reboot_verification_status,
             row?.last_reboot_error,
             row?.last_reboot_detail,
+            row?.reboot_blocked_label,
+            row?.reboot_blocked_reason,
+            row?.reboot_next_check_at_ph,
           ]
             .filter((x) => x !== null && x !== undefined)
             .map((x) => String(x).toLowerCase())
@@ -1587,13 +1608,28 @@
       const detailAction = renderUsageAccountDetailAction(row);
       const profileAction = renderProfileReviewAction({ pppoe: row?.pppoe, address: row?.address, device_id: row?.device_id });
       const successCount = Number(row?.reboot_success_count || 0) || 0;
-      const failedCount = Number(row?.reboot_failed_count || 0) || 0;
+      const failedCount = Number(row?.reboot_failed_total_count ?? row?.reboot_failed_count ?? 0) || 0;
       const successBadge = successCount > 0
         ? `<span class="badge bg-azure-lt text-azure">${successCount}</span>`
         : '<span class="badge bg-secondary-lt">0</span>';
       const failedBadge = failedCount > 0
         ? `<span class="badge bg-red-lt text-red">${failedCount}</span>`
         : '<span class="badge bg-secondary-lt">0</span>';
+      const blockedTitle = [
+        row?.reboot_blocked_label || "Reboot Blocked",
+        row?.reboot_blocked_reason || "This account reached the configured failed reboot check limit.",
+        row?.reboot_next_check_at_ph ? `Next checker attempt: ${row.reboot_next_check_at_ph}` : "",
+        row?.reboot_max_attempts ? `Maximum failed checks: ${row.reboot_max_attempts}` : "",
+        row?.reboot_check_interval_days ? `Checker interval: every ${row.reboot_check_interval_days} day(s)` : "",
+        `Failed/no-TR069 attempts: ${row?.reboot_failed_count || 0}`,
+        `Failed verification checks: ${row?.reboot_verification_failed_count || 0}`,
+        row?.last_reboot_at_ph ? `Last reboot attempt: ${row.last_reboot_at_ph}` : "",
+        row?.last_reboot_error || row?.last_reboot_detail || "",
+      ].filter(Boolean).join("\n");
+      const blockedIcon = row?.reboot_blocked
+        ? `<span class="badge bg-red-lt text-red ms-1" title="${esc(blockedTitle)}" aria-label="Reboot blocked"><i class="ti ti-ban"></i></span>`
+        : "";
+      const failedCell = `<span class="d-inline-flex align-items-center justify-content-end">${failedBadge}${blockedIcon}</span>`;
       const lastRebootTitle = [
         row?.last_reboot_status ? `Status: ${row.last_reboot_status}` : "",
         row?.last_reboot_verification_status ? `Verification: ${row.last_reboot_verification_status}` : "",
@@ -1607,7 +1643,7 @@
           <td class="text-end us-col-dl-rate us-priority-2">${esc(fmtBpsNullable(row?.dl_bps))}</td>
           <td class="text-end us-col-ul-rate us-priority-3">${esc(fmtBpsNullable(row?.ul_bps))}</td>
           <td class="text-end us-priority-4">${successBadge}</td>
-          <td class="text-end us-priority-5">${failedBadge}</td>
+          <td class="text-end us-priority-5">${failedCell}</td>
           <td class="us-priority-6"><span class="usage-status-cell-truncate" title="${esc(lastRebootTitle || row?.last_reboot_at_ph || "n/a")}">${esc(row?.last_reboot_at_ph || "n/a")}</span></td>
           <td class="us-col-last-seen us-priority-5"><span class="usage-status-cell-truncate" title="${esc(row?.last_seen || "n/a")}">${esc(row?.last_seen || "n/a")}</span></td>
           <td class="text-end us-col-actions us-priority-0"><span class="us-actions">${detailAction}${profileAction}</span></td>
@@ -2388,10 +2424,23 @@
       const history = Array.isArray(payload?.history) ? payload.history : [];
       const successCount = Number(account.reboot_success_count || 0) || 0;
       const attemptCount = Number(account.reboot_attempt_count || 0) || 0;
-      const failedCount = Number(account.reboot_failed_count || 0) || 0;
+      const failedCount = Number(account.reboot_failed_total_count ?? account.reboot_failed_count ?? 0) || 0;
       const hostCount = account.host_count === null || account.host_count === undefined ? "n/a" : account.host_count;
       const latestDetail = String(account.last_reboot_error || account.last_reboot_detail || "").trim();
+      const blockedNotice = account.reboot_blocked
+        ? `<div class="alert alert-danger mb-3">
+             <div class="d-flex align-items-start">
+               <span class="me-2"><i class="ti ti-ban"></i></span>
+               <div>
+                 <div class="fw-semibold">${esc(account.reboot_blocked_label || "Reboot Blocked")}</div>
+                 <div>${esc(account.reboot_blocked_reason || "This account reached the maximum failed reboot check limit.")}</div>
+                 <div class="small mt-1">Next checker attempt: ${esc(account.reboot_next_check_at_ph || "n/a")}</div>
+               </div>
+             </div>
+           </div>`
+        : "";
       return `
+        ${blockedNotice}
         <div class="row g-3 mb-3">
           <div class="col-md-3 col-sm-6">
             <div class="card">
@@ -2416,7 +2465,7 @@
               <div class="card-body">
                 <div class="text-muted small">Failed / No TR-069</div>
                 <div class="fs-2 fw-semibold mt-1">${esc(failedCount)}</div>
-                <div class="text-muted small">No TR-069: ${esc(account.reboot_no_tr069_count || 0)}</div>
+                <div class="text-muted small">No TR-069: ${esc(account.reboot_no_tr069_count || 0)} · Verify failed: ${esc(account.reboot_verification_failed_count || 0)}</div>
               </div>
             </div>
           </div>
