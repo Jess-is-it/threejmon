@@ -672,6 +672,29 @@ select:not(.form-select) {
   vertical-align: middle;
 }
 
+[data-surv-list-full] .surv-col-select {
+  width: 44px !important;
+  min-width: 44px;
+  max-width: 44px;
+  overflow: visible !important;
+  text-overflow: clip;
+  text-align: center;
+}
+
+[data-surv-list-full] .surv-col-select .form-check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 1.25rem;
+  padding-left: 0;
+}
+
+[data-surv-list-full] .surv-col-select .form-check-input {
+  float: none;
+  flex: 0 0 auto;
+  margin: 0;
+}
+
 [data-surv-list-full] td.surv-col-pppoe,
 [data-surv-list-full] th.surv-col-pppoe {
   width: 36ch;

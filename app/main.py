@@ -1866,6 +1866,14 @@ def _audit_human_message(username: str, action: str, resource: str, details: str
         if count:
             return f"User {user} marked {count} accounts as false alarm."
         return f"User {user} marked {(resource or 'an account')} as false alarm."
+    if action_l == "surveillance.mark_false_bulk":
+        count = details_map.get("count") or ""
+        remarks = details_map.get("remarks") or ""
+        if count and remarks:
+            return f"User {user} marked {count} accounts as false alarm using Select Multiple. Shared remarks: {remarks}"
+        if count:
+            return f"User {user} marked {count} accounts as false alarm using Select Multiple."
+        return f"User {user} marked multiple accounts as false alarm using Select Multiple."
     if action_l == "surveillance.undo_add":
         return f"User {user} removed {(resource or 'an account')} during undo window."
     if action_l == "surveillance.remove":
@@ -18212,7 +18220,10 @@ async def surveillance_mark_false(request: Request):
         return RedirectResponse(url=f"/surveillance?{urllib.parse.urlencode(params)}", status_code=303)
     settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
     entry_map = _surveillance_entry_map(settings)
+    is_bulk = len(unique_pppoes) > 1
+    selected_count = len(unique_pppoes)
     processed = 0
+    processed_pppoes: list[str] = []
     for pppoe in unique_pppoes:
         entry = entry_map.get(pppoe) or {}
         if not entry:
@@ -18226,7 +18237,11 @@ async def surveillance_mark_false(request: Request):
                 source=(entry.get("source") or "").strip(),
                 ip=(entry.get("ip") or "").strip(),
                 state=(entry.get("status") or "under"),
-                note=f"Marked as False: {remarks}",
+                note=(
+                    f"Marked as False via Select Multiple ({selected_count} selected). Shared remarks: {remarks}"
+                    if is_bulk
+                    else f"Marked as False: {remarks}"
+                ),
                 under_seconds=under_seconds,
                 level2_seconds=level2_seconds,
                 observe_seconds=observe_seconds,
@@ -18236,18 +18251,25 @@ async def surveillance_mark_false(request: Request):
             pass
         entry_map.pop(pppoe, None)
         processed += 1
+        processed_pppoes.append(pppoe)
     settings["entries"] = list(entry_map.values())
     save_settings("surveillance", settings)
     if processed > 0:
-        preview = ",".join(unique_pppoes[:10])
-        if len(unique_pppoes) > 10:
-            preview += f",+{len(unique_pppoes) - 10}"
-        _auth_log_event(
-            request,
-            action="surveillance.mark_false",
-            resource=preview,
-            details=f"count={processed};tab={tab};remarks={remarks[:200]}",
-        )
+        if is_bulk:
+            for processed_pppoe in processed_pppoes:
+                _auth_log_event(
+                    request,
+                    action="surveillance.mark_false_bulk",
+                    resource=processed_pppoe,
+                    details=f"count={processed};selected={selected_count};tab={tab};mode=select_multiple;remarks={remarks[:200]}",
+                )
+        else:
+            _auth_log_event(
+                request,
+                action="surveillance.mark_false",
+                resource=processed_pppoes[0] if processed_pppoes else unique_pppoes[0],
+                details=f"count={processed};tab={tab};remarks={remarks[:200]}",
+            )
     return RedirectResponse(url=f"/surveillance?tab={urllib.parse.quote(tab)}", status_code=303)
 
 
@@ -18620,9 +18642,11 @@ def _build_surveillance_stage_events(audit_rows: list[dict], cycle_rows: list[di
         elif action in ("surveillance.mark_fixed", "surveillance.mark_fixed_bulk") and not stage_events["observe"]:
             event["action_label"] = "Moved to Post-Fix Observation"
             stage_events["observe"] = event
-        elif action in ("surveillance.mark_false", "surveillance.mark_fully_recovered", "surveillance.remove", "surveillance.remove_bulk"):
+        elif action in ("surveillance.mark_false", "surveillance.mark_false_bulk", "surveillance.mark_fully_recovered", "surveillance.remove", "surveillance.remove_bulk"):
             if action == "surveillance.mark_false":
                 event["action_label"] = "Marked False"
+            elif action == "surveillance.mark_false_bulk":
+                event["action_label"] = "Marked False (Select Multiple)"
             elif action == "surveillance.mark_fully_recovered":
                 event["action_label"] = "Marked Fully Recovered"
             else:

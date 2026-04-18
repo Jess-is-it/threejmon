@@ -72,7 +72,7 @@
 			                <span class="form-check-label">Select multiple</span>
 			              </label>
 			            </div>
-			            <button type="button" class="btn btn-outline-warning btn-sm d-none" disabled data-surv-bulk-false-btn="under" title="Mark selected accounts as false">
+			            <button type="button" class="btn btn-outline-warning btn-sm d-none" disabled data-surv-bulk-false-btn="under" data-surv-bulk-false-open="under" data-bs-toggle="modal" data-bs-target="#surv-false-modal" title="Mark selected accounts as false">
 			              <i class="ti ti-circle-x me-1"></i>Mark as False
 			            </button>
 			            <div class="input-icon" data-search-clearable>
@@ -1909,7 +1909,8 @@
 		                    {% if row.end_reason == 'healed' %}
 		                      <span class="badge bg-green-lt text-green">Auto Healed</span>
 	                    {% elif row.end_reason == 'false' %}
-	                      <span class="badge bg-orange-lt text-orange" {% if row.end_note %}title="{{ row.end_note }}"{% endif %}>Marked False</span>
+	                      {% set marked_false_bulk = row.end_note and ('Select Multiple' in row.end_note) %}
+	                      <span class="badge bg-orange-lt text-orange" {% if row.end_note %}title="{{ row.end_note }}"{% endif %}>{{ 'Marked False (Select Multiple)' if marked_false_bulk else 'Marked False' }}</span>
                     {% elif row.end_reason == 'fixed' %}
                       <span class="badge bg-blue-lt text-blue" {% if row.end_note %}title="{{ row.end_note }}"{% endif %}>Fixed</span>
                     {% elif row.end_reason == 'recovered' %}
@@ -2164,7 +2165,7 @@
                 <div class="modal-content">
                   <form method="post" action="/surveillance/mark_false" id="surv-false-form">
                     <div class="modal-header">
-                      <h5 class="modal-title"><i class="ti ti-circle-x me-1 text-orange"></i>Mark as False</h5>
+                      <h5 class="modal-title" id="surv-false-title"><i class="ti ti-circle-x me-1 text-orange"></i>Mark as False</h5>
                       <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                     </div>
                     <div class="modal-body">
@@ -2174,6 +2175,17 @@
                       <div class="mb-2">
                         <div class="text-muted small">Account</div>
                         <div class="fw-semibold" id="surv-false-pppoe-label">—</div>
+                      </div>
+                      <div class="alert alert-warning d-none py-2" id="surv-false-bulk-note">
+                        <div class="fw-semibold">Select Multiple false mark</div>
+                        <div class="small">The same remarks will be saved to every selected account and shown in history/logs as a Select Multiple action.</div>
+                      </div>
+                      <div class="mb-3 d-none" id="surv-false-bulk-list-wrap">
+                        <div class="d-flex justify-content-between align-items-center mb-1">
+                          <div class="text-muted small">Selected accounts</div>
+                          <span class="badge bg-orange-lt text-orange" id="surv-false-bulk-count">0</span>
+                        </div>
+                        <div class="border rounded p-2 bg-light" style="max-height: 180px; overflow: auto;" id="surv-false-bulk-list"></div>
                       </div>
                       <div>
                         <label class="form-label">Remarks (required)</label>
@@ -2756,6 +2768,28 @@
 			    };
 			    removeSurveillanceAiUi();
 
+          const applySurveillanceTableHoverTitles = (root = document) => {
+            const tables = root.querySelectorAll(
+              "#surv-under table, #surv-level2 table, #surv-observe table, #surv-history table, #surv-logs table"
+            );
+            tables.forEach((table) => {
+              table.querySelectorAll("th, td").forEach((cell) => {
+                if (!cell || cell.hasAttribute("title")) return;
+                if (
+                  cell.classList.contains("surv-col-actions") ||
+                  cell.classList.contains("surv-actions-cell") ||
+                  cell.classList.contains("surv-col-select") ||
+                  cell.querySelector("button, a, input, select, textarea")
+                ) {
+                  return;
+                }
+                const text = String(cell.textContent || "").replace(/\s+/g, " ").trim();
+                if (!text || text === "—" || text.toLowerCase() === "n/a") return;
+                cell.setAttribute("title", text);
+              });
+            });
+          };
+
 			    const settingsSaveBar = document.querySelector('[data-surv-settings-save-bar]');
 			    const isSettingsDangerTabActive = () => false;
 			    const setSettingsSaveBar = (tab) => {
@@ -3004,11 +3038,44 @@
         const falseModalPppoe = document.getElementById("surv-false-pppoe");
         const falseModalPppoes = document.getElementById("surv-false-pppoes");
         const falseModalTab = document.getElementById("surv-false-tab");
+        const falseModalTitle = document.getElementById("surv-false-title");
         const falseModalPppoeLabel = document.getElementById("surv-false-pppoe-label");
+        const falseModalBulkNote = document.getElementById("surv-false-bulk-note");
+        const falseModalBulkListWrap = document.getElementById("surv-false-bulk-list-wrap");
+        const falseModalBulkList = document.getElementById("surv-false-bulk-list");
+        const falseModalBulkCount = document.getElementById("surv-false-bulk-count");
         const falseModalRemarks = document.getElementById("surv-false-remarks");
-        const falseModal = falseModalEl && window.bootstrap?.Modal ? new window.bootstrap.Modal(falseModalEl) : null;
+        const getFalseModal = () => {
+          if (!falseModalEl || !window.bootstrap?.Modal) return null;
+          if (typeof window.bootstrap.Modal.getOrCreateInstance === "function") {
+            return window.bootstrap.Modal.getOrCreateInstance(falseModalEl);
+          }
+          return new window.bootstrap.Modal(falseModalEl);
+        };
+        const renderFalseModalAccounts = (accounts = []) => {
+          const isBulk = accounts.length > 1;
+          if (falseModalTitle) falseModalTitle.innerHTML = `<i class="ti ti-circle-x me-1 text-orange"></i>${isBulk ? "Mark Selected Accounts as False" : "Mark as False"}`;
+          if (falseModalBulkNote) falseModalBulkNote.classList.toggle("d-none", !isBulk);
+          if (falseModalBulkListWrap) falseModalBulkListWrap.classList.toggle("d-none", !isBulk);
+          if (falseModalBulkCount) falseModalBulkCount.textContent = `${accounts.length}`;
+          if (!falseModalBulkList) return;
+          falseModalBulkList.innerHTML = "";
+          if (!isBulk) return;
+          accounts.forEach((account) => {
+            const item = document.createElement("div");
+            item.className = "d-flex align-items-center gap-2 py-1 border-bottom";
+            const icon = document.createElement("i");
+            icon.className = "ti ti-user text-orange";
+            const text = document.createElement("span");
+            text.className = "text-break";
+            text.textContent = account;
+            item.appendChild(icon);
+            item.appendChild(text);
+            falseModalBulkList.appendChild(item);
+          });
+        };
         const openFalseModal = ({ pppoe = "", pppoes = [], tab = "under" } = {}) => {
-          if (!falseModal) return;
+          if (!falseModalEl) return;
           const list = Array.isArray(pppoes) ? pppoes.filter((v) => String(v || "").trim()).map((v) => String(v).trim()) : [];
           const normalizedTab = ["under", "level2", "observe"].includes((tab || "").trim().toLowerCase()) ? (tab || "").trim().toLowerCase() : "under";
           if (falseModalPppoe) falseModalPppoe.value = pppoe && list.length <= 1 ? String(pppoe).trim() : "";
@@ -3017,12 +3084,32 @@
           if (falseModalPppoeLabel) {
             falseModalPppoeLabel.textContent = list.length > 1 ? `${list.length} account(s) selected` : (pppoe || "—");
           }
+          renderFalseModalAccounts(list.length > 1 ? list : []);
           if (falseModalRemarks) falseModalRemarks.value = "";
-          falseModal.show();
+          const modal = getFalseModal();
+          if (modal) modal.show();
         };
         if (falseModalEl) {
           falseModalEl.addEventListener("show.bs.modal", (event) => {
             const trigger = event.relatedTarget;
+            const bulkTab = (trigger && trigger.getAttribute ? (trigger.getAttribute("data-surv-bulk-false-open") || "") : "").trim().toLowerCase();
+            if (bulkTab) {
+              const normalizedBulkTab = ["under", "level2", "observe"].includes(bulkTab) ? bulkTab : "under";
+              const selected = Array.from(document.querySelectorAll(`input[data-surv-select-item="${normalizedBulkTab}"]:checked`))
+                .map((cb) => String(cb.value || "").trim())
+                .filter(Boolean);
+              if (selected.length === 0) {
+                event.preventDefault();
+                return;
+              }
+              if (falseModalPppoe) falseModalPppoe.value = "";
+              if (falseModalPppoes) falseModalPppoes.value = JSON.stringify(selected);
+              if (falseModalTab) falseModalTab.value = normalizedBulkTab;
+              if (falseModalPppoeLabel) falseModalPppoeLabel.textContent = `${selected.length} account(s) selected`;
+              renderFalseModalAccounts(selected);
+              if (falseModalRemarks) falseModalRemarks.value = "";
+              return;
+            }
             const isSingle = !!(trigger && trigger.getAttribute && trigger.hasAttribute("data-surv-row-false-open"));
             if (!isSingle) return;
             const pppoeValue = (trigger.getAttribute("data-pppoe") || "").trim();
@@ -3036,6 +3123,7 @@
             if (falseModalPppoes) falseModalPppoes.value = "";
             if (falseModalTab) falseModalTab.value = tabValue;
             if (falseModalPppoeLabel) falseModalPppoeLabel.textContent = pppoeValue;
+            renderFalseModalAccounts([]);
             if (falseModalRemarks) falseModalRemarks.value = "";
           });
           falseModalEl.addEventListener("shown.bs.modal", () => {
@@ -3046,6 +3134,7 @@
             if (falseModalPppoes) falseModalPppoes.value = "";
             if (falseModalTab) falseModalTab.value = "under";
             if (falseModalPppoeLabel) falseModalPppoeLabel.textContent = "—";
+            renderFalseModalAccounts([]);
             if (falseModalRemarks) falseModalRemarks.value = "";
           });
         }
@@ -3488,10 +3577,13 @@
             const num = Number(value);
             return Number.isFinite(num) ? `${num.toFixed(2)} dBm` : "n/a";
           };
-          const actionBadge = (action) => {
+          const actionBadge = (action, note = "") => {
             const normalized = String(action || "").trim().toLowerCase();
             if (normalized === "healed") return '<span class="badge bg-green-lt text-green">Auto Healed</span>';
-            if (normalized === "false") return '<span class="badge bg-orange-lt text-orange">Marked False</span>';
+            if (normalized === "false") {
+              const isBulkFalse = String(note || "").includes("Select Multiple");
+              return `<span class="badge bg-orange-lt text-orange">${isBulkFalse ? "Marked False (Select Multiple)" : "Marked False"}</span>`;
+            }
             if (normalized === "fixed") return '<span class="badge bg-blue-lt text-blue">Fixed</span>';
             if (normalized === "recovered") return '<span class="badge bg-green-lt text-green">Fully Recovered</span>';
             return '<span class="badge bg-secondary-lt text-secondary">Removed</span>';
@@ -3647,7 +3739,7 @@
             setHistoryText("surv-history-detail-observe", session.observe_for_text || "0m");
             setHistoryText("surv-history-detail-note", session.end_note || "No note provided.");
             const actionEl = document.getElementById("surv-history-detail-action");
-            if (actionEl) actionEl.innerHTML = actionBadge(session.end_reason || "");
+            if (actionEl) actionEl.innerHTML = actionBadge(session.end_reason || "", session.end_note || "");
             const stageSummaryEl = document.getElementById("surv-history-stage-summary");
             if (stageSummaryEl) stageSummaryEl.innerHTML = renderStageSummaryCards(stages);
             const movementEl = document.getElementById("surv-history-movement");
@@ -6342,7 +6434,21 @@
 		        return out;
 		      };
 
+          const syncSelectedRowsFromDom = () => {
+            selectedRows.clear();
+            fullTable.querySelectorAll(`tbody tr.surv-row-full`).forEach((tr) => {
+              const cb = tr.querySelector(`input[data-surv-select-item="${key}"]`);
+              const checked = !!(cb && cb.checked);
+              tr.classList.toggle("table-active", checked);
+              if (checked) {
+                const p = (cb.value || "").trim();
+                if (p) selectedRows.add(p);
+              }
+            });
+          };
+
 			      const updateBulkUi = () => {
+              syncSelectedRowsFromDom();
 			        if (bulkInput) bulkInput.value = JSON.stringify(Array.from(selectedRows.values()));
 			        if (bulkBtn) {
 			          bulkBtn.disabled = selectedRows.size === 0;
@@ -6424,7 +6530,11 @@
 				      }
 
               if (bulkFalseBtn) {
-                bulkFalseBtn.addEventListener("click", () => {
+                bulkFalseBtn.addEventListener("click", (event) => {
+                  syncSelectedRowsFromDom();
+                  if (window.bootstrap?.Modal) return;
+                  event.preventDefault();
+                  event.stopPropagation();
                   if (selectedRows.size === 0) return;
                   openFalseModal({
                     pppoes: Array.from(selectedRows.values()),
@@ -6468,6 +6578,11 @@
                 fullTable.querySelectorAll(`[data-surv-row-recovered="${key}"]`).forEach((el) => {
                   el.classList.toggle("d-none", !!enabled);
                 });
+                if (key === "under") {
+                  fullTable.querySelectorAll(".surv-move-level2-btn").forEach((el) => {
+                    el.classList.toggle("d-none", !!enabled);
+                  });
+                }
 			        if (!enabled) {
 			          selectedRows.clear();
 			          fullTable.querySelectorAll(`input[data-surv-select-item="${key}"]`).forEach((cb) => {
@@ -6624,6 +6739,7 @@
     initTableSort("under");
     initTableSort("level2");
     initTableSort("observe");
+    applySurveillanceTableHoverTitles();
     scheduleUnderNewSeenAck();
 
   });
