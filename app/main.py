@@ -103,6 +103,8 @@ from .db import (
     init_db,
     insert_auth_audit_log,
     list_usage_modem_reboot_history,
+    list_usage_modem_reboot_account_stats,
+    list_usage_modem_reboot_history_for_account,
     list_auth_audit_logs,
     list_auth_permissions,
     list_auth_roles,
@@ -7487,6 +7489,137 @@ def _build_usage_summary_data(settings, state):
     return build_usage_summary_data_shared(settings, state)
 
 
+def _usage_account_key(router_id, pppoe):
+    return f"{(router_id or '').strip()}|{(pppoe or '').strip().lower()}"
+
+
+def _usage_status_rank(status):
+    ranks = {
+        "issue": 4,
+        "stable": 3,
+        "no_session": 2,
+        "history_only": 1,
+    }
+    return ranks.get((status or "").strip().lower(), 0)
+
+
+def _usage_status_label(status):
+    labels = {
+        "issue": "Usage Issue",
+        "stable": "Stable Usage",
+        "no_session": "No Active Session",
+        "history_only": "History Only",
+    }
+    return labels.get((status or "").strip().lower(), "Unknown")
+
+
+def _build_usage_accounts_rows(summary, reboot_stats=None):
+    summary = summary if isinstance(summary, dict) else {}
+    reboot_stats = reboot_stats if isinstance(reboot_stats, list) else []
+    accounts = {}
+
+    def _base_for(row, status):
+        row = row if isinstance(row, dict) else {}
+        pppoe = (row.get("pppoe") or "").strip()
+        if not pppoe:
+            return None, None
+        router_id = (row.get("router_id") or "").strip()
+        key = _usage_account_key(router_id, pppoe)
+        item = accounts.get(key)
+        if not item:
+            item = {
+                "entry_id": key,
+                "pppoe": pppoe,
+                "router_id": router_id,
+                "router_name": (row.get("router_name") or router_id or "").strip(),
+                "address": (row.get("address") or row.get("ip") or "").strip(),
+                "device_id": (row.get("device_id") or "").strip(),
+                "current_status": status,
+                "current_status_label": _usage_status_label(status),
+                "dl_bps": None,
+                "ul_bps": None,
+                "dl_total_bytes": None,
+                "ul_total_bytes": None,
+                "host_count": None,
+                "hostnames": [],
+                "last_seen": "",
+                "last_seen_ts": "",
+                "profile": (row.get("profile") or "").strip(),
+                "last_logged_out": (row.get("last_logged_out") or "").strip(),
+                "reboot_attempt_count": 0,
+                "reboot_success_count": 0,
+                "reboot_failed_count": 0,
+                "reboot_no_tr069_count": 0,
+                "reboot_verification_passed_count": 0,
+                "reboot_verification_failed_count": 0,
+                "last_reboot_at": "",
+                "last_reboot_at_ph": "",
+                "last_reboot_verified_at": "",
+                "last_reboot_verified_at_ph": "",
+                "last_reboot_status": "",
+                "last_reboot_verification_status": "",
+                "last_reboot_error": "",
+                "last_reboot_detail": "",
+            }
+            accounts[key] = item
+        if _usage_status_rank(status) > _usage_status_rank(item.get("current_status")):
+            item["current_status"] = status
+            item["current_status_label"] = _usage_status_label(status)
+        for field in ("router_name", "address", "device_id", "profile", "last_logged_out"):
+            value = (row.get(field) or "").strip() if isinstance(row.get(field), str) else row.get(field)
+            if value and not item.get(field):
+                item[field] = value
+        return key, item
+
+    def _merge_live(row, status):
+        _key, item = _base_for(row, status)
+        if not item:
+            return
+        if status in ("issue", "stable"):
+            item["dl_bps"] = row.get("dl_bps")
+            item["ul_bps"] = row.get("ul_bps")
+            item["dl_total_bytes"] = row.get("dl_total_bytes")
+            item["ul_total_bytes"] = row.get("ul_total_bytes")
+            item["host_count"] = row.get("host_count")
+            item["hostnames"] = row.get("hostnames") if isinstance(row.get("hostnames"), list) else []
+            item["last_seen"] = row.get("last_seen") or ""
+            item["last_seen_ts"] = row.get("last_seen_ts") or ""
+
+    for row in summary.get("issues") or []:
+        _merge_live(row, "issue")
+    for row in summary.get("stable") or []:
+        _merge_live(row, "stable")
+    for row in summary.get("offline_rows") or []:
+        _merge_live(row, "no_session")
+
+    for stat in reboot_stats:
+        _key, item = _base_for(stat, "history_only")
+        if not item:
+            continue
+        item["reboot_attempt_count"] = int(stat.get("attempt_count") or 0)
+        item["reboot_success_count"] = int(stat.get("success_count") or 0)
+        item["reboot_failed_count"] = int(stat.get("failed_count") or 0)
+        item["reboot_no_tr069_count"] = int(stat.get("no_tr069_count") or 0)
+        item["reboot_verification_passed_count"] = int(stat.get("verification_passed_count") or 0)
+        item["reboot_verification_failed_count"] = int(stat.get("verification_failed_count") or 0)
+        item["last_reboot_at"] = stat.get("latest_attempted_at") or ""
+        item["last_reboot_at_ph"] = format_ts_ph(stat.get("latest_attempted_at"))
+        item["last_reboot_verified_at"] = stat.get("latest_verified_at") or ""
+        item["last_reboot_verified_at_ph"] = format_ts_ph(stat.get("latest_verified_at"))
+        item["last_reboot_status"] = (stat.get("latest_status") or "").strip()
+        item["last_reboot_verification_status"] = (stat.get("latest_verification_status") or "").strip()
+        item["last_reboot_error"] = (stat.get("latest_error_message") or "").strip()
+        item["last_reboot_detail"] = (stat.get("latest_detail") or "").strip()
+
+    return sorted(
+        accounts.values(),
+        key=lambda item: (
+            str(item.get("pppoe") or "").lower(),
+            str(item.get("router_name") or item.get("router_id") or "").lower(),
+        ),
+    )
+
+
 @app.get("/usage/summary")
 async def usage_summary(request: Request):
     settings = get_settings("usage", USAGE_DEFAULTS)
@@ -7512,6 +7645,7 @@ async def usage_summary(request: Request):
     )
     reboot_history_rows = []
     reboot_history_count = 0
+    reboot_account_stats = list_usage_modem_reboot_account_stats() if can_view_reboot_history else []
     if reboot_settings.get("enabled") and can_view_reboot_history:
         reboot_history_count = count_usage_modem_reboot_history()
         for row in list_usage_modem_reboot_history(limit=250):
@@ -7519,6 +7653,7 @@ async def usage_summary(request: Request):
             item["attempted_at_ph"] = format_ts_ph(item.get("attempted_at"))
             item["verified_at_ph"] = format_ts_ph(item.get("verified_at"))
             reboot_history_rows.append(item)
+    account_rows = _build_usage_accounts_rows(summary, reboot_account_stats)
     return JSONResponse(
         {
             "updated_at": utc_now_iso(),
@@ -7537,12 +7672,14 @@ async def usage_summary(request: Request):
                 "stable": len(stable),
                 "offline": len(offline_rows),
                 "reboot_history": reboot_history_count,
+                "accounts": len(account_rows),
             },
             "rows": {
                 "issues": issues,
                 "stable": stable,
                 "offline": offline_rows,
                 "reboot_history": reboot_history_rows,
+                "accounts": account_rows,
             },
         }
     )
@@ -7612,6 +7749,89 @@ async def usage_series(pppoe: str, router_id: str = "", hours: int = 24):
                 if p.get("devices") is None:
                     p["devices"] = first_known
     return _json_no_store({"hours": hours, "points": len(series), "series": series})
+
+
+@app.get("/usage/account-detail", response_class=JSONResponse)
+async def usage_account_detail(pppoe: str, router_id: str = "", hours: int = 168):
+    pppoe_value = (pppoe or "").strip()
+    router_id_value = (router_id or "").strip()
+    if not pppoe_value:
+        return _json_no_store({"ok": False, "error": "Missing account."}, status_code=400)
+
+    settings = get_settings("usage", USAGE_DEFAULTS)
+    state = get_state("usage_state", {})
+    summary = _build_usage_summary_data(settings, state)
+    reboot_stats = list_usage_modem_reboot_account_stats()
+    accounts = _build_usage_accounts_rows(summary, reboot_stats)
+    account_key = _usage_account_key(router_id_value, pppoe_value)
+    account = next(
+        (row for row in accounts if _usage_account_key(row.get("router_id"), row.get("pppoe")) == account_key),
+        None,
+    )
+    if not account and not router_id_value:
+        account = next(
+            (row for row in accounts if (row.get("pppoe") or "").strip().lower() == pppoe_value.lower()),
+            None,
+        )
+
+    history_rows = list_usage_modem_reboot_history_for_account(pppoe_value, router_id=router_id_value, limit=250)
+    if not account and not history_rows:
+        return _json_no_store({"ok": False, "error": "Account not found."}, status_code=404)
+    if not account:
+        latest = history_rows[0] if history_rows else {}
+        account = {
+            "entry_id": _usage_account_key(router_id_value or latest.get("router_id"), pppoe_value),
+            "pppoe": pppoe_value,
+            "router_id": router_id_value or (latest.get("router_id") or ""),
+            "router_name": latest.get("router_name") or latest.get("router_id") or router_id_value or "",
+            "address": latest.get("address") or "",
+            "device_id": latest.get("device_id") or "",
+            "current_status": "history_only",
+            "current_status_label": _usage_status_label("history_only"),
+        }
+
+    history_payload = []
+    for row in history_rows:
+        item = dict(row or {})
+        item["attempted_at_ph"] = format_ts_ph(item.get("attempted_at"))
+        item["verified_at_ph"] = format_ts_ph(item.get("verified_at"))
+        history_payload.append(item)
+
+    try:
+        hours = max(min(int(hours or 168), 24 * 30), 1)
+    except Exception:
+        hours = 168
+    since_iso = (datetime.utcnow() - timedelta(hours=hours)).replace(microsecond=0).isoformat() + "Z"
+    series_rows = get_pppoe_usage_series_since(account.get("router_id") or router_id_value, pppoe_value, since_iso)
+    max_points = 1000
+    if len(series_rows) > max_points:
+        step = max(1, int(len(series_rows) / max_points))
+        sampled = series_rows[::step]
+        if series_rows and (not sampled or sampled[-1].get("timestamp") != series_rows[-1].get("timestamp")):
+            sampled.append(series_rows[-1])
+        series_rows = sampled
+    series_payload = [
+        {
+            "ts": row.get("timestamp"),
+            "dl_bps": row.get("tx_bps"),
+            "ul_bps": row.get("rx_bps"),
+            "dl_total_bytes": row.get("bytes_out"),
+            "ul_total_bytes": row.get("bytes_in"),
+            "devices": row.get("host_count"),
+        }
+        for row in series_rows
+        if row.get("timestamp")
+    ]
+
+    return _json_no_store(
+        {
+            "ok": True,
+            "account": account,
+            "history": history_payload,
+            "series": series_payload,
+            "hours": hours,
+        }
+    )
 
 
 @app.get("/offline/summary")
@@ -9505,6 +9725,12 @@ async def usage_settings(request: Request):
     }
     state = get_state("usage_state", {})
     usage_summary_data = _build_usage_summary_data(settings, state)
+    usage_account_count = len(
+        _build_usage_accounts_rows(
+            usage_summary_data,
+            list_usage_modem_reboot_account_stats() if can_view_reboot_history else [],
+        )
+    )
     wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
     router_state_rows = state.get("routers") if isinstance(state.get("routers"), list) else []
     router_state_map = {
@@ -9531,6 +9757,7 @@ async def usage_settings(request: Request):
                 "usage_counts": {
                     "issues": len(usage_summary_data.get("issues") or []),
                     "stable": len(usage_summary_data.get("stable") or []),
+                    "accounts": usage_account_count,
                     "reboot_history": count_usage_modem_reboot_history()
                     if normalize_usage_modem_reboot_settings(settings).get("enabled") and can_view_reboot_history
                     else 0,
@@ -9781,6 +10008,12 @@ async def usage_settings_save(request: Request):
     }
     state = get_state("usage_state", {})
     usage_summary_data = _build_usage_summary_data(settings, state)
+    usage_account_count = len(
+        _build_usage_accounts_rows(
+            usage_summary_data,
+            list_usage_modem_reboot_account_stats() if can_view_reboot_history else [],
+        )
+    )
     wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
     router_state_rows = state.get("routers") if isinstance(state.get("routers"), list) else []
     router_state_map = {
@@ -9806,6 +10039,7 @@ async def usage_settings_save(request: Request):
                 "usage_counts": {
                     "issues": len(usage_summary_data.get("issues") or []),
                     "stable": len(usage_summary_data.get("stable") or []),
+                    "accounts": usage_account_count,
                     "reboot_history": count_usage_modem_reboot_history()
                     if normalize_usage_modem_reboot_settings(settings).get("enabled") and can_view_reboot_history
                     else 0,
@@ -9856,6 +10090,20 @@ async def usage_test_genieacs(request: Request):
     }
     state = get_state("usage_state", {})
     usage_summary_data = _build_usage_summary_data(settings, state)
+    can_view_reboot_history = (
+        not bool(getattr(request.state, "auth_enabled", True))
+        or _auth_request_has_permission(request, "usage.status.reboot_history.view")
+    )
+    can_edit_modem_reboot = (
+        not bool(getattr(request.state, "auth_enabled", True))
+        or _auth_request_has_permission(request, "usage.settings.modem_reboot.edit")
+    )
+    usage_account_count = len(
+        _build_usage_accounts_rows(
+            usage_summary_data,
+            list_usage_modem_reboot_account_stats() if can_view_reboot_history else [],
+        )
+    )
     wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
     router_state_rows = state.get("routers") if isinstance(state.get("routers"), list) else []
     router_state_map = {
@@ -9881,23 +10129,15 @@ async def usage_test_genieacs(request: Request):
                 "usage_counts": {
                     "issues": len(usage_summary_data.get("issues") or []),
                     "stable": len(usage_summary_data.get("stable") or []),
+                    "accounts": usage_account_count,
                     "reboot_history": count_usage_modem_reboot_history()
                     if normalize_usage_modem_reboot_settings(settings).get("enabled")
-                    and (
-                        not bool(getattr(request.state, "auth_enabled", True))
-                        or _auth_request_has_permission(request, "usage.status.reboot_history.view")
-                    )
+                    and can_view_reboot_history
                     else 0,
                 },
                 "usage_new_view_seconds": _USAGE_NEW_VIEW_SECONDS,
-                "can_view_usage_reboot_history": (
-                    not bool(getattr(request.state, "auth_enabled", True))
-                    or _auth_request_has_permission(request, "usage.status.reboot_history.view")
-                ),
-                "can_edit_usage_modem_reboot": (
-                    not bool(getattr(request.state, "auth_enabled", True))
-                    or _auth_request_has_permission(request, "usage.settings.modem_reboot.edit")
-                ),
+                "can_view_usage_reboot_history": can_view_reboot_history,
+                "can_edit_usage_modem_reboot": can_edit_modem_reboot,
             },
         ),
     )

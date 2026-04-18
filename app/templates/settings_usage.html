@@ -115,6 +115,19 @@
     max-width: 100%;
   }
 
+  .usage-status-table .usage-action-btn {
+    width: 2.5rem;
+    height: 2.5rem;
+    min-width: 2.5rem;
+    padding: 0;
+    border-radius: 0.5rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.25rem;
+    line-height: 1;
+  }
+
   .usage-status-table .rto-sparkline {
     width: 96px;
     max-width: 100%;
@@ -229,6 +242,9 @@
 			            <a href="#usage-reboot-history" class="nav-link" data-bs-toggle="tab">Rebooted History <span class="badge bg-secondary-lt text-secondary ms-2" id="usage-reboot-history-tab-count">{{ usage_counts.reboot_history if usage_counts is defined else 0 }}</span></a>
 			          </li>
                 {% endif %}
+                <li class="nav-item">
+                  <a href="#usage-accounts" class="nav-link" data-bs-toggle="tab">Accounts <span class="badge bg-azure-lt text-azure ms-2" id="usage-accounts-tab-count">{{ usage_counts.accounts if usage_counts is defined else 0 }}</span></a>
+                </li>
 		            <li class="nav-item ms-auto">
 		              <div class="px-2 py-2">
                     <div class="input-icon" data-search-clearable>
@@ -364,6 +380,48 @@
               </div>
 	          </div>
             {% endif %}
+
+            <div class="tab-pane" id="usage-accounts">
+              <div class="rto-table-shell">
+                <div class="rto-table-wrap usage-status-table-wrap" id="usage-accounts-table">
+                  <table class="table table-vcenter rto-table usage-status-table">
+                    <thead>
+                      <tr>
+                        <th class="rto-tip rto-sort us-col-pppoe us-priority-0" data-table="accounts" data-sort-key="pppoe" aria-sort="none" title="PPPoE username (subscriber)." data-tip="PPPoE username (subscriber).">PPPoE <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                        <th class="rto-tip rto-sort us-col-router us-priority-1" data-table="accounts" data-sort-key="router_name" aria-sort="none" title="MikroTik router name." data-tip="MikroTik router name.">Router <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                        <th class="rto-tip rto-sort us-priority-0" data-table="accounts" data-sort-key="current_status_label" aria-sort="none" title="Current usage state." data-tip="Current usage state.">Current <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                        <th class="rto-tip rto-sort text-end us-col-dl-rate us-priority-2" data-table="accounts" data-sort-key="dl_bps" aria-sort="none" title="Latest download rate." data-tip="Latest download rate.">DL Rate <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                        <th class="rto-tip rto-sort text-end us-col-ul-rate us-priority-3" data-table="accounts" data-sort-key="ul_bps" aria-sort="none" title="Latest upload rate." data-tip="Latest upload rate.">UL Rate <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                        <th class="rto-tip rto-sort text-end us-priority-4" data-table="accounts" data-sort-key="reboot_success_count" aria-sort="none" title="Successful modem reboot count." data-tip="Successful modem reboot count.">Successful Reboots <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                        <th class="rto-tip rto-sort text-end us-priority-5" data-table="accounts" data-sort-key="reboot_failed_count" aria-sort="none" title="Failed modem reboot count." data-tip="Failed modem reboot count.">Failed <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                        <th class="rto-tip rto-sort us-priority-6" data-table="accounts" data-sort-key="last_reboot_at" aria-sort="none" title="Latest reboot attempt." data-tip="Latest reboot attempt.">Last Reboot <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                        <th class="rto-tip rto-sort us-col-last-seen us-priority-5" data-table="accounts" data-sort-key="last_seen_ts" aria-sort="none" title="Latest usage sample timestamp." data-tip="Latest usage sample timestamp.">Last Seen <span class="rto-sort-indicator" aria-hidden="true"></span></th>
+                        <th class="text-end us-col-actions us-priority-0">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody id="usage-accounts-body">
+                      <tr><td colspan="10" class="text-muted">Loading…</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div class="rto-resize-handle" data-target="usage-accounts-table"></div>
+                <div class="d-flex flex-wrap align-items-center justify-content-between mt-2 gap-2" id="usage-accounts-pagination">
+                  <div class="text-muted small" id="usage-accounts-range-info">Showing 0–0 of 0</div>
+                  <div class="d-flex align-items-center gap-2" id="usage-accounts-page-nav">
+                    <span class="text-muted small" id="usage-accounts-page-info">Page 1 of 1</span>
+                    <ul class="pagination pagination-sm mb-0">
+                      <li class="page-item" id="usage-accounts-prev-item">
+                        <a class="page-link" href="#" id="usage-accounts-prev">Prev</a>
+                      </li>
+                      <li class="page-item" id="usage-accounts-next-item">
+                        <a class="page-link" href="#" id="usage-accounts-next">Next</a>
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+                <div class="text-muted small mt-2">Accounts lists every account currently known to Usage detection, plus reboot counts and latest usage state per router.</div>
+              </div>
+            </div>
 
 		        </div>
 		      </div>
@@ -801,6 +859,23 @@
   </div>
 </div>
 
+<div class="modal modal-blur fade" id="usage-account-detail-modal" tabindex="-1" role="dialog" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div>
+          <h5 class="modal-title" id="usage-account-detail-title">Usage Account Details</h5>
+          <div class="text-muted small" id="usage-account-detail-subtitle">Loading…</div>
+        </div>
+        <button type="button" class="btn-close ms-2" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body" id="usage-account-detail-body">
+        <div class="text-muted small">Loading…</div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="modal modal-blur fade" id="usage-spark-modal" tabindex="-1" role="dialog" aria-hidden="true">
   <div class="modal-dialog modal-lg modal-dialog-centered" role="document">
     <div class="modal-content">
@@ -866,8 +941,17 @@
       return `${size.toFixed(2)} ${units[idx]}`;
     };
 
+    const fmtBpsNullable = (value) => (
+      value === null || value === undefined || value === "" ? "n/a" : fmtBps(value)
+    );
+
+    const fmtBytesNullable = (value) => (
+      value === null || value === undefined || value === "" ? "n/a" : fmtBytes(value)
+    );
+
 	    const issuesBody = document.getElementById("usage-issues-body");
 	    const stableBody = document.getElementById("usage-stable-body");
+    const accountsBody = document.getElementById("usage-accounts-body");
     const rebootHistoryBody = document.getElementById("usage-reboot-history-body");
     const issuesPaginationEl = document.getElementById("usage-issues-pagination");
     const issuesRangeInfoEl = document.getElementById("usage-issues-range-info");
@@ -885,6 +969,14 @@
     const stablePrevBtn = document.getElementById("usage-stable-prev");
     const stableNextItemEl = document.getElementById("usage-stable-next-item");
     const stableNextBtn = document.getElementById("usage-stable-next");
+    const accountsPaginationEl = document.getElementById("usage-accounts-pagination");
+    const accountsRangeInfoEl = document.getElementById("usage-accounts-range-info");
+    const accountsPageInfoEl = document.getElementById("usage-accounts-page-info");
+    const accountsPageNavEl = document.getElementById("usage-accounts-page-nav");
+    const accountsPrevItemEl = document.getElementById("usage-accounts-prev-item");
+    const accountsPrevBtn = document.getElementById("usage-accounts-prev");
+    const accountsNextItemEl = document.getElementById("usage-accounts-next-item");
+    const accountsNextBtn = document.getElementById("usage-accounts-next");
     const rebootHistoryPaginationEl = document.getElementById("usage-reboot-history-pagination");
     const rebootHistoryRangeInfoEl = document.getElementById("usage-reboot-history-range-info");
     const rebootHistoryPageInfoEl = document.getElementById("usage-reboot-history-page-info");
@@ -898,6 +990,7 @@
 	    const stableCount = document.getElementById("usage-stable-count");
     const issuesTabCount = document.getElementById("usage-issues-tab-count");
     const stableTabCount = document.getElementById("usage-stable-tab-count");
+    const accountsTabCount = document.getElementById("usage-accounts-tab-count");
     const rebootHistoryTabCount = document.getElementById("usage-reboot-history-tab-count");
 	    const peakBadge = document.getElementById("usage-peak-badge");
 	    const lastCheck = document.getElementById("usage-last-check");
@@ -918,16 +1011,18 @@
 	    const statusTabKey = "usage_status_active_tab_v1";
     const pageStateKey = "usage_status_pages_v1";
 
-		    const numericKeys = new Set(["dl_bps", "ul_bps", "dl_total_bytes", "ul_total_bytes", "host_count"]);
+		    const numericKeys = new Set(["dl_bps", "ul_bps", "dl_total_bytes", "ul_total_bytes", "host_count", "reboot_success_count", "reboot_attempt_count", "reboot_failed_count", "reboot_no_tr069_count"]);
 		    const booleanKeys = new Set([]);
 
 		    let issuesData = [];
 		    let stableData = [];
+    let accountsData = [];
     let rebootHistoryData = [];
-    let tablePages = { issues: 1, stable: 1, reboot_history: 1 };
+    let tablePages = { issues: 1, stable: 1, accounts: 1, reboot_history: 1 };
     let tablePagination = {
       issues: { page: 1, pages: 1, total: 0, has_prev: false, has_next: false },
       stable: { page: 1, pages: 1, total: 0, has_prev: false, has_next: false },
+      accounts: { page: 1, pages: 1, total: 0, has_prev: false, has_next: false },
       reboot_history: { page: 1, pages: 1, total: 0, has_prev: false, has_next: false },
     };
     let usageNewSeenTimer = null;
@@ -1025,6 +1120,10 @@
     }
 
     let sortState = loadSortState();
+    if (!sortState.accounts) {
+      sortState = { ...sortState, accounts: { key: "pppoe", dir: "asc" } };
+      saveSortState(sortState);
+    }
     if (!sortState.reboot_history) {
       sortState = { ...sortState, reboot_history: { key: "attempted_at", dir: "desc" } };
       saveSortState(sortState);
@@ -1139,6 +1238,7 @@
       tablePages = {
         issues: Math.max(Number(storedPages.issues || 1) || 1, 1),
         stable: Math.max(Number(storedPages.stable || 1) || 1, 1),
+        accounts: Math.max(Number(storedPages.accounts || 1) || 1, 1),
         reboot_history: Math.max(Number(storedPages.reboot_history || 1) || 1, 1),
       };
     }
@@ -1148,7 +1248,7 @@
     }
 
     function resetTablePages() {
-      tablePages = { issues: 1, stable: 1, reboot_history: 1 };
+      tablePages = { issues: 1, stable: 1, accounts: 1, reboot_history: 1 };
       saveTablePages();
     }
 
@@ -1191,6 +1291,15 @@
         if (stablePageNavEl) stablePageNavEl.classList.toggle("d-none", meta.pages <= 1);
         if (stablePrevItemEl) stablePrevItemEl.classList.toggle("disabled", !meta.has_prev);
         if (stableNextItemEl) stableNextItemEl.classList.toggle("disabled", !meta.has_next);
+        return;
+      }
+      if (tableKey === "accounts") {
+        if (accountsPaginationEl) accountsPaginationEl.classList.toggle("d-none", meta.total <= 0);
+        if (accountsRangeInfoEl) accountsRangeInfoEl.textContent = `Showing ${meta.start || 0}–${meta.end || 0} of ${meta.total || 0}`;
+        if (accountsPageInfoEl) accountsPageInfoEl.textContent = `Page ${meta.page} of ${meta.pages}`;
+        if (accountsPageNavEl) accountsPageNavEl.classList.toggle("d-none", meta.pages <= 1);
+        if (accountsPrevItemEl) accountsPrevItemEl.classList.toggle("disabled", !meta.has_prev);
+        if (accountsNextItemEl) accountsNextItemEl.classList.toggle("disabled", !meta.has_next);
         return;
       }
       if (rebootHistoryPaginationEl) rebootHistoryPaginationEl.classList.toggle("d-none", meta.total <= 0);
@@ -1249,7 +1358,7 @@
     function renderProfileReviewAction(item) {
       if (!canProfileReview) return "";
       const href = buildProfileReviewHref(item);
-      return `<a class="badge bg-azure-lt text-azure header-icon-badge" href="${esc(href)}" target="_blank" rel="noopener" title="Profile Review" aria-label="Profile Review"><i class="ti ti-user"></i></a>`;
+      return `<a class="usage-action-btn bg-azure-lt text-azure text-decoration-none" href="${esc(href)}" target="_blank" rel="noopener" title="Profile Review" aria-label="Profile Review"><i class="ti ti-user"></i></a>`;
     }
 
     function rowMatchesRouters(row) {
@@ -1277,6 +1386,25 @@
             .map((x) => String(x).toLowerCase())
             .some((x) => x.includes(q));
         }
+        if (table === "accounts") {
+          return [
+            row?.pppoe,
+            row?.router_name,
+            row?.router_id,
+            row?.address,
+            row?.device_id,
+            row?.current_status_label,
+            row?.last_seen,
+            row?.last_reboot_at_ph,
+            row?.last_reboot_status,
+            row?.last_reboot_verification_status,
+            row?.last_reboot_error,
+            row?.last_reboot_detail,
+          ]
+            .filter((x) => x !== null && x !== undefined)
+            .map((x) => String(x).toLowerCase())
+            .some((x) => x.includes(q));
+        }
 	      const hay = [];
 	      hay.push(row?.pppoe, row?.router_name, row?.router_id, row?.address, row?.last_seen);
 	      const names = Array.isArray(row?.hostnames) ? row.hostnames : [];
@@ -1292,7 +1420,7 @@
     }
 
 	    function uniqueRoutersFromData() {
-	      const all = [...issuesData, ...stableData, ...rebootHistoryData];
+	      const all = [...issuesData, ...stableData, ...accountsData, ...rebootHistoryData];
 	      const set = new Set();
 	      all.forEach((row) => {
 	        const r = getRowRouterName(row);
@@ -1424,6 +1552,67 @@
         }
         acknowledgeUsageNewEntries();
       }, delayMs);
+    }
+
+    function usageStatusBadge(row) {
+      const status = String(row?.current_status || "").trim().toLowerCase();
+      if (status === "issue") return '<span class="badge bg-red-lt text-red">Usage Issue</span>';
+      if (status === "stable") return '<span class="badge bg-green-lt text-green">Stable</span>';
+      if (status === "no_session") return '<span class="badge bg-secondary-lt text-secondary">No Active Session</span>';
+      return '<span class="badge bg-secondary-lt text-secondary">History Only</span>';
+    }
+
+    function renderUsageAccountDetailAction(item) {
+      const pppoe = String(item?.pppoe || "").trim();
+      if (!pppoe) return "";
+      const routerId = String(item?.router_id || "").trim();
+      return `
+        <button
+          type="button"
+          class="usage-action-btn bg-secondary-lt text-secondary border-0"
+          data-usage-account-detail-view="1"
+          data-pppoe="${esc(pppoe)}"
+          data-router-id="${esc(routerId)}"
+          data-bs-toggle="modal"
+          data-bs-target="#usage-account-detail-modal"
+          title="View Usage Details"
+          aria-label="View Usage Details"
+        >
+          <i class="ti ti-eye"></i>
+        </button>
+      `;
+    }
+
+    function renderAccountsRow(row) {
+      const detailAction = renderUsageAccountDetailAction(row);
+      const profileAction = renderProfileReviewAction({ pppoe: row?.pppoe, address: row?.address, device_id: row?.device_id });
+      const successCount = Number(row?.reboot_success_count || 0) || 0;
+      const failedCount = Number(row?.reboot_failed_count || 0) || 0;
+      const successBadge = successCount > 0
+        ? `<span class="badge bg-azure-lt text-azure">${successCount}</span>`
+        : '<span class="badge bg-secondary-lt">0</span>';
+      const failedBadge = failedCount > 0
+        ? `<span class="badge bg-red-lt text-red">${failedCount}</span>`
+        : '<span class="badge bg-secondary-lt">0</span>';
+      const lastRebootTitle = [
+        row?.last_reboot_status ? `Status: ${row.last_reboot_status}` : "",
+        row?.last_reboot_verification_status ? `Verification: ${row.last_reboot_verification_status}` : "",
+        row?.last_reboot_error || row?.last_reboot_detail || "",
+      ].filter(Boolean).join(" · ");
+      return `
+        <tr>
+          <td class="us-col-pppoe us-priority-0"><span class="usage-status-label" title="${esc(row?.pppoe || "")}">${esc(row?.pppoe || "")}</span></td>
+          <td class="us-col-router us-priority-1"><span class="usage-status-cell-truncate" title="${esc(row?.router_name || row?.router_id || "")}">${esc(row?.router_name || row?.router_id || "")}</span></td>
+          <td class="us-priority-0">${usageStatusBadge(row)}</td>
+          <td class="text-end us-col-dl-rate us-priority-2">${esc(fmtBpsNullable(row?.dl_bps))}</td>
+          <td class="text-end us-col-ul-rate us-priority-3">${esc(fmtBpsNullable(row?.ul_bps))}</td>
+          <td class="text-end us-priority-4">${successBadge}</td>
+          <td class="text-end us-priority-5">${failedBadge}</td>
+          <td class="us-priority-6"><span class="usage-status-cell-truncate" title="${esc(lastRebootTitle || row?.last_reboot_at_ph || "n/a")}">${esc(row?.last_reboot_at_ph || "n/a")}</span></td>
+          <td class="us-col-last-seen us-priority-5"><span class="usage-status-cell-truncate" title="${esc(row?.last_seen || "n/a")}">${esc(row?.last_seen || "n/a")}</span></td>
+          <td class="text-end us-col-actions us-priority-0"><span class="us-actions">${detailAction}${profileAction}</span></td>
+        </tr>
+      `;
     }
 
 	    function renderActiveRow(row) {
@@ -1580,6 +1769,7 @@
 	        stableCount.textContent = `Stable: ${counts.stable || 0}`;
         if (issuesTabCount) issuesTabCount.textContent = String(counts.issues || 0);
         if (stableTabCount) stableTabCount.textContent = String(counts.stable || 0);
+        if (accountsTabCount) accountsTabCount.textContent = String(counts.accounts || 0);
         if (rebootHistoryTabCount) rebootHistoryTabCount.textContent = String(counts.reboot_history || 0);
 
         const peak = data.peak || {};
@@ -1594,6 +1784,7 @@
 	        const rows = data.rows || {};
 	        issuesData = Array.isArray(rows.issues) ? rows.issues : [];
 	        stableData = Array.isArray(rows.stable) ? rows.stable : [];
+        accountsData = Array.isArray(rows.accounts) ? rows.accounts : [];
         rebootHistoryData = Array.isArray(rows.reboot_history) ? rows.reboot_history : [];
 	        updateTrendCacheFromLive([...issuesData, ...stableData]);
 	        renderRouterFilterMenu();
@@ -1601,17 +1792,27 @@
 	      } catch (err) {
 	        issuesBody.innerHTML = '<tr><td colspan="10" class="text-danger">Failed to load usage summary.</td></tr>';
         stableBody.innerHTML = '<tr><td colspan="10" class="text-danger">Failed to load usage summary.</td></tr>';
+        if (accountsBody) accountsBody.innerHTML = '<tr><td colspan="10" class="text-danger">Failed to load usage accounts.</td></tr>';
         if (rebootHistoryBody) rebootHistoryBody.innerHTML = '<tr><td colspan="8" class="text-danger">Failed to load reboot history.</td></tr>';
 	      }
 	    }
 
     const usageStatusHashes = ["#usage-issues", "#usage-stable"];
     if (document.getElementById("usage-reboot-history")) usageStatusHashes.push("#usage-reboot-history");
+    usageStatusHashes.push("#usage-accounts");
     const usageStatusPanes = {
       "#usage-issues": document.getElementById("usage-issues"),
       "#usage-stable": document.getElementById("usage-stable"),
+      "#usage-accounts": document.getElementById("usage-accounts"),
       "#usage-reboot-history": document.getElementById("usage-reboot-history"),
     };
+
+    function usageTableKeyForHash(hash) {
+      if (hash === "#usage-stable") return "stable";
+      if (hash === "#usage-accounts") return "accounts";
+      if (hash === "#usage-reboot-history") return "reboot_history";
+      return "issues";
+    }
 
     function applyUsageStatusTabState(hash) {
       if (!usageStatusHashes.includes(hash)) return;
@@ -1651,13 +1852,13 @@
       order.forEach((hash) => {
         const link = document.querySelector(`#usage-status a[href="${hash}"]`);
         if (!link) return;
-        const key = hash === "#usage-stable" ? "stable" : (hash === "#usage-reboot-history" ? "reboot_history" : "issues");
+        const key = usageTableKeyForHash(hash);
         const hasMatch = Number(matchCounts?.[key] || 0) > 0;
         link.classList.toggle("threej-search-hit-tab", hasSearch && hasMatch);
       });
       if (!hasSearch) return;
       const matched = order.filter((hash) => {
-        const key = hash === "#usage-stable" ? "stable" : (hash === "#usage-reboot-history" ? "reboot_history" : "issues");
+        const key = usageTableKeyForHash(hash);
         return Number(matchCounts?.[key] || 0) > 0;
       });
       const activeLink = usageStatusHashes
@@ -1672,28 +1873,37 @@
 	    function renderAllTables(forceSearchFocus = false) {
 	      const filteredIssues = sortRows(filterRows(issuesData, "issues"), "issues");
 	      const filteredStable = sortRows(filterRows(stableData, "stable"), "stable");
+        const filteredAccounts = sortRows(filterRows(accountsData, "accounts"), "accounts");
         const filteredHistory = sortRows(filterRows(rebootHistoryData, "reboot_history"), "reboot_history");
         syncUsageSearchTabs(
-          { issues: filteredIssues.length, stable: filteredStable.length, reboot_history: filteredHistory.length },
+          { issues: filteredIssues.length, stable: filteredStable.length, accounts: filteredAccounts.length, reboot_history: filteredHistory.length },
           forceSearchFocus,
         );
 	      const pagedIssues = paginateRows(filteredIssues, tablePages.issues);
 	      const pagedStable = paginateRows(filteredStable, tablePages.stable);
+        const pagedAccounts = paginateRows(filteredAccounts, tablePages.accounts);
         const pagedHistory = paginateRows(filteredHistory, tablePages.reboot_history);
         tablePagination = {
           issues: pagedIssues.meta,
           stable: pagedStable.meta,
+          accounts: pagedAccounts.meta,
           reboot_history: pagedHistory.meta,
         };
         tablePages = {
           issues: pagedIssues.meta.page,
           stable: pagedStable.meta.page,
+          accounts: pagedAccounts.meta.page,
           reboot_history: pagedHistory.meta.page,
         };
         saveTablePages();
 
 	      issuesBody.innerHTML = pagedIssues.rows.length ? pagedIssues.rows.map(renderActiveRow).join("") : '<tr><td colspan="10" class="text-muted">No usage issues detected yet.</td></tr>';
 	      stableBody.innerHTML = pagedStable.rows.length ? pagedStable.rows.map(renderActiveRow).join("") : '<tr><td colspan="10" class="text-muted">No stable usage rows yet.</td></tr>';
+        if (accountsBody) {
+          accountsBody.innerHTML = pagedAccounts.rows.length
+            ? pagedAccounts.rows.map(renderAccountsRow).join("")
+            : '<tr><td colspan="10" class="text-muted">No usage accounts found.</td></tr>';
+        }
         if (rebootHistoryBody) {
           rebootHistoryBody.innerHTML = pagedHistory.rows.length
             ? pagedHistory.rows.map(renderRebootHistoryRow).join("")
@@ -1703,6 +1913,7 @@
 	      initDeviceClickcards();
 	      renderPaginationControls("issues");
 	      renderPaginationControls("stable");
+        if (accountsBody) renderPaginationControls("accounts");
         if (rebootHistoryBody) renderPaginationControls("reboot_history");
 	      updateSortIndicators();
         scheduleUsageNewSeenAck();
@@ -2038,6 +2249,286 @@
       });
     });
 
+    const accountDetailModalEl = document.getElementById("usage-account-detail-modal");
+    const accountDetailBodyEl = document.getElementById("usage-account-detail-body");
+    const accountDetailTitleEl = document.getElementById("usage-account-detail-title");
+    const accountDetailSubtitleEl = document.getElementById("usage-account-detail-subtitle");
+    let accountDetailChart = null;
+
+    if (accountDetailModalEl && accountDetailModalEl.parentElement !== document.body) {
+      document.body.appendChild(accountDetailModalEl);
+    }
+
+    function destroyUsageAccountDetailChart() {
+      if (accountDetailChart && typeof accountDetailChart.destroy === "function") {
+        try { accountDetailChart.destroy(); } catch {}
+      }
+      accountDetailChart = null;
+    }
+
+    function showUsageAccountDetailModal() {
+      if (!accountDetailModalEl) return;
+      if (window.bootstrap?.Modal) {
+        window.bootstrap.Modal.getOrCreateInstance(accountDetailModalEl).show();
+        return;
+      }
+      accountDetailModalEl.classList.add("show");
+      accountDetailModalEl.style.display = "block";
+      accountDetailModalEl.removeAttribute("aria-hidden");
+      accountDetailModalEl.setAttribute("aria-modal", "true");
+      document.body.classList.add("modal-open");
+    }
+
+    function rebootStatusBadge(status) {
+      const value = String(status || "").trim().toLowerCase();
+      if (value === "success") return '<span class="badge bg-azure-lt text-azure">Rebooted</span>';
+      if (value === "failed") return '<span class="badge bg-red-lt text-red">Failed</span>';
+      if (value === "no_tr069") return '<span class="badge bg-red-lt text-red">No TR-069</span>';
+      return value ? `<span class="badge bg-secondary-lt text-secondary">${esc(value)}</span>` : '<span class="badge bg-secondary-lt text-secondary">n/a</span>';
+    }
+
+    function verificationBadge(status) {
+      const value = String(status || "").trim().toLowerCase();
+      if (value === "passed") return '<span class="badge bg-green-lt text-green">Recovered</span>';
+      if (value === "failed") return '<span class="badge bg-red-lt text-red">Still Issue</span>';
+      if (value === "pending") return '<span class="badge bg-yellow-lt text-yellow">Pending</span>';
+      return '<span class="badge bg-secondary-lt text-secondary">n/a</span>';
+    }
+
+    function renderUsageAccountDetailHistoryRows(history) {
+      const rows = Array.isArray(history) ? history.slice(0, 50) : [];
+      if (!rows.length) {
+        return '<tr><td colspan="6" class="text-muted">No modem reboot history recorded for this account yet.</td></tr>';
+      }
+      return rows.map((row) => {
+        const detail = String(row?.error_message || row?.detail || "").trim();
+        const retryIndex = Number(row?.retry_index || 0) || 0;
+        const retryLimit = Number(row?.retry_limit || 0) || 0;
+        return `
+          <tr>
+            <td class="text-muted"><span class="usage-status-cell-truncate" title="${esc(row?.attempted_at_ph || "n/a")}">${esc(row?.attempted_at_ph || "n/a")}</span></td>
+            <td>${rebootStatusBadge(row?.status)}</td>
+            <td>${verificationBadge(row?.verification_status)}</td>
+            <td class="text-muted">${esc(`Attempt ${retryIndex}/${retryLimit || retryIndex}`)}</td>
+            <td class="text-muted"><span class="usage-status-cell-truncate" title="${esc(row?.device_id || "n/a")}">${esc(row?.device_id || "n/a")}</span></td>
+            <td class="text-muted"><span class="usage-status-cell-truncate" title="${esc(detail || "n/a")}">${esc(detail || "n/a")}</span></td>
+          </tr>
+        `;
+      }).join("");
+    }
+
+    function renderUsageAccountDetailChart(payload) {
+      destroyUsageAccountDetailChart();
+      const chartEl = document.getElementById("usage-account-detail-chart");
+      const emptyEl = document.getElementById("usage-account-detail-chart-empty");
+      if (!chartEl || !emptyEl || typeof ApexCharts === "undefined") return;
+      const seriesRaw = Array.isArray(payload?.series) ? payload.series : [];
+      const toPoint = (row, key) => {
+        const ts = Date.parse(String(row?.ts || ""));
+        if (!Number.isFinite(ts)) return null;
+        const value = row?.[key];
+        const num = Number(value);
+        return { x: ts, y: Number.isFinite(num) ? num : null };
+      };
+      const dl = seriesRaw.map((row) => toPoint(row, "dl_bps")).filter(Boolean);
+      const ul = seriesRaw.map((row) => toPoint(row, "ul_bps")).filter(Boolean);
+      if (!dl.length && !ul.length) {
+        chartEl.classList.add("d-none");
+        emptyEl.classList.remove("d-none");
+        return;
+      }
+      chartEl.classList.remove("d-none");
+      emptyEl.classList.add("d-none");
+      accountDetailChart = new ApexCharts(chartEl, {
+        chart: {
+          type: "line",
+          height: 300,
+          zoom: { enabled: true, type: "x", autoScaleYaxis: true },
+          toolbar: {
+            show: true,
+            tools: {
+              download: false,
+              selection: true,
+              zoom: true,
+              zoomin: true,
+              zoomout: true,
+              pan: true,
+              reset: true,
+            },
+          },
+          animations: { enabled: false },
+        },
+        stroke: { width: 2, curve: "smooth" },
+        markers: { size: 0 },
+        series: [
+          { name: "DL", data: dl },
+          { name: "UL", data: ul },
+        ],
+        xaxis: {
+          type: "datetime",
+          labels: { datetimeUTC: false },
+        },
+        yaxis: {
+          labels: { formatter: (value) => fmtBps(value) },
+        },
+        tooltip: {
+          shared: true,
+          intersect: false,
+          x: { format: "yyyy-MM-dd HH:mm" },
+          y: { formatter: (value) => fmtBps(value) },
+        },
+        colors: ["#206bc4", "#2fb344"],
+        grid: { strokeDashArray: 3 },
+      });
+      accountDetailChart.render();
+    }
+
+    function renderUsageAccountDetail(payload) {
+      const account = payload?.account && typeof payload.account === "object" ? payload.account : {};
+      const history = Array.isArray(payload?.history) ? payload.history : [];
+      const successCount = Number(account.reboot_success_count || 0) || 0;
+      const attemptCount = Number(account.reboot_attempt_count || 0) || 0;
+      const failedCount = Number(account.reboot_failed_count || 0) || 0;
+      const hostCount = account.host_count === null || account.host_count === undefined ? "n/a" : account.host_count;
+      const latestDetail = String(account.last_reboot_error || account.last_reboot_detail || "").trim();
+      return `
+        <div class="row g-3 mb-3">
+          <div class="col-md-3 col-sm-6">
+            <div class="card">
+              <div class="card-body">
+                <div class="text-muted small">Current Usage State</div>
+                <div class="mt-2">${usageStatusBadge(account)}</div>
+                <div class="text-muted small mt-2">${esc(account.last_seen ? `Last seen ${account.last_seen}` : "No current usage sample.")}</div>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-3 col-sm-6">
+            <div class="card">
+              <div class="card-body">
+                <div class="text-muted small">Successful Reboots</div>
+                <div class="fs-2 fw-semibold mt-1">${esc(successCount)}</div>
+                <div class="text-muted small">Total attempts: ${esc(attemptCount)}</div>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-3 col-sm-6">
+            <div class="card">
+              <div class="card-body">
+                <div class="text-muted small">Failed / No TR-069</div>
+                <div class="fs-2 fw-semibold mt-1">${esc(failedCount)}</div>
+                <div class="text-muted small">No TR-069: ${esc(account.reboot_no_tr069_count || 0)}</div>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-3 col-sm-6">
+            <div class="card">
+              <div class="card-body">
+                <div class="text-muted small">Connected Devices</div>
+                <div class="fs-2 fw-semibold mt-1">${esc(hostCount)}</div>
+                <div class="text-muted small">Current router session count</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="row g-3 mb-3">
+          <div class="col-lg-5">
+            <div class="card h-100">
+              <div class="card-body">
+                <h4 class="mb-3">Account Summary</h4>
+                <div class="datagrid">
+                  <div class="datagrid-item"><div class="datagrid-title">PPPoE</div><div class="datagrid-content">${esc(account.pppoe || "n/a")}</div></div>
+                  <div class="datagrid-item"><div class="datagrid-title">Router</div><div class="datagrid-content">${esc(account.router_name || account.router_id || "n/a")}</div></div>
+                  <div class="datagrid-item"><div class="datagrid-title">Address</div><div class="datagrid-content">${esc(account.address || "n/a")}</div></div>
+                  <div class="datagrid-item"><div class="datagrid-title">TR-069 Device</div><div class="datagrid-content">${esc(account.device_id || "n/a")}</div></div>
+                  <div class="datagrid-item"><div class="datagrid-title">DL Rate</div><div class="datagrid-content">${esc(fmtBpsNullable(account.dl_bps))}</div></div>
+                  <div class="datagrid-item"><div class="datagrid-title">UL Rate</div><div class="datagrid-content">${esc(fmtBpsNullable(account.ul_bps))}</div></div>
+                  <div class="datagrid-item"><div class="datagrid-title">DL Total</div><div class="datagrid-content">${esc(fmtBytesNullable(account.dl_total_bytes))}</div></div>
+                  <div class="datagrid-item"><div class="datagrid-title">UL Total</div><div class="datagrid-content">${esc(fmtBytesNullable(account.ul_total_bytes))}</div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="col-lg-7">
+            <div class="card h-100">
+              <div class="card-body">
+                <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
+                  <h4 class="mb-0">Usage Timeline</h4>
+                  <span class="badge bg-secondary-lt">${esc(payload?.hours || 168)}h</span>
+                </div>
+                <div id="usage-account-detail-chart"></div>
+                <div class="text-muted small d-none" id="usage-account-detail-chart-empty">No stored usage samples found for this account in the selected window.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-body">
+            <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+              <div>
+                <h4 class="mb-1">Modem Reboot History</h4>
+                <div class="text-muted small">Latest attempt: ${esc(account.last_reboot_at_ph || "n/a")}${latestDetail ? ` · ${esc(latestDetail)}` : ""}</div>
+              </div>
+              <div class="d-flex flex-wrap gap-2">${rebootStatusBadge(account.last_reboot_status)}${verificationBadge(account.last_reboot_verification_status)}</div>
+            </div>
+            <div class="table-responsive" style="max-height: 360px; overflow:auto;">
+              <table class="table table-sm table-vcenter mb-0">
+                <thead>
+                  <tr>
+                    <th>Attempted</th>
+                    <th>Status</th>
+                    <th>Verification</th>
+                    <th>Retry</th>
+                    <th>Device</th>
+                    <th>Details</th>
+                  </tr>
+                </thead>
+                <tbody>${renderUsageAccountDetailHistoryRows(history)}</tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    async function openUsageAccountDetail(item) {
+      const pppoe = String(item?.pppoe || "").trim();
+      if (!pppoe || !accountDetailBodyEl) return;
+      const routerId = String(item?.router_id || "").trim();
+      if (accountDetailTitleEl) accountDetailTitleEl.textContent = `Usage Account · ${pppoe}`;
+      if (accountDetailSubtitleEl) accountDetailSubtitleEl.textContent = routerId ? `Router: ${routerId}` : "Loading account details";
+      accountDetailBodyEl.innerHTML = '<div class="text-muted small">Loading…</div>';
+      destroyUsageAccountDetailChart();
+      showUsageAccountDetailModal();
+      const params = new URLSearchParams({ pppoe, hours: "168" });
+      if (routerId) params.set("router_id", routerId);
+      try {
+        const res = await fetch(`/usage/account-detail?${params.toString()}`, { headers: { "Accept": "application/json" } });
+        const payload = await res.json().catch(() => null);
+        if (!res.ok || !payload?.ok) throw new Error(payload?.error || `HTTP ${res.status}`);
+        const account = payload.account || {};
+        if (accountDetailTitleEl) accountDetailTitleEl.textContent = `Usage Account · ${account.pppoe || pppoe}`;
+        if (accountDetailSubtitleEl) accountDetailSubtitleEl.textContent = `${account.router_name || account.router_id || "Unknown router"} · ${account.current_status_label || "Usage"}`;
+        accountDetailBodyEl.innerHTML = renderUsageAccountDetail(payload);
+        renderUsageAccountDetailChart(payload);
+      } catch (err) {
+        accountDetailBodyEl.innerHTML = `<div class="alert alert-danger mb-0">Failed to load usage account details: ${esc(err?.message || err || "unknown error")}</div>`;
+      }
+    }
+
+    document.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-usage-account-detail-view]");
+      if (!btn) return;
+      event.preventDefault();
+      openUsageAccountDetail({
+        pppoe: btn.dataset.pppoe || "",
+        router_id: btn.dataset.routerId || "",
+      });
+    });
+
+    if (accountDetailModalEl) {
+      accountDetailModalEl.addEventListener("hidden.bs.modal", destroyUsageAccountDetailChart);
+    }
+
     // Search
     if (searchInput) {
       searchInput.value = searchQuery;
@@ -2098,6 +2589,24 @@
         event.preventDefault();
         if (!tablePagination.stable?.has_next) return;
         tablePages = { ...tablePages, stable: Math.min(Number(tablePages.stable || 1) + 1, Number(tablePagination.stable?.pages || 1) || 1) };
+        saveTablePages();
+        renderAllTables();
+      });
+    }
+    if (accountsPrevBtn) {
+      accountsPrevBtn.addEventListener("click", (event) => {
+        event.preventDefault();
+        if (!tablePagination.accounts?.has_prev) return;
+        tablePages = { ...tablePages, accounts: Math.max(Number(tablePages.accounts || 1) - 1, 1) };
+        saveTablePages();
+        renderAllTables();
+      });
+    }
+    if (accountsNextBtn) {
+      accountsNextBtn.addEventListener("click", (event) => {
+        event.preventDefault();
+        if (!tablePagination.accounts?.has_next) return;
+        tablePages = { ...tablePages, accounts: Math.min(Number(tablePages.accounts || 1) + 1, Number(tablePagination.accounts?.pages || 1) || 1) };
         saveTablePages();
         renderAllTables();
       });

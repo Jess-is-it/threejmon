@@ -5362,6 +5362,173 @@ def list_usage_modem_reboot_history(limit=200):
         conn.close()
 
 
+def list_usage_modem_reboot_account_stats(limit=50000):
+    try:
+        limit = int(limit or 50000)
+    except Exception:
+        limit = 50000
+    limit = max(1, min(limit, 100000))
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                id,
+                attempted_at,
+                verified_at,
+                pppoe,
+                router_id,
+                router_name,
+                address,
+                device_id,
+                issue_opened_at,
+                retry_index,
+                retry_limit,
+                status,
+                verification_status,
+                task_id,
+                http_status,
+                buffer_until,
+                next_retry_at,
+                error_message,
+                detail
+            FROM usage_modem_reboot_history
+            ORDER BY attempted_at DESC, id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        stats = {}
+        for row in [dict(item) for item in rows]:
+            pppoe = (row.get("pppoe") or "").strip()
+            if not pppoe:
+                continue
+            router_id = (row.get("router_id") or "").strip()
+            key = f"{router_id}|{pppoe.lower()}"
+            item = stats.get(key)
+            if not item:
+                item = {
+                    "pppoe": pppoe,
+                    "router_id": router_id,
+                    "router_name": (row.get("router_name") or router_id or "").strip(),
+                    "address": (row.get("address") or "").strip(),
+                    "device_id": (row.get("device_id") or "").strip(),
+                    "attempt_count": 0,
+                    "success_count": 0,
+                    "failed_count": 0,
+                    "no_tr069_count": 0,
+                    "verification_passed_count": 0,
+                    "verification_failed_count": 0,
+                    "latest_attempted_at": row.get("attempted_at") or "",
+                    "latest_verified_at": row.get("verified_at") or "",
+                    "latest_status": (row.get("status") or "").strip(),
+                    "latest_verification_status": (row.get("verification_status") or "").strip(),
+                    "latest_error_message": (row.get("error_message") or "").strip(),
+                    "latest_detail": (row.get("detail") or "").strip(),
+                }
+                stats[key] = item
+            status = (row.get("status") or "").strip().lower()
+            verification = (row.get("verification_status") or "").strip().lower()
+            item["attempt_count"] += 1
+            if status == "success":
+                item["success_count"] += 1
+            elif status == "no_tr069":
+                item["no_tr069_count"] += 1
+                item["failed_count"] += 1
+            elif status == "failed":
+                item["failed_count"] += 1
+            if verification == "passed":
+                item["verification_passed_count"] += 1
+            elif verification == "failed":
+                item["verification_failed_count"] += 1
+            if not item.get("router_name") and row.get("router_name"):
+                item["router_name"] = (row.get("router_name") or "").strip()
+            if not item.get("address") and row.get("address"):
+                item["address"] = (row.get("address") or "").strip()
+            if not item.get("device_id") and row.get("device_id"):
+                item["device_id"] = (row.get("device_id") or "").strip()
+        return list(stats.values())
+    finally:
+        conn.close()
+
+
+def list_usage_modem_reboot_history_for_account(pppoe, router_id="", limit=200):
+    pppoe = (pppoe or "").strip()
+    router_id = (router_id or "").strip()
+    if not pppoe:
+        return []
+    try:
+        limit = int(limit or 200)
+    except Exception:
+        limit = 200
+    limit = max(1, min(limit, 1000))
+    conn = get_conn()
+    try:
+        if router_id:
+            rows = conn.execute(
+                """
+                SELECT
+                    id,
+                    attempted_at,
+                    verified_at,
+                    pppoe,
+                    router_id,
+                    router_name,
+                    address,
+                    device_id,
+                    issue_opened_at,
+                    retry_index,
+                    retry_limit,
+                    status,
+                    verification_status,
+                    task_id,
+                    http_status,
+                    buffer_until,
+                    next_retry_at,
+                    error_message,
+                    detail
+                FROM usage_modem_reboot_history
+                WHERE LOWER(pppoe) = LOWER(?) AND COALESCE(router_id, '') = ?
+                ORDER BY attempted_at DESC, id DESC
+                LIMIT ?
+                """,
+                (pppoe, router_id, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT
+                    id,
+                    attempted_at,
+                    verified_at,
+                    pppoe,
+                    router_id,
+                    router_name,
+                    address,
+                    device_id,
+                    issue_opened_at,
+                    retry_index,
+                    retry_limit,
+                    status,
+                    verification_status,
+                    task_id,
+                    http_status,
+                    buffer_until,
+                    next_retry_at,
+                    error_message,
+                    detail
+                FROM usage_modem_reboot_history
+                WHERE LOWER(pppoe) = LOWER(?)
+                ORDER BY attempted_at DESC, id DESC
+                LIMIT ?
+                """,
+                (pppoe, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
 def count_usage_modem_reboot_history():
     conn = get_conn()
     try:
