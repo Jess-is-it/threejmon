@@ -58,9 +58,23 @@
   }
   .dashboard-resource-kpi.rto-tip:focus-visible::after,
   .dashboard-resource-kpi.rto-tip:hover::after{opacity:1}
+  .dashboard-attention-chart{min-height:360px}
+  .dashboard-attention-issue{border:1px solid rgba(31,41,55,.1);border-radius:14px;background:var(--tblr-bg-surface);min-height:74px;cursor:pointer;transition:border-color .16s ease,box-shadow .16s ease,opacity .16s ease}
+  .dashboard-attention-issue:hover,
+  .dashboard-attention-issue:focus-visible{border-color:var(--attention-color,rgba(32,107,196,.45));box-shadow:0 .55rem 1.25rem rgba(15,31,42,.08);outline:0}
+  .dashboard-attention-issue.is-filtered{border-color:var(--attention-color,#206bc4);box-shadow:0 0 0 2px color-mix(in srgb,var(--attention-color,#206bc4) 18%,transparent)}
+  .dashboard-attention-issue.is-dimmed{opacity:.45}
+  .dashboard-attention-issue-dot{width:.7rem;height:.7rem;border-radius:999px;background:var(--attention-color,#adb5bd);display:inline-block;box-shadow:0 0 0 3px color-mix(in srgb,var(--attention-color,#adb5bd) 14%,transparent);flex:0 0 auto}
+  .dashboard-attention-issue-value{font-size:1.6rem;line-height:1;font-weight:700;letter-spacing:-.03em;white-space:nowrap}
+  .dashboard-update-banner{border:1px solid rgba(245,159,0,.28);background:linear-gradient(90deg,rgba(245,159,0,.14),rgba(66,153,225,.08));color:inherit;cursor:pointer;display:block}
+  .dashboard-update-banner:hover{border-color:rgba(245,159,0,.42);box-shadow:0 .55rem 1.35rem rgba(245,159,0,.12);color:inherit;text-decoration:none}
+  .dashboard-update-banner-inner{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:start;gap:.75rem}
+  .dashboard-resource-modal .modal-dialog{max-width:min(1180px,96vw)}
 </style>
 
-{% set attention_active_items = attention.get('items', []) | selectattr('active') | list %}
+{% set attention_items = attention.get('items', []) %}
+{% set attention_active_items = attention_items | selectattr('active') | list %}
+{% set attention_total_count = attention.get('total_count', attention.get('active_total', attention_active_items|length)) %}
 <div class="row row-cards">
   <div class="col-12 col-xxl-9">
     <div class="row row-cards">
@@ -111,84 +125,58 @@
   {% endfor %}
     </div>
     <div class="row row-cards mt-2">
-      {% if has_perm('dashboard.resources.view') %}
+      {% if has_perm('dashboard.needs_attention.view') %}
       <div class="col-12">
-        <div class="card">
+        <div class="card dashboard-kpi-card dashboard-attention-card">
           <div class="card-header">
-            <h3 class="card-title"><i class="ti ti-activity me-2"></i>Live System Resource Usage</h3>
-            <div class="card-actions d-flex align-items-center gap-3">
-              <label class="form-check form-switch m-0">
-                <input class="form-check-input" type="checkbox" id="dashboard-system-mode-toggle" checked>
-                <span class="form-check-label small">System mode</span>
-              </label>
-              <div class="text-muted small" id="dashboard-resource-updated">Updating…</div>
+            <h3 class="card-title"><i class="ti ti-alert-triangle text-red me-2"></i>Needs Attention</h3>
+            <div class="card-actions d-flex align-items-center gap-2">
+              <span class="badge bg-red-lt text-red" id="dashboard-attention-issue-badge">{{ attention_total_count }} issues</span>
+              <span class="text-muted small" id="dashboard-attention-updated">Loading trends…</span>
             </div>
           </div>
           <div class="card-body">
-            <div class="row g-2 mb-3">
-              <div class="col-sm-6 col-lg-3">
-                <div class="border rounded p-2 dashboard-resource-kpi rto-tip" tabindex="0" id="dashboard-cpu-total-card" data-tip="Total CPU shows how busy the server processor is right now. Lower means more breathing room.">
-                  <div class="text-muted small dashboard-resource-kpi-label">
-                    <span>Total CPU</span>
-                    <i class="ti ti-info-circle dashboard-resource-kpi-note-icon" aria-hidden="true"></i>
+            <div class="row g-3">
+              <div class="col-12">
+                <div class="border rounded p-3">
+                  <div class="d-flex align-items-start justify-content-between mb-3">
+                    <div>
+                      <div class="fw-semibold">Total Needs Attention Trend</div>
+                      <div class="text-muted small">Use the chart toolbar to zoom, pan, reset, or select a range. Click Issue Trends cards below to filter the lines.</div>
+                    </div>
+                    <span class="badge bg-red-lt text-red fs-6" id="dashboard-attention-total-badge">{{ attention_total_count }}</span>
                   </div>
-                  <div class="fw-semibold" id="dashboard-cpu-total">0%</div>
-                  <div class="text-muted small" id="dashboard-cpu-tracked-note">Table accounted: 0%</div>
-                  <div class="text-muted small" id="dashboard-cpu-scope">Scope: n/a</div>
+                  <div id="dashboard-attention-total-chart" class="dashboard-attention-chart"></div>
                 </div>
               </div>
-              <div class="col-sm-6 col-lg-3">
-                <div class="border rounded p-2 dashboard-resource-kpi rto-tip" tabindex="0" id="dashboard-ram-pressure-card" data-tip="RAM Pressure shows how hard the server is working to keep memory available. It is the stress level, not just the amount already in use.">
-                  <div class="text-muted small dashboard-resource-kpi-label">
-                    <span>RAM Pressure</span>
-                    <i class="ti ti-info-circle dashboard-resource-kpi-note-icon" aria-hidden="true"></i>
+              <div class="col-12">
+                <div class="d-flex align-items-center justify-content-between mb-2">
+                  <div>
+                    <div class="fw-semibold">Issue Trends</div>
+                    <div class="text-muted small" id="dashboard-attention-filter-status">Current counts per issue category. Click a card to filter the chart.</div>
                   </div>
-                  <div class="fw-semibold" id="dashboard-ram-pressure">0%</div>
+                  <button type="button" class="btn btn-link btn-sm p-0 d-none" id="dashboard-attention-clear-filter">Clear filter</button>
+                </div>
+                <div class="row g-3" id="dashboard-attention-items">
+                  {% for item in attention_items if item.get('count_in_total', True) and item.get('key') != 'wan_ping_down_isps' %}
+                    {% set attention_key = item.get('key') or ('attention_' ~ loop.index) %}
+                    <div class="col-12 col-md-6 col-xl-4">
+                      <button type="button" class="dashboard-attention-issue p-3 h-100 w-100 text-start" data-dashboard-attention-card data-attention-key="{{ attention_key }}">
+                        <div class="d-flex align-items-center justify-content-between gap-3">
+                          <div class="fw-semibold d-flex align-items-center gap-2"><span class="dashboard-attention-issue-dot" data-dashboard-attention-color></span>{{ item.get('label') }}:</div>
+                          <div class="dashboard-attention-issue-value" data-dashboard-attention-value>{{ item.get('value', item.get('value_label')) }}</div>
+                        </div>
+                      </button>
+                    </div>
+                  {% else %}
+                    <div class="col-12">
+                      <div class="border rounded p-3 text-muted">
+                        <i class="ti ti-circle-check text-green me-1"></i>No active attention item right now. The total trend still tracks future changes.
+                      </div>
+                    </div>
+                  {% endfor %}
                 </div>
               </div>
-              <div class="col-sm-6 col-lg-3">
-                <div class="border rounded p-2 dashboard-resource-kpi rto-tip" tabindex="0" id="dashboard-ram-alloc-card" data-tip="RAM Allocated shows how much memory is already claimed by apps and by Linux cache. High allocated memory is not automatically bad. Compare it with RAM Pressure to see whether the server is actually running tight on memory.">
-                  <div class="text-muted small dashboard-resource-kpi-label">
-                    <span>RAM Allocated</span>
-                    <i class="ti ti-info-circle dashboard-resource-kpi-note-icon" aria-hidden="true"></i>
-                  </div>
-                  <div class="fw-semibold" id="dashboard-ram-alloc">0%</div>
-                </div>
-              </div>
-              <div class="col-sm-6 col-lg-3">
-                <div class="border rounded p-2 dashboard-resource-kpi rto-tip" tabindex="0" id="dashboard-top-cpu-card" data-tip="This shows which process is using the most CPU right now. In System mode off, it shows the busiest group instead.">
-                  <div class="text-muted small dashboard-resource-kpi-label" id="dashboard-top-cpu-label-wrap">
-                    <span id="dashboard-top-cpu-label">Top Process CPU</span>
-                    <i class="ti ti-info-circle dashboard-resource-kpi-note-icon" aria-hidden="true"></i>
-                  </div>
-                  <div class="fw-semibold" id="dashboard-top-proc-cpu">n/a</div>
-                </div>
-              </div>
-            </div>
-
-            <div class="mb-3">
-              <div class="text-muted small mb-2">CPU/RAM usage by feature (aggregated from running processes)</div>
-              <div class="d-flex flex-wrap gap-2" id="dashboard-feature-usage">
-                <span class="badge bg-secondary-lt text-secondary">Loading…</span>
-              </div>
-            </div>
-
-            <div class="table-responsive">
-              <table class="table table-vcenter table-sm mb-0">
-                <thead id="dashboard-process-usage-head">
-                  <tr>
-                    <th>PID</th>
-                    <th>Process</th>
-                    <th>Feature</th>
-                    <th class="text-end">CPU %</th>
-                    <th class="text-end">RAM %</th>
-                    <th class="text-end">RSS MB</th>
-                  </tr>
-                </thead>
-                <tbody id="dashboard-process-usage-body">
-                  <tr><td colspan="6" class="text-muted">Loading process usage…</td></tr>
-                </tbody>
-              </table>
             </div>
           </div>
         </div>
@@ -197,24 +185,82 @@
     </div>
   </div>
   <div class="col-12 col-xxl-3 dashboard-side-column">
-    {% if attention_active_items and has_perm('dashboard.needs_attention.view') %}
+    {% if has_perm('system.update.check.run') %}
+      <a class="alert dashboard-update-banner d-none mb-2 text-decoration-none" id="dashboard-update-banner" href="/settings/system?tab=update" aria-label="Open update details">
+        <div class="dashboard-update-banner-inner">
+          <span class="badge bg-yellow-lt text-yellow"><i class="ti ti-refresh-alert"></i></span>
+          <div>
+            <div class="fw-semibold" id="dashboard-update-title">System update detected</div>
+            <div class="small text-muted" id="dashboard-update-detail">Checking latest remote changes…</div>
+          </div>
+        </div>
+      </a>
+    {% endif %}
+    {% if has_perm('dashboard.resources.view') %}
       <div class="card dashboard-kpi-card card-sm dashboard-attention-card mb-2">
         <div class="card-header py-3 px-3 d-flex align-items-center">
           <h4 class="card-title mb-0 d-flex align-items-center">
-            <span class="badge bg-red-lt text-red me-2 dashboard-logo-badge"><i class="ti ti-alert-triangle"></i></span>
-            Needs Attention
+            <span class="badge bg-blue-lt text-blue me-2 dashboard-logo-badge"><i class="ti ti-activity"></i></span>
+            Live System Resource Usage
           </h4>
-          <span class="badge bg-red-lt text-red ms-auto">{{ attention_active_items|length }}</span>
+          <button type="button" class="btn btn-icon btn-outline-secondary btn-sm ms-auto" data-bs-toggle="modal" data-bs-target="#dashboard-resource-modal" title="Expand system resources" aria-label="Expand system resources">
+            <i class="ti ti-arrows-maximize"></i>
+          </button>
         </div>
         <div class="card-body">
-          {% for item in attention_active_items %}
-            <div class="d-flex align-items-center justify-content-between py-2 {% if not loop.last %}border-bottom{% endif %}">
-              <div class="pe-2">
-                <div class="text-muted dashboard-kpi-sub">{{ item.get('label') }}</div>
+          <div class="d-flex align-items-center justify-content-between mb-3">
+            <label class="form-check form-switch m-0">
+              <input class="form-check-input" type="checkbox" id="dashboard-system-mode-toggle" checked>
+              <span class="form-check-label small">System mode</span>
+            </label>
+            <div class="text-muted small" id="dashboard-resource-updated">Updating…</div>
+          </div>
+          <div class="row g-2">
+            <div class="col-6">
+              <div class="border rounded p-2 dashboard-resource-kpi rto-tip" tabindex="0" id="dashboard-cpu-total-card" data-tip="Total CPU shows how busy the server processor is right now. Lower means more breathing room.">
+                <div class="text-muted small dashboard-resource-kpi-label">
+                  <span>Total CPU</span>
+                  <i class="ti ti-info-circle dashboard-resource-kpi-note-icon" aria-hidden="true"></i>
+                </div>
+                <div class="fw-semibold" id="dashboard-cpu-total">0%</div>
+                <div class="text-muted small" id="dashboard-cpu-tracked-note">Table accounted: 0%</div>
+                <div class="text-muted small" id="dashboard-cpu-scope">Scope: n/a</div>
               </div>
-              <span class="badge bg-red-lt text-red">{{ item.get('value_label') }}</span>
             </div>
-          {% endfor %}
+            <div class="col-6">
+              <div class="border rounded p-2 dashboard-resource-kpi rto-tip" tabindex="0" id="dashboard-ram-pressure-card" data-tip="RAM Pressure shows how hard the server is working to keep memory available. It is the stress level, not just the amount already in use.">
+                <div class="text-muted small dashboard-resource-kpi-label">
+                  <span>RAM Pressure</span>
+                  <i class="ti ti-info-circle dashboard-resource-kpi-note-icon" aria-hidden="true"></i>
+                </div>
+                <div class="fw-semibold" id="dashboard-ram-pressure">0%</div>
+              </div>
+            </div>
+            <div class="col-6">
+              <div class="border rounded p-2 dashboard-resource-kpi rto-tip" tabindex="0" id="dashboard-ram-alloc-card" data-tip="RAM Allocated shows how much memory is already claimed by apps and by Linux cache. High allocated memory is not automatically bad. Compare it with RAM Pressure to see whether the server is actually running tight on memory.">
+                <div class="text-muted small dashboard-resource-kpi-label">
+                  <span>RAM Allocated</span>
+                  <i class="ti ti-info-circle dashboard-resource-kpi-note-icon" aria-hidden="true"></i>
+                </div>
+                <div class="fw-semibold" id="dashboard-ram-alloc">0%</div>
+              </div>
+            </div>
+            <div class="col-6">
+              <div class="border rounded p-2 dashboard-resource-kpi rto-tip" tabindex="0" id="dashboard-top-cpu-card" data-tip="This shows which process is using the most CPU right now. In System mode off, it shows the busiest group instead.">
+                <div class="text-muted small dashboard-resource-kpi-label" id="dashboard-top-cpu-label-wrap">
+                  <span id="dashboard-top-cpu-label">Top Process CPU</span>
+                  <i class="ti ti-info-circle dashboard-resource-kpi-note-icon" aria-hidden="true"></i>
+                </div>
+                <div class="fw-semibold" id="dashboard-top-proc-cpu">n/a</div>
+              </div>
+            </div>
+          </div>
+          <div class="mt-3">
+            <div class="text-muted small mb-2">CPU/RAM usage by feature</div>
+            <div class="d-flex flex-wrap gap-2" id="dashboard-feature-usage">
+              <span class="badge bg-secondary-lt text-secondary">Loading…</span>
+            </div>
+          </div>
         </div>
       </div>
     {% endif %}
@@ -248,6 +294,44 @@
   </div>
 </div>
 
+{% if has_perm('dashboard.resources.view') %}
+<div class="modal modal-blur fade dashboard-resource-modal" id="dashboard-resource-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="ti ti-activity me-2 text-blue"></i>Live System Resource Usage</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="alert alert-info">
+          <div class="d-flex align-items-start gap-2">
+            <i class="ti ti-info-circle mt-1"></i>
+            <div class="small">This expanded view shows the process or group breakdown behind the compact dashboard resource KPIs. Toggle System mode on the dashboard card to switch between individual processes and grouped ThreeJ/System usage.</div>
+          </div>
+        </div>
+        <div class="table-responsive">
+          <table class="table table-vcenter table-sm mb-0">
+            <thead id="dashboard-process-usage-head">
+              <tr>
+                <th>PID</th>
+                <th>Process</th>
+                <th>Feature</th>
+                <th class="text-end">CPU %</th>
+                <th class="text-end">RAM %</th>
+                <th class="text-end">RSS MB</th>
+              </tr>
+            </thead>
+            <tbody id="dashboard-process-usage-body">
+              <tr><td colspan="6" class="text-muted">Loading process usage…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <script>
   (() => {
     const updatedEl = document.getElementById("dashboard-resource-updated");
@@ -268,9 +352,21 @@
     const systemModeToggleEl = document.getElementById("dashboard-system-mode-toggle");
     const processHeadEl = document.getElementById("dashboard-process-usage-head");
     const processBodyEl = document.getElementById("dashboard-process-usage-body");
+    const attentionUpdatedEl = document.getElementById("dashboard-attention-updated");
+    const attentionTotalChartEl = document.getElementById("dashboard-attention-total-chart");
+    const attentionTotalBadgeEl = document.getElementById("dashboard-attention-total-badge");
+    const attentionIssueBadgeEl = document.getElementById("dashboard-attention-issue-badge");
+    const attentionCards = Array.from(document.querySelectorAll("[data-dashboard-attention-card]"));
+    const attentionClearFilterEl = document.getElementById("dashboard-attention-clear-filter");
+    const attentionFilterStatusEl = document.getElementById("dashboard-attention-filter-status");
+    const updateBannerEl = document.getElementById("dashboard-update-banner");
+    const updateTitleEl = document.getElementById("dashboard-update-title");
+    const updateDetailEl = document.getElementById("dashboard-update-detail");
     const hasResourcesPanel = !!(updatedEl && featureUsageEl && processBodyEl && processHeadEl && systemModeToggleEl);
     const hasLogsPanel = !!(logsBodyEl && logsUpdatedEl);
-    if (!hasResourcesPanel && !hasLogsPanel) return;
+    const hasAttentionPanel = !!attentionTotalChartEl;
+    const hasUpdateBanner = !!updateBannerEl;
+    if (!hasResourcesPanel && !hasLogsPanel && !hasAttentionPanel && !hasUpdateBanner) return;
 
     const esc = (value) => String(value ?? "")
       .replace(/&/g, "&amp;")
@@ -278,6 +374,159 @@
       .replace(/>/g, "&gt;")
       .replace(/\"/g, "&quot;")
       .replace(/'/g, "&#39;");
+
+    const attentionChartColors = ["#d63939", "#4c6ef5", "#4299e1", "#d6336c", "#12b886", "#f59f00", "#7950f2", "#364fc7", "#868e96"];
+    const attentionChartState = { chart: null, allSeriesDefs: [], selectedKeys: new Set() };
+    const zoomToolbarOptions = {
+      show: true,
+      tools: {
+        download: false,
+        selection: true,
+        zoom: true,
+        zoomin: true,
+        zoomout: true,
+        pan: true,
+        reset: true,
+      },
+    };
+    const toChartPoints = (series) => (Array.isArray(series) ? series : [])
+      .map((point) => {
+        const ts = point && point.x ? new Date(point.x).getTime() : NaN;
+        const value = Number(point && point.y !== undefined ? point.y : 0);
+        return Number.isFinite(ts) ? { x: ts, y: Number.isFinite(value) ? value : 0 } : null;
+      })
+      .filter(Boolean);
+    const formatAttentionAxis = (value) => {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return "";
+      return Math.abs(n) >= 100 || Number.isInteger(n) ? String(Math.round(n)) : n.toFixed(1);
+    };
+    const formatAttentionTime = (value) => {
+      const dt = new Date(value);
+      if (Number.isNaN(dt.getTime())) return "";
+      return dt.toLocaleString(undefined, { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+    };
+    const setAttentionChartPlaceholder = (message) => {
+      if (attentionChartState.chart) {
+        try { attentionChartState.chart.destroy(); } catch (_error) {}
+        attentionChartState.chart = null;
+      }
+      if (!attentionTotalChartEl) return;
+      attentionTotalChartEl.innerHTML = `<div class="text-muted d-flex align-items-center justify-content-center" style="height:360px;">${esc(message)}</div>`;
+    };
+    const normalizeAttentionSeriesDefs = (seriesDefs) => (Array.isArray(seriesDefs) ? seriesDefs : [])
+        .map((def, index) => ({
+          key: String(def.key || `series-${index}`),
+          label: String(def.label || def.key || `Series ${index + 1}`),
+          color: def.color || attentionChartColors[index % attentionChartColors.length],
+          data: toChartPoints(def.series || def.data || []),
+        }))
+        .filter((def) => def.data.some((point) => Number.isFinite(Number(point.x)) && Number.isFinite(Number(point.y))));
+    const updateAttentionFilterUi = () => {
+      const selected = attentionChartState.selectedKeys;
+      const seriesMap = new Map(attentionChartState.allSeriesDefs.map((def) => [def.key, def]));
+      attentionCards.forEach((card) => {
+        const key = String(card.getAttribute("data-attention-key") || "");
+        const def = seriesMap.get(key);
+        const color = def?.color || "#adb5bd";
+        card.style.setProperty("--attention-color", color);
+        card.classList.toggle("is-filtered", selected.has(key));
+        card.classList.toggle("is-dimmed", selected.size > 0 && !selected.has(key));
+        card.setAttribute("aria-pressed", selected.has(key) ? "true" : "false");
+        const dot = card.querySelector("[data-dashboard-attention-color]");
+        if (dot) dot.style.backgroundColor = color;
+      });
+      if (attentionClearFilterEl) attentionClearFilterEl.classList.toggle("d-none", selected.size === 0);
+      if (attentionFilterStatusEl) {
+        attentionFilterStatusEl.textContent = selected.size
+          ? `Showing ${selected.size} selected issue trend${selected.size === 1 ? "" : "s"}. Click more cards to add lines, or clear the filter.`
+          : "Current counts per issue category. Click a card to filter the chart.";
+      }
+    };
+    const renderAttentionChartFromState = () => {
+      const el = attentionTotalChartEl;
+      if (!el) return;
+      const prepared = attentionChartState.allSeriesDefs;
+      if (!prepared.length) {
+        setAttentionChartPlaceholder("No trend data yet");
+        updateAttentionFilterUi();
+        return;
+      }
+      if (!window.ApexCharts) {
+        setAttentionChartPlaceholder("Chart library unavailable.");
+        updateAttentionFilterUi();
+        return;
+      }
+      const selected = attentionChartState.selectedKeys;
+      const visible = selected.size ? prepared.filter((def) => selected.has(def.key)) : prepared;
+      if (!visible.length) {
+        attentionChartState.selectedKeys.clear();
+        updateAttentionFilterUi();
+        renderAttentionChartFromState();
+        return;
+      }
+      if (attentionChartState.chart) {
+        try { attentionChartState.chart.destroy(); } catch (_error) {}
+        attentionChartState.chart = null;
+      }
+      el.innerHTML = "";
+      const chart = new window.ApexCharts(el, {
+        chart: {
+          type: "line",
+          height: 360,
+          toolbar: zoomToolbarOptions,
+          zoom: { enabled: true, type: "x", autoScaleYaxis: true },
+          animations: { enabled: false },
+        },
+        series: visible.map((def) => ({ name: def.label, data: def.data })),
+        colors: visible.map((def) => def.color),
+        stroke: { width: 3 },
+        markers: { size: 0 },
+        xaxis: { type: "datetime" },
+        yaxis: { min: 0, labels: { formatter: (value) => formatAttentionAxis(value) } },
+        tooltip: {
+          shared: true,
+          intersect: false,
+          followCursor: true,
+          x: { formatter: (value) => formatAttentionTime(value) },
+          y: { formatter: (value) => formatAttentionAxis(value) },
+        },
+        grid: { borderColor: "#e9ecef", strokeDashArray: 4 },
+        legend: { show: false },
+      });
+      attentionChartState.chart = chart;
+      chart.render().catch(() => setAttentionChartPlaceholder("Trend chart could not be rendered."));
+      updateAttentionFilterUi();
+    };
+    const renderAttentionChart = (_el, seriesDefs) => {
+      const prepared = normalizeAttentionSeriesDefs(seriesDefs);
+      const validKeys = new Set(prepared.map((def) => def.key));
+      attentionChartState.selectedKeys.forEach((key) => {
+        if (!validKeys.has(key)) attentionChartState.selectedKeys.delete(key);
+      });
+      attentionChartState.allSeriesDefs = prepared;
+      renderAttentionChartFromState();
+    };
+    attentionCards.forEach((card) => {
+      card.addEventListener("click", () => {
+        const key = String(card.getAttribute("data-attention-key") || "");
+        if (!key) return;
+        if (attentionChartState.selectedKeys.size === 0) {
+          attentionChartState.selectedKeys.add(key);
+        } else if (attentionChartState.selectedKeys.has(key)) {
+          if (attentionChartState.selectedKeys.size > 1) attentionChartState.selectedKeys.delete(key);
+        } else {
+          attentionChartState.selectedKeys.add(key);
+        }
+        renderAttentionChartFromState();
+      });
+    });
+    if (attentionClearFilterEl) {
+      attentionClearFilterEl.addEventListener("click", () => {
+        attentionChartState.selectedKeys.clear();
+        renderAttentionChartFromState();
+      });
+    }
 
     const SYSTEM_MODE_KEY = "threej_dashboard_system_mode_enabled";
     const readSystemMode = () => {
@@ -483,6 +732,90 @@
           : "Updated: now";
       }
     };
+
+    const renderAttentionTrends = (payload) => {
+      if (!hasAttentionPanel) return;
+      const trends = payload && payload.trends ? payload.trends : payload;
+      const totalSeries = Array.isArray(trends?.total) ? trends.total : [];
+      const latestTotal = totalSeries.length ? Number(totalSeries[totalSeries.length - 1].y || 0) : 0;
+      const latestTotalLabel = Number.isFinite(latestTotal) ? latestTotal.toFixed(0) : "0";
+      if (attentionTotalBadgeEl) attentionTotalBadgeEl.textContent = latestTotalLabel;
+      if (attentionIssueBadgeEl) attentionIssueBadgeEl.textContent = `${latestTotalLabel} issues`;
+
+      const latestMap = new Map((Array.isArray(trends?.latest_items) ? trends.latest_items : []).map((item) => [String(item.key || ""), item]));
+      const hiddenIssueKeys = new Set(["wan_ping_down_isps"]);
+      const countItems = (Array.isArray(trends?.items) ? trends.items : [])
+        .filter((item) => !hiddenIssueKeys.has(String(item.key || "")))
+        .filter((item) => {
+          const latest = latestMap.get(String(item.key || ""));
+          return !latest || latest.count_in_total !== false;
+        });
+      const chartSeries = countItems.map((item, index) => ({
+        key: item.key,
+        label: item.label || item.key,
+        data: item.series || [],
+        color: attentionChartColors[index % attentionChartColors.length],
+        width: 3.2,
+      }));
+      renderAttentionChart(attentionTotalChartEl, chartSeries);
+
+      attentionCards.forEach((card) => {
+        const key = String(card.getAttribute("data-attention-key") || "");
+        const latest = latestMap.get(key);
+        const valueEl = card.querySelector("[data-dashboard-attention-value]");
+        if (latest && valueEl) {
+          const numericValue = Number(latest.value || 0);
+          const valueText = Number.isFinite(numericValue)
+            ? (Number.isInteger(numericValue) ? String(numericValue) : numericValue.toFixed(1))
+            : String(latest.value_label || "0");
+          valueEl.textContent = valueText;
+        }
+      });
+      if (attentionUpdatedEl) {
+        const ts = trends?.updated_at ? new Date(trends.updated_at) : null;
+        const samples = Number(trends?.sample_count || 0);
+        attentionUpdatedEl.textContent = ts && !Number.isNaN(ts.getTime())
+          ? `Updated: ${ts.toLocaleTimeString()} · ${samples} sample${samples === 1 ? "" : "s"}`
+          : `${samples} trend sample${samples === 1 ? "" : "s"}`;
+      }
+    };
+
+    const updateAttentionTrends = async () => {
+      if (!hasAttentionPanel) return;
+      try {
+        const res = await fetch("/dashboard/attention-trends", { headers: { "Accept": "application/json" }, cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json();
+        renderAttentionTrends(data);
+      } catch (_error) {
+        if (attentionUpdatedEl) attentionUpdatedEl.textContent = "Trend unavailable";
+      }
+    };
+
+    const checkDashboardUpdates = async () => {
+      if (!hasUpdateBanner) return;
+      try {
+        const res = await fetch("/settings/system/update/check", { headers: { "Accept": "application/json" }, cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json();
+        const check = data?.check || {};
+        if (!check.has_update) {
+          updateBannerEl.classList.add("d-none");
+          return;
+        }
+        const commits = Array.isArray(check.commits) ? check.commits : [];
+        const currentIndex = commits.findIndex((item) => item && item.is_current);
+        const updateCount = currentIndex >= 0 ? currentIndex : 1;
+        const latest = check.latest || {};
+        if (updateTitleEl) updateTitleEl.textContent = `${updateCount} update${updateCount === 1 ? "" : "s"} detected`;
+        if (updateDetailEl) {
+          updateDetailEl.textContent = `Latest remote commit ${latest.short || "unknown"} is available. Click this card to review the update command.`;
+        }
+        updateBannerEl.classList.remove("d-none");
+      } catch (_error) {
+      }
+    };
+
     const updateLiveUsage = async () => {
       if (!hasResourcesPanel) return;
       try {
@@ -533,6 +866,14 @@
         updateLatestLogs();
         setInterval(updateLatestLogs, 5000);
       }
+    }
+    if (hasAttentionPanel) {
+      updateAttentionTrends();
+      setInterval(updateAttentionTrends, 60000);
+    }
+    if (hasUpdateBanner) {
+      checkDashboardUpdates();
+      setInterval(checkDashboardUpdates, 600000);
     }
   })();
 </script>

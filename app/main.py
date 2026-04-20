@@ -235,6 +235,9 @@ _cpu_sample = {"total": None, "idle": None, "at": 0.0, "pct": 0.0}
 _dashboard_kpis_cache_lock = threading.Lock()
 _dashboard_kpis_cache = {"at": 0.0, "data": None}
 _DASHBOARD_KPI_CACHE_SECONDS = 120
+_DASHBOARD_ATTENTION_HISTORY_KEY = "dashboard_attention_history"
+_DASHBOARD_ATTENTION_HISTORY_DAYS = 7
+_DASHBOARD_ATTENTION_SAMPLE_SECONDS = 300
 _surveillance_checker_cache_lock = threading.Lock()
 _surveillance_checker_cache = {"at": 0.0, "key": None, "data": {}, "refreshing": False}
 _surveillance_checker_compute_lock = threading.Lock()
@@ -6271,6 +6274,150 @@ def _dashboard_surveillance_health(surveillance):
     return ("Active", "warning")
 
 
+def _dashboard_attention_key(label: str) -> str:
+    key = re.sub(r"[^a-z0-9]+", "_", str(label or "").strip().lower()).strip("_")
+    return key or "attention"
+
+
+def _dashboard_attention_snapshot_payload(attention: dict, ts_iso: str = "") -> dict:
+    ts_iso = (ts_iso or utc_now_iso()).strip()
+    values = {}
+    items_meta = {}
+    total_count = 0.0
+    for item in (attention or {}).get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        label = (item.get("label") or "").strip()
+        key = (item.get("key") or _dashboard_attention_key(label)).strip()
+        if not key:
+            continue
+        try:
+            value = float(item.get("value") or 0)
+        except Exception:
+            value = 0.0
+        count_in_total = bool(item.get("count_in_total", True))
+        if count_in_total:
+            total_count += value
+        values[key] = value
+        items_meta[key] = {
+            "key": key,
+            "label": label or key.replace("_", " ").title(),
+            "value_label": (item.get("value_label") or str(int(value))).strip(),
+            "note": (item.get("note") or "").strip(),
+            "active": bool(item.get("active")),
+            "count_in_total": count_in_total,
+        }
+    return {
+        "ts": ts_iso,
+        "total": float((attention or {}).get("total_count") if (attention or {}).get("total_count") is not None else total_count),
+        "values": values,
+        "items": items_meta,
+    }
+
+
+def _record_dashboard_attention_snapshot(attention: dict):
+    if not isinstance(attention, dict):
+        return
+    now_iso = utc_now_iso()
+    next_snapshot = _dashboard_attention_snapshot_payload(attention, now_iso)
+    state = get_state(_DASHBOARD_ATTENTION_HISTORY_KEY, {})
+    if not isinstance(state, dict):
+        state = {}
+    samples = state.get("samples") if isinstance(state.get("samples"), list) else []
+    last = samples[-1] if samples and isinstance(samples[-1], dict) else {}
+    last_dt = _parse_iso_z(last.get("ts")) if last else None
+    now_dt = _parse_iso_z(now_iso) or datetime.utcnow()
+    should_append = True
+    if isinstance(last_dt, datetime):
+        elapsed = (now_dt - last_dt).total_seconds()
+        same_total = float(last.get("total") or 0) == float(next_snapshot.get("total") or 0)
+        same_values = (last.get("values") or {}) == (next_snapshot.get("values") or {})
+        should_append = elapsed >= _DASHBOARD_ATTENTION_SAMPLE_SECONDS or not (same_total and same_values)
+    if not should_append:
+        return
+    cutoff = now_dt - timedelta(days=_DASHBOARD_ATTENTION_HISTORY_DAYS)
+    kept = []
+    for sample in samples:
+        if not isinstance(sample, dict):
+            continue
+        sample_dt = _parse_iso_z(sample.get("ts"))
+        if isinstance(sample_dt, datetime) and sample_dt >= cutoff:
+            kept.append(sample)
+    kept.append(next_snapshot)
+    save_state(
+        _DASHBOARD_ATTENTION_HISTORY_KEY,
+        {
+            "updated_at": now_iso,
+            "samples": kept[-2500:],
+        },
+    )
+
+
+def _dashboard_attention_trends_payload(current_attention: dict | None = None) -> dict:
+    state = get_state(_DASHBOARD_ATTENTION_HISTORY_KEY, {})
+    samples = state.get("samples") if isinstance(state, dict) and isinstance(state.get("samples"), list) else []
+    if current_attention:
+        current_snapshot = _dashboard_attention_snapshot_payload(current_attention)
+        if not samples or (samples[-1].get("ts") if isinstance(samples[-1], dict) else "") != current_snapshot.get("ts"):
+            samples = [*samples, current_snapshot]
+    keys = []
+    meta = {}
+    for sample in samples:
+        if not isinstance(sample, dict):
+            continue
+        sample_items = sample.get("items") if isinstance(sample.get("items"), dict) else {}
+        for key, item in sample_items.items():
+            if key not in keys:
+                keys.append(key)
+            if isinstance(item, dict):
+                meta[key] = item
+        values = sample.get("values") if isinstance(sample.get("values"), dict) else {}
+        for key in values.keys():
+            if key not in keys:
+                keys.append(key)
+    total_series = []
+    item_series = {key: [] for key in keys}
+    for sample in samples:
+        if not isinstance(sample, dict):
+            continue
+        ts = (sample.get("ts") or "").strip()
+        if not ts:
+            continue
+        try:
+            total_value = float(sample.get("total") or 0)
+        except Exception:
+            total_value = 0.0
+        total_series.append({"x": ts, "y": total_value})
+        values = sample.get("values") if isinstance(sample.get("values"), dict) else {}
+        for key in keys:
+            try:
+                item_value = float(values.get(key) or 0)
+            except Exception:
+                item_value = 0.0
+            item_series.setdefault(key, []).append({"x": ts, "y": item_value})
+    latest_items = []
+    if current_attention:
+        for item in (current_attention.get("items") or []):
+            if isinstance(item, dict):
+                latest_items.append(item)
+    return {
+        "updated_at": utc_now_iso(),
+        "window_days": _DASHBOARD_ATTENTION_HISTORY_DAYS,
+        "sample_count": len(samples),
+        "total": total_series,
+        "items": [
+            {
+                "key": key,
+                "label": (meta.get(key) or {}).get("label") or key.replace("_", " ").title(),
+                "note": (meta.get(key) or {}).get("note") or "",
+                "series": item_series.get(key) or [],
+            }
+            for key in keys
+        ],
+        "latest_items": latest_items,
+    }
+
+
 def _build_dashboard_kpis(job_status):
     now = datetime.utcnow()
     out = {
@@ -6587,64 +6734,100 @@ def _build_dashboard_kpis(job_status):
         optical_issue_total = int(out["optical"].get("issue_rx") or 0) + int(out["optical"].get("issue_tx") or 0)
         active_monitoring_total = int(out["surveillance"].get("under") or 0)
         needs_manual_fix_total = int(out["surveillance"].get("level2") or 0)
+        usage_issue_total = int(out["usage"].get("anytime_issues") or 0)
         wan_down_total = int(out["wan"].get("down") or 0)
         offline_total = int(out["offline"].get("current") or 0)
         cpu_pct = round(float(_cpu_percent()), 1)
         ram_pct = round(float(_memory_percent()), 1)
         attention_items = [
             {
+                "key": "accounts_ping_issues",
                 "label": "Accounts Ping Issues",
+                "value": accounts_issue_total,
                 "value_label": f"{accounts_issue_total} accounts",
                 "active": accounts_issue_total > 0,
                 "note": "Accounts currently classified as issue/down.",
+                "count_in_total": True,
             },
             {
+                "key": "optical_monitoring_issues",
                 "label": "Optical Monitoring Issues",
+                "value": optical_issue_total,
                 "value_label": f"{optical_issue_total} findings",
                 "active": optical_issue_total > 0,
                 "note": "RX/TX threshold violations from latest optical data.",
+                "count_in_total": True,
             },
             {
+                "key": "surveillance_active_monitoring",
                 "label": "Under Surveillance · Active Monitoring",
+                "value": active_monitoring_total,
                 "value_label": f"{active_monitoring_total} accounts",
                 "active": active_monitoring_total > 0,
                 "note": "Accounts still under active watch.",
+                "count_in_total": True,
             },
             {
+                "key": "surveillance_needs_manual_fix",
                 "label": "Under Surveillance · Needs Manual Fix",
+                "value": needs_manual_fix_total,
                 "value_label": f"{needs_manual_fix_total} accounts",
                 "active": needs_manual_fix_total > 0,
                 "note": "Accounts requiring manual intervention.",
+                "count_in_total": True,
             },
             {
+                "key": "usage_issues",
+                "label": "Usage Issues",
+                "value": usage_issue_total,
+                "value_label": f"{usage_issue_total} accounts",
+                "active": usage_issue_total > 0,
+                "note": "Accounts currently detected in Usage Issues.",
+                "count_in_total": True,
+            },
+            {
+                "key": "wan_ping_down_isps",
                 "label": "WAN Ping · Down ISPs",
+                "value": wan_down_total,
                 "value_label": f"{wan_down_total} down",
                 "active": wan_down_total > 0,
                 "note": "Any ISP marked down by WAN Ping/Netwatch.",
+                "count_in_total": True,
             },
             {
+                "key": "offline_accounts",
                 "label": "Offline Accounts",
+                "value": offline_total,
                 "value_label": f"{offline_total} offline",
                 "active": offline_total > 0,
                 "note": "Accounts currently in Offline state.",
+                "count_in_total": True,
             },
             {
+                "key": "cpu_usage",
                 "label": "CPU Usage",
+                "value": cpu_pct,
                 "value_label": f"{cpu_pct:.1f}%",
                 "active": cpu_pct >= 85.0,
                 "note": "Triggers attention at 85% and above.",
+                "count_in_total": False,
             },
             {
+                "key": "ram_usage",
                 "label": "RAM Usage",
+                "value": ram_pct,
                 "value_label": f"{ram_pct:.1f}%",
                 "active": ram_pct >= 85.0,
                 "note": "Triggers attention at 85% and above.",
+                "count_in_total": False,
             },
         ]
         active_total = sum(1 for item in attention_items if bool(item.get("active")))
+        total_count = int(sum(float(item.get("value") or 0) for item in attention_items if bool(item.get("count_in_total", True))))
         out["attention"] = {
             "title": "Operations Attention Board",
             "active_total": active_total,
+            "total_count": total_count,
             "items": attention_items,
             "healthy": active_total == 0,
         }
@@ -6652,9 +6835,14 @@ def _build_dashboard_kpis(job_status):
         out["attention"] = {
             "title": "Operations Attention Board",
             "active_total": 0,
+            "total_count": 0,
             "items": [],
             "healthy": True,
         }
+    try:
+        _record_dashboard_attention_snapshot(out.get("attention") or {})
+    except Exception:
+        pass
 
     feature_defs = [
         ("WAN Ping", "wan_ping", out["wan"].get("enabled"), f"{out['wan'].get('configured', 0)} ISPs · {out['wan'].get('targets_enabled', 0)} targets"),
@@ -6745,6 +6933,14 @@ async def dashboard_latest_logs(request: Request, limit: int = 20):
             surveillance_only=False,
         )
     return JSONResponse({"rows": rows, "captured_at": utc_now_iso()})
+
+
+@app.get("/dashboard/attention-trends", response_class=JSONResponse)
+async def dashboard_attention_trends(request: Request):
+    job_status = {item["job_name"]: dict(item) for item in get_job_status()}
+    dashboard_kpis = _get_dashboard_kpis_cached(job_status)
+    attention = dashboard_kpis.get("attention") if isinstance(dashboard_kpis, dict) else {}
+    return _json_no_store({"ok": True, "trends": _dashboard_attention_trends_payload(attention if isinstance(attention, dict) else {})})
 
 
 @app.get("/logs", response_class=HTMLResponse)
