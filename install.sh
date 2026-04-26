@@ -107,7 +107,7 @@ run_compose() {
   log "Starting services..."
   cd "$INSTALL_DIR"
   mkdir -p data
-  THREEJ_VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+  THREEJ_VERSION=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
   THREEJ_VERSION_DATE=$(git log -1 --format=%cs 2>/dev/null || echo "unknown")
   export THREEJ_VERSION
   export THREEJ_VERSION_DATE

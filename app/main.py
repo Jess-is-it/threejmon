@@ -173,6 +173,8 @@ SYSTEM_UPDATE_LOG_PATH = DATA_DIR / "system_update.log"
 SYSTEM_UPDATE_CHECK_LIMIT = 50
 SYSTEM_UPDATE_LOG_TAIL_BYTES = 16384
 SYSTEM_UPDATE_STALE_SECONDS = 1800
+SYSTEM_UPDATE_INSTALLED_CACHE_SECONDS = 120
+SYSTEM_UPDATE_INSTALLED_VERSION_CACHE = {"repo_path": "", "expires_at": 0.0, "value": None}
 
 SYSTEM_DEFAULTS = {
     "branding": {
@@ -3597,20 +3599,134 @@ def _system_update_branch_name() -> str:
     return (str(os.environ.get("THREEJ_BRANCH") or "").strip() or "master")
 
 
+def _system_update_git_commit_info(repo_path: str = "", ref: str = "HEAD") -> dict:
+    repo_path = (str(repo_path or "").strip() or _system_update_host_repo())
+    ref = (str(ref or "").strip() or "HEAD")
+    info = {"full": "", "short": "", "date": ""}
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo_path, "rev-parse", ref],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if result.returncode != 0:
+            return info
+        full_sha = str(result.stdout or "").strip()
+        if not full_sha or full_sha.lower() == "head":
+            return info
+        info["full"] = full_sha
+        info["short"] = full_sha[:7]
+    except Exception:
+        return info
+    try:
+        date_result = subprocess.run(
+            ["git", "-C", repo_path, "show", "-s", "--format=%cI", info["full"]],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if date_result.returncode == 0:
+            info["date"] = str(date_result.stdout or "").strip()[:10]
+    except Exception:
+        pass
+    return info
+
+
+def _system_update_host_git_commit_info(repo_path: str = "") -> dict:
+    repo_path = (str(repo_path or "").strip() or _system_update_host_repo())
+    now = time.time()
+    cached = SYSTEM_UPDATE_INSTALLED_VERSION_CACHE
+    cached_value = cached.get("value")
+    if (
+        cached.get("repo_path") == repo_path
+        and float(cached.get("expires_at") or 0.0) > now
+        and isinstance(cached_value, dict)
+    ):
+        return dict(cached_value)
+
+    info = {"full": "", "short": "", "date": ""}
+    script = "\n".join(
+        [
+            "set -e",
+            f"repo={shlex.quote(repo_path)}",
+            'full=$(git -C "$repo" rev-parse HEAD 2>/dev/null || true)',
+            'date=$(git -C "$repo" show -s --format=%cI "$full" 2>/dev/null || true)',
+            'printf "%s\\n%s\\n" "$full" "$date"',
+        ]
+    )
+    ok, output = run_host_command(script, timeout_seconds=15)
+    if ok:
+        lines = str(output or "").splitlines()
+        full_sha = str(lines[0] if lines else "").strip()
+        if full_sha and full_sha.lower() != "head":
+            info["full"] = full_sha
+            info["short"] = full_sha[:7]
+            info["date"] = str(lines[1] if len(lines) > 1 else "").strip()[:10]
+
+    ttl = SYSTEM_UPDATE_INSTALLED_CACHE_SECONDS if info.get("full") else 30
+    SYSTEM_UPDATE_INSTALLED_VERSION_CACHE.update(
+        {"repo_path": repo_path, "expires_at": now + ttl, "value": dict(info)}
+    )
+    return info
+
+
+def _system_update_version_file_info(repo_path: str = "") -> dict:
+    repo_path = (str(repo_path or "").strip() or _system_update_host_repo())
+    info = {"full": "", "short": "", "date": ""}
+    candidates = []
+    if repo_path:
+        candidates.append(Path(repo_path) / ".threej_version")
+    candidates.append(BASE_DIR.parent / ".threej_version")
+    for version_path in candidates:
+        try:
+            if not version_path.is_file():
+                continue
+            parts = version_path.read_text(encoding="utf-8", errors="replace").strip().split()
+            version = str(parts[0] if parts else "").strip()
+            if not version or version.lower() == "unknown":
+                continue
+            info["full"] = version
+            info["short"] = version[:7]
+            info["date"] = str(parts[1] if len(parts) > 1 else "").strip()[:10]
+            return info
+        except Exception:
+            continue
+    return info
+
+
 def _system_update_installed_version() -> dict:
-    version = (str(os.environ.get("THREEJ_VERSION") or "").strip() or "unknown")
-    version_date = (str(os.environ.get("THREEJ_VERSION_DATE") or "").strip() or "unknown")
+    version = str(os.environ.get("THREEJ_VERSION") or "").strip()
+    version_date = str(os.environ.get("THREEJ_VERSION_DATE") or "").strip()
+    git_info = {"full": "", "short": "", "date": ""}
+    version_info = _system_update_version_file_info()
     status = _read_system_update_status()
-    if version in ("", "unknown"):
-        fallback_full = str(status.get("new_commit") or "").strip() or str(status.get("old_commit") or "").strip()
-        if fallback_full:
-            version = fallback_full[:7]
-            if version_date in ("", "unknown"):
-                version_date = (status.get("updated_at") or "")[:10] or "unknown"
+
+    if not version or version.lower() == "unknown":
+        git_info = _system_update_git_commit_info()
+        if not git_info.get("full") and not version_info.get("full"):
+            git_info = _system_update_host_git_commit_info()
+        version = (
+            git_info.get("full")
+            or version_info.get("full")
+            or str(status.get("new_commit") or "").strip()
+            or str(status.get("old_commit") or "").strip()
+        )
+    if not version_date or version_date.lower() == "unknown":
+        version_date = (
+            git_info.get("date")
+            or version_info.get("date")
+            or (status.get("updated_at") or "")[:10]
+        )
+
+    if not version or version.lower() == "unknown":
+        return {"full": "", "short": "", "date": ""}
     return {
         "full": version,
-        "short": version[:7] if version and version != "unknown" else version,
-        "date": version_date if version_date not in ("", "unknown") else "",
+        "short": version[:7],
+        "date": version_date if version_date.lower() != "unknown" else "",
     }
 
 
@@ -3859,8 +3975,8 @@ def _system_update_parse_check_output(output: str):
                     "subject": parts[5].strip(),
                 }
             )
-    info["has_update"] = bool(info["latest"]["full"]) and info["current"]["full"] != info["latest"]["full"]
     current_full = info["current"]["full"]
+    info["has_update"] = bool(info["latest"]["full"]) and bool(current_full) and current_full != info["latest"]["full"]
     current_index = -1
     for idx, item in enumerate(info["commits"]):
         if item.get("full") == current_full:
@@ -3891,7 +4007,8 @@ def _system_update_check_remote():
     latest = commits[0] if commits else {"full": "", "short": "", "date": ""}
     current_full = str(current.get("full") or "").strip()
     current_short = str(current.get("short") or "").strip()
-    has_update = bool(latest.get("full")) and not (
+    has_known_current = bool(current_full or current_short)
+    has_update = bool(latest.get("full")) and has_known_current and not (
         (current_full and current_full == latest.get("full"))
         or (current_short and current_short == str(latest.get("short") or "").strip())
     )

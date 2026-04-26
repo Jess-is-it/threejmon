@@ -177,7 +177,7 @@ ensure_clean_repo() {
 
 write_version_file() {
   local version version_date
-  version=$(git_repo rev-parse --short HEAD 2>/dev/null || echo "unknown")
+  version=$(git_repo rev-parse HEAD 2>/dev/null || echo "unknown")
   version_date=$(git_repo log -1 --format=%cs 2>/dev/null || echo "unknown")
   printf "%s %s" "${version}" "${version_date}" > "${INSTALL_DIR}/.threej_version"
 }
@@ -210,6 +210,9 @@ run_update() {
   STATUS_NEW_COMMIT=${new_commit}
 
   write_version_file
+  THREEJ_VERSION=$(git_repo rev-parse HEAD 2>/dev/null || echo "unknown")
+  THREEJ_VERSION_DATE=$(git_repo log -1 --format=%cs 2>/dev/null || echo "unknown")
+  export THREEJ_VERSION THREEJ_VERSION_DATE
 
   if [ "${SKIP_REBUILD}" = "1" ]; then
     set_phase 5 "done" "Repository updated. Rebuild skipped."
@@ -218,18 +221,20 @@ run_update() {
   fi
 
   if [ "${old_commit}" = "${new_commit}" ] && [ "${FORCE_REBUILD}" != "1" ]; then
-    set_phase 5 "done" "Already up to date. Rebuild skipped."
-    log "Already up to date at $(git_repo rev-parse --short HEAD). Skipping rebuild."
-    return
+    running_version=$(cd "${INSTALL_DIR}" && docker compose exec -T threejnotif printenv THREEJ_VERSION 2>/dev/null || true)
+    running_version=$(printf "%s" "${running_version}" | tr -d '\r' | head -n 1)
+    if [ "${running_version}" = "${THREEJ_VERSION}" ]; then
+      set_phase 5 "done" "Already up to date. Rebuild skipped."
+      log "Already up to date at $(git_repo rev-parse --short HEAD). Skipping rebuild."
+      return
+    fi
+    log "Repository is already up to date, but the running service reports version ${running_version:-unknown}. Rebuilding service metadata."
   fi
 
   set_phase 3 "rebuilding" "Rebuilding services..."
   log "Rebuilding services..."
   cd "${INSTALL_DIR}"
   mkdir -p data
-  THREEJ_VERSION=$(git_repo rev-parse --short HEAD 2>/dev/null || echo "unknown")
-  THREEJ_VERSION_DATE=$(git_repo log -1 --format=%cs 2>/dev/null || echo "unknown")
-  export THREEJ_VERSION THREEJ_VERSION_DATE
   export BUILDX_NO_DEFAULT_ATTESTATIONS=1
   docker compose up -d --build
   set_phase 4 "health_check" "Waiting for the updated service to come back..."

@@ -29,6 +29,7 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY app /app/app
+COPY .threej_version /app/.threej_version
 
 ENV THREEJ_DB_PATH=/data/threejnotif.db
 ENV THREEJ_VERSION=${THREEJ_VERSION}
