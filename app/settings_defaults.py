@@ -563,6 +563,28 @@ WAN_PING_DEFAULTS = {
     "messages": {},
 }
 
+ISP_STATUS_DEFAULTS = {
+    "enabled": False,
+    "general": {
+        "poll_interval_seconds": 30,
+        "history_retention_days": 400,
+        "chart_window_hours": 24,
+    },
+    "capacity": {
+        "hundred_mbps_min": 90,
+        "hundred_mbps_max": 105,
+        "window_minutes": 10,
+        "average_detection_enabled": True,
+        "average_window_hours": 4,
+    },
+    "telegram": {
+        "daily_enabled": False,
+        "daily_time": "07:00",
+        "immediate_100m_enabled": True,
+        "recovery_confirm_minutes": 2,
+    },
+}
+
 WAN_MESSAGE_DEFAULTS = {
     "down_msg": "🔴 {label} {target} is DOWN {{datetime}} 😢😤",
     "up_msg": "🟢 {label} {target} is UP {{datetime}}\n  Target: {target}\n  Source: {local-ip}\n  {ping5}",

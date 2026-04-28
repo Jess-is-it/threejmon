@@ -7,6 +7,7 @@ _LAST_TOTALS = {}
 _LAST_SAMPLE_AT = time.monotonic()
 _REGISTERED = {
     "WAN Ping",
+    "ISP Port Status",
     "Accounts Ping",
     "Under Surveillance",
     "Usage",

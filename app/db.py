@@ -24,6 +24,8 @@ AUTH_DEFAULT_PERMISSIONS = [
     {"code": "dashboard.kpi.usage.view", "label": "Dashboard · Usage KPI", "description": "View Usage KPI card on Dashboard."},
     {"code": "dashboard.kpi.offline.view", "label": "Dashboard · Offline KPI", "description": "View Offline KPI card on Dashboard."},
     {"code": "dashboard.kpi.optical.view", "label": "Dashboard · Optical KPI", "description": "View Optical Monitoring KPI card on Dashboard."},
+    {"code": "dashboard.kpi.isp_status.view", "label": "Dashboard · ISP Port Status KPI", "description": "View ISP Port Status capacity KPI card on Dashboard."},
+    {"code": "dashboard.kpi.mikrotik_routers.view", "label": "Dashboard · MikroTik Routers KPI", "description": "View MikroTik router up/down KPI card on Dashboard."},
     {"code": "dashboard.needs_attention.view", "label": "Dashboard · Needs Attention", "description": "View Needs Attention panel on Dashboard."},
     {"code": "dashboard.resources.view", "label": "Dashboard · Live Resources", "description": "View Live System Resource Usage panel on Dashboard."},
     {"code": "dashboard.logs.view", "label": "Dashboard · Latest Logs", "description": "View Latest Logs panel on Dashboard."},
@@ -42,6 +44,15 @@ AUTH_DEFAULT_PERMISSIONS = [
     {"code": "offline.edit", "label": "Offline Edit", "description": "Edit Offline settings and actions."},
     {"code": "wan.view", "label": "WAN View", "description": "View WAN Ping status and charts."},
     {"code": "wan.edit", "label": "WAN Edit", "description": "Edit WAN settings, targets, and actions."},
+    {"code": "isp_status.view", "label": "ISP Port Status View", "description": "View ISP Port Status bandwidth tracking and charts."},
+    {"code": "isp_status.edit", "label": "ISP Port Status Edit", "description": "Edit ISP Port Status settings and actions."},
+    {"code": "isp_status.tab.status.view", "label": "ISP Port Status · Status Tab", "description": "View ISP Port Status bandwidth table and charts."},
+    {"code": "isp_status.tab.settings.view", "label": "ISP Port Status · Settings Tab", "description": "View ISP Port Status settings tab."},
+    {"code": "isp_status.chart.series.view", "label": "ISP Port Status · Chart Series", "description": "View ISP Port Status bandwidth chart series."},
+    {"code": "isp_status.settings.general.edit", "label": "ISP Port Status · Settings · General", "description": "Edit ISP Port Status polling, retention, and chart defaults."},
+    {"code": "isp_status.settings.capacity.edit", "label": "ISP Port Status · Settings · Capacity", "description": "Edit ISP Port Status bandwidth capacity classification settings."},
+    {"code": "isp_status.settings.telegram.edit", "label": "ISP Port Status · Settings · Telegram", "description": "Edit ISP Port Status Telegram report behavior."},
+    {"code": "isp_status.settings.danger.run", "label": "ISP Port Status · Settings · Danger", "description": "Run ISP Port Status destructive format actions."},
     {"code": "system.view", "label": "System View", "description": "View system settings pages."},
     {"code": "system.edit", "label": "System Edit", "description": "Edit system settings pages."},
     {"code": "system.general.branding.view", "label": "System General · Branding View", "description": "View Branding section under System Settings → General."},
@@ -725,6 +736,24 @@ def init_db():
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS isp_status_samples (
+                    id BIGSERIAL PRIMARY KEY,
+                    timestamp TEXT NOT NULL,
+                    wan_id TEXT NOT NULL,
+                    core_id TEXT,
+                    label TEXT,
+                    interface_name TEXT,
+                    rx_bps DOUBLE PRECISION,
+                    tx_bps DOUBLE PRECISION,
+                    total_bps DOUBLE PRECISION,
+                    peak_mbps DOUBLE PRECISION,
+                    capacity_status TEXT,
+                    capacity_reason TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_wan_target_ping_results_target_ts
                 ON wan_target_ping_results (target_id, timestamp)
                 """
@@ -1078,6 +1107,24 @@ def init_db():
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS isp_status_samples (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    wan_id TEXT NOT NULL,
+                    core_id TEXT,
+                    label TEXT,
+                    interface_name TEXT,
+                    rx_bps REAL,
+                    tx_bps REAL,
+                    total_bps REAL,
+                    peak_mbps REAL,
+                    capacity_status TEXT,
+                    capacity_reason TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_wan_target_ping_results_target_ts
                 ON wan_target_ping_results (target_id, timestamp)
                 """
@@ -1302,6 +1349,18 @@ def init_db():
             """
             CREATE INDEX IF NOT EXISTS idx_wan_target_ping_results_ts
             ON wan_target_ping_results (timestamp)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_isp_status_samples_wan_ts
+            ON isp_status_samples (wan_id, timestamp)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_isp_status_samples_ts
+            ON isp_status_samples (timestamp)
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_rto_results_ip_ts ON rto_results (ip, timestamp)")
@@ -5002,6 +5061,225 @@ def get_wan_status_counts(wan_ids, start_iso, end_iso):
                 "total": int(row["total"] or 0),
             }
         return counts
+    finally:
+        conn.close()
+
+
+def insert_isp_status_sample(
+    wan_id,
+    core_id="",
+    label="",
+    interface_name="",
+    rx_bps=None,
+    tx_bps=None,
+    timestamp=None,
+    capacity_status="",
+    capacity_reason="",
+    retention_days=400,
+):
+    stamp = timestamp or utc_now_iso()
+    try:
+        rx_value = float(rx_bps) if rx_bps is not None else None
+    except Exception:
+        rx_value = None
+    try:
+        tx_value = float(tx_bps) if tx_bps is not None else None
+    except Exception:
+        tx_value = None
+    total_bps = None
+    values = [value for value in (rx_value, tx_value) if value is not None]
+    if values:
+        total_bps = sum(values)
+    peak_mbps = None
+    if values:
+        peak_mbps = max(values) / 1_000_000.0
+    cutoff = (datetime.utcnow() - timedelta(days=max(int(retention_days or 1), 1))).replace(microsecond=0).isoformat() + "Z"
+    try:
+        prune_interval_seconds = int(os.environ.get("THREEJ_ISP_STATUS_PRUNE_INTERVAL_SECONDS", "300") or 300)
+    except Exception:
+        prune_interval_seconds = 300
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO isp_status_samples (
+                    timestamp, wan_id, core_id, label, interface_name,
+                    rx_bps, tx_bps, total_bps, peak_mbps, capacity_status, capacity_reason
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    stamp,
+                    wan_id,
+                    core_id,
+                    label,
+                    interface_name,
+                    rx_value,
+                    tx_value,
+                    total_bps,
+                    peak_mbps,
+                    capacity_status,
+                    capacity_reason,
+                ),
+            )
+            if _should_run_retention_prune("isp_status_samples", prune_interval_seconds):
+                conn.execute("DELETE FROM isp_status_samples WHERE timestamp < ?", (cutoff,))
+    finally:
+        conn.close()
+
+
+def fetch_isp_status_latest_map(wan_ids):
+    ids = [str(item or "").strip() for item in (wan_ids or []) if str(item or "").strip()]
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    conn = get_conn()
+    try:
+        if _use_postgres():
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT ON (wan_id)
+                    wan_id, timestamp, core_id, label, interface_name, rx_bps, tx_bps,
+                    total_bps, peak_mbps, capacity_status, capacity_reason
+                FROM isp_status_samples
+                WHERE wan_id IN ({placeholders})
+                ORDER BY wan_id, timestamp DESC
+                """,
+                ids,
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                f"""
+                SELECT s.wan_id, s.timestamp, s.core_id, s.label, s.interface_name,
+                       s.rx_bps, s.tx_bps, s.total_bps, s.peak_mbps,
+                       s.capacity_status, s.capacity_reason
+                FROM isp_status_samples s
+                INNER JOIN (
+                    SELECT wan_id, MAX(timestamp) AS max_timestamp
+                    FROM isp_status_samples
+                    WHERE wan_id IN ({placeholders})
+                    GROUP BY wan_id
+                ) latest
+                  ON latest.wan_id = s.wan_id AND latest.max_timestamp = s.timestamp
+                """,
+                ids,
+            ).fetchall()
+        out = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                row = dict(row)
+            out[row.get("wan_id")] = row
+        return out
+    finally:
+        conn.close()
+
+
+def fetch_isp_status_series_map(wan_ids, start_iso, end_iso, bucket_seconds=None):
+    ids = [str(item or "").strip() for item in (wan_ids or []) if str(item or "").strip()]
+    if not ids:
+        return {"series": {}, "total": []}
+    try:
+        bucket_seconds = max(int(bucket_seconds or 0), 0)
+    except Exception:
+        bucket_seconds = 0
+    placeholders = ",".join("?" for _ in ids)
+    conn = get_conn()
+    try:
+        if bucket_seconds > 1:
+            if _use_postgres():
+                rows = conn.execute(
+                    f"""
+                    SELECT
+                        wan_id,
+                        FLOOR(EXTRACT(EPOCH FROM (timestamp::timestamptz)) / ?) * ? AS bucket_epoch,
+                        AVG(rx_bps) AS rx_bps,
+                        AVG(tx_bps) AS tx_bps,
+                        AVG(total_bps) AS total_bps,
+                        MAX(peak_mbps) AS peak_mbps
+                    FROM isp_status_samples
+                    WHERE timestamp BETWEEN ? AND ?
+                      AND wan_id IN ({placeholders})
+                    GROUP BY wan_id, bucket_epoch
+                    ORDER BY bucket_epoch ASC
+                    """,
+                    [bucket_seconds, bucket_seconds, start_iso, end_iso] + ids,
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    f"""
+                    SELECT
+                        wan_id,
+                        (CAST(strftime('%s', timestamp) AS INTEGER) / ?) * ? AS bucket_epoch,
+                        AVG(rx_bps) AS rx_bps,
+                        AVG(tx_bps) AS tx_bps,
+                        AVG(total_bps) AS total_bps,
+                        MAX(peak_mbps) AS peak_mbps
+                    FROM isp_status_samples
+                    WHERE timestamp BETWEEN ? AND ?
+                      AND wan_id IN ({placeholders})
+                    GROUP BY wan_id, bucket_epoch
+                    ORDER BY bucket_epoch ASC
+                    """,
+                    [bucket_seconds, bucket_seconds, start_iso, end_iso] + ids,
+                ).fetchall()
+        else:
+            rows = conn.execute(
+                f"""
+                SELECT wan_id, timestamp, rx_bps, tx_bps, total_bps, peak_mbps
+                FROM isp_status_samples
+                WHERE timestamp BETWEEN ? AND ?
+                  AND wan_id IN ({placeholders})
+                ORDER BY timestamp ASC
+                """,
+                [start_iso, end_iso] + ids,
+            ).fetchall()
+        series = {}
+        total_by_ts = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                row = dict(row)
+            stamp = row.get("timestamp")
+            if bucket_seconds > 1:
+                epoch = row.get("bucket_epoch")
+                if epoch is None:
+                    continue
+                try:
+                    stamp = datetime.fromtimestamp(float(epoch), tz=timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+                except Exception:
+                    continue
+            wan_id = (row.get("wan_id") or "").strip()
+            if not wan_id or not stamp:
+                continue
+            total_mbps = None
+            try:
+                total_mbps = float(row.get("total_bps")) / 1_000_000.0 if row.get("total_bps") is not None else None
+            except Exception:
+                total_mbps = None
+            point = {
+                "timestamp": stamp,
+                "rx_mbps": round(float(row.get("rx_bps") or 0) / 1_000_000.0, 2) if row.get("rx_bps") is not None else None,
+                "tx_mbps": round(float(row.get("tx_bps") or 0) / 1_000_000.0, 2) if row.get("tx_bps") is not None else None,
+                "total_mbps": round(total_mbps, 2) if total_mbps is not None else None,
+                "peak_mbps": round(float(row.get("peak_mbps") or 0), 2) if row.get("peak_mbps") is not None else None,
+            }
+            series.setdefault(wan_id, []).append(point)
+            if total_mbps is not None:
+                total_by_ts[stamp] = float(total_by_ts.get(stamp, 0.0) or 0.0) + total_mbps
+        total = [
+            {"timestamp": stamp, "total_mbps": round(value, 2)}
+            for stamp, value in sorted(total_by_ts.items())
+        ]
+        return {"series": series, "total": total}
+    finally:
+        conn.close()
+
+
+def clear_isp_status_data():
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM isp_status_samples")
     finally:
         conn.close()
 

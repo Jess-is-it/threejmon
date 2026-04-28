@@ -19,6 +19,7 @@ from .db import (
     delete_usage_modem_reboot_history_older_than,
     get_pppoe_usage_window_stats_since,
     insert_pppoe_usage_sample,
+    insert_isp_status_sample,
     insert_usage_modem_reboot_history,
     insert_offline_history_event,
     list_usage_modem_reboot_account_stats,
@@ -61,6 +62,7 @@ from .settings_defaults import (
     SURVEILLANCE_DEFAULTS,
     USAGE_DEFAULTS,
     WAN_PING_DEFAULTS,
+    ISP_STATUS_DEFAULTS,
 )
 from .settings_store import get_settings, get_state, save_settings, save_state
 from .telegram_commands import handle_telegram_command
@@ -126,6 +128,272 @@ def _normalize_accounts_ping_classification(raw):
         "issue_rto_pct": float(source.get("issue_rto_pct", defaults.get("issue_rto_pct", 5.0)) or 5.0),
         "issue_streak": int(source.get("issue_streak", defaults.get("issue_streak", 2)) or 2),
     }
+
+
+def _normalize_isp_status_job_settings(raw):
+    cfg = raw if isinstance(raw, dict) else {}
+    defaults = ISP_STATUS_DEFAULTS
+    general = cfg.get("general") if isinstance(cfg.get("general"), dict) else {}
+    capacity = cfg.get("capacity") if isinstance(cfg.get("capacity"), dict) else {}
+    default_general = defaults.get("general", {})
+    default_capacity = defaults.get("capacity", {})
+    try:
+        poll_interval = max(int(general.get("poll_interval_seconds") or default_general.get("poll_interval_seconds", 30)), 5)
+    except Exception:
+        poll_interval = int(default_general.get("poll_interval_seconds", 30))
+    try:
+        retention_days = max(int(general.get("history_retention_days") or default_general.get("history_retention_days", 400)), 1)
+    except Exception:
+        retention_days = int(default_general.get("history_retention_days", 400))
+    try:
+        low = max(float(capacity.get("hundred_mbps_min") or default_capacity.get("hundred_mbps_min", 90)), 1.0)
+    except Exception:
+        low = float(default_capacity.get("hundred_mbps_min", 90))
+    try:
+        high = max(float(capacity.get("hundred_mbps_max") or default_capacity.get("hundred_mbps_max", 105)), low)
+    except Exception:
+        high = float(default_capacity.get("hundred_mbps_max", 105))
+    try:
+        window_minutes = max(int(capacity.get("window_minutes") or default_capacity.get("window_minutes", 10)), 1)
+    except Exception:
+        window_minutes = int(default_capacity.get("window_minutes", 10))
+    average_enabled = bool(capacity.get("average_detection_enabled", default_capacity.get("average_detection_enabled", True)))
+    try:
+        average_window_hours = max(
+            int(capacity.get("average_window_hours") or default_capacity.get("average_window_hours", 4)),
+            1,
+        )
+    except Exception:
+        average_window_hours = int(default_capacity.get("average_window_hours", 4))
+    telegram = cfg.get("telegram") if isinstance(cfg.get("telegram"), dict) else {}
+    default_telegram = defaults.get("telegram", {})
+    try:
+        recovery_confirm_minutes = max(
+            int(telegram.get("recovery_confirm_minutes") or default_telegram.get("recovery_confirm_minutes", 2)),
+            1,
+        )
+    except Exception:
+        recovery_confirm_minutes = int(default_telegram.get("recovery_confirm_minutes", 2))
+    return {
+        "enabled": bool(cfg.get("enabled")),
+        "poll_interval_seconds": poll_interval,
+        "history_retention_days": retention_days,
+        "hundred_mbps_min": low,
+        "hundred_mbps_max": high,
+        "window_minutes": window_minutes,
+        "average_detection_enabled": average_enabled,
+        "average_window_hours": average_window_hours,
+        "telegram": {
+            "daily_enabled": bool(telegram.get("daily_enabled", default_telegram.get("daily_enabled", False))),
+            "daily_time": (telegram.get("daily_time") or default_telegram.get("daily_time", "07:00")).strip() or "07:00",
+            "immediate_100m_enabled": bool(
+                telegram.get("immediate_100m_enabled", default_telegram.get("immediate_100m_enabled", True))
+            ),
+            "recovery_confirm_minutes": recovery_confirm_minutes,
+        },
+    }
+
+
+def _parse_routeros_bps(value):
+    raw = str(value if value is not None else "").strip().lower()
+    if not raw:
+        return None
+    raw = raw.replace(" ", "")
+    try:
+        return float(raw)
+    except Exception:
+        pass
+    match = re.match(r"^([0-9]+(?:\.[0-9]+)?)([kmgt]?)(?:bps|b/s)?$", raw)
+    if not match:
+        return None
+    value_num = float(match.group(1))
+    unit = match.group(2)
+    multiplier = {"": 1, "k": 1_000, "m": 1_000_000, "g": 1_000_000_000, "t": 1_000_000_000_000}.get(unit, 1)
+    return value_num * multiplier
+
+
+def _classify_isp_capacity(samples, cfg):
+    cleaned = [
+        item
+        for item in (samples or [])
+        if isinstance(item, dict) and item.get("ts") and item.get("peak_mbps") is not None
+    ]
+    cleaned.sort(key=lambda item: str(item.get("ts") or ""))
+    if not cleaned:
+        return "observing", "Waiting for traffic samples."
+    low = float(cfg.get("hundred_mbps_min") or 90)
+    high = float(cfg.get("hundred_mbps_max") or 105)
+    window_minutes = int(cfg.get("window_minutes") or 10)
+    average_enabled = bool(cfg.get("average_detection_enabled", True))
+    average_window_hours = max(int(cfg.get("average_window_hours") or 4), 1)
+    latest = cleaned[-1]
+    latest_peak = float(latest.get("peak_mbps") or 0.0)
+    last_dt = _parse_iso_utc(cleaned[-1].get("ts"))
+    short_cutoff = last_dt - timedelta(minutes=window_minutes) if last_dt else None
+    short_window = [
+        item
+        for item in cleaned
+        if not short_cutoff or (_parse_iso_utc(item.get("ts")) or datetime.min) >= short_cutoff
+    ] or cleaned
+    first_dt = _parse_iso_utc(short_window[0].get("ts"))
+    short_last_dt = _parse_iso_utc(short_window[-1].get("ts"))
+    span_seconds = max((short_last_dt - first_dt).total_seconds(), 0.0) if first_dt and short_last_dt else 0.0
+    required_seconds = max(window_minutes * 60, 1)
+    short_max_peak = max(float(item.get("peak_mbps") or 0.0) for item in short_window)
+    if short_max_peak > high:
+        return "1g", f"Recent peak reached {short_max_peak:.1f} Mbps, above the {high:.1f} Mbps 100M ceiling."
+    if low <= short_max_peak <= high and span_seconds >= required_seconds * 0.7:
+        return "100m", f"Peak stayed within {low:.1f}-{high:.1f} Mbps over the {window_minutes}m observation window."
+    if average_enabled and last_dt:
+        average_cutoff = last_dt - timedelta(hours=average_window_hours)
+        average_window = [
+            item
+            for item in cleaned
+            if (_parse_iso_utc(item.get("ts")) or datetime.min) >= average_cutoff
+        ]
+        if average_window:
+            avg_first_dt = _parse_iso_utc(average_window[0].get("ts"))
+            avg_last_dt = _parse_iso_utc(average_window[-1].get("ts"))
+            avg_span_seconds = max((avg_last_dt - avg_first_dt).total_seconds(), 0.0) if avg_first_dt and avg_last_dt else 0.0
+            avg_required_seconds = max(average_window_hours * 3600, 1)
+            avg_peak = sum(float(item.get("peak_mbps") or 0.0) for item in average_window) / max(len(average_window), 1)
+            avg_max_peak = max(float(item.get("peak_mbps") or 0.0) for item in average_window)
+            if avg_max_peak > high and avg_span_seconds >= avg_required_seconds * 0.7:
+                return "1g", f"Average window still observed {avg_max_peak:.1f} Mbps, above the {high:.1f} Mbps 100M ceiling."
+            if avg_span_seconds >= avg_required_seconds * 0.7 and low <= avg_peak <= high:
+                return (
+                    "100m",
+                    f"Average peak is {avg_peak:.1f} Mbps over {average_window_hours}h, inside the {low:.1f}-{high:.1f} Mbps 100M window.",
+                )
+    if low <= latest_peak <= high:
+        return "observing", f"Latest peak is {latest_peak:.1f} Mbps; waiting for a full {window_minutes}m window."
+    return "observing", f"Latest peak is {latest_peak:.1f} Mbps; no capacity ceiling detected yet."
+
+
+def _isp_status_local_now():
+    if ZoneInfo is not None:
+        return datetime.now(ZoneInfo("Asia/Manila"))
+    return datetime.now()
+
+
+def _fmt_mbps(value):
+    try:
+        return f"{float(value or 0.0):.2f}"
+    except Exception:
+        return "0.00"
+
+
+def _isp_status_wan_label(wan, wan_id):
+    return (wan.get("identifier") or wan.get("list_name") or wan_id or "ISP").strip()
+
+
+def _send_isp_status_telegram(wan_cfg, message):
+    telegram = wan_cfg.get("telegram") if isinstance(wan_cfg.get("telegram"), dict) else {}
+    token = (telegram.get("bot_token") or "").strip()
+    chat_id = (telegram.get("chat_id") or "").strip()
+    if not token or not chat_id or not (message or "").strip():
+        return False
+    send_telegram(token, chat_id, message)
+    return True
+
+
+def _send_isp_status_100m_alert(cfg, wan_cfg, wan, wan_id, latest_row):
+    telegram_cfg = cfg.get("telegram") if isinstance(cfg.get("telegram"), dict) else {}
+    if not telegram_cfg.get("immediate_100m_enabled", True):
+        return False
+    identifier = (wan.get("identifier") or "").strip()
+    list_name = (wan.get("list_name") or latest_row.get("label") or "").strip()
+    label = identifier or list_name or _isp_status_wan_label(wan, wan_id)
+    core_id = (wan.get("core_id") or latest_row.get("core_id") or "").strip()
+    interface_name = (latest_row.get("interface_name") or wan.get("traffic_interface") or "").strip()
+    message = "\n".join(
+        [
+            "⚠️ ISP Port Status detected possible 100M capacity",
+            f"Identifier: {label}",
+            f"TO-ISP: {list_name or 'n/a'}",
+            f"Core: {core_id or 'n/a'}",
+            f"Interface: {interface_name or 'n/a'}",
+            f"RX: {_fmt_mbps((latest_row.get('rx_bps') or 0.0) / 1_000_000.0)} Mbps",
+            f"TX: {_fmt_mbps((latest_row.get('tx_bps') or 0.0) / 1_000_000.0)} Mbps",
+            f"Total: {_fmt_mbps((latest_row.get('total_bps') or 0.0) / 1_000_000.0)} Mbps",
+            f"Peak: {_fmt_mbps(latest_row.get('peak_mbps'))} Mbps",
+            f"Reason: {latest_row.get('capacity_reason') or '100M rule matched.'}",
+            f"Detected: {_isp_status_local_now().strftime('%Y-%m-%d %I:%M %p')}",
+        ]
+    )
+    return _send_isp_status_telegram(wan_cfg, message)
+
+
+def _send_isp_status_recovered_alert(cfg, wan_cfg, wan, wan_id, latest_row, recovery_started_at=""):
+    telegram_cfg = cfg.get("telegram") if isinstance(cfg.get("telegram"), dict) else {}
+    if not telegram_cfg.get("immediate_100m_enabled", True):
+        return False
+    identifier = (wan.get("identifier") or "").strip()
+    list_name = (wan.get("list_name") or latest_row.get("label") or "").strip()
+    label = identifier or list_name or _isp_status_wan_label(wan, wan_id)
+    core_id = (wan.get("core_id") or latest_row.get("core_id") or "").strip()
+    interface_name = (latest_row.get("interface_name") or wan.get("traffic_interface") or "").strip()
+    confirm_minutes = max(int(telegram_cfg.get("recovery_confirm_minutes") or 2), 1)
+    message = "\n".join(
+        [
+            "✅ ISP Port Status recovered from 100M",
+            f"Identifier: {label}",
+            f"TO-ISP: {list_name or 'n/a'}",
+            f"Core: {core_id or 'n/a'}",
+            f"Interface: {interface_name or 'n/a'}",
+            f"Current Status: 1G",
+            f"RX: {_fmt_mbps((latest_row.get('rx_bps') or 0.0) / 1_000_000.0)} Mbps",
+            f"TX: {_fmt_mbps((latest_row.get('tx_bps') or 0.0) / 1_000_000.0)} Mbps",
+            f"Total: {_fmt_mbps((latest_row.get('total_bps') or 0.0) / 1_000_000.0)} Mbps",
+            f"Peak: {_fmt_mbps(latest_row.get('peak_mbps'))} Mbps",
+            f"Confirmed: stayed 1G for at least {confirm_minutes} minute(s)",
+            f"Recovery Started: {format_ts_ph(recovery_started_at) if recovery_started_at else 'n/a'}",
+            f"Detected: {_isp_status_local_now().strftime('%Y-%m-%d %I:%M %p')}",
+        ]
+    )
+    return _send_isp_status_telegram(wan_cfg, message)
+
+
+def _send_isp_status_daily_report(cfg, wan_cfg, latest):
+    telegram_cfg = cfg.get("telegram") if isinstance(cfg.get("telegram"), dict) else {}
+    if not telegram_cfg.get("daily_enabled"):
+        return False
+    rows = []
+    counts = {"1g": 0, "100m": 0, "observing": 0, "not_configured": 0, "error": 0}
+    latest = latest if isinstance(latest, dict) else {}
+    for wan in wan_cfg.get("wans") or []:
+        if not isinstance(wan, dict) or not bool(wan.get("enabled", True)):
+            continue
+        wan_id = (wan.get("id") or f"{wan.get('core_id')}:{wan.get('list_name')}").strip()
+        if not wan_id:
+            continue
+        row = latest.get(wan_id) if isinstance(latest.get(wan_id), dict) else {}
+        status = (row.get("capacity_status") or "observing").strip().lower()
+        if status not in counts:
+            status = "observing"
+        counts[status] += 1
+        rows.append((wan, wan_id, row, status))
+    if not rows:
+        return False
+    now_local = _isp_status_local_now()
+    review_count = counts["observing"] + counts["not_configured"] + counts["error"]
+    if counts["100m"] > 0:
+        summary_status = "🔴 100M detected"
+    elif review_count > 0:
+        summary_status = "🟡 Some ISPs need review"
+    else:
+        summary_status = "🟢 All ISPs are 1G"
+    lines = [
+        "ISP Port Status Daily Report",
+        f"🕖 {now_local.strftime('%Y-%m-%d %I:%M %p')}",
+        f"(1G/100M): {counts['1g']}/{counts['100m']} - {summary_status}",
+        "",
+    ]
+    for wan, wan_id, row, status in rows:
+        label = _isp_status_wan_label(wan, wan_id)
+        label_status = "1G" if status == "1g" else "100M" if status == "100m" else "Needs Check" if status in ("not_configured", "error") else "Observing"
+        lines.append(f"{label}: {label_status}")
+    return _send_isp_status_telegram(wan_cfg, "\n".join(lines[:80]))
 
 
 def _accounts_ping_applied_classification(settings=None, state=None):
@@ -673,6 +941,8 @@ class JobsManager:
             "Optical Monitoring",
             "Telegram",
             "WAN Ping",
+            "ISP Port Status",
+            "MikroTik Routers",
             "Accounts Ping",
             "Missing Secrets",
             "Under Surveillance",
@@ -686,6 +956,8 @@ class JobsManager:
             threading.Thread(target=self._optical_loop, daemon=True),
             threading.Thread(target=self._telegram_loop, daemon=True),
             threading.Thread(target=self._wan_ping_loop, daemon=True),
+            threading.Thread(target=self._isp_status_loop, daemon=True),
+            threading.Thread(target=self._mikrotik_router_health_loop, daemon=True),
             threading.Thread(target=self._accounts_ping_loop, daemon=True),
             threading.Thread(target=self._accounts_missing_loop, daemon=True),
             threading.Thread(target=self._usage_loop, daemon=True),
@@ -1767,6 +2039,417 @@ class JobsManager:
                 add_feature_cpu("Telegram", max(time_module.thread_time() - loop_cpu_start, 0.0))
 
             time_module.sleep(2)
+
+    def _isp_status_loop(self):
+        while not self.stop_event.is_set():
+            cfg = _normalize_isp_status_job_settings(get_settings("isp_status", ISP_STATUS_DEFAULTS))
+            if not cfg.get("enabled"):
+                time_module.sleep(10)
+                continue
+            loop_cpu_start = time_module.thread_time()
+            try:
+                now_iso = utc_now_iso()
+                _safe_update_job_status("isp_status", last_run_at=now_iso)
+                wan_cfg = get_settings("wan_ping", WAN_PING_DEFAULTS)
+                pulse_cfg = get_settings("isp_ping", {})
+                cores = ((pulse_cfg.get("pulsewatch") or {}).get("mikrotik") or {}).get("cores") or []
+                core_map = {
+                    (core.get("id") or "").strip(): core
+                    for core in cores
+                    if isinstance(core, dict) and (core.get("id") or "").strip()
+                }
+                state = get_state("isp_status_state", {})
+                if not isinstance(state, dict):
+                    state = {}
+                latest = state.setdefault("latest", {})
+                windows = state.setdefault("capacity_windows", {})
+                capacity_alerts = state.setdefault("capacity_alerts", {})
+                if not isinstance(latest, dict):
+                    latest = {}
+                    state["latest"] = latest
+                if not isinstance(windows, dict):
+                    windows = {}
+                    state["capacity_windows"] = windows
+                if not isinstance(capacity_alerts, dict):
+                    capacity_alerts = {}
+                    state["capacity_alerts"] = capacity_alerts
+
+                groups = {}
+                for wan in wan_cfg.get("wans") or []:
+                    if not isinstance(wan, dict) or not bool(wan.get("enabled", True)):
+                        continue
+                    wan_id = (wan.get("id") or f"{wan.get('core_id')}:{wan.get('list_name')}").strip()
+                    if not wan_id:
+                        continue
+                    core_id = (wan.get("core_id") or "").strip()
+                    label = (wan.get("identifier") or wan.get("list_name") or wan_id).strip()
+                    interface_name = (wan.get("traffic_interface") or "").strip()
+                    if not interface_name:
+                        latest[wan_id] = {
+                            "wan_id": wan_id,
+                            "core_id": core_id,
+                            "label": label,
+                            "interface_name": "",
+                            "status": "not_configured",
+                            "capacity_status": "not_configured",
+                            "capacity_reason": "Traffic Interface is not set in System Settings -> Routers -> ISP Port Tagging.",
+                            "last_sample_at": now_iso,
+                        }
+                        continue
+                    core = core_map.get(core_id)
+                    if not isinstance(core, dict) or not (core.get("host") or "").strip():
+                        latest[wan_id] = {
+                            "wan_id": wan_id,
+                            "core_id": core_id,
+                            "label": label,
+                            "interface_name": interface_name,
+                            "status": "error",
+                            "capacity_status": "error",
+                            "capacity_reason": "Core MikroTik is not configured.",
+                            "last_sample_at": now_iso,
+                        }
+                        continue
+                    group_key = f"{core.get('host')}|{core.get('port', 8728)}|{core.get('username', '')}"
+                    groups.setdefault(group_key, {"core": core, "items": []})["items"].append((wan_id, wan, label, interface_name))
+
+                cutoff_minutes = int(cfg.get("window_minutes") or 10)
+                if cfg.get("average_detection_enabled", True):
+                    cutoff_minutes = max(cutoff_minutes, int(cfg.get("average_window_hours") or 4) * 60)
+                cutoff_dt = datetime.utcnow() - timedelta(minutes=max(cutoff_minutes, 1))
+                max_window_samples = max(
+                    int((max(cutoff_minutes, 1) * 60) / max(int(cfg.get("poll_interval_seconds") or 30), 1)) + 20,
+                    500,
+                )
+                for group in groups.values():
+                    core = group.get("core") or {}
+                    client = RouterOSClient(
+                        core.get("host", ""),
+                        int(core.get("port", 8728)),
+                        core.get("username", ""),
+                        core.get("password", ""),
+                    )
+                    try:
+                        client.connect()
+                    except Exception as exc:
+                        error_text = str(exc)
+                        for wan_id, wan, label, interface_name in group.get("items", []):
+                            core_id = (wan.get("core_id") or "").strip()
+                            latest[wan_id] = {
+                                "wan_id": wan_id,
+                                "core_id": core_id,
+                                "label": label,
+                                "interface_name": interface_name,
+                                "status": "error",
+                                "capacity_status": "error",
+                                "capacity_reason": error_text,
+                                "last_sample_at": now_iso,
+                                "last_error": error_text,
+                            }
+                            insert_isp_status_sample(
+                                wan_id,
+                                core_id=core_id,
+                                label=label,
+                                interface_name=interface_name,
+                                rx_bps=None,
+                                tx_bps=None,
+                                timestamp=now_iso,
+                                capacity_status="error",
+                                capacity_reason=error_text,
+                                retention_days=cfg.get("history_retention_days", 400),
+                            )
+                        client.close()
+                        continue
+                    try:
+                        for wan_id, wan, label, interface_name in group.get("items", []):
+                            core_id = (wan.get("core_id") or "").strip()
+                            try:
+                                traffic = client.monitor_interface_traffic(interface_name)
+                                rx_bps = _parse_routeros_bps(traffic.get("rx-bits-per-second"))
+                                tx_bps = _parse_routeros_bps(traffic.get("tx-bits-per-second"))
+                                peak_mbps = max((rx_bps or 0.0), (tx_bps or 0.0)) / 1_000_000.0
+                                window = [
+                                    item
+                                    for item in (windows.get(wan_id) or [])
+                                    if isinstance(item, dict)
+                                    and (_parse_iso_utc(item.get("ts")) or datetime.min) >= cutoff_dt
+                                ]
+                                window.append({"ts": now_iso, "peak_mbps": peak_mbps})
+                                windows[wan_id] = window[-max_window_samples:]
+                                capacity_status, capacity_reason = _classify_isp_capacity(windows[wan_id], cfg)
+                                insert_isp_status_sample(
+                                    wan_id,
+                                    core_id=core_id,
+                                    label=label,
+                                    interface_name=interface_name,
+                                    rx_bps=rx_bps,
+                                    tx_bps=tx_bps,
+                                    timestamp=now_iso,
+                                    capacity_status=capacity_status,
+                                    capacity_reason=capacity_reason,
+                                    retention_days=cfg.get("history_retention_days", 400),
+                                )
+                                latest_row = {
+                                    "wan_id": wan_id,
+                                    "core_id": core_id,
+                                    "label": label,
+                                    "interface_name": interface_name,
+                                    "status": "ok",
+                                    "rx_bps": rx_bps,
+                                    "tx_bps": tx_bps,
+                                    "total_bps": (rx_bps or 0.0) + (tx_bps or 0.0),
+                                    "peak_mbps": peak_mbps,
+                                    "capacity_status": capacity_status,
+                                    "capacity_reason": capacity_reason,
+                                    "last_sample_at": now_iso,
+                                    "last_error": "",
+                                }
+                                latest[wan_id] = latest_row
+                                alert_row = capacity_alerts.setdefault(wan_id, {})
+                                previous_capacity_status = (alert_row.get("last_status") or "").strip().lower()
+                                if capacity_status == "100m" and previous_capacity_status != "100m":
+                                    alert_sent = False
+                                    alert_row["recovery_started_at"] = ""
+                                    alert_row["last_recovered_sent_at"] = ""
+                                    try:
+                                        if _send_isp_status_100m_alert(cfg, wan_cfg, wan, wan_id, latest_row):
+                                            alert_row["last_100m_sent_at"] = now_iso
+                                            alert_row["last_alert_error"] = ""
+                                            alert_sent = True
+                                    except TelegramError:
+                                        alert_row["last_alert_error"] = "Telegram send failed."
+                                    except Exception as exc:
+                                        alert_row["last_alert_error"] = str(exc)
+                                    if alert_sent:
+                                        alert_row["last_status"] = capacity_status
+                                elif capacity_status == "100m":
+                                    alert_row["last_status"] = capacity_status
+                                    alert_row["recovery_started_at"] = ""
+                                else:
+                                    if previous_capacity_status == "100m" and capacity_status == "1g":
+                                        recovery_started_at = (alert_row.get("recovery_started_at") or "").strip()
+                                        if not recovery_started_at:
+                                            recovery_started_at = now_iso
+                                            alert_row["recovery_started_at"] = recovery_started_at
+                                        started_dt = _parse_iso_utc(recovery_started_at)
+                                        recovery_minutes = max(int((cfg.get("telegram") or {}).get("recovery_confirm_minutes") or 2), 1)
+                                        elapsed_seconds = (
+                                            max((datetime.utcnow() - started_dt).total_seconds(), 0.0)
+                                            if started_dt
+                                            else 0.0
+                                        )
+                                        if elapsed_seconds >= recovery_minutes * 60:
+                                            recovered_sent = False
+                                            try:
+                                                if _send_isp_status_recovered_alert(cfg, wan_cfg, wan, wan_id, latest_row, recovery_started_at):
+                                                    alert_row["last_recovered_sent_at"] = now_iso
+                                                    alert_row["last_alert_error"] = ""
+                                                    recovered_sent = True
+                                            except TelegramError:
+                                                alert_row["last_alert_error"] = "Telegram recovery send failed."
+                                            except Exception as exc:
+                                                alert_row["last_alert_error"] = str(exc)
+                                            if recovered_sent:
+                                                alert_row["last_status"] = capacity_status
+                                                alert_row["recovery_started_at"] = ""
+                                    elif previous_capacity_status == "100m":
+                                        alert_row["recovery_started_at"] = ""
+                                    else:
+                                        alert_row["last_status"] = capacity_status
+                                alert_row["last_seen_at"] = now_iso
+                            except Exception as exc:
+                                latest[wan_id] = {
+                                    "wan_id": wan_id,
+                                    "core_id": core_id,
+                                    "label": label,
+                                    "interface_name": interface_name,
+                                    "status": "error",
+                                    "capacity_status": "error",
+                                    "capacity_reason": str(exc),
+                                    "last_sample_at": now_iso,
+                                    "last_error": str(exc),
+                                }
+                                insert_isp_status_sample(
+                                    wan_id,
+                                    core_id=core_id,
+                                    label=label,
+                                    interface_name=interface_name,
+                                    rx_bps=None,
+                                    tx_bps=None,
+                                    timestamp=now_iso,
+                                    capacity_status="error",
+                                    capacity_reason=str(exc),
+                                    retention_days=cfg.get("history_retention_days", 400),
+                                )
+                    finally:
+                        client.close()
+
+                state["last_check_at"] = now_iso
+                telegram_cfg = cfg.get("telegram") if isinstance(cfg.get("telegram"), dict) else {}
+                if telegram_cfg.get("daily_enabled"):
+                    summary_state = {"last_run_date": state.get("telegram_daily_last_run_date")}
+                    general_cfg = {
+                        "schedule_time_ph": telegram_cfg.get("daily_time", "07:00"),
+                        "timezone": "Asia/Manila",
+                    }
+                    if should_run_daily(general_cfg, summary_state):
+                        try:
+                            _send_isp_status_daily_report(cfg, wan_cfg, latest)
+                        except TelegramError:
+                            pass
+                        except Exception:
+                            pass
+                        state["telegram_daily_last_run_date"] = current_date(general_cfg).isoformat()
+                save_state("isp_status_state", state)
+                _safe_update_job_status("isp_status", last_success_at=utc_now_iso(), last_error="", last_error_at="")
+            except Exception as exc:
+                _safe_update_job_status("isp_status", last_error=str(exc), last_error_at=utc_now_iso())
+            finally:
+                add_feature_cpu("ISP Port Status", max(time_module.thread_time() - loop_cpu_start, 0.0))
+            time_module.sleep(max(int(cfg.get("poll_interval_seconds") or 30), 5))
+
+    def _mikrotik_router_health_loop(self):
+        def _router_key(kind, router_id):
+            return f"{kind}:{str(router_id or '').strip()}"
+
+        def _configured_routers():
+            pulse_cfg = get_settings("isp_ping", {})
+            wan_cfg = get_settings("wan_ping", WAN_PING_DEFAULTS)
+            rows = []
+            seen = set()
+            for core in ((((pulse_cfg.get("pulsewatch") or {}).get("mikrotik") or {}).get("cores")) or []):
+                if not isinstance(core, dict):
+                    continue
+                core_id = (core.get("id") or "").strip()
+                if not core_id:
+                    continue
+                key = _router_key("core", core_id)
+                seen.add(key)
+                rows.append(
+                    {
+                        "key": key,
+                        "kind": "core",
+                        "id": core_id,
+                        "label": (core.get("label") or core_id).strip(),
+                        "host": (core.get("host") or "").strip(),
+                        "port": int(core.get("port", 8728) or 8728),
+                        "username": core.get("username", ""),
+                        "password": core.get("password", ""),
+                        "use_tls": False,
+                    }
+                )
+            for router in (wan_cfg.get("pppoe_routers") or []):
+                if not isinstance(router, dict):
+                    continue
+                router_id = (router.get("id") or "").strip()
+                if not router_id:
+                    continue
+                key = _router_key("pppoe", router_id)
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append(
+                    {
+                        "key": key,
+                        "kind": "pppoe",
+                        "id": router_id,
+                        "label": (router.get("name") or router_id).strip(),
+                        "host": (router.get("host") or "").strip(),
+                        "port": int(router.get("port", 8728) or 8728),
+                        "username": router.get("username", ""),
+                        "password": router.get("password", ""),
+                        "use_tls": bool(router.get("use_tls")),
+                    }
+                )
+            return rows
+
+        def _check_router(row):
+            now_iso = utc_now_iso()
+            base = {
+                "key": row.get("key") or _router_key(row.get("kind"), row.get("id")),
+                "kind": row.get("kind") or "",
+                "id": row.get("id") or "",
+                "label": row.get("label") or row.get("id") or "Router",
+                "host": row.get("host") or "",
+                "port": int(row.get("port", 8728) or 8728),
+                "status": "down",
+                "connected": False,
+                "error": "",
+                "last_check_at": now_iso,
+                "response_ms": None,
+            }
+            if not base["host"]:
+                base["error"] = "Router host is not configured."
+                return base
+            if row.get("use_tls"):
+                base["error"] = "TLS/API-SSL is not supported by the current RouterOS API client. Disable TLS or use port 8728."
+                return base
+            client = RouterOSClient(
+                base["host"],
+                base["port"],
+                row.get("username", ""),
+                row.get("password", ""),
+                timeout=3,
+            )
+            started = time_module.monotonic()
+            try:
+                client.connect()
+                base["status"] = "up"
+                base["connected"] = True
+                base["response_ms"] = round((time_module.monotonic() - started) * 1000.0, 1)
+            except Exception as exc:
+                base["error"] = str(exc)
+            finally:
+                client.close()
+            return base
+
+        while not self.stop_event.is_set():
+            loop_cpu_start = time_module.thread_time()
+            try:
+                now_iso = utc_now_iso()
+                _safe_update_job_status("mikrotik_router_health", last_run_at=now_iso)
+                configured = _configured_routers()
+                rows = []
+                if configured:
+                    workers = min(max(len(configured), 1), 16)
+                    with ThreadPoolExecutor(max_workers=workers) as executor:
+                        futures = [executor.submit(_check_router, row) for row in configured]
+                        for future in as_completed(futures):
+                            try:
+                                rows.append(future.result())
+                            except Exception as exc:
+                                rows.append(
+                                    {
+                                        "key": "",
+                                        "kind": "",
+                                        "id": "",
+                                        "label": "Router",
+                                        "host": "",
+                                        "port": 8728,
+                                        "status": "down",
+                                        "connected": False,
+                                        "error": str(exc),
+                                        "last_check_at": now_iso,
+                                        "response_ms": None,
+                                    }
+                                )
+                rows = sorted(rows, key=lambda item: (item.get("kind") or "", item.get("label") or ""))
+                up = sum(1 for item in rows if (item.get("status") or "").lower() == "up")
+                down = sum(1 for item in rows if (item.get("status") or "").lower() == "down")
+                state = {
+                    "last_check_at": now_iso,
+                    "total": len(rows),
+                    "up": up,
+                    "down": down,
+                    "unknown": 0,
+                    "rows": rows,
+                }
+                save_state("mikrotik_router_health_state", state)
+                _safe_update_job_status("mikrotik_router_health", last_success_at=utc_now_iso(), last_error="", last_error_at="")
+            except Exception as exc:
+                _safe_update_job_status("mikrotik_router_health", last_error=str(exc), last_error_at=utc_now_iso())
+            finally:
+                add_feature_cpu("MikroTik Routers", max(time_module.thread_time() - loop_cpu_start, 0.0))
+            time_module.sleep(30)
 
     def _wan_ping_loop(self):
         while not self.stop_event.is_set():

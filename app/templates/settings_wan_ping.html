@@ -201,7 +201,7 @@
                       <div class="fw-semibold">Heads up</div>
                       <div class="small text-muted mt-1">
                         ISPs (TO-ISP lists) shown below are <span class="fw-semibold">view-only</span> in WAN Ping.
-                        To add/edit them, use <a href="/settings/system?tab=routers&routers_tab=isps">System Settings → Routers</a>.
+                        To add/edit them, use <a href="/settings/system?tab=routers&routers_tab=isps">System Settings → Routers → Add ISP</a>. ISP Port Status bandwidth interfaces are tagged in <a href="/settings/system?tab=routers&routers_tab=isp-port-tagging">ISP Port Tagging</a>.
                       </div>
                     </div>
                   </div>
@@ -226,6 +226,7 @@
                               <th>Mode</th>
                               <th>Local IP</th>
                               <th>PPPoE Router</th>
+                              <th>Traffic Interface</th>
                               <th>Enabled</th>
                             </tr>
                           </thead>
@@ -247,6 +248,7 @@
                                   {% set rr = (settings.pppoe_routers or []) | selectattr('id', 'equalto', rid) | list %}
                                   {{ (rr and (rr[0].name or rr[0].id)) or '' }}
                                 </td>
+                                <td class="text-muted">{{ row.traffic_interface or '' }}</td>
                                 <td>
                                   {% if row.enabled %}
                                     <span class="badge bg-green-lt">Yes</span>

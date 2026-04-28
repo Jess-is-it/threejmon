@@ -80,6 +80,8 @@
     <div class="row row-cards">
   {% set feature_meta = {
     'WAN Ping': {'icon': 'ti ti-world', 'theme': 'azure'},
+    'ISP Port Status': {'icon': 'ti ti-broadcast', 'theme': 'cyan'},
+    'MikroTik Routers': {'icon': 'ti ti-router', 'theme': 'orange'},
     'Accounts Ping': {'icon': 'ti ti-wifi', 'theme': 'green'},
     'Under Surveillance': {'icon': 'ti ti-binoculars', 'theme': 'red'},
     'Usage': {'icon': 'ti ti-chart-bar', 'theme': 'indigo'},
@@ -88,6 +90,8 @@
   } %}
   {% set kpi_perm_map = {
     'WAN Ping': 'dashboard.kpi.wan.view',
+    'ISP Port Status': 'dashboard.kpi.isp_status.view',
+    'MikroTik Routers': 'dashboard.kpi.mikrotik_routers.view',
     'Accounts Ping': 'dashboard.kpi.accounts_ping.view',
     'Under Surveillance': 'dashboard.kpi.under_surveillance.view',
     'Usage': 'dashboard.kpi.usage.view',
@@ -101,10 +105,10 @@
     {% set meta = feature_meta.get(label, {'icon': 'ti ti-dashboard', 'theme': 'blue'}) %}
     {% set theme = meta.get('theme', 'blue') %}
     {% set state_label = item.get('state_label') %}
-    {% set badge_label = (wan.get('up', 0)|string ~ '/' ~ wan.get('configured', 0)|string) if label == 'WAN Ping' else state_label %}
+    {% set badge_label = item.get('badge_label') or ((wan.get('up', 0)|string ~ '/' ~ wan.get('configured', 0)|string) if label == 'WAN Ping' else state_label) %}
     {% set state_theme = item.get('tone') or ('green' if (state_label|string|lower) == 'ok' else theme) %}
     <div class="col-md-6 col-xl-4">
-      <div class="card dashboard-kpi-card dashboard-kpi-theme-{{ theme }}">
+      <div class="card dashboard-kpi-card dashboard-kpi-theme-{{ theme }}" data-dashboard-kpi-card data-kpi-label="{{ label }}">
         <div class="card-body">
           <div class="d-flex justify-content-between align-items-start mb-2">
             <div class="d-flex align-items-center gap-2">
@@ -112,11 +116,11 @@
                 <i class="{{ meta.get('icon', 'ti ti-dashboard') }}"></i>
               </span>
               <div>
-                <div class="fw-semibold">{{ label }}</div>
-                <div class="text-muted dashboard-kpi-sub">{{ item.get('subtitle') }}</div>
+                <div class="fw-semibold" data-kpi-title>{{ label }}</div>
+                <div class="text-muted dashboard-kpi-sub" data-kpi-subtitle>{{ item.get('subtitle') }}</div>
               </div>
             </div>
-            <span class="badge bg-{{ state_theme }}-lt text-{{ state_theme }}">{{ badge_label }}</span>
+            <span class="badge bg-{{ state_theme }}-lt text-{{ state_theme }}" data-kpi-badge>{{ badge_label }}</span>
           </div>
         </div>
       </div>
@@ -362,11 +366,13 @@
     const updateBannerEl = document.getElementById("dashboard-update-banner");
     const updateTitleEl = document.getElementById("dashboard-update-title");
     const updateDetailEl = document.getElementById("dashboard-update-detail");
+    const kpiCards = Array.from(document.querySelectorAll("[data-dashboard-kpi-card]"));
     const hasResourcesPanel = !!(updatedEl && featureUsageEl && processBodyEl && processHeadEl && systemModeToggleEl);
     const hasLogsPanel = !!(logsBodyEl && logsUpdatedEl);
     const hasAttentionPanel = !!attentionTotalChartEl;
     const hasUpdateBanner = !!updateBannerEl;
-    if (!hasResourcesPanel && !hasLogsPanel && !hasAttentionPanel && !hasUpdateBanner) return;
+    const hasKpiPanel = kpiCards.length > 0;
+    if (!hasResourcesPanel && !hasLogsPanel && !hasAttentionPanel && !hasUpdateBanner && !hasKpiPanel) return;
 
     const esc = (value) => String(value ?? "")
       .replace(/&/g, "&amp;")
@@ -377,6 +383,7 @@
 
     const attentionChartColors = ["#d63939", "#4c6ef5", "#4299e1", "#d6336c", "#12b886", "#f59f00", "#7950f2", "#364fc7", "#868e96"];
     const attentionChartState = { chart: null, allSeriesDefs: [], selectedKeys: new Set() };
+    const kpiToneClasses = ["green", "red", "yellow", "orange", "blue", "azure", "cyan", "indigo", "purple", "secondary"];
     const zoomToolbarOptions = {
       show: true,
       tools: {
@@ -527,6 +534,38 @@
         renderAttentionChartFromState();
       });
     }
+
+    const renderDashboardKpis = (payload) => {
+      if (!hasKpiPanel) return;
+      const features = Array.isArray(payload?.dashboard_kpis?.features) ? payload.dashboard_kpis.features : [];
+      const featureMap = new Map(features.map((item) => [String(item.label || ""), item]));
+      kpiCards.forEach((card) => {
+        const label = String(card.getAttribute("data-kpi-label") || "");
+        const item = featureMap.get(label);
+        if (!item) return;
+        const subtitleEl = card.querySelector("[data-kpi-subtitle]");
+        const badgeEl = card.querySelector("[data-kpi-badge]");
+        if (subtitleEl) subtitleEl.textContent = item.subtitle || "";
+        if (badgeEl) {
+          const tone = item.tone || "secondary";
+          badgeEl.textContent = item.badge_label || item.state_label || "n/a";
+          kpiToneClasses.forEach((name) => {
+            badgeEl.classList.remove(`bg-${name}-lt`, `text-${name}`);
+          });
+          badgeEl.classList.add(`bg-${tone}-lt`, `text-${tone}`);
+        }
+      });
+    };
+
+    const updateDashboardKpis = async () => {
+      if (!hasKpiPanel) return;
+      try {
+        const res = await fetch("/dashboard/kpis", { headers: { "Accept": "application/json" }, cache: "no-store" });
+        if (!res.ok) return;
+        renderDashboardKpis(await res.json());
+      } catch (_error) {
+      }
+    };
 
     const SYSTEM_MODE_KEY = "threej_dashboard_system_mode_enabled";
     const readSystemMode = () => {
@@ -870,6 +909,14 @@
     if (hasAttentionPanel) {
       updateAttentionTrends();
       setInterval(updateAttentionTrends, 60000);
+    }
+    if (hasKpiPanel) {
+      if (window.ThreeJPolling?.createTask) {
+        window.ThreeJPolling.createTask(updateDashboardKpis, { intervalMs: 10000, resumeDelayMs: 300 });
+      } else {
+        updateDashboardKpis();
+        setInterval(updateDashboardKpis, 10000);
+      }
     }
     if (hasUpdateBanner) {
       checkDashboardUpdates();

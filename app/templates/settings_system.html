@@ -9,6 +9,14 @@
   <div class="alert alert-info auto-dismiss-alert">{{ message }}</div>
 {% endif %}
 
+<style>
+  .sys-isp-traffic-interface-select {
+    max-width: 12rem;
+    min-width: 12rem;
+    width: 12rem;
+  }
+</style>
+
 <ul class="nav nav-tabs mb-3" data-bs-toggle="tabs">
   {% if can_view_general_tab %}
     <li class="nav-item">
@@ -209,6 +217,9 @@
         <li class="nav-item">
           <a href="#sys-routers-isps" class="nav-link {% if routers_tab == 'isps' %}active{% endif %}" data-bs-toggle="tab">Add ISP</a>
         </li>
+        <li class="nav-item">
+          <a href="#sys-routers-isp-port-tagging" class="nav-link {% if routers_tab == 'isp-port-tagging' %}active{% endif %}" data-bs-toggle="tab">ISP Port Tagging</a>
+        </li>
       {% endif %}
     </ul>
 
@@ -375,10 +386,10 @@
                 <div class="d-flex align-items-start">
                   <span class="me-2"><i class="ti ti-info-circle"></i></span>
                   <div>
-                    ISPs are detected from each Core’s RouterOS address-lists (TO-ISP). This is the main ISP list used by WAN Ping and other modules—manage the Identifier and Color here.
+                    ISPs are detected from each Core’s RouterOS address-lists (TO-ISP). This is the main ISP list used by WAN Ping and other modules. Manage the Identifier and Color here.
                     <div class="mt-2"><span class="fw-semibold">Routed mode:</span> Local IP is auto-detected from RouterOS and set to read-only. WAN IP is auto-detected and used for Netwatch host checks.</div>
                     <div class="mt-2"><span class="fw-semibold">Bridged mode:</span> Local IP stays manual and is used as ping source and Netwatch host.</div>
-                    <div class="mt-2">Color is used for charts/labels (when available).</div>
+                    <div class="mt-2">Color is used for charts/labels when available. ISP Port Status bandwidth tracking uses the Core interface selected in the <span class="fw-semibold">ISP Port Tagging</span> tab.</div>
                   </div>
                 </div>
               </div>
@@ -486,6 +497,130 @@
             </div>
             <div class="card-footer d-flex justify-content-end">
               <button type="submit" class="btn btn-primary" {% if not can_edit_system_router_isp %}disabled{% endif %}>Save ISP List</button>
+            </div>
+          </div>
+        </form>
+      </div>
+      {% endif %}
+
+      {% if can_view_system_router_isp %}
+      <div class="tab-pane {% if routers_tab == 'isp-port-tagging' %}active{% endif %}" id="sys-routers-isp-port-tagging">
+        <form method="post" action="/settings/system/routers/isp-port-tags">
+          <div class="card mb-3">
+            <div class="card-body">
+              <h4 class="mb-3">ISP Port Tagging</h4>
+              {% if not wan_rows_loaded %}
+                <div class="alert alert-warning">
+                  <div class="d-flex align-items-start">
+                    <span class="me-2"><i class="ti ti-alert-triangle"></i></span>
+                    <div>
+                      This tab needs a refresh to retrieve TO-ISP lists and Core interfaces from your MikroTik cores.
+                      <div class="mt-2">
+                        <a class="btn btn-sm btn-outline-primary" href="/settings/system?tab=routers&routers_tab=isp-port-tagging">Refresh ISP Port Tags</a>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              {% endif %}
+              <div class="alert alert-info">
+                <div class="d-flex align-items-start">
+                  <span class="me-2"><i class="ti ti-info-circle"></i></span>
+                  <div>
+                    <div class="fw-semibold">Core interface mapping for ISP Port Status</div>
+                    <div class="small text-muted mt-1">
+                      Select the exact Core router interface where each ISP enters the network. ISP Port Status reads live RX/TX traffic from this Core interface to build the bandwidth graph and 100M/1G classification. Only Core routers are used here; bridged routers are not part of ISP bandwidth tagging.
+                    </div>
+                  </div>
+                </div>
+              </div>
+              {% if wan_autodetect_warnings %}
+                <div class="alert alert-warning">
+                  <div class="fw-semibold mb-1">Interface detection warnings</div>
+                  <ul class="mb-0 ps-3">
+                    {% for item in wan_autodetect_warnings[:8] %}
+                      <li>{{ item }}</li>
+                    {% endfor %}
+                  </ul>
+                </div>
+              {% endif %}
+              <input type="hidden" name="wan_count" value="{{ wan_rows|length }}" />
+              <div style="overflow-x: auto;">
+                <table class="table table-vcenter">
+                  <thead>
+                    <tr>
+                      <th title="MikroTik core where this TO-ISP list is found.">Core</th>
+                      <th title="Address-list name pulled from MikroTik.">TO-ISP List</th>
+                      <th title="Friendly ISP label used across pages.">Identifier</th>
+                      <th title="Exact Core MikroTik interface used by ISP Port Status bandwidth tracking.">Traffic Interface</th>
+                      <th title="Whether ISP Port Status can read bandwidth for this row.">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for row in wan_rows %}
+                      <tr>
+                        <td>
+                          {{ row.core_label }}
+                          <input type="hidden" name="wan_{{ loop.index0 }}_core_id" value="{{ row.core_id }}" />
+                        </td>
+                        <td>
+                          {{ row.list_name }}
+                          <input type="hidden" name="wan_{{ loop.index0 }}_list" value="{{ row.list_name }}" />
+                        </td>
+                        <td>{{ row.identifier or row.list_name }}</td>
+                        <td>
+                          <select
+                            class="form-select sys-isp-traffic-interface-select"
+                            name="wan_{{ loop.index0 }}_traffic_interface"
+                            {% if not can_edit_system_router_isp %}disabled{% endif %}
+                          >
+                            <option value="">No interface tagged</option>
+                            {% for iface in row.traffic_interface_options or [] %}
+                              {% set iface_label = iface.name %}
+                              {% if iface.comment %}
+                                {% set iface_label = iface_label ~ ' - ' ~ iface.comment %}
+                              {% endif %}
+                              {% if iface.type %}
+                                {% set iface_label = iface_label ~ ' (' ~ iface.type ~ ')' %}
+                              {% endif %}
+                              {% if iface.disabled %}
+                                {% set iface_label = iface_label ~ ' - disabled' %}
+                              {% elif iface.running %}
+                                {% set iface_label = iface_label ~ ' - running' %}
+                              {% endif %}
+                              <option value="{{ iface.name }}" title="{{ iface_label }}" {% if row.traffic_interface == iface.name %}selected{% endif %}>{{ iface_label }}</option>
+                            {% endfor %}
+                          </select>
+                          {% if wan_rows_loaded and not row.traffic_interface_options %}
+                            <div class="form-hint text-danger">No interfaces detected for this Core router.</div>
+                          {% endif %}
+                        </td>
+                        <td>
+                          {% if row.traffic_interface %}
+                            <span class="badge bg-green-lt text-green">Tagged</span>
+                          {% else %}
+                            <span class="badge bg-red-lt text-red">Needs tag</span>
+                          {% endif %}
+                        </td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+              {% if not wan_rows %}
+                <div class="text-muted">
+                  {% if wan_rows_loaded %}
+                    No TO-ISP lists detected yet. Check <span class="fw-semibold">Cores</span> configuration and MikroTik API connectivity.
+                  {% else %}
+                    Not loaded yet.
+                  {% endif %}
+                </div>
+              {% endif %}
+              {% if not can_edit_system_router_isp %}
+                <div class="text-muted small mt-3">ISP Port Tagging is in read-only mode for your role.</div>
+              {% endif %}
+            </div>
+            <div class="card-footer d-flex justify-content-end">
+              <button type="submit" class="btn btn-primary" {% if not can_edit_system_router_isp %}disabled{% endif %}>Save Port Tags</button>
             </div>
           </div>
         </form>

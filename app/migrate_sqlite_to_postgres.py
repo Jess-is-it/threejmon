@@ -21,6 +21,24 @@ TABLE_SPECS = [
     ("rto_results", ["id", "timestamp", "ip", "name", "ok"], "id"),
     ("optical_results", ["id", "timestamp", "device_id", "pppoe", "ip", "rx", "tx", "priority"], "id"),
     ("wan_status_history", ["id", "timestamp", "wan_id", "status", "up_pct", "target", "core_id", "label"], "id"),
+    (
+        "isp_status_samples",
+        [
+            "id",
+            "timestamp",
+            "wan_id",
+            "core_id",
+            "label",
+            "interface_name",
+            "rx_bps",
+            "tx_bps",
+            "total_bps",
+            "peak_mbps",
+            "capacity_status",
+            "capacity_reason",
+        ],
+        "id",
+    ),
 ]
 
 
@@ -54,7 +72,8 @@ def _pg_truncate_all(pg_con):
               alerts_log,
               rto_results,
               optical_results,
-              wan_status_history
+              wan_status_history,
+              isp_status_samples
             RESTART IDENTITY
             """
         )
@@ -67,7 +86,20 @@ def _count_sqlite(sqlite_con, table):
     return int(row["n"] or 0)
 
 
+def _sqlite_has_table(sqlite_con, table):
+    row = sqlite_con.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+        (table,),
+    ).fetchone()
+    return bool(row)
+
+
 def _copy_table(sqlite_con, pg_con, table, cols, id_col=None, batch_size=5000, verbose=False):
+    if not _sqlite_has_table(sqlite_con, table):
+        if verbose:
+            print(f"[{table}] skipped: source table is not present")
+        return
+
     col_sql = ", ".join(cols)
     placeholders = "(" + ", ".join(["%s"] * len(cols)) + ")"
     insert_sql = f"INSERT INTO {table} ({col_sql}) VALUES %s"
@@ -164,4 +196,3 @@ def main(argv=None):
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

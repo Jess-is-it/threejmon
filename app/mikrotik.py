@@ -250,6 +250,48 @@ class RouterOSClient:
             entries.append(data)
         return entries
 
+    def list_interfaces(self):
+        replies = self.talk(["/interface/print"])
+        entries = []
+        for sentence in replies:
+            if sentence and sentence[0] == "!trap":
+                raise RuntimeError(f"RouterOS interface print failed: {sentence}")
+            if not sentence or sentence[0] != "!re":
+                continue
+            data = {}
+            for word in sentence[1:]:
+                if not word:
+                    continue
+                if word.startswith("="):
+                    word = word[1:]
+                if "=" in word:
+                    key, value = word.split("=", 1)
+                    data[key] = value
+            entries.append(data)
+        return entries
+
+    def monitor_interface_traffic(self, interface_name):
+        interface_name = (interface_name or "").strip()
+        if not interface_name:
+            raise ValueError("Interface name is required.")
+        replies = self.talk(["/interface/monitor-traffic", f"=interface={interface_name}", "=once="])
+        for sentence in replies:
+            if sentence and sentence[0] == "!trap":
+                raise RuntimeError(f"RouterOS monitor-traffic failed: {sentence}")
+            if not sentence or sentence[0] != "!re":
+                continue
+            data = {}
+            for word in sentence[1:]:
+                if not word:
+                    continue
+                if word.startswith("="):
+                    word = word[1:]
+                if "=" in word:
+                    key, value = word.split("=", 1)
+                    data[key] = value
+            return data
+        return {}
+
     def add_netwatch(self, host, interval, timeout, comment):
         words = [
             "/tool/netwatch/add",
@@ -357,4 +399,3 @@ class RouterOSClient:
                 if parsed is not None:
                     times.append(parsed)
         return times
-

@@ -144,6 +144,15 @@
                 </a>
               </li>
             {% endif %}
+            {% if not auth_enabled or has_perm('isp_status.view') %}
+              <li class="nav-item">
+                <a class="nav-link" href="/settings/isp-status">
+                  <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-chart-area-line"></i></span>
+                  <span class="nav-link-title">ISP Port Status</span>
+                  <span class="badge bg-red-lt text-red ms-auto d-none" id="nav-isp-status-100m-badge">0</span>
+                </a>
+              </li>
+            {% endif %}
             {% if not auth_enabled or has_perm('system.view') %}
               <li class="nav-item">
                 <a class="nav-link" href="/settings/system">
@@ -529,7 +538,8 @@
       const usageBadge = document.getElementById("nav-usage-new-badge");
       const surveillanceBadge = document.getElementById("nav-surveillance-new-badge");
       const missingSecretsBadge = document.getElementById("nav-missing-secrets-new-badge");
-      if (!offlineBadge && !usageBadge && !surveillanceBadge && !missingSecretsBadge) return;
+      const ispStatusBadge = document.getElementById("nav-isp-status-100m-badge");
+      if (!offlineBadge && !usageBadge && !surveillanceBadge && !missingSecretsBadge && !ispStatusBadge) return;
 
       const renderBadge = (badgeEl, count) => {
         if (!badgeEl) return;
@@ -567,6 +577,11 @@
           if (missingSecretsBadge) {
             const serverNewCount = Number(data?.accounts_missing?.new_count || 0);
             renderBadge(missingSecretsBadge, Number.isFinite(serverNewCount) ? serverNewCount : 0);
+          }
+
+          if (ispStatusBadge) {
+            const hundredMbpsCount = Number(data?.isp_status?.hundred_mbps_count || 0);
+            renderBadge(ispStatusBadge, Number.isFinite(hundredMbpsCount) ? hundredMbpsCount : 0);
           }
         } catch (_err) {
           // ignore nav badge refresh failures

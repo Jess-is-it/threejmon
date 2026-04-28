@@ -44,6 +44,7 @@ from .db import (
     clear_usage_modem_reboot_history,
     clear_surveillance_audit_logs,
     clear_surveillance_history,
+    clear_isp_status_data,
     clear_wan_history,
     count_offline_history_accounts_since,
     count_usage_modem_reboot_history,
@@ -58,6 +59,8 @@ from .db import (
     end_surveillance_session,
     ensure_surveillance_session,
     fetch_wan_history_map,
+    fetch_isp_status_latest_map,
+    fetch_isp_status_series_map,
     fetch_wan_target_ping_series_map,
     get_active_surveillance_session,
     get_auth_role_by_id,
@@ -159,6 +162,7 @@ from .settings_defaults import (
     SURVEILLANCE_DEFAULTS,
     USAGE_DEFAULTS,
     WAN_PING_DEFAULTS,
+    ISP_STATUS_DEFAULTS,
     WAN_MESSAGE_DEFAULTS,
     WAN_SUMMARY_DEFAULTS,
 )
@@ -435,6 +439,8 @@ AUTH_PERMISSION_ALIASES = {
     "EDIT_Offline": "offline.edit",
     "VIEW_WanPing": "wan.view",
     "EDIT_WanPing": "wan.edit",
+    "VIEW_IspStatus": "isp_status.view",
+    "EDIT_IspStatus": "isp_status.edit",
     "VIEW_SystemSettings": "system.view",
     "EDIT_SystemSettings": "system.edit",
     "RUN_TestTools": "tools.test",
@@ -457,6 +463,7 @@ AUTH_PERMISSION_FEATURE_ORDER = [
     "usage",
     "offline",
     "wan_ping",
+    "isp_status",
     "system_settings",
     "logs",
     "other",
@@ -471,6 +478,7 @@ AUTH_PERMISSION_FEATURE_LABELS = {
     "usage": "Usage",
     "offline": "Offline",
     "wan_ping": "WAN Ping",
+    "isp_status": "ISP Port Status",
     "system_settings": "System Settings",
     "logs": "Logs",
     "other": "Other",
@@ -482,6 +490,8 @@ AUTH_PERMISSION_DEPENDENCIES = {
     "dashboard.kpi.usage.view": ["dashboard.view"],
     "dashboard.kpi.offline.view": ["dashboard.view"],
     "dashboard.kpi.optical.view": ["dashboard.view"],
+    "dashboard.kpi.isp_status.view": ["dashboard.view"],
+    "dashboard.kpi.mikrotik_routers.view": ["dashboard.view"],
     "dashboard.needs_attention.view": ["dashboard.view"],
     "dashboard.resources.view": ["dashboard.view"],
     "dashboard.logs.view": ["dashboard.view"],
@@ -496,6 +506,7 @@ AUTH_PERMISSION_DEPENDENCIES = {
     "EDIT_Usage": ["VIEW_Usage"],
     "EDIT_Offline": ["VIEW_Offline"],
     "EDIT_WanPing": ["VIEW_WanPing"],
+    "EDIT_IspStatus": ["VIEW_IspStatus"],
     "EDIT_SystemSettings": ["VIEW_SystemSettings"],
     "settings.danger": ["system.view", "system.tab.danger.view"],
     "system.general.branding.edit": ["system.general.branding.view"],
@@ -523,6 +534,11 @@ AUTH_PERMISSION_DEPENDENCIES = {
     "usage.settings.modem_reboot.edit": ["usage.view", "usage.edit"],
     "offline.settings.danger.run": ["offline.view", "offline.edit", "system.view", "system.tab.danger.view"],
     "wan.settings.danger.run": ["wan.view", "wan.edit", "system.view", "system.tab.danger.view"],
+    "isp_status.settings.danger.run": ["isp_status.view", "isp_status.edit", "system.view", "system.tab.danger.view"],
+    "isp_status.settings.general.edit": ["isp_status.view", "isp_status.edit"],
+    "isp_status.settings.capacity.edit": ["isp_status.view", "isp_status.edit"],
+    "isp_status.settings.telegram.edit": ["isp_status.view", "isp_status.edit"],
+    "isp_status.chart.series.view": ["isp_status.view"],
     "system.danger.uninstall.run": ["system.view", "system.tab.danger.view"],
     "optical.action.test_source.run": ["optical.view", "optical.edit"],
     "accounts_ping.action.test_source.run": ["accounts_ping.view", "accounts_ping.edit"],
@@ -629,6 +645,7 @@ AUTH_UI_PERMISSION_REPLACEMENTS = {
         "usage.settings.danger.run",
         "offline.settings.danger.run",
         "wan.settings.danger.run",
+        "isp_status.settings.danger.run",
         "system.danger.uninstall.run",
         "VIEW_SystemSettings",
         "system.tab.danger.view",
@@ -667,6 +684,7 @@ AUTH_PERMISSION_COMPAT_GRANTS = {
         "usage.settings.danger.run",
         "offline.settings.danger.run",
         "wan.settings.danger.run",
+        "isp_status.settings.danger.run",
         "system.danger.uninstall.run",
         "VIEW_SystemSettings",
         "system.tab.danger.view",
@@ -692,6 +710,7 @@ AUTH_PERMISSION_COMPAT_GRANTS = {
     "usage.settings.modem_reboot.edit": ["usage.edit"],
     "offline.settings.danger.run": ["settings.danger"],
     "wan.settings.danger.run": ["settings.danger"],
+    "isp_status.settings.danger.run": ["settings.danger"],
     "system.danger.uninstall.run": ["settings.danger"],
     "optical.action.test_source.run": ["tools.test"],
     "accounts_ping.action.test_source.run": ["tools.test"],
@@ -731,6 +750,7 @@ AUTH_AUTODEP_ROOT_VIEW_FEATURES = {
     "usage",
     "offline",
     "wan",
+    "isp_status",
     "system",
     "logs",
 }
@@ -742,6 +762,7 @@ AUTH_AUTODEP_ROOT_EDIT_FEATURES = {
     "usage",
     "offline",
     "wan",
+    "isp_status",
     "system",
 }
 AUTH_AUTODEP_ACTIONS = {
@@ -799,6 +820,8 @@ def _auth_permission_feature_key(code: str) -> str:
         return "offline"
     if lowered.startswith("wan.") or "wanping" in lowered or lowered.startswith("view_wan") or lowered.startswith("edit_wan"):
         return "wan_ping"
+    if lowered.startswith("isp_status.") or "ispstatus" in lowered or lowered.startswith("view_isp") or lowered.startswith("edit_isp"):
+        return "isp_status"
     if (
         lowered.startswith("system.")
         or "systemsettings" in lowered
@@ -1546,6 +1569,13 @@ def _auth_permission_for_route(path: str, method: str):
             return "wan.action.test_router.run"
         return "EDIT_WanPing"
 
+    if path.startswith("/settings/isp-status") or path.startswith("/isp-status"):
+        if method == "GET":
+            return "VIEW_IspStatus"
+        if path.endswith("/format"):
+            return "isp_status.settings.danger.run"
+        return "EDIT_IspStatus"
+
     if path in ("/settings/export", "/settings/db/export"):
         return "system.backup.import_export.run"
     if path in ("/settings/import", "/settings/db/import"):
@@ -1580,7 +1610,7 @@ def _auth_permission_for_route(path: str, method: str):
         return "system.routers.cores.edit"
     if path == "/settings/system/routers/pppoe" or path.startswith("/settings/system/routers/pppoe/"):
         return "system.routers.mikrotik.edit"
-    if path == "/settings/system/routers/isps":
+    if path == "/settings/system/routers/isps" or path == "/settings/system/routers/isp-port-tags":
         return "system.routers.isp.edit"
 
     if path.startswith("/settings/system"):
@@ -2133,6 +2163,8 @@ def _runtime_feature_from_path(path: str):
         return "Missing Secrets"
     if value.startswith("/settings/wan") or value.startswith("/wan"):
         return "WAN Ping"
+    if value.startswith("/settings/isp-status") or value.startswith("/isp-status"):
+        return "ISP Port Status"
     if value.startswith("/settings/optical") or value.startswith("/optical"):
         return "Optical Monitoring"
     if value.startswith("/usage") or value.startswith("/settings/usage"):
@@ -2905,6 +2937,7 @@ async def navigation_summary(request: Request):
         "usage": {"current_ids": [], "current_count": 0, "new_ids": [], "new_count": 0},
         "accounts_missing": {"current_ids": [], "current_count": 0, "new_ids": [], "new_count": 0},
         "surveillance": {"under_ids": [], "under_count": 0, "new_ids": [], "new_count": 0},
+        "isp_status": {"hundred_mbps_ids": [], "hundred_mbps_count": 0},
     }
 
     if not bool(getattr(request.state, "auth_enabled", True)) or _auth_request_has_permission(request, "offline.view"):
@@ -2978,6 +3011,24 @@ async def navigation_summary(request: Request):
                 "current_count": len(current_ids),
                 "new_ids": new_ids,
                 "new_count": len(new_ids),
+            }
+        except Exception:
+            pass
+
+    if not bool(getattr(request.state, "auth_enabled", True)) or _auth_request_has_permission(request, "isp_status.view"):
+        try:
+            state = get_state("isp_status_state", {})
+            latest = state.get("latest") if isinstance(state.get("latest"), dict) else {}
+            hundred_mbps_ids = [
+                str(wan_id or "").strip()
+                for wan_id, row in latest.items()
+                if str(wan_id or "").strip()
+                and isinstance(row, dict)
+                and (row.get("capacity_status") or "").strip().lower() == "100m"
+            ]
+            payload["isp_status"] = {
+                "hundred_mbps_ids": hundred_mbps_ids,
+                "hundred_mbps_count": len(hundred_mbps_ids),
             }
         except Exception:
             pass
@@ -4435,6 +4486,7 @@ def normalize_wan_ping_settings(settings):
                 "gateway_ip": (item.get("gateway_ip") or "").strip(),
                 "netwatch_host": netwatch_host,
                 "pppoe_router_id": (item.get("pppoe_router_id") or "").strip(),
+                "traffic_interface": (item.get("traffic_interface") or "").strip(),
             }
         )
     settings["wans"] = cleaned_wans
@@ -4446,6 +4498,87 @@ def normalize_wan_ping_settings(settings):
     summary.setdefault("all_up_msg", WAN_SUMMARY_DEFAULTS["all_up_msg"])
     summary.setdefault("partial_msg", WAN_SUMMARY_DEFAULTS["partial_msg"])
     summary.setdefault("line_template", WAN_SUMMARY_DEFAULTS["line_template"])
+    return settings
+
+
+def normalize_isp_status_settings(settings):
+    settings = copy.deepcopy(settings) if isinstance(settings, dict) else {}
+    defaults = copy.deepcopy(ISP_STATUS_DEFAULTS)
+    settings.setdefault("enabled", defaults.get("enabled", False))
+    settings["enabled"] = bool(settings.get("enabled"))
+    general = settings.setdefault("general", {})
+    default_general = defaults.get("general", {})
+    try:
+        general["poll_interval_seconds"] = max(
+            int(general.get("poll_interval_seconds") or default_general.get("poll_interval_seconds", 30)),
+            5,
+        )
+    except Exception:
+        general["poll_interval_seconds"] = int(default_general.get("poll_interval_seconds", 30))
+    try:
+        general["history_retention_days"] = max(
+            int(general.get("history_retention_days") or default_general.get("history_retention_days", 400)),
+            1,
+        )
+    except Exception:
+        general["history_retention_days"] = int(default_general.get("history_retention_days", 400))
+    try:
+        general["chart_window_hours"] = max(
+            int(general.get("chart_window_hours") or default_general.get("chart_window_hours", 24)),
+            1,
+        )
+    except Exception:
+        general["chart_window_hours"] = int(default_general.get("chart_window_hours", 24))
+    capacity = settings.setdefault("capacity", {})
+    default_capacity = defaults.get("capacity", {})
+    try:
+        capacity["hundred_mbps_min"] = max(
+            float(capacity.get("hundred_mbps_min") or default_capacity.get("hundred_mbps_min", 90)),
+            1.0,
+        )
+    except Exception:
+        capacity["hundred_mbps_min"] = float(default_capacity.get("hundred_mbps_min", 90))
+    try:
+        capacity["hundred_mbps_max"] = max(
+            float(capacity.get("hundred_mbps_max") or default_capacity.get("hundred_mbps_max", 105)),
+            capacity["hundred_mbps_min"],
+        )
+    except Exception:
+        capacity["hundred_mbps_max"] = float(default_capacity.get("hundred_mbps_max", 105))
+    try:
+        capacity["window_minutes"] = max(
+            int(capacity.get("window_minutes") or default_capacity.get("window_minutes", 10)),
+            1,
+        )
+    except Exception:
+        capacity["window_minutes"] = int(default_capacity.get("window_minutes", 10))
+    capacity["average_detection_enabled"] = bool(
+        capacity.get(
+            "average_detection_enabled",
+            default_capacity.get("average_detection_enabled", True),
+        )
+    )
+    try:
+        capacity["average_window_hours"] = max(
+            int(capacity.get("average_window_hours") or default_capacity.get("average_window_hours", 4)),
+            1,
+        )
+    except Exception:
+        capacity["average_window_hours"] = int(default_capacity.get("average_window_hours", 4))
+    telegram = settings.setdefault("telegram", {})
+    default_telegram = defaults.get("telegram", {})
+    telegram["daily_enabled"] = bool(telegram.get("daily_enabled", default_telegram.get("daily_enabled", False)))
+    telegram["daily_time"] = (telegram.get("daily_time") or default_telegram.get("daily_time", "07:00")).strip() or "07:00"
+    telegram["immediate_100m_enabled"] = bool(
+        telegram.get("immediate_100m_enabled", default_telegram.get("immediate_100m_enabled", True))
+    )
+    try:
+        telegram["recovery_confirm_minutes"] = max(
+            int(telegram.get("recovery_confirm_minutes") or default_telegram.get("recovery_confirm_minutes", 2)),
+            1,
+        )
+    except Exception:
+        telegram["recovery_confirm_minutes"] = int(default_telegram.get("recovery_confirm_minutes", 2))
     return settings
 
 
@@ -4753,6 +4886,94 @@ def _wan_target_bucket_seconds(hours, max_points_per_series=1800):
         max_points = 1800
     total_seconds = window_hours * 3600
     return max((total_seconds + max_points - 1) // max_points, 1)
+
+
+def _isp_status_bucket_seconds(hours):
+    try:
+        hours = int(hours or 24)
+    except Exception:
+        hours = 24
+    if hours <= 24:
+        return 300
+    if hours <= 168:
+        return 1800
+    return 7200
+
+
+def _bps_to_mbps(value):
+    try:
+        return round(float(value or 0.0) / 1_000_000.0, 2)
+    except Exception:
+        return 0.0
+
+
+def _capacity_status_label(status):
+    value = (status or "").strip().lower()
+    if value == "1g":
+        return "1G"
+    if value == "100m":
+        return "100M"
+    if value == "not_configured":
+        return "Interface Missing"
+    if value == "error":
+        return "Error"
+    return "Observing"
+
+
+def _capacity_status_badge(status):
+    value = (status or "").strip().lower()
+    if value == "1g":
+        return "bg-green-lt text-green"
+    if value == "100m":
+        return "bg-yellow-lt text-yellow"
+    if value in ("error", "not_configured"):
+        return "bg-red-lt text-red"
+    return "bg-blue-lt text-blue"
+
+
+def _build_isp_status_rows(pulse_settings, wan_settings, state=None):
+    wan_rows = build_wan_rows(pulse_settings, wan_settings)
+    wan_ids = [row.get("wan_id") for row in wan_rows if row.get("wan_id")]
+    db_latest = fetch_isp_status_latest_map(wan_ids)
+    state = state if isinstance(state, dict) else get_state("isp_status_state", {})
+    state_latest = state.get("latest") if isinstance(state.get("latest"), dict) else {}
+    rows = []
+    for row in wan_rows:
+        wan_id = row.get("wan_id")
+        latest = state_latest.get(wan_id) if isinstance(state_latest.get(wan_id), dict) else {}
+        if not latest:
+            latest = db_latest.get(wan_id) if isinstance(db_latest.get(wan_id), dict) else {}
+        capacity_status = (latest.get("capacity_status") or "").strip().lower()
+        traffic_interface = (row.get("traffic_interface") or latest.get("interface_name") or "").strip()
+        capacity_reason = (latest.get("capacity_reason") or latest.get("last_error") or "").strip()
+        if not traffic_interface:
+            capacity_status = "not_configured"
+            capacity_reason = capacity_reason or "Traffic Interface is not set in System Settings -> Routers -> ISP Port Tagging."
+        rx_bps = latest.get("rx_bps")
+        tx_bps = latest.get("tx_bps")
+        total_bps = latest.get("total_bps")
+        if total_bps is None and (rx_bps is not None or tx_bps is not None):
+            try:
+                total_bps = float(rx_bps or 0.0) + float(tx_bps or 0.0)
+            except Exception:
+                total_bps = None
+        rows.append(
+            {
+                **row,
+                "rx_mbps": _bps_to_mbps(rx_bps),
+                "tx_mbps": _bps_to_mbps(tx_bps),
+                "total_mbps": _bps_to_mbps(total_bps),
+                "peak_mbps": round(float(latest.get("peak_mbps") or 0.0), 2),
+                "capacity_status": capacity_status or "observing",
+                "capacity_label": _capacity_status_label(capacity_status),
+                "capacity_badge": _capacity_status_badge(capacity_status),
+                "capacity_reason": capacity_reason,
+                "last_sample_at": (latest.get("last_sample_at") or latest.get("timestamp") or "").strip(),
+                "last_sample_at_ph": format_ts_ph(latest.get("last_sample_at") or latest.get("timestamp")),
+                "traffic_interface": traffic_interface,
+            }
+        )
+    return rows
 
 
 TABLE_PAGE_SIZE_OPTIONS = [50, 100, 200, 500, 1000]
@@ -5418,6 +5639,7 @@ def build_wan_rows(pulsewatch_settings, wan_settings):
                     "gateway_ip": saved.get("gateway_ip", ""),
                     "preset_address": preset_data.get("address", ""),
                     "pppoe_router_id": saved.get("pppoe_router_id", ""),
+                    "traffic_interface": (saved.get("traffic_interface") or "").strip(),
                     "enabled": bool(saved.get("enabled", True)),
                 }
             )
@@ -5457,6 +5679,56 @@ def fetch_mikrotik_lists(cores):
         finally:
             client.close()
     return list_map
+
+
+def fetch_mikrotik_interfaces(cores):
+    interface_map = {}
+    warnings = []
+    for core in cores:
+        core_id = (core.get("id") or "core").strip() or "core"
+        label = (core.get("label") or core_id).strip() or core_id
+        host = (core.get("host") or "").strip()
+        if not host:
+            interface_map[core_id] = []
+            warnings.append(f"{label}: no MikroTik host configured for interface detection")
+            continue
+        client = RouterOSClient(
+            host,
+            int(core.get("port", 8728)),
+            core.get("username", ""),
+            core.get("password", ""),
+        )
+        try:
+            client.connect()
+            rows = []
+            seen_names = set()
+            for entry in client.list_interfaces():
+                if not isinstance(entry, dict):
+                    continue
+                name = (entry.get("name") or "").strip()
+                if not name or name.lower() in seen_names:
+                    continue
+                seen_names.add(name.lower())
+                disabled = str(entry.get("disabled", "")).strip().lower() in ("true", "yes", "1")
+                running = str(entry.get("running", "")).strip().lower() in ("true", "yes", "1")
+                rows.append(
+                    {
+                        "name": name,
+                        "comment": (entry.get("comment") or "").strip(),
+                        "type": (entry.get("type") or "").strip(),
+                        "default_name": (entry.get("default-name") or "").strip(),
+                        "disabled": disabled,
+                        "running": running,
+                    }
+                )
+            rows.sort(key=lambda item: (bool(item.get("disabled")), (item.get("name") or "").lower()))
+            interface_map[core_id] = rows
+        except Exception as exc:
+            interface_map[core_id] = []
+            warnings.append(f"{label}: failed to load interfaces ({exc})")
+        finally:
+            client.close()
+    return interface_map, warnings
 
 
 def _process_proc_root():
@@ -6535,6 +6807,287 @@ def _dashboard_attention_trends_payload(current_attention: dict | None = None) -
     }
 
 
+def _dashboard_isp_status_summary():
+    try:
+        settings = normalize_isp_status_settings(get_settings("isp_status", ISP_STATUS_DEFAULTS))
+        wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+        state = get_state("isp_status_state", {})
+        latest = state.get("latest") if isinstance(state.get("latest"), dict) else {}
+        counts = {"1g": 0, "100m": 0, "observing": 0, "not_configured": 0, "error": 0}
+        enabled_wans = [
+            wan
+            for wan in (wan_settings.get("wans") or [])
+            if isinstance(wan, dict) and bool(wan.get("enabled", True))
+        ]
+        configured = 0
+        for wan in enabled_wans:
+            wan_id = (wan.get("id") or f"{wan.get('core_id')}:{wan.get('list_name')}").strip()
+            row = latest.get(wan_id) if isinstance(latest.get(wan_id), dict) else {}
+            status = (row.get("capacity_status") or "observing").strip().lower()
+            if not (wan.get("traffic_interface") or row.get("interface_name") or "").strip():
+                status = "not_configured"
+            else:
+                configured += 1
+            if status not in counts:
+                status = "observing"
+            counts[status] += 1
+        review_total = counts["observing"] + counts["not_configured"] + counts["error"]
+        if counts["100m"] > 0:
+            state_label = "100M"
+            tone = "red"
+        elif counts["error"] > 0 or counts["not_configured"] > 0:
+            state_label = "Review"
+            tone = "orange"
+        elif counts["observing"] > 0:
+            state_label = "Observing"
+            tone = "blue"
+        elif enabled_wans:
+            state_label = "OK"
+            tone = "green"
+        else:
+            state_label = "Off"
+            tone = "secondary"
+        return {
+            "enabled": bool(settings.get("enabled")),
+            "total": len(enabled_wans),
+            "configured": configured,
+            "counts": counts,
+            "review_total": review_total,
+            "state_label": state_label,
+            "tone": tone,
+            "last_check_at_ph": format_ts_ph(state.get("last_check_at")),
+        }
+    except Exception:
+        return {
+            "enabled": False,
+            "total": 0,
+            "configured": 0,
+            "counts": {"1g": 0, "100m": 0, "observing": 0, "not_configured": 0, "error": 0},
+            "review_total": 0,
+            "state_label": "Error",
+            "tone": "red",
+            "last_check_at_ph": "n/a",
+        }
+
+
+def _dashboard_mikrotik_router_summary():
+    try:
+        pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+        wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+        routers = {}
+
+        def _router_key(kind, router_id):
+            return f"{kind}:{str(router_id or '').strip()}"
+
+        def _add_router(kind, router_id, label, host):
+            router_id = str(router_id or "").strip()
+            if not router_id:
+                return
+            key = _router_key(kind, router_id)
+            routers[key] = {
+                "kind": kind,
+                "id": router_id,
+                "label": (label or router_id).strip(),
+                "host": (host or "").strip(),
+                "status": "unknown",
+                "source": "",
+                "last_seen": "",
+                "error": "",
+            }
+            if not routers[key]["host"]:
+                routers[key].update({"status": "down", "source": "Settings", "error": "Router host is not configured."})
+
+        for core in (((pulse_settings.get("pulsewatch") or {}).get("mikrotik") or {}).get("cores") or []):
+            if isinstance(core, dict):
+                _add_router("core", core.get("id"), core.get("label") or core.get("id"), core.get("host"))
+        for router in wan_settings.get("pppoe_routers") or []:
+            if isinstance(router, dict):
+                _add_router("pppoe", router.get("id"), router.get("name") or router.get("id"), router.get("host"))
+
+        health_state = get_state("mikrotik_router_health_state", {})
+        health_rows = health_state.get("rows") if isinstance(health_state, dict) and isinstance(health_state.get("rows"), list) else []
+        if health_rows:
+            for row in health_rows:
+                if not isinstance(row, dict):
+                    continue
+                key = row.get("key") or _router_key(row.get("kind"), row.get("id"))
+                if key not in routers:
+                    continue
+                status = (row.get("status") or "").strip().lower()
+                if status not in {"up", "down"}:
+                    status = "unknown"
+                routers[key].update(
+                    {
+                        "status": status,
+                        "source": "API Health",
+                        "last_seen": row.get("last_check_at") or health_state.get("last_check_at") or "",
+                        "error": (row.get("error") or "").strip(),
+                        "response_ms": row.get("response_ms"),
+                    }
+                )
+            rows = sorted(routers.values(), key=lambda item: (item.get("kind") or "", item.get("label") or ""))
+            up = sum(1 for item in rows if item.get("status") == "up")
+            down = sum(1 for item in rows if item.get("status") == "down")
+            unknown = sum(1 for item in rows if item.get("status") == "unknown")
+            if down > 0:
+                state_label = "Down"
+                tone = "red"
+            elif unknown > 0:
+                state_label = "Unknown"
+                tone = "yellow"
+            elif rows:
+                state_label = "OK"
+                tone = "green"
+            else:
+                state_label = "None"
+                tone = "secondary"
+            return {
+                "total": len(rows),
+                "up": up,
+                "down": down,
+                "unknown": unknown,
+                "state_label": state_label,
+                "tone": tone,
+                "rows": rows,
+                "last_check_at_ph": format_ts_ph(health_state.get("last_check_at")),
+            }
+
+        def _parse_dt(value):
+            raw = str(value or "").strip()
+            if not raw:
+                return datetime.min.replace(tzinfo=timezone.utc)
+            try:
+                if raw.endswith("Z"):
+                    raw = raw[:-1] + "+00:00"
+                dt = datetime.fromisoformat(raw)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt.astimezone(timezone.utc)
+            except Exception:
+                return datetime.min.replace(tzinfo=timezone.utc)
+
+        def _apply_status(kind, router_id, connected=None, error="", source="", ts=""):
+            key = _router_key(kind, router_id)
+            if key not in routers:
+                return
+            current_dt = _parse_dt(routers[key].get("last_seen"))
+            next_dt = _parse_dt(ts)
+            if routers[key].get("last_seen") and next_dt < current_dt:
+                return
+            if connected is True:
+                status = "up"
+            elif connected is False or (error or "").strip():
+                status = "down"
+            else:
+                status = "unknown"
+            routers[key].update(
+                {
+                    "status": status,
+                    "source": source or routers[key].get("source") or "",
+                    "last_seen": ts or routers[key].get("last_seen") or "",
+                    "error": (error or "").strip(),
+                }
+            )
+
+        for state_key, source_name, ts_key in (
+            ("usage_state", "Usage", "last_check_at"),
+            ("offline_state", "Offline", "last_check_at"),
+            ("accounts_ping_state", "Accounts Ping", "devices_refreshed_at"),
+        ):
+            state = get_state(state_key, {})
+            if not isinstance(state, dict):
+                continue
+            rows_key = "routers" if state_key in {"usage_state", "offline_state"} else "router_status"
+            rows = state.get(rows_key) if isinstance(state.get(rows_key), list) else []
+            state_ts = state.get(ts_key) or ""
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                router_id = (row.get("router_id") or "").strip()
+                if not router_id:
+                    continue
+                connected = row.get("connected")
+                if connected is not True and connected is not False:
+                    connected = None
+                _apply_status(
+                    "pppoe",
+                    router_id,
+                    connected=connected,
+                    error=row.get("error") or "",
+                    source=source_name,
+                    ts=row.get("last_check_at") or state_ts,
+                )
+
+        isp_state = get_state("isp_status_state", {})
+        latest = isp_state.get("latest") if isinstance(isp_state.get("latest"), dict) else {}
+        core_observations = {}
+        for row in latest.values():
+            if not isinstance(row, dict):
+                continue
+            core_id = (row.get("core_id") or "").strip()
+            if not core_id:
+                continue
+            item = core_observations.setdefault(core_id, {"ok": 0, "error": 0, "ts": "", "error_text": ""})
+            row_status = (row.get("status") or "").strip().lower()
+            capacity_status = (row.get("capacity_status") or "").strip().lower()
+            if row_status == "ok":
+                item["ok"] += 1
+            elif row_status == "error" or capacity_status == "error":
+                item["error"] += 1
+                item["error_text"] = item["error_text"] or (row.get("last_error") or row.get("capacity_reason") or "")
+            row_ts = row.get("last_sample_at") or row.get("timestamp") or isp_state.get("last_check_at") or ""
+            if _parse_dt(row_ts) >= _parse_dt(item.get("ts")):
+                item["ts"] = row_ts
+        for core_id, item in core_observations.items():
+            if item.get("ok"):
+                _apply_status("core", core_id, connected=True, source="ISP Port Status", ts=item.get("ts") or isp_state.get("last_check_at") or "")
+            elif item.get("error"):
+                _apply_status(
+                    "core",
+                    core_id,
+                    connected=False,
+                    error=item.get("error_text") or "Core check failed.",
+                    source="ISP Port Status",
+                    ts=item.get("ts") or isp_state.get("last_check_at") or "",
+                )
+
+        rows = sorted(routers.values(), key=lambda item: (item.get("kind") or "", item.get("label") or ""))
+        up = sum(1 for item in rows if item.get("status") == "up")
+        down = sum(1 for item in rows if item.get("status") == "down")
+        unknown = sum(1 for item in rows if item.get("status") == "unknown")
+        if down > 0:
+            state_label = "Down"
+            tone = "red"
+        elif unknown > 0:
+            state_label = "Unknown"
+            tone = "yellow"
+        elif rows:
+            state_label = "OK"
+            tone = "green"
+        else:
+            state_label = "None"
+            tone = "secondary"
+        return {
+            "total": len(rows),
+            "up": up,
+            "down": down,
+            "unknown": unknown,
+            "state_label": state_label,
+            "tone": tone,
+            "rows": rows,
+        }
+    except Exception:
+        return {
+            "total": 0,
+            "up": 0,
+            "down": 0,
+            "unknown": 0,
+            "state_label": "Error",
+            "tone": "red",
+            "rows": [],
+        }
+
+
 def _build_dashboard_kpis(job_status):
     now = datetime.utcnow()
     out = {
@@ -6545,6 +7098,8 @@ def _build_dashboard_kpis(job_status):
         "accounts_ping": {},
         "optical": {},
         "offline": {},
+        "isp_status": {},
+        "mikrotik_routers": {},
         "attention": {},
     }
 
@@ -6846,6 +7401,9 @@ def _build_dashboard_kpis(job_status):
             "last_check_at_ph": "n/a",
         }
 
+    out["isp_status"] = _dashboard_isp_status_summary()
+    out["mikrotik_routers"] = _dashboard_mikrotik_router_summary()
+
     try:
         accounts_issue_total = int(out["accounts_ping"].get("issue") or 0)
         optical_issue_total = int(out["optical"].get("issue_rx") or 0) + int(out["optical"].get("issue_tx") or 0)
@@ -6961,8 +7519,23 @@ def _build_dashboard_kpis(job_status):
     except Exception:
         pass
 
+    isp_counts = out["isp_status"].get("counts") if isinstance(out.get("isp_status"), dict) else {}
+    isp_counts = isp_counts if isinstance(isp_counts, dict) else {}
+    router_summary = out.get("mikrotik_routers") if isinstance(out.get("mikrotik_routers"), dict) else {}
     feature_defs = [
         ("WAN Ping", "wan_ping", out["wan"].get("enabled"), f"{out['wan'].get('configured', 0)} ISPs · {out['wan'].get('targets_enabled', 0)} targets"),
+        (
+            "ISP Port Status",
+            "isp_status",
+            out["isp_status"].get("enabled"),
+            f"{out['isp_status'].get('total', 0)} ISPs · {isp_counts.get('1g', 0)} 1G / {isp_counts.get('100m', 0)} 100M",
+        ),
+        (
+            "MikroTik Routers",
+            "",
+            bool(router_summary.get("total")),
+            f"{router_summary.get('up', 0)} up · {router_summary.get('down', 0)} down · {router_summary.get('unknown', 0)} unknown",
+        ),
         ("Accounts Ping", "accounts_ping", out["accounts_ping"].get("enabled"), f"{out['accounts_ping'].get('accounts', 0)} accounts"),
         ("Under Surveillance", "", out["surveillance"].get("enabled"), f"{out['surveillance'].get('total', 0)} active"),
         ("Usage", "usage", out["usage"].get("enabled"), f"{out['usage'].get('active_accounts', 0)} active accounts"),
@@ -6974,13 +7547,24 @@ def _build_dashboard_kpis(job_status):
         status = job_status.get(job_key) if job_key else {}
         if label == "Under Surveillance":
             state_label, tone = _dashboard_surveillance_health(out["surveillance"])
+            badge_label = state_label
+        elif label == "ISP Port Status":
+            state_label = out["isp_status"].get("state_label") or "Off"
+            tone = out["isp_status"].get("tone") or "secondary"
+            badge_label = f"{isp_counts.get('1g', 0)}/{isp_counts.get('100m', 0)}"
+        elif label == "MikroTik Routers":
+            state_label = router_summary.get("state_label") or "None"
+            tone = router_summary.get("tone") or "secondary"
+            badge_label = f"{router_summary.get('up', 0)}/{router_summary.get('total', 0)}"
         else:
             state_label, tone = _dashboard_job_health(bool(enabled), status)
+            badge_label = state_label
         features.append(
             {
                 "label": label,
                 "state_label": state_label,
                 "tone": tone,
+                "badge_label": badge_label,
                 "subtitle": subtitle,
                 "last_run_at_ph": format_ts_ph((status or {}).get("last_run_at")) if job_key else "n/a",
                 "last_success_at_ph": format_ts_ph((status or {}).get("last_success_at")) if job_key else "n/a",
@@ -7058,6 +7642,17 @@ async def dashboard_attention_trends(request: Request):
     dashboard_kpis = _get_dashboard_kpis_cached(job_status)
     attention = dashboard_kpis.get("attention") if isinstance(dashboard_kpis, dict) else {}
     return _json_no_store({"ok": True, "trends": _dashboard_attention_trends_payload(attention if isinstance(attention, dict) else {})})
+
+
+@app.get("/dashboard/kpis", response_class=JSONResponse)
+async def dashboard_kpis_live(request: Request):
+    job_status = {item["job_name"]: dict(item) for item in get_job_status()}
+    for status in job_status.values():
+        status["last_run_at_ph"] = format_ts_ph(status.get("last_run_at"))
+        status["last_success_at_ph"] = format_ts_ph(status.get("last_success_at"))
+        status["last_error_at_ph"] = format_ts_ph(status.get("last_error_at"))
+    dashboard_kpis = _get_dashboard_kpis_cached(job_status, force=True)
+    return _json_no_store({"ok": True, "dashboard_kpis": dashboard_kpis, "updated_at": utc_now_iso()})
 
 
 @app.get("/logs", response_class=HTMLResponse)
@@ -10622,7 +11217,7 @@ async def usage_format(request: Request):
 async def offline_settings(request: Request):
     settings = normalize_offline_settings(get_settings("offline", OFFLINE_DEFAULTS))
     active_tab = (request.query_params.get("tab") or "status").strip().lower()
-    if active_tab not in ("status", "settings"):
+    if active_tab not in ("status", "settings", "telegram"):
         active_tab = "status"
     settings_tab = (request.query_params.get("settings_tab") or "general").strip().lower()
     if settings_tab not in ("general", "routers", "radius"):
@@ -19590,12 +20185,282 @@ def render_wan_ping_response(request, pulse_settings, wan_settings, message, act
     )
 
 
+def _render_isp_status_response(request, message="", active_tab="status", settings_tab="general"):
+    settings = normalize_isp_status_settings(get_settings("isp_status", ISP_STATUS_DEFAULTS))
+    pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    state = get_state("isp_status_state", {})
+    rows = _build_isp_status_rows(pulse_settings, wan_settings, state=state)
+    configured_rows = [row for row in rows if (row.get("traffic_interface") or "").strip()]
+    capacity_counts = {"1g": 0, "100m": 0, "observing": 0, "not_configured": 0, "error": 0}
+    for row in rows:
+        status = (row.get("capacity_status") or "observing").strip().lower()
+        capacity_counts[status if status in capacity_counts else "observing"] += 1
+    active_tab = (active_tab or "status").strip().lower()
+    if active_tab == "telegram":
+        active_tab = "settings"
+        settings_tab = "telegram"
+    if active_tab not in ("status", "settings"):
+        active_tab = "status"
+    settings_tab = (settings_tab or "general").strip().lower()
+    if settings_tab not in ("general", "capacity", "telegram"):
+        settings_tab = "general"
+    status_map = {item["job_name"]: dict(item) for item in get_job_status()}
+    job = status_map.get("isp_status", {})
+    job["last_run_at_ph"] = format_ts_ph(job.get("last_run_at"))
+    job["last_success_at_ph"] = format_ts_ph(job.get("last_success_at"))
+    job["last_error_at_ph"] = format_ts_ph(job.get("last_error_at"))
+    return templates.TemplateResponse(
+        "settings_isp_status.html",
+        make_context(
+            request,
+            {
+                "settings": settings,
+                "wan_rows": rows,
+                "configured_count": len(configured_rows),
+                "capacity_counts": capacity_counts,
+                "job_status": job,
+                "state": state if isinstance(state, dict) else {},
+                "active_tab": active_tab,
+                "settings_tab": settings_tab,
+                "message": message,
+                "window_options": WAN_STATUS_WINDOW_OPTIONS,
+                "wan_telegram": wan_settings.get("telegram") if isinstance(wan_settings.get("telegram"), dict) else {},
+            },
+        ),
+    )
+
+
+@app.get("/settings/isp-status", response_class=HTMLResponse)
+async def isp_status_settings(request: Request):
+    tab = (request.query_params.get("tab") or "status").strip().lower()
+    settings_tab = (request.query_params.get("settings_tab") or "general").strip().lower()
+    return _render_isp_status_response(request, active_tab=tab, settings_tab=settings_tab)
+
+
+@app.post("/settings/isp-status/settings", response_class=HTMLResponse)
+async def isp_status_settings_save(request: Request):
+    form = await request.form()
+    settings = normalize_isp_status_settings(get_settings("isp_status", ISP_STATUS_DEFAULTS))
+    settings_tab = (form.get("settings_tab") or "general").strip().lower()
+    if settings_tab not in ("general", "capacity"):
+        settings_tab = "general"
+    if settings_tab == "general":
+        settings["enabled"] = parse_bool(form, "isp_status_enabled")
+        general = settings.setdefault("general", {})
+        general["poll_interval_seconds"] = max(parse_int(form, "poll_interval_seconds", general.get("poll_interval_seconds", 30)), 5)
+        general["history_retention_days"] = max(parse_int(form, "history_retention_days", general.get("history_retention_days", 400)), 1)
+        general["chart_window_hours"] = max(parse_int(form, "chart_window_hours", general.get("chart_window_hours", 24)), 1)
+    elif settings_tab == "capacity":
+        capacity = settings.setdefault("capacity", {})
+        try:
+            capacity["hundred_mbps_min"] = max(float(form.get("hundred_mbps_min") or capacity.get("hundred_mbps_min") or 90), 1.0)
+        except Exception:
+            capacity["hundred_mbps_min"] = 90.0
+        try:
+            capacity["hundred_mbps_max"] = max(float(form.get("hundred_mbps_max") or capacity.get("hundred_mbps_max") or 105), capacity["hundred_mbps_min"])
+        except Exception:
+            capacity["hundred_mbps_max"] = max(105.0, capacity["hundred_mbps_min"])
+        capacity["window_minutes"] = max(parse_int(form, "window_minutes", capacity.get("window_minutes", 10)), 1)
+        capacity["average_detection_enabled"] = parse_bool(form, "average_detection_enabled")
+        capacity["average_window_hours"] = max(parse_int(form, "average_window_hours", capacity.get("average_window_hours", 4)), 1)
+    settings = normalize_isp_status_settings(settings)
+    save_settings("isp_status", settings)
+    return _render_isp_status_response(request, "ISP Port Status settings saved.", active_tab="settings", settings_tab=settings_tab)
+
+
+@app.post("/settings/isp-status/telegram", response_class=HTMLResponse)
+async def isp_status_telegram_save(request: Request):
+    form = await request.form()
+    settings = normalize_isp_status_settings(get_settings("isp_status", ISP_STATUS_DEFAULTS))
+    telegram = settings.setdefault("telegram", {})
+    telegram["daily_enabled"] = parse_bool(form, "telegram_daily_enabled")
+    telegram["daily_time"] = (form.get("telegram_daily_time") or telegram.get("daily_time") or "07:00").strip()
+    telegram["immediate_100m_enabled"] = parse_bool(form, "telegram_immediate_100m_enabled")
+    telegram["recovery_confirm_minutes"] = max(parse_int(form, "telegram_recovery_confirm_minutes", telegram.get("recovery_confirm_minutes", 2)), 1)
+    settings = normalize_isp_status_settings(settings)
+    save_settings("isp_status", settings)
+    return _render_isp_status_response(request, "ISP Port Status Telegram settings saved.", active_tab="settings", settings_tab="telegram")
+
+
+def _send_isp_status_test_telegram(wan_settings, message):
+    telegram = wan_settings.get("telegram") if isinstance(wan_settings.get("telegram"), dict) else {}
+    send_telegram((telegram.get("bot_token") or "").strip(), (telegram.get("chat_id") or "").strip(), message)
+
+
+def _build_isp_status_daily_test_message(rows, capacity_counts):
+    rows = rows or []
+    review_count = (
+        capacity_counts.get("observing", 0)
+        + capacity_counts.get("not_configured", 0)
+        + capacity_counts.get("error", 0)
+    )
+    if capacity_counts.get("100m", 0) > 0:
+        summary_status = "🔴 100M detected"
+    elif review_count > 0:
+        summary_status = "🟡 Some ISPs need review"
+    else:
+        summary_status = "🟢 All ISPs are 1G"
+    now_local = datetime.now(ZoneInfo("Asia/Manila"))
+    lines = [
+        "ISP Port Status Daily Report (Test)",
+        f"🕖 {now_local.strftime('%Y-%m-%d %I:%M %p')}",
+        f"(1G/100M): {capacity_counts.get('1g', 0)}/{capacity_counts.get('100m', 0)} - {summary_status}",
+        "",
+    ]
+    for row in rows[:20]:
+        label = row.get("identifier") or row.get("list_name") or row.get("wan_id") or "ISP"
+        status = (row.get("capacity_label") or row.get("capacity_status") or "Observing").strip()
+        lines.append(f"{label}: {status}")
+    if len(rows) > 20:
+        lines.append(f"+{len(rows) - 20} more ISP row(s)")
+    return "\n".join(lines)
+
+
+def _build_isp_status_100m_test_message(rows):
+    row = next((item for item in (rows or []) if (item.get("traffic_interface") or "").strip()), None)
+    if not row and rows:
+        row = rows[0]
+    identifier = (row or {}).get("identifier") or (row or {}).get("list_name") or (row or {}).get("wan_id") or "Sample ISP"
+    list_name = (row or {}).get("list_name") or "sample-to-isp"
+    core = (row or {}).get("core_label") or (row or {}).get("core_id") or "Sample Core"
+    iface = (row or {}).get("traffic_interface") or "sample-interface"
+    return "\n".join(
+        [
+            "⚠️ ISP Port Status detected possible 100M capacity (Test)",
+            f"Identifier: {identifier}",
+            f"TO-ISP: {list_name}",
+            f"Core: {core}",
+            f"Interface: {iface}",
+            "RX: 94.00 Mbps",
+            "TX: 3.00 Mbps",
+            "Total: 97.00 Mbps",
+            "Peak: 94.00 Mbps",
+            "Reason: Test message for the immediate 100M alert.",
+        ]
+    )
+
+
+@app.post("/settings/isp-status/telegram/test-daily", response_class=HTMLResponse)
+async def isp_status_telegram_test_daily(request: Request):
+    pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    rows = _build_isp_status_rows(pulse_settings, wan_settings, state=get_state("isp_status_state", {}))
+    capacity_counts = {"1g": 0, "100m": 0, "observing": 0, "not_configured": 0, "error": 0}
+    for row in rows:
+        status = (row.get("capacity_status") or "observing").strip().lower()
+        capacity_counts[status if status in capacity_counts else "observing"] += 1
+    try:
+        _send_isp_status_test_telegram(wan_settings, _build_isp_status_daily_test_message(rows, capacity_counts))
+        message = "Daily report test message sent."
+    except TelegramError as exc:
+        message = str(exc)
+    return _render_isp_status_response(request, message, active_tab="settings", settings_tab="telegram")
+
+
+@app.post("/settings/isp-status/telegram/test-100m", response_class=HTMLResponse)
+async def isp_status_telegram_test_100m(request: Request):
+    pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    rows = _build_isp_status_rows(pulse_settings, wan_settings, state=get_state("isp_status_state", {}))
+    try:
+        _send_isp_status_test_telegram(wan_settings, _build_isp_status_100m_test_message(rows))
+        message = "Immediate 100M alert test message sent."
+    except TelegramError as exc:
+        message = str(exc)
+    return _render_isp_status_response(request, message, active_tab="settings", settings_tab="telegram")
+
+
+@app.get("/isp-status/status", response_class=JSONResponse)
+async def isp_status_status():
+    pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    state = get_state("isp_status_state", {})
+    rows = _build_isp_status_rows(pulse_settings, wan_settings, state=state)
+    capacity_counts = {"1g": 0, "100m": 0, "observing": 0, "not_configured": 0, "error": 0}
+    configured_count = 0
+    for row in rows:
+        status = (row.get("capacity_status") or "observing").strip().lower()
+        capacity_counts[status if status in capacity_counts else "observing"] += 1
+        if (row.get("traffic_interface") or "").strip():
+            configured_count += 1
+    status_map = {item["job_name"]: dict(item) for item in get_job_status()}
+    job = status_map.get("isp_status", {})
+    job["last_run_at_ph"] = format_ts_ph(job.get("last_run_at"))
+    job["last_success_at_ph"] = format_ts_ph(job.get("last_success_at"))
+    job["last_error_at_ph"] = format_ts_ph(job.get("last_error_at"))
+    return _json_no_store(
+        {
+            "rows": rows,
+            "capacity_counts": capacity_counts,
+            "configured_count": configured_count,
+            "job_status": job,
+            "updated_at": utc_now_iso(),
+        }
+    )
+
+
+@app.get("/isp-status/series", response_class=JSONResponse)
+async def isp_status_series(hours: int = 24):
+    hours = _normalize_wan_window(hours)
+    now_dt = datetime.now(timezone.utc).replace(microsecond=0)
+    start_dt = now_dt - timedelta(hours=hours)
+    start_iso = start_dt.isoformat().replace("+00:00", "Z")
+    end_iso = now_dt.isoformat().replace("+00:00", "Z")
+    pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    rows = _build_isp_status_rows(pulse_settings, wan_settings)
+    wan_ids = [row.get("wan_id") for row in rows if row.get("wan_id") and (row.get("traffic_interface") or "").strip()]
+    series_payload = fetch_isp_status_series_map(wan_ids, start_iso, end_iso, bucket_seconds=_isp_status_bucket_seconds(hours))
+    series_map = series_payload.get("series") if isinstance(series_payload, dict) else {}
+    total_points = series_payload.get("total") if isinstance(series_payload, dict) else []
+    chart_series = [
+        {
+            "id": "all",
+            "name": "All ISP",
+            "color": "#206bc4",
+            "points": [{"x": item.get("timestamp"), "y": item.get("total_mbps")} for item in total_points],
+        }
+    ]
+    for row in rows:
+        wan_id = row.get("wan_id")
+        if not wan_id or wan_id not in series_map:
+            continue
+        chart_series.append(
+            {
+                "id": wan_id,
+                "name": " · ".join(
+                    part
+                    for part in [
+                        row.get("identifier") or row.get("list_name") or wan_id,
+                        row.get("core_label") or row.get("core_id"),
+                        row.get("traffic_interface"),
+                    ]
+                    if part
+                ),
+                "color": row.get("color") or "#6c7a91",
+                "points": [
+                    {"x": item.get("timestamp"), "y": item.get("total_mbps")}
+                    for item in (series_map.get(wan_id) or [])
+                ],
+            }
+        )
+    return JSONResponse({"series": chart_series, "window": {"start": start_iso, "end": end_iso}, "hours": hours})
+
+
+@app.post("/settings/isp-status/format", response_class=HTMLResponse)
+async def isp_status_format_db(request: Request):
+    return _render_system_danger_notice(request, "isp_status")
+
+
 @app.get("/settings/wan", response_class=HTMLResponse)
 async def wan_settings(request: Request):
     pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
     wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
     window_hours = _normalize_wan_window(request.query_params.get("wan_window"))
-    return render_wan_ping_response(request, pulse_settings, wan_settings_data, "", "status", window_hours)
+    active_tab = (request.query_params.get("tab") or "status").strip().lower()
+    wan_settings_tab = (request.query_params.get("wan_settings_tab") or "telegram").strip().lower()
+    return render_wan_ping_response(request, pulse_settings, wan_settings_data, "", active_tab, window_hours, wan_settings_tab=wan_settings_tab)
 
 
 @app.post("/settings/wan/wans", response_class=HTMLResponse)
@@ -19604,12 +20469,19 @@ async def wan_settings_save_wans(request: Request):
     pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
     wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
     count = parse_int(form, "wan_count", 0)
+    existing_wan_map = {
+        ((item.get("core_id") or "").strip(), (item.get("list_name") or "").strip()): item
+        for item in wan_settings_data.get("wans", [])
+        if isinstance(item, dict) and (item.get("core_id") or "").strip() and (item.get("list_name") or "").strip()
+    }
     wans = []
     for idx in range(count):
         core_id = (form.get(f"wan_{idx}_core_id") or "").strip()
         list_name = (form.get(f"wan_{idx}_list") or "").strip()
         if not core_id or not list_name:
             continue
+        existing = existing_wan_map.get((core_id, list_name), {}) or {}
+        raw_traffic_interface = form.get(f"wan_{idx}_traffic_interface")
         mode = (form.get(f"wan_{idx}_mode") or "routed").strip().lower()
         if mode not in ("routed", "bridged"):
             mode = "routed"
@@ -19633,6 +20505,11 @@ async def wan_settings_save_wans(request: Request):
                 "gateway_ip": "",
                 "netwatch_host": netwatch_host,
                 "pppoe_router_id": (form.get(f"wan_{idx}_pppoe_router_id") or "").strip(),
+                "traffic_interface": (
+                    raw_traffic_interface.strip()
+                    if raw_traffic_interface is not None
+                    else (existing.get("traffic_interface") or "").strip()
+                ),
             }
         )
     wan_settings_data["wans"] = wans
@@ -20018,7 +20895,7 @@ async def settings_root():
     return RedirectResponse(url="/settings/optical", status_code=302)
 
 
-_SYSTEM_DANGER_FEATURE_ORDER = ("surveillance", "optical", "accounts_ping", "usage", "offline", "wan")
+_SYSTEM_DANGER_FEATURE_ORDER = ("surveillance", "optical", "accounts_ping", "usage", "offline", "wan", "isp_status")
 _SYSTEM_DANGER_ACTIONS = {
     "surveillance": {
         "label": "Under Surveillance",
@@ -20062,11 +20939,18 @@ _SYSTEM_DANGER_ACTIONS = {
         "summary": "Clears WAN status history, target latency history, and cached WAN states. Settings are preserved.",
         "path": "/settings/wan?tab=settings",
     },
+    "isp_status": {
+        "label": "ISP Port Status",
+        "button_label": "Format ISP Port Status",
+        "permission": "isp_status.settings.danger.run",
+        "summary": "Clears stored ISP Port Status bandwidth samples and runtime classification state. Settings and ISP interface assignments are preserved.",
+        "path": "/settings/isp-status?tab=settings",
+    },
     "all": {
         "label": "All Monitoring Features",
         "button_label": "Format All Features",
         "permission": "settings.danger",
-        "summary": "Formats Under Surveillance, Optical, Accounts Ping, Usage, Offline, and WAN Ping in one step. Settings are preserved.",
+        "summary": "Formats Under Surveillance, Optical, Accounts Ping, Usage, Offline, WAN Ping, and ISP Port Status in one step. Settings are preserved.",
         "path": "/settings/system?tab=danger",
     },
     "uninstall": {
@@ -20089,7 +20973,7 @@ _SYSTEM_DANGER_GROUPS = (
         "key": "traffic_and_link",
         "title": "Traffic & Link Telemetry",
         "description": "Feature data tied to optical, usage, and WAN history.",
-        "actions": ("optical", "usage", "wan"),
+        "actions": ("optical", "usage", "wan", "isp_status"),
     },
 )
 _SYSTEM_DANGER_ROLE_TRIGGER_CODES = (
@@ -20101,6 +20985,7 @@ _SYSTEM_DANGER_ROLE_TRIGGER_CODES = (
     "usage.settings.danger.run",
     "offline.settings.danger.run",
     "wan.settings.danger.run",
+    "isp_status.settings.danger.run",
     "system.danger.uninstall.run",
 )
 _SYSTEM_DANGER_ROLE_GRANTED_CODES = ("system.view", "system.tab.danger.view")
@@ -20274,6 +21159,11 @@ def _system_danger_format_wan():
     clear_wan_history()
 
 
+def _system_danger_format_isp_status():
+    clear_isp_status_data()
+    save_state("isp_status_state", {"reset_at": utc_now_iso(), "latest": {}, "capacity_windows": {}, "capacity_alerts": {}})
+
+
 def _system_danger_start_uninstall():
     host_repo = os.environ.get("THREEJ_HOST_REPO", "/opt/threejnotif")
     command = (
@@ -20302,6 +21192,7 @@ def _system_danger_capabilities(request: Request):
         "can_format_usage": _auth_request_has_permission(request, "usage.settings.danger.run"),
         "can_format_offline": _auth_request_has_permission(request, "offline.settings.danger.run"),
         "can_format_wan": _auth_request_has_permission(request, "wan.settings.danger.run"),
+        "can_format_isp_status": _auth_request_has_permission(request, "isp_status.settings.danger.run"),
         "can_uninstall_system": _auth_request_has_permission(request, "system.danger.uninstall.run"),
     }
     caps["can_format_all_features"] = all(
@@ -20313,6 +21204,7 @@ def _system_danger_capabilities(request: Request):
             "can_format_usage",
             "can_format_offline",
             "can_format_wan",
+            "can_format_isp_status",
         )
     )
     caps["can_run_danger_actions"] = bool(
@@ -20322,6 +21214,7 @@ def _system_danger_capabilities(request: Request):
         or caps["can_format_usage"]
         or caps["can_format_offline"]
         or caps["can_format_wan"]
+        or caps["can_format_isp_status"]
         or caps["can_format_all_features"]
         or caps["can_uninstall_system"]
     )
@@ -20395,6 +21288,9 @@ def _run_system_danger_action(action_key: str):
     if action_key == "wan":
         _system_danger_format_wan()
         return "WAN history and cached state formatted. Settings preserved."
+    if action_key == "isp_status":
+        _system_danger_format_isp_status()
+        return "ISP Port Status bandwidth samples and cached state formatted. Settings preserved."
     if action_key == "all":
         for feature_key in _SYSTEM_DANGER_FEATURE_ORDER:
             _run_system_danger_action(feature_key)
@@ -20525,7 +21421,7 @@ def _normalize_system_settings_tabs(active_tab: str, routers_tab: str, access_ta
 
     if active_tab not in {"general", "telegram", "routers", "access", "update", "backup", "danger"}:
         active_tab = "general"
-    if routers_tab not in {"cores", "mikrotik-routers", "isps"}:
+    if routers_tab not in {"cores", "mikrotik-routers", "isps", "isp-port-tagging"}:
         routers_tab = "cores"
     if access_tab not in {"auth", "permissions", "roles", "users"}:
         access_tab = "auth"
@@ -20556,6 +21452,7 @@ def _normalize_system_settings_tabs(active_tab: str, routers_tab: str, access_ta
         allowed_routers_tabs.append("mikrotik-routers")
     if caps.get("can_view_system_router_isp"):
         allowed_routers_tabs.append("isps")
+        allowed_routers_tabs.append("isp-port-tagging")
     if active_tab == "routers" and allowed_routers_tabs and routers_tab not in allowed_routers_tabs:
         routers_tab = allowed_routers_tabs[0]
 
@@ -20692,17 +21589,35 @@ def render_system_settings_response(
             auth_roles = []
             auth_users = []
 
-    wan_rows_loaded = bool(active_tab == "routers" and routers_tab == "isps")
+    wan_rows_loaded = bool(active_tab == "routers" and routers_tab in {"isps", "isp-port-tagging"})
     wan_rows = []
     wan_autodetect_warnings = []
     if wan_rows_loaded:
         try:
             wan_rows = build_wan_rows(pulse_settings, wan_settings_data)
+            cores = ((pulse_settings.get("pulsewatch") or {}).get("mikrotik") or {}).get("cores") or []
+            interface_map, interface_warnings = fetch_mikrotik_interfaces(cores)
             detect_map, detect_warnings = detect_routed_wan_autofill(pulse_settings, wan_rows, probe_public=False)
-            wan_autodetect_warnings = detect_warnings
+            wan_autodetect_warnings = list(interface_warnings or []) if routers_tab == "isp-port-tagging" else list(detect_warnings or [])
             for row in wan_rows:
                 key = ((row.get("core_id") or "").strip(), (row.get("list_name") or "").strip())
                 detected = detect_map.get(key) or {}
+                core_id = (row.get("core_id") or "").strip()
+                current_interface = (row.get("traffic_interface") or "").strip()
+                options = list(interface_map.get(core_id) or [])
+                if current_interface and not any((item.get("name") or "").strip() == current_interface for item in options):
+                    options.insert(
+                        0,
+                        {
+                            "name": current_interface,
+                            "comment": "Configured value is not currently detected on this router",
+                            "type": "",
+                            "default_name": "",
+                            "disabled": False,
+                            "running": False,
+                        },
+                    )
+                row["traffic_interface_options"] = options
                 detected_local_ip = (detected.get("local_ip") or "").strip()
                 detected_netwatch = (detected.get("netwatch_host") or "").strip()
                 row["detected_local_ip"] = detected_local_ip
@@ -20784,13 +21699,22 @@ def _parse_wan_pppoe_routers_from_form(form, count: int):
     return routers, removed_ids
 
 
-def _parse_wan_list_from_form(form, count: int):
+def _parse_wan_list_from_form(form, count: int, existing_wans=None):
+    existing_map = {}
+    if isinstance(existing_wans, list):
+        existing_map = {
+            ((item.get("core_id") or "").strip(), (item.get("list_name") or "").strip()): item
+            for item in existing_wans
+            if isinstance(item, dict) and (item.get("core_id") or "").strip() and (item.get("list_name") or "").strip()
+        }
     wans = []
     for idx in range(count):
         core_id = (form.get(f"wan_{idx}_core_id") or "").strip()
         list_name = (form.get(f"wan_{idx}_list") or "").strip()
         if not core_id or not list_name:
             continue
+        existing = existing_map.get((core_id, list_name), {}) or {}
+        raw_traffic_interface = form.get(f"wan_{idx}_traffic_interface")
         mode = (form.get(f"wan_{idx}_mode") or "routed").strip().lower()
         if mode not in ("routed", "bridged"):
             mode = "routed"
@@ -20814,6 +21738,11 @@ def _parse_wan_list_from_form(form, count: int):
                 "gateway_ip": "",
                 "netwatch_host": netwatch_host,
                 "pppoe_router_id": (form.get(f"wan_{idx}_pppoe_router_id") or "").strip(),
+                "traffic_interface": (
+                    raw_traffic_interface.strip()
+                    if raw_traffic_interface is not None
+                    else (existing.get("traffic_interface") or "").strip()
+                ),
             }
         )
     return wans
@@ -21448,7 +22377,7 @@ async def system_save_isps(request: Request):
     pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
     wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
     count = parse_int(form, "wan_count", 0)
-    parsed_wans = _parse_wan_list_from_form(form, count)
+    parsed_wans = _parse_wan_list_from_form(form, count, wan_settings_data.get("wans") or [])
     routed_detect_map, routed_detect_warnings = detect_routed_wan_autofill(pulse_settings, parsed_wans, probe_public=True)
     local_warnings = []
     for wan in parsed_wans:
@@ -21491,6 +22420,67 @@ async def system_save_isps(request: Request):
     else:
         message = "ISP list saved and Netwatch synced."
     return render_system_settings_response(request, message, active_tab="routers", routers_tab="isps")
+
+
+@app.post("/settings/system/routers/isp-port-tags", response_class=HTMLResponse)
+async def system_save_isp_port_tags(request: Request):
+    form = await request.form()
+    wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    count = parse_int(form, "wan_count", 0)
+    tag_map = {}
+    for idx in range(count):
+        core_id = (form.get(f"wan_{idx}_core_id") or "").strip()
+        list_name = (form.get(f"wan_{idx}_list") or "").strip()
+        if not core_id or not list_name:
+            continue
+        tag_map[(core_id, list_name)] = (form.get(f"wan_{idx}_traffic_interface") or "").strip()
+
+    updated = 0
+    for wan in wan_settings_data.get("wans") or []:
+        if not isinstance(wan, dict):
+            continue
+        key = ((wan.get("core_id") or "").strip(), (wan.get("list_name") or "").strip())
+        if key not in tag_map:
+            continue
+        if (wan.get("traffic_interface") or "").strip() != tag_map[key]:
+            updated += 1
+        wan["traffic_interface"] = tag_map[key]
+
+    existing_keys = {
+        ((wan.get("core_id") or "").strip(), (wan.get("list_name") or "").strip())
+        for wan in wan_settings_data.get("wans") or []
+        if isinstance(wan, dict)
+    }
+    for (core_id, list_name), traffic_interface in tag_map.items():
+        if (core_id, list_name) in existing_keys:
+            continue
+        if traffic_interface:
+            updated += 1
+        wan_settings_data.setdefault("wans", []).append(
+            {
+                "id": wan_row_id(core_id, list_name),
+                "core_id": core_id,
+                "list_name": list_name,
+                "identifier": "",
+                "color": "",
+                "enabled": False,
+                "mode": "routed",
+                "local_ip": "",
+                "gateway_ip": "",
+                "netwatch_host": "",
+                "pppoe_router_id": "",
+                "traffic_interface": traffic_interface,
+            }
+        )
+
+    save_settings("wan_ping", wan_settings_data)
+    label = "tag" if updated == 1 else "tags"
+    return render_system_settings_response(
+        request,
+        f"ISP port {label} saved. Updated {updated} {label}.",
+        active_tab="routers",
+        routers_tab="isp-port-tagging",
+    )
 
 
 @app.post("/settings/system/uninstall", response_class=HTMLResponse)
