@@ -45,6 +45,7 @@ from .db import (
     clear_surveillance_audit_logs,
     clear_surveillance_history,
     clear_isp_status_data,
+    clear_mikrotik_logs,
     clear_wan_history,
     count_offline_history_accounts_since,
     count_usage_modem_reboot_history,
@@ -99,6 +100,8 @@ from .db import (
     get_optical_samples_for_devices_since,
     get_optical_worst_candidates,
     get_wan_status_counts,
+    get_mikrotik_log_facets,
+    get_mikrotik_log_stats,
     increment_surveillance_observed,
     get_offline_history_since,
     get_pppoe_usage_series_since,
@@ -108,6 +111,7 @@ from .db import (
     list_usage_modem_reboot_history,
     list_usage_modem_reboot_account_stats,
     list_usage_modem_reboot_history_for_account,
+    list_mikrotik_logs,
     list_auth_audit_logs,
     list_auth_permissions,
     list_auth_roles,
@@ -125,6 +129,7 @@ from .db import (
     update_auth_user,
     update_auth_role,
     insert_wan_target_ping_result,
+    delete_mikrotik_logs_older_than,
     utc_now_iso,
 )
 from .accounts_ping_sources import (
@@ -163,6 +168,7 @@ from .settings_defaults import (
     USAGE_DEFAULTS,
     WAN_PING_DEFAULTS,
     ISP_STATUS_DEFAULTS,
+    MIKROTIK_LOGS_DEFAULTS,
     WAN_MESSAGE_DEFAULTS,
     WAN_SUMMARY_DEFAULTS,
 )
@@ -481,6 +487,7 @@ AUTH_PERMISSION_FEATURE_LABELS = {
     "isp_status": "ISP Port Status",
     "system_settings": "System Settings",
     "logs": "Logs",
+    "mikrotik_logs": "MikroTik Logs",
     "other": "Other",
 }
 AUTH_PERMISSION_DEPENDENCIES = {
@@ -551,6 +558,10 @@ AUTH_PERMISSION_DEPENDENCIES = {
     "system.access.roles.edit": ["system.access.roles.view"],
     "system.access.users.edit": ["system.access.users.view"],
     "logs.timeline.view": ["dashboard.view"],
+    "logs.system.view": ["logs.timeline.view"],
+    "logs.mikrotik.view": ["logs.timeline.view"],
+    "logs.mikrotik.edit": ["logs.mikrotik.view"],
+    "logs.mikrotik.danger.run": ["logs.mikrotik.view", "logs.mikrotik.edit", "system.view", "system.tab.danger.view"],
     "logs.search.view": ["logs.timeline.view"],
     "logs.filter.view": ["logs.timeline.view"],
     "logs.category.surveillance.view": ["logs.timeline.view"],
@@ -646,6 +657,7 @@ AUTH_UI_PERMISSION_REPLACEMENTS = {
         "offline.settings.danger.run",
         "wan.settings.danger.run",
         "isp_status.settings.danger.run",
+        "logs.mikrotik.danger.run",
         "system.danger.uninstall.run",
         "VIEW_SystemSettings",
         "system.tab.danger.view",
@@ -685,6 +697,7 @@ AUTH_PERMISSION_COMPAT_GRANTS = {
         "offline.settings.danger.run",
         "wan.settings.danger.run",
         "isp_status.settings.danger.run",
+        "logs.mikrotik.danger.run",
         "system.danger.uninstall.run",
         "VIEW_SystemSettings",
         "system.tab.danger.view",
@@ -711,6 +724,7 @@ AUTH_PERMISSION_COMPAT_GRANTS = {
     "offline.settings.danger.run": ["settings.danger"],
     "wan.settings.danger.run": ["settings.danger"],
     "isp_status.settings.danger.run": ["settings.danger"],
+    "logs.mikrotik.danger.run": ["settings.danger"],
     "system.danger.uninstall.run": ["settings.danger"],
     "optical.action.test_source.run": ["tools.test"],
     "accounts_ping.action.test_source.run": ["tools.test"],
@@ -1431,7 +1445,7 @@ def _auth_allowed_log_categories(permission_codes) -> list[str]:
 
 
 def _auth_can_view_logs_page(permission_codes) -> bool:
-    return bool(_auth_allowed_log_categories(permission_codes))
+    return bool(_auth_allowed_log_categories(permission_codes) or _auth_check_permission(permission_codes or [], "logs.mikrotik.view"))
 
 
 def _audit_rows_for_categories(
@@ -4582,6 +4596,52 @@ def normalize_isp_status_settings(settings):
     return settings
 
 
+def normalize_mikrotik_logs_settings(settings):
+    cfg = copy.deepcopy(MIKROTIK_LOGS_DEFAULTS)
+    if isinstance(settings, dict):
+        cfg["enabled"] = bool(settings.get("enabled", cfg["enabled"]))
+        for section in ("receiver", "storage", "filters"):
+            if isinstance(settings.get(section), dict):
+                cfg[section].update(settings.get(section) or {})
+
+    receiver = cfg.setdefault("receiver", {})
+    receiver["host"] = (receiver.get("host") or "0.0.0.0").strip() or "0.0.0.0"
+    try:
+        port = int(receiver.get("port") or 5514)
+    except Exception:
+        port = 5514
+    receiver["port"] = max(1, min(port, 65535))
+
+    storage = cfg.setdefault("storage", {})
+    try:
+        retention_days = int(storage.get("retention_days") or 30)
+    except Exception:
+        retention_days = 30
+    try:
+        batch_size = int(storage.get("batch_size") or 100)
+    except Exception:
+        batch_size = 100
+    try:
+        flush_interval = int(storage.get("flush_interval_seconds") or 2)
+    except Exception:
+        flush_interval = 2
+    storage["retention_days"] = max(1, min(retention_days, 3650))
+    storage["batch_size"] = max(1, min(batch_size, 1000))
+    storage["flush_interval_seconds"] = max(1, min(flush_interval, 30))
+
+    filters = cfg.setdefault("filters", {})
+    filters["allow_unknown_sources"] = bool(filters.get("allow_unknown_sources", True))
+    min_severity = (filters.get("min_severity") or "debug").strip().lower()
+    if min_severity not in {"debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"}:
+        min_severity = "debug"
+    filters["min_severity"] = min_severity
+    if isinstance(filters.get("drop_topics"), list):
+        filters["drop_topics"] = [str(item or "").strip().lower() for item in filters["drop_topics"] if str(item or "").strip()]
+    else:
+        filters["drop_topics"] = []
+    return cfg
+
+
 def normalize_offline_settings(settings):
     settings = settings if isinstance(settings, dict) else {}
     settings.setdefault("enabled", False)
@@ -7657,20 +7717,43 @@ async def dashboard_kpis_live(request: Request):
 
 @app.get("/logs", response_class=HTMLResponse)
 async def logs_page(request: Request):
+    active_tab = (request.query_params.get("tab") or "system").strip().lower()
     query = (request.query_params.get("q") or "").strip()
     category = (request.query_params.get("category") or "all").strip()
     action_filter = (request.query_params.get("action") or "").strip()
     user_filter = (request.query_params.get("user") or "").strip()
     window = (request.query_params.get("window") or "all").strip().lower()
     page = _parse_table_page(request.query_params.get("page"), default=1)
+    mt_query = (request.query_params.get("mt_q") or "").strip()
+    mt_router = (request.query_params.get("mt_router") or "").strip()
+    mt_severity = (request.query_params.get("mt_severity") or "").strip().lower()
+    mt_topic = (request.query_params.get("mt_topic") or "").strip()
+    mt_window = (request.query_params.get("mt_window") or "24h").strip().lower()
+    mt_limit = _parse_table_limit(request.query_params.get("mt_limit"), default=100)
+    mt_page = _parse_table_page(request.query_params.get("mt_page"), default=1)
+    mt_tab = (request.query_params.get("mt_tab") or "logs").strip().lower()
+    if mt_tab not in {"logs", "settings"}:
+        mt_tab = "logs"
 
     all_categories = list(LOG_CATEGORY_PERMISSION_MAP.keys())
+    can_view_system_logs = _auth_request_has_permission(request, "logs.system.view") or _auth_request_has_permission(request, "logs.timeline.view")
+    can_view_mikrotik_logs = _auth_request_has_permission(request, "logs.mikrotik.view")
+    can_edit_mikrotik_logs = _auth_request_has_permission(request, "logs.mikrotik.edit")
     if bool(getattr(request.state, "auth_enabled", True)):
         allowed_categories = _auth_allowed_log_categories(getattr(request.state, "auth_permission_codes", []) or [])
     else:
         allowed_categories = list(all_categories)
-    if not allowed_categories:
+        can_view_system_logs = True
+        can_view_mikrotik_logs = True
+        can_edit_mikrotik_logs = True
+    if not allowed_categories and not can_view_mikrotik_logs:
         return _auth_forbidden_response(request, "logs.timeline.view")
+    if active_tab not in {"system", "mikrotik"}:
+        active_tab = "system"
+    if active_tab == "system" and not can_view_system_logs and can_view_mikrotik_logs:
+        active_tab = "mikrotik"
+    if active_tab == "mikrotik" and not can_view_mikrotik_logs and can_view_system_logs:
+        active_tab = "system"
 
     allowed_category_set = {str(item or "").strip() for item in allowed_categories if str(item or "").strip()}
     valid_category_values = {"all", *allowed_category_set}
@@ -7755,6 +7838,7 @@ async def logs_page(request: Request):
     rows_page = filtered_rows[start_idx:end_idx]
 
     base_params = {
+        "tab": "system",
         "q": query,
         "category": category if category != "all" else "",
         "action": action_filter,
@@ -7764,11 +7848,176 @@ async def logs_page(request: Request):
     base_params = {key: value for key, value in base_params.items() if value}
     logs_base_query = urllib.parse.urlencode(base_params)
 
+    if mt_window not in {"all", "24h", "7d", "30d"}:
+        mt_window = "24h"
+    valid_severities = {"", "debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"}
+    if mt_severity not in valid_severities:
+        mt_severity = ""
+    mt_offset = (mt_page - 1) * mt_limit
+    mt_total, mt_rows = (0, [])
+    mt_facets = {"routers": [], "severities": [], "topics": []}
+    mt_stats = {"total": 0, "today": 0, "warning": 0, "error": 0, "critical": 0, "sources": 0}
+    mt_settings = normalize_mikrotik_logs_settings(get_settings("mikrotik_logs", MIKROTIK_LOGS_DEFAULTS))
+    mt_state = get_state("mikrotik_logs_state", {})
+    if not isinstance(mt_state, dict):
+        mt_state = {}
+    if can_view_mikrotik_logs:
+        mt_total, mt_rows = list_mikrotik_logs(
+            limit=mt_limit,
+            offset=mt_offset,
+            query=mt_query,
+            router=mt_router,
+            severity=mt_severity,
+            topic=mt_topic,
+            window=mt_window,
+        )
+        mt_facets = get_mikrotik_log_facets()
+        mt_stats = get_mikrotik_log_stats()
+    mt_pages = max((mt_total + mt_limit - 1) // mt_limit, 1)
+    if mt_page > mt_pages and can_view_mikrotik_logs:
+        mt_page = mt_pages
+        mt_offset = (mt_page - 1) * mt_limit
+        mt_total, mt_rows = list_mikrotik_logs(
+            limit=mt_limit,
+            offset=mt_offset,
+            query=mt_query,
+            router=mt_router,
+            severity=mt_severity,
+            topic=mt_topic,
+            window=mt_window,
+        )
+    mt_page = max(1, min(mt_page, mt_pages))
+    mt_router_tabs_map = {}
+    for item in mt_facets.get("routers") or []:
+        if not isinstance(item, dict):
+            continue
+        value = str(item.get("value") or "").strip()
+        if not value:
+            continue
+        mt_router_tabs_map[value] = {
+            "value": value,
+            "label": str(item.get("label") or value).strip(),
+            "count": int(item.get("count") or 0),
+        }
+    try:
+        pulse_settings_for_tabs = get_settings("isp_ping", ISP_PING_DEFAULTS)
+        for core in ((((pulse_settings_for_tabs.get("pulsewatch") or {}).get("mikrotik") or {}).get("cores")) or []):
+            if not isinstance(core, dict):
+                continue
+            value = (core.get("id") or core.get("host") or "").strip()
+            if not value:
+                continue
+            mt_router_tabs_map.setdefault(
+                value,
+                {
+                    "value": value,
+                    "label": (core.get("label") or core.get("id") or core.get("host") or value).strip(),
+                    "count": 0,
+                },
+            )
+    except Exception:
+        pass
+    try:
+        wan_settings_for_tabs = get_settings("wan_ping", WAN_PING_DEFAULTS)
+        for router in (wan_settings_for_tabs.get("pppoe_routers") or []):
+            if not isinstance(router, dict):
+                continue
+            value = (router.get("id") or router.get("host") or "").strip()
+            if not value:
+                continue
+            mt_router_tabs_map.setdefault(
+                value,
+                {
+                    "value": value,
+                    "label": (router.get("name") or router.get("id") or router.get("host") or value).strip(),
+                    "count": 0,
+                },
+            )
+    except Exception:
+        pass
+    mt_router_tabs = sorted(mt_router_tabs_map.values(), key=lambda item: (item.get("label") or item.get("value") or "").lower())
+    mt_base_params = {
+        "tab": "mikrotik",
+        "mt_tab": "logs",
+        "mt_q": mt_query,
+        "mt_router": mt_router,
+        "mt_severity": mt_severity,
+        "mt_topic": mt_topic,
+        "mt_window": mt_window if mt_window != "24h" else "",
+        "mt_limit": mt_limit if mt_limit != 100 else "",
+    }
+    mt_base_query = urllib.parse.urlencode({key: value for key, value in mt_base_params.items() if value})
+    mt_router_tab_params = {
+        "tab": "mikrotik",
+        "mt_tab": "logs",
+        "mt_q": mt_query,
+        "mt_severity": mt_severity,
+        "mt_topic": mt_topic,
+        "mt_window": mt_window if mt_window != "24h" else "",
+        "mt_limit": mt_limit if mt_limit != 100 else "",
+    }
+    mt_router_tab_query = urllib.parse.urlencode({key: value for key, value in mt_router_tab_params.items() if value})
+    configured_drop_topics = {
+        str(item or "").strip().lower()
+        for item in (((mt_settings.get("filters") or {}).get("drop_topics")) or [])
+        if str(item or "").strip()
+    }
+    noisy_topic_keywords = ("debug", "packet", "firewall", "dhcp", "dns", "route", "wireless")
+    mt_drop_topic_options = []
+    seen_topic_values = set()
+    for item in (mt_facets.get("topics") or []):
+        if not isinstance(item, dict):
+            continue
+        value = str(item.get("value") or "").strip()
+        if not value:
+            continue
+        normalized = value.lower()
+        if normalized in seen_topic_values:
+            continue
+        seen_topic_values.add(normalized)
+        count = int(item.get("count") or 0)
+        suggested = count >= 100 or any(keyword in normalized for keyword in noisy_topic_keywords)
+        mt_drop_topic_options.append(
+            {
+                "value": value,
+                "count": count,
+                "selected": normalized in configured_drop_topics,
+                "suggested": suggested,
+            }
+        )
+    mt_drop_topic_options = sorted(
+        mt_drop_topic_options,
+        key=lambda item: (not bool(item.get("selected")), not bool(item.get("suggested")), -int(item.get("count") or 0), item.get("value", "").lower()),
+    )
+    mt_custom_drop_topics = [
+        item
+        for item in (((mt_settings.get("filters") or {}).get("drop_topics")) or [])
+        if str(item or "").strip().lower() not in seen_topic_values
+    ]
+    server_host = (request.url.hostname or "SERVER_IP").strip()
+    mt_port = int((mt_settings.get("receiver") or {}).get("port") or 5514)
+    mt_commands = [
+        f"/system logging action add name=threejmon target=remote remote={server_host} remote-port={mt_port} bsd-syslog=yes syslog-facility=local7",
+        "/system logging add topics=info action=threejmon",
+        "/system logging add topics=warning action=threejmon",
+        "/system logging add topics=error action=threejmon",
+        "/system logging add topics=critical action=threejmon",
+    ]
+    status_map = {item["job_name"]: dict(item) for item in get_job_status()}
+    mt_job = status_map.get("mikrotik_logs", {})
+    mt_job["last_run_at_ph"] = format_ts_ph(mt_job.get("last_run_at"))
+    mt_job["last_success_at_ph"] = format_ts_ph(mt_job.get("last_success_at"))
+    mt_job["last_error_at_ph"] = format_ts_ph(mt_job.get("last_error_at"))
+
     return templates.TemplateResponse(
         "logs.html",
         make_context(
             request,
             {
+                "active_tab": active_tab,
+                "can_view_system_logs": can_view_system_logs,
+                "can_view_mikrotik_logs": can_view_mikrotik_logs,
+                "can_edit_mikrotik_logs": can_edit_mikrotik_logs,
                 "logs_rows": rows_page,
                 "logs_total": total,
                 "logs_page": page,
@@ -7782,9 +8031,77 @@ async def logs_page(request: Request):
                 "logs_users": users,
                 "logs_actions": actions,
                 "logs_base_query": logs_base_query,
+                "mikrotik_logs_rows": [
+                    {
+                        **dict(row),
+                        "timestamp_ph": format_ts_ph(row.get("timestamp")),
+                        "received_at_ph": format_ts_ph(row.get("received_at")),
+                    }
+                    for row in mt_rows
+                ],
+                "mikrotik_logs_total": mt_total,
+                "mikrotik_logs_page": mt_page,
+                "mikrotik_logs_pages": mt_pages,
+                "mikrotik_logs_limit": mt_limit,
+                "mikrotik_logs_query": mt_query,
+                "mikrotik_logs_router": mt_router,
+                "mikrotik_logs_severity": mt_severity,
+                "mikrotik_logs_topic": mt_topic,
+                "mikrotik_logs_window": mt_window,
+                "mikrotik_logs_base_query": mt_base_query,
+                "mikrotik_logs_router_tab_query": mt_router_tab_query,
+                "mikrotik_logs_router_tabs": mt_router_tabs,
+                "mikrotik_logs_active_tab": mt_tab,
+                "mikrotik_logs_facets": mt_facets,
+                "mikrotik_logs_stats": mt_stats,
+                "mikrotik_logs_settings": mt_settings,
+                "mikrotik_logs_drop_topic_options": mt_drop_topic_options,
+                "mikrotik_logs_custom_drop_topics": mt_custom_drop_topics,
+                "mikrotik_logs_state": mt_state,
+                "mikrotik_logs_job": mt_job,
+                "mikrotik_logs_commands": mt_commands,
             },
         ),
     )
+
+
+@app.post("/logs/mikrotik/settings", response_class=HTMLResponse)
+async def mikrotik_logs_settings_save(request: Request):
+    if not _auth_request_has_permission(request, "logs.mikrotik.edit"):
+        return _auth_forbidden_response(request, "logs.mikrotik.edit")
+    form = await request.form()
+    selected_drop_topics = []
+    try:
+        selected_drop_topics.extend([str(item or "").strip() for item in form.getlist("drop_topics") if str(item or "").strip()])
+    except Exception:
+        selected_drop_topics.extend(parse_lines(form.get("drop_topics")))
+    selected_drop_topics.extend(parse_lines(form.get("drop_topics_custom")))
+    settings = {
+        "enabled": parse_bool(form, "enabled"),
+        "receiver": {
+            "host": (form.get("receiver_host") or "0.0.0.0").strip() or "0.0.0.0",
+            "port": parse_int(form, "receiver_port", 5514),
+        },
+        "storage": {
+            "retention_days": parse_int(form, "retention_days", 30),
+            "batch_size": parse_int(form, "batch_size", 100),
+            "flush_interval_seconds": parse_int(form, "flush_interval_seconds", 2),
+        },
+        "filters": {
+            "allow_unknown_sources": parse_bool(form, "allow_unknown_sources"),
+            "min_severity": (form.get("min_severity") or "debug").strip().lower(),
+            "drop_topics": sorted({item.lower(): item for item in selected_drop_topics if item}.values(), key=lambda value: value.lower()),
+        },
+    }
+    settings = normalize_mikrotik_logs_settings(settings)
+    save_settings("mikrotik_logs", settings)
+    _auth_log_event(
+        request,
+        "mikrotik_logs.settings_saved",
+        resource="/logs?tab=mikrotik",
+        details=f"enabled={int(bool(settings.get('enabled')))};port={(settings.get('receiver') or {}).get('port')}",
+    )
+    return RedirectResponse(url="/logs?tab=mikrotik&mt_tab=settings&saved=1", status_code=303)
 
 
 @app.get("/wan/latency-series")
@@ -20895,7 +21212,7 @@ async def settings_root():
     return RedirectResponse(url="/settings/optical", status_code=302)
 
 
-_SYSTEM_DANGER_FEATURE_ORDER = ("surveillance", "optical", "accounts_ping", "usage", "offline", "wan", "isp_status")
+_SYSTEM_DANGER_FEATURE_ORDER = ("surveillance", "optical", "accounts_ping", "usage", "offline", "wan", "isp_status", "mikrotik_logs")
 _SYSTEM_DANGER_ACTIONS = {
     "surveillance": {
         "label": "Under Surveillance",
@@ -20946,11 +21263,18 @@ _SYSTEM_DANGER_ACTIONS = {
         "summary": "Clears stored ISP Port Status bandwidth samples and runtime classification state. Settings and ISP interface assignments are preserved.",
         "path": "/settings/isp-status?tab=settings",
     },
+    "mikrotik_logs": {
+        "label": "MikroTik Logs",
+        "button_label": "Format MikroTik Logs",
+        "permission": "logs.mikrotik.danger.run",
+        "summary": "Clears centralized MikroTik syslog entries. Receiver settings are preserved.",
+        "path": "/logs?tab=mikrotik",
+    },
     "all": {
         "label": "All Monitoring Features",
         "button_label": "Format All Features",
         "permission": "settings.danger",
-        "summary": "Formats Under Surveillance, Optical, Accounts Ping, Usage, Offline, WAN Ping, and ISP Port Status in one step. Settings are preserved.",
+        "summary": "Formats Under Surveillance, Optical, Accounts Ping, Usage, Offline, WAN Ping, ISP Port Status, and MikroTik Logs in one step. Settings are preserved.",
         "path": "/settings/system?tab=danger",
     },
     "uninstall": {
@@ -20973,7 +21297,7 @@ _SYSTEM_DANGER_GROUPS = (
         "key": "traffic_and_link",
         "title": "Traffic & Link Telemetry",
         "description": "Feature data tied to optical, usage, and WAN history.",
-        "actions": ("optical", "usage", "wan", "isp_status"),
+        "actions": ("optical", "usage", "wan", "isp_status", "mikrotik_logs"),
     },
 )
 _SYSTEM_DANGER_ROLE_TRIGGER_CODES = (
@@ -20986,6 +21310,7 @@ _SYSTEM_DANGER_ROLE_TRIGGER_CODES = (
     "offline.settings.danger.run",
     "wan.settings.danger.run",
     "isp_status.settings.danger.run",
+    "logs.mikrotik.danger.run",
     "system.danger.uninstall.run",
 )
 _SYSTEM_DANGER_ROLE_GRANTED_CODES = ("system.view", "system.tab.danger.view")
@@ -21164,6 +21489,16 @@ def _system_danger_format_isp_status():
     save_state("isp_status_state", {"reset_at": utc_now_iso(), "latest": {}, "capacity_windows": {}, "capacity_alerts": {}})
 
 
+def _system_danger_format_mikrotik_logs():
+    clear_mikrotik_logs()
+    state = get_state("mikrotik_logs_state", {})
+    if not isinstance(state, dict):
+        state = {}
+    state["formatted_at"] = utc_now_iso()
+    state["inserted_total"] = 0
+    save_state("mikrotik_logs_state", state)
+
+
 def _system_danger_start_uninstall():
     host_repo = os.environ.get("THREEJ_HOST_REPO", "/opt/threejnotif")
     command = (
@@ -21193,6 +21528,7 @@ def _system_danger_capabilities(request: Request):
         "can_format_offline": _auth_request_has_permission(request, "offline.settings.danger.run"),
         "can_format_wan": _auth_request_has_permission(request, "wan.settings.danger.run"),
         "can_format_isp_status": _auth_request_has_permission(request, "isp_status.settings.danger.run"),
+        "can_format_mikrotik_logs": _auth_request_has_permission(request, "logs.mikrotik.danger.run"),
         "can_uninstall_system": _auth_request_has_permission(request, "system.danger.uninstall.run"),
     }
     caps["can_format_all_features"] = all(
@@ -21205,6 +21541,7 @@ def _system_danger_capabilities(request: Request):
             "can_format_offline",
             "can_format_wan",
             "can_format_isp_status",
+            "can_format_mikrotik_logs",
         )
     )
     caps["can_run_danger_actions"] = bool(
@@ -21215,6 +21552,7 @@ def _system_danger_capabilities(request: Request):
         or caps["can_format_offline"]
         or caps["can_format_wan"]
         or caps["can_format_isp_status"]
+        or caps["can_format_mikrotik_logs"]
         or caps["can_format_all_features"]
         or caps["can_uninstall_system"]
     )
@@ -21291,6 +21629,9 @@ def _run_system_danger_action(action_key: str):
     if action_key == "isp_status":
         _system_danger_format_isp_status()
         return "ISP Port Status bandwidth samples and cached state formatted. Settings preserved."
+    if action_key == "mikrotik_logs":
+        _system_danger_format_mikrotik_logs()
+        return "MikroTik logs formatted. Receiver settings preserved."
     if action_key == "all":
         for feature_key in _SYSTEM_DANGER_FEATURE_ORDER:
             _run_system_danger_action(feature_key)

@@ -6,6 +6,8 @@ import os
 import queue
 import re
 import subprocess
+import select
+import socket
 
 try:
     from zoneinfo import ZoneInfo
@@ -17,7 +19,9 @@ from .db import (
     delete_offline_history_older_than,
     delete_pppoe_usage_samples_older_than,
     delete_usage_modem_reboot_history_older_than,
+    delete_mikrotik_logs_older_than,
     get_pppoe_usage_window_stats_since,
+    insert_mikrotik_logs,
     insert_pppoe_usage_sample,
     insert_isp_status_sample,
     insert_usage_modem_reboot_history,
@@ -63,6 +67,7 @@ from .settings_defaults import (
     USAGE_DEFAULTS,
     WAN_PING_DEFAULTS,
     ISP_STATUS_DEFAULTS,
+    MIKROTIK_LOGS_DEFAULTS,
 )
 from .settings_store import get_settings, get_state, save_settings, save_state
 from .telegram_commands import handle_telegram_command
@@ -97,6 +102,188 @@ def _safe_insert_system_audit(action, resource="", details=""):
         )
     except Exception:
         pass
+
+
+_SYSLOG_PRI_RE = re.compile(r"^<(?P<pri>\d{1,3})>(?P<body>.*)$", re.DOTALL)
+_SYSLOG_RFC3164_RE = re.compile(
+    r"^(?P<month>[A-Z][a-z]{2})\s+(?P<day>\d{1,2})\s+(?P<time>\d{2}:\d{2}:\d{2})\s+(?P<host>\S+)\s+(?P<msg>.*)$",
+    re.DOTALL,
+)
+_SYSLOG_SEVERITIES = {
+    0: "emergency",
+    1: "alert",
+    2: "critical",
+    3: "error",
+    4: "warning",
+    5: "notice",
+    6: "info",
+    7: "debug",
+}
+_SYSLOG_SEVERITY_RANK = {
+    "debug": 0,
+    "info": 1,
+    "notice": 2,
+    "warning": 3,
+    "error": 4,
+    "critical": 5,
+    "alert": 6,
+    "emergency": 7,
+}
+
+
+def _normalize_mikrotik_logs_settings(settings):
+    cfg = MIKROTIK_LOGS_DEFAULTS.copy()
+    cfg = {
+        "enabled": bool(cfg.get("enabled", False)),
+        "receiver": dict(MIKROTIK_LOGS_DEFAULTS.get("receiver") or {}),
+        "storage": dict(MIKROTIK_LOGS_DEFAULTS.get("storage") or {}),
+        "filters": dict(MIKROTIK_LOGS_DEFAULTS.get("filters") or {}),
+    }
+    if isinstance(settings, dict):
+        cfg["enabled"] = bool(settings.get("enabled", cfg["enabled"]))
+        for section in ("receiver", "storage", "filters"):
+            if isinstance(settings.get(section), dict):
+                cfg[section].update(settings.get(section) or {})
+    receiver = cfg["receiver"]
+    receiver["host"] = (receiver.get("host") or "0.0.0.0").strip() or "0.0.0.0"
+    try:
+        receiver["port"] = max(1, min(int(receiver.get("port") or 5514), 65535))
+    except Exception:
+        receiver["port"] = 5514
+    storage = cfg["storage"]
+    for key, default, low, high in (
+        ("retention_days", 30, 1, 3650),
+        ("batch_size", 100, 1, 1000),
+        ("flush_interval_seconds", 2, 1, 30),
+    ):
+        try:
+            storage[key] = max(low, min(int(storage.get(key) or default), high))
+        except Exception:
+            storage[key] = default
+    filters = cfg["filters"]
+    filters["allow_unknown_sources"] = bool(filters.get("allow_unknown_sources", True))
+    min_severity = (filters.get("min_severity") or "debug").strip().lower()
+    if min_severity not in _SYSLOG_SEVERITY_RANK:
+        min_severity = "debug"
+    filters["min_severity"] = min_severity
+    if isinstance(filters.get("drop_topics"), list):
+        filters["drop_topics"] = [str(item or "").strip().lower() for item in filters["drop_topics"] if str(item or "").strip()]
+    else:
+        filters["drop_topics"] = []
+    return cfg
+
+
+def _mikrotik_logs_router_map():
+    out = {}
+    try:
+        pulse = get_settings("isp_ping", {})
+        cores = (((pulse.get("pulsewatch") or {}).get("mikrotik") or {}).get("cores") or [])
+        for core in cores:
+            if not isinstance(core, dict):
+                continue
+            host = (core.get("host") or "").strip()
+            if not host:
+                continue
+            out[host] = {
+                "router_id": (core.get("id") or "").strip(),
+                "router_name": (core.get("label") or core.get("id") or host).strip(),
+                "router_kind": "core",
+            }
+    except Exception:
+        pass
+    try:
+        wan = get_settings("wan_ping", WAN_PING_DEFAULTS)
+        for router in (wan.get("pppoe_routers") or []):
+            if not isinstance(router, dict):
+                continue
+            host = (router.get("host") or "").strip()
+            if not host:
+                continue
+            out[host] = {
+                "router_id": (router.get("id") or "").strip(),
+                "router_name": (router.get("name") or router.get("id") or host).strip(),
+                "router_kind": "pppoe",
+            }
+    except Exception:
+        pass
+    return out
+
+
+def _parse_mikrotik_syslog(raw_message, source_ip, source_port, router_info):
+    received_at = utc_now_iso()
+    text = (raw_message or "").replace("\x00", "").strip()
+    priority = None
+    facility = None
+    severity = "info"
+    body = text
+    pri_match = _SYSLOG_PRI_RE.match(text)
+    if pri_match:
+        try:
+            priority = int(pri_match.group("pri"))
+            facility = priority // 8
+            severity = _SYSLOG_SEVERITIES.get(priority % 8, "info")
+        except Exception:
+            priority = None
+            facility = None
+        body = (pri_match.group("body") or "").strip()
+
+    timestamp = received_at
+    host = ""
+    msg = body
+    rfc_match = _SYSLOG_RFC3164_RE.match(body)
+    if rfc_match:
+        host = (rfc_match.group("host") or "").strip()
+        msg = (rfc_match.group("msg") or "").strip()
+        try:
+            year = datetime.utcnow().year
+            dt = datetime.strptime(
+                f"{year} {rfc_match.group('month')} {rfc_match.group('day')} {rfc_match.group('time')}",
+                "%Y %b %d %H:%M:%S",
+            )
+            timestamp = dt.replace(microsecond=0).isoformat() + "Z"
+        except Exception:
+            timestamp = received_at
+
+    topics = ""
+    topic_match = re.match(r"^(?P<topics>[A-Za-z0-9_,.!-]+):\s+(?P<message>.*)$", msg, flags=re.DOTALL)
+    if topic_match:
+        topics = (topic_match.group("topics") or "").strip()
+        msg = (topic_match.group("message") or "").strip()
+    else:
+        lower_msg = msg.lower()
+        for candidate in ("critical", "error", "warning", "info", "debug"):
+            if lower_msg.startswith(candidate + ","):
+                topics = msg.split(" ", 1)[0].strip().rstrip(":")
+                msg = msg[len(topics):].strip(" :")
+                break
+
+    if severity == "info":
+        topic_lower = topics.lower()
+        if "critical" in topic_lower:
+            severity = "critical"
+        elif "error" in topic_lower:
+            severity = "error"
+        elif "warning" in topic_lower:
+            severity = "warning"
+        elif "debug" in topic_lower:
+            severity = "debug"
+
+    info = router_info if isinstance(router_info, dict) else {}
+    return {
+        "timestamp": timestamp,
+        "received_at": received_at,
+        "source_ip": source_ip,
+        "source_port": int(source_port or 0),
+        "router_id": info.get("router_id") or host or source_ip,
+        "router_name": info.get("router_name") or host or source_ip,
+        "router_kind": info.get("router_kind") or ("unknown" if not info else ""),
+        "severity": severity,
+        "facility": facility,
+        "priority": priority,
+        "topics": topics,
+        "message": msg or body or text,
+        "raw_message": text,
+    }
 
 
 def _parse_iso_utc(value):
@@ -943,6 +1130,7 @@ class JobsManager:
             "WAN Ping",
             "ISP Port Status",
             "MikroTik Routers",
+            "MikroTik Logs",
             "Accounts Ping",
             "Missing Secrets",
             "Under Surveillance",
@@ -958,6 +1146,7 @@ class JobsManager:
             threading.Thread(target=self._wan_ping_loop, daemon=True),
             threading.Thread(target=self._isp_status_loop, daemon=True),
             threading.Thread(target=self._mikrotik_router_health_loop, daemon=True),
+            threading.Thread(target=self._mikrotik_logs_loop, daemon=True),
             threading.Thread(target=self._accounts_ping_loop, daemon=True),
             threading.Thread(target=self._accounts_missing_loop, daemon=True),
             threading.Thread(target=self._usage_loop, daemon=True),
@@ -2450,6 +2639,131 @@ class JobsManager:
             finally:
                 add_feature_cpu("MikroTik Routers", max(time_module.thread_time() - loop_cpu_start, 0.0))
             time_module.sleep(30)
+
+    def _mikrotik_logs_loop(self):
+        sock = None
+        bound_addr = None
+        pending = []
+        last_flush = time_module.monotonic()
+        last_settings_check = 0.0
+        last_prune = 0.0
+        cfg = _normalize_mikrotik_logs_settings(get_settings("mikrotik_logs", MIKROTIK_LOGS_DEFAULTS))
+        router_map = _mikrotik_logs_router_map()
+
+        def _close_socket():
+            nonlocal sock, bound_addr
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+            sock = None
+            bound_addr = None
+
+        def _flush():
+            nonlocal pending, last_flush
+            if not pending:
+                last_flush = time_module.monotonic()
+                return
+            count = len(pending)
+            insert_mikrotik_logs(pending)
+            state = get_state("mikrotik_logs_state", {})
+            if not isinstance(state, dict):
+                state = {}
+            state["last_received_at"] = pending[-1].get("received_at") or utc_now_iso()
+            state["last_source_ip"] = pending[-1].get("source_ip") or ""
+            state["inserted_total"] = int(state.get("inserted_total") or 0) + count
+            state["last_batch_count"] = count
+            save_state("mikrotik_logs_state", state)
+            pending = []
+            last_flush = time_module.monotonic()
+
+        while not self.stop_event.is_set():
+            loop_cpu_start = time_module.thread_time()
+            try:
+                now_mono = time_module.monotonic()
+                if now_mono - last_settings_check >= 5:
+                    cfg = _normalize_mikrotik_logs_settings(get_settings("mikrotik_logs", MIKROTIK_LOGS_DEFAULTS))
+                    router_map = _mikrotik_logs_router_map()
+                    last_settings_check = now_mono
+
+                if not cfg.get("enabled"):
+                    _flush()
+                    _close_socket()
+                    _safe_update_job_status("mikrotik_logs", last_run_at=utc_now_iso(), last_error="", last_error_at="")
+                    time_module.sleep(2)
+                    continue
+
+                receiver = cfg.get("receiver") or {}
+                desired_addr = ((receiver.get("host") or "0.0.0.0").strip(), int(receiver.get("port") or 5514))
+                if sock is None or bound_addr != desired_addr:
+                    _flush()
+                    _close_socket()
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    sock.bind(desired_addr)
+                    sock.setblocking(False)
+                    bound_addr = desired_addr
+                    state = get_state("mikrotik_logs_state", {})
+                    if not isinstance(state, dict):
+                        state = {}
+                    state["listen_host"] = desired_addr[0]
+                    state["listen_port"] = desired_addr[1]
+                    state["started_at"] = utc_now_iso()
+                    state["last_error"] = ""
+                    save_state("mikrotik_logs_state", state)
+
+                _safe_update_job_status("mikrotik_logs", last_run_at=utc_now_iso())
+                readable, _, _ = select.select([sock], [], [], 1.0)
+                if readable:
+                    data, addr = sock.recvfrom(65535)
+                    source_ip = addr[0] if addr else ""
+                    source_port = int(addr[1]) if addr and len(addr) > 1 else 0
+                    raw = data.decode("utf-8", errors="replace")
+                    router_info = router_map.get(source_ip) or {}
+                    filters = cfg.get("filters") or {}
+                    if router_info or bool(filters.get("allow_unknown_sources", True)):
+                        row = _parse_mikrotik_syslog(raw, source_ip, source_port, router_info)
+                        min_sev = (filters.get("min_severity") or "debug").strip().lower()
+                        row_sev = (row.get("severity") or "info").strip().lower()
+                        drop_topics = filters.get("drop_topics") if isinstance(filters.get("drop_topics"), list) else []
+                        topic_blob = (row.get("topics") or "").lower()
+                        if (
+                            _SYSLOG_SEVERITY_RANK.get(row_sev, 1) >= _SYSLOG_SEVERITY_RANK.get(min_sev, 0)
+                            and not any(topic and topic in topic_blob for topic in drop_topics)
+                        ):
+                            pending.append(row)
+
+                storage = cfg.get("storage") or {}
+                batch_size = int(storage.get("batch_size") or 100)
+                flush_interval = int(storage.get("flush_interval_seconds") or 2)
+                if pending and (len(pending) >= batch_size or time_module.monotonic() - last_flush >= flush_interval):
+                    _flush()
+                    _safe_update_job_status("mikrotik_logs", last_success_at=utc_now_iso(), last_error="", last_error_at="")
+
+                if time_module.monotonic() - last_prune >= 3600:
+                    retention_days = max(int(storage.get("retention_days") or 30), 1)
+                    cutoff = (datetime.utcnow() - timedelta(days=retention_days)).replace(microsecond=0).isoformat() + "Z"
+                    delete_mikrotik_logs_older_than(cutoff)
+                    last_prune = time_module.monotonic()
+            except Exception as exc:
+                _close_socket()
+                state = get_state("mikrotik_logs_state", {})
+                if not isinstance(state, dict):
+                    state = {}
+                state["last_error"] = str(exc)
+                state["last_error_at"] = utc_now_iso()
+                save_state("mikrotik_logs_state", state)
+                _safe_update_job_status("mikrotik_logs", last_error=str(exc), last_error_at=utc_now_iso())
+                time_module.sleep(3)
+            finally:
+                add_feature_cpu("MikroTik Logs", max(time_module.thread_time() - loop_cpu_start, 0.0))
+
+        try:
+            _flush()
+        except Exception:
+            pass
+        _close_socket()
 
     def _wan_ping_loop(self):
         while not self.stop_event.is_set():

@@ -185,6 +185,10 @@ AUTH_DEFAULT_PERMISSIONS = [
     {"code": "logs.category.user_action.view", "label": "Logs · Category · User Action", "description": "View User Action logs on the Logs page."},
     {"code": "logs.category.settings.view", "label": "Logs · Category · Settings", "description": "View Settings logs on the Logs page."},
     {"code": "logs.category.system.view", "label": "Logs · Category · System", "description": "View System logs on the Logs page."},
+    {"code": "logs.system.view", "label": "Logs · System Logs", "description": "View application/system logs on the Logs page."},
+    {"code": "logs.mikrotik.view", "label": "Logs · MikroTik Logs", "description": "View centralized MikroTik syslog entries."},
+    {"code": "logs.mikrotik.edit", "label": "Logs · MikroTik Logs Settings", "description": "Edit MikroTik log receiver settings."},
+    {"code": "logs.mikrotik.danger.run", "label": "Logs · MikroTik Logs Danger", "description": "Format/delete stored MikroTik logs."},
     {"code": "logs.search.view", "label": "Logs · Search", "description": "Use logs search on logs page."},
     {"code": "logs.filter.view", "label": "Logs · Filters", "description": "Use logs filters/date/category controls."},
     {"code": "logs.timeline.view", "label": "Logs · Timeline", "description": "View detailed logs timeline table/cards."},
@@ -754,6 +758,26 @@ def init_db():
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS mikrotik_logs (
+                    id BIGSERIAL PRIMARY KEY,
+                    timestamp TEXT NOT NULL,
+                    received_at TEXT NOT NULL,
+                    source_ip TEXT NOT NULL,
+                    source_port INTEGER,
+                    router_id TEXT,
+                    router_name TEXT,
+                    router_kind TEXT,
+                    severity TEXT,
+                    facility INTEGER,
+                    priority INTEGER,
+                    topics TEXT,
+                    message TEXT NOT NULL,
+                    raw_message TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_wan_target_ping_results_target_ts
                 ON wan_target_ping_results (target_id, timestamp)
                 """
@@ -1125,6 +1149,26 @@ def init_db():
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS mikrotik_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    received_at TEXT NOT NULL,
+                    source_ip TEXT NOT NULL,
+                    source_port INTEGER,
+                    router_id TEXT,
+                    router_name TEXT,
+                    router_kind TEXT,
+                    severity TEXT,
+                    facility INTEGER,
+                    priority INTEGER,
+                    topics TEXT,
+                    message TEXT NOT NULL,
+                    raw_message TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_wan_target_ping_results_target_ts
                 ON wan_target_ping_results (target_id, timestamp)
                 """
@@ -1363,6 +1407,11 @@ def init_db():
             ON isp_status_samples (timestamp)
             """
         )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_mikrotik_logs_ts ON mikrotik_logs (timestamp)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_mikrotik_logs_received ON mikrotik_logs (received_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_mikrotik_logs_router_ts ON mikrotik_logs (router_id, timestamp)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_mikrotik_logs_source_ts ON mikrotik_logs (source_ip, timestamp)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_mikrotik_logs_severity_ts ON mikrotik_logs (severity, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_rto_results_ip_ts ON rto_results (ip, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_optical_results_device_ts ON optical_results (device_id, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_optical_results_ip_ts ON optical_results (ip, timestamp)")
@@ -5280,6 +5329,209 @@ def clear_isp_status_data():
     try:
         with conn:
             conn.execute("DELETE FROM isp_status_samples")
+    finally:
+        conn.close()
+
+
+def insert_mikrotik_logs(rows):
+    clean_rows = []
+    for item in rows or []:
+        if not isinstance(item, dict):
+            continue
+        message = str(item.get("message") or "").strip()
+        raw_message = str(item.get("raw_message") or message or "").strip()
+        source_ip = str(item.get("source_ip") or "").strip()
+        if not message or not source_ip:
+            continue
+        clean_rows.append(
+            (
+                str(item.get("timestamp") or item.get("received_at") or utc_now_iso()),
+                str(item.get("received_at") or utc_now_iso()),
+                source_ip,
+                item.get("source_port"),
+                str(item.get("router_id") or "").strip(),
+                str(item.get("router_name") or "").strip(),
+                str(item.get("router_kind") or "").strip(),
+                str(item.get("severity") or "").strip().lower(),
+                item.get("facility"),
+                item.get("priority"),
+                str(item.get("topics") or "").strip(),
+                message[:4000],
+                raw_message[:8000],
+            )
+        )
+    if not clean_rows:
+        return 0
+    conn = get_conn()
+    try:
+        with conn:
+            for values in clean_rows:
+                conn.execute(
+                    """
+                    INSERT INTO mikrotik_logs (
+                        timestamp, received_at, source_ip, source_port, router_id,
+                        router_name, router_kind, severity, facility, priority,
+                        topics, message, raw_message
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    values,
+                )
+        return len(clean_rows)
+    finally:
+        conn.close()
+
+
+def delete_mikrotik_logs_older_than(cutoff_iso):
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM mikrotik_logs WHERE timestamp < ?", (cutoff_iso,))
+    finally:
+        conn.close()
+
+
+def clear_mikrotik_logs():
+    conn = get_conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM mikrotik_logs")
+    finally:
+        conn.close()
+
+
+def list_mikrotik_logs(
+    *,
+    limit=100,
+    offset=0,
+    query="",
+    router="",
+    severity="",
+    topic="",
+    window="all",
+):
+    try:
+        limit = max(1, min(int(limit or 100), 1000))
+    except Exception:
+        limit = 100
+    try:
+        offset = max(int(offset or 0), 0)
+    except Exception:
+        offset = 0
+    filters = []
+    params = []
+    if query:
+        like = f"%{str(query).strip().lower()}%"
+        filters.append("(LOWER(message) LIKE ? OR LOWER(raw_message) LIKE ? OR LOWER(router_name) LIKE ? OR LOWER(source_ip) LIKE ? OR LOWER(topics) LIKE ?)")
+        params.extend([like, like, like, like, like])
+    if router:
+        filters.append("(router_id = ? OR source_ip = ?)")
+        params.extend([router, router])
+    if severity:
+        filters.append("LOWER(severity) = ?")
+        params.append(str(severity).strip().lower())
+    if topic:
+        like = f"%{str(topic).strip().lower()}%"
+        filters.append("LOWER(topics) LIKE ?")
+        params.append(like)
+    now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
+    if window == "24h":
+        filters.append("timestamp >= ?")
+        params.append((now_utc - timedelta(hours=24)).replace(microsecond=0).isoformat().replace("+00:00", "Z"))
+    elif window == "7d":
+        filters.append("timestamp >= ?")
+        params.append((now_utc - timedelta(days=7)).replace(microsecond=0).isoformat().replace("+00:00", "Z"))
+    elif window == "30d":
+        filters.append("timestamp >= ?")
+        params.append((now_utc - timedelta(days=30)).replace(microsecond=0).isoformat().replace("+00:00", "Z"))
+    where_sql = ("WHERE " + " AND ".join(filters)) if filters else ""
+    conn = get_conn()
+    try:
+        total_row = conn.execute(f"SELECT COUNT(1) AS n FROM mikrotik_logs {where_sql}", params).fetchone()
+        rows = conn.execute(
+            f"""
+            SELECT id, timestamp, received_at, source_ip, source_port, router_id,
+                   router_name, router_kind, severity, facility, priority, topics,
+                   message, raw_message
+            FROM mikrotik_logs
+            {where_sql}
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ? OFFSET ?
+            """,
+            params + [limit, offset],
+        ).fetchall()
+        return int(_row_get(total_row, "n", 0) or 0), [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_mikrotik_log_facets():
+    conn = get_conn()
+    try:
+        routers = conn.execute(
+            """
+            SELECT COALESCE(NULLIF(router_id, ''), source_ip) AS value,
+                   COALESCE(NULLIF(router_name, ''), source_ip) AS label,
+                   COUNT(1) AS count
+            FROM mikrotik_logs
+            GROUP BY value, label
+            ORDER BY label ASC
+            LIMIT 500
+            """
+        ).fetchall()
+        severities = conn.execute(
+            """
+            SELECT severity AS value, COUNT(1) AS count
+            FROM mikrotik_logs
+            WHERE severity IS NOT NULL AND severity <> ''
+            GROUP BY severity
+            ORDER BY count DESC, severity ASC
+            """
+        ).fetchall()
+        topics = conn.execute(
+            """
+            SELECT topics AS value, COUNT(1) AS count
+            FROM mikrotik_logs
+            WHERE topics IS NOT NULL AND topics <> ''
+            GROUP BY topics
+            ORDER BY count DESC, topics ASC
+            LIMIT 500
+            """
+        ).fetchall()
+        return {
+            "routers": [dict(row) for row in routers],
+            "severities": [dict(row) for row in severities],
+            "topics": [dict(row) for row in topics],
+        }
+    finally:
+        conn.close()
+
+
+def get_mikrotik_log_stats():
+    conn = get_conn()
+    try:
+        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0).isoformat() + "Z"
+        rows = conn.execute(
+            """
+            SELECT
+              COUNT(1) AS total,
+              SUM(CASE WHEN timestamp >= ? THEN 1 ELSE 0 END) AS today,
+              SUM(CASE WHEN LOWER(severity) = 'warning' THEN 1 ELSE 0 END) AS warning,
+              SUM(CASE WHEN LOWER(severity) = 'error' THEN 1 ELSE 0 END) AS error,
+              SUM(CASE WHEN LOWER(severity) = 'critical' THEN 1 ELSE 0 END) AS critical,
+              COUNT(DISTINCT source_ip) AS sources
+            FROM mikrotik_logs
+            """,
+            (today_start,),
+        ).fetchone()
+        return {
+            "total": int(_row_get(rows, "total", 0) or 0),
+            "today": int(_row_get(rows, "today", 0) or 0),
+            "warning": int(_row_get(rows, "warning", 0) or 0),
+            "error": int(_row_get(rows, "error", 0) or 0),
+            "critical": int(_row_get(rows, "critical", 0) or 0),
+            "sources": int(_row_get(rows, "sources", 0) or 0),
+        }
     finally:
         conn.close()
 

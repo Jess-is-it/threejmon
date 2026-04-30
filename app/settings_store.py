@@ -4,7 +4,7 @@ import base64
 from pathlib import Path
 
 from .db import export_auth_config, fetch_all_settings, get_json, replace_auth_config, set_json, utc_now_iso
-from .settings_defaults import ISP_STATUS_DEFAULTS
+from .settings_defaults import ISP_STATUS_DEFAULTS, MIKROTIK_LOGS_DEFAULTS
 
 DATA_DIR = Path("/data")
 _BRANDING_ASSET_KEYS = ("company_logo", "browser_logo")
@@ -122,6 +122,10 @@ def export_settings():
         settings_payload["isp_status"] = deep_merge(ISP_STATUS_DEFAULTS, settings_payload.get("isp_status") or {})
     else:
         settings_payload["isp_status"] = copy.deepcopy(ISP_STATUS_DEFAULTS)
+    if isinstance(settings_payload.get("mikrotik_logs"), dict):
+        settings_payload["mikrotik_logs"] = deep_merge(MIKROTIK_LOGS_DEFAULTS, settings_payload.get("mikrotik_logs") or {})
+    else:
+        settings_payload["mikrotik_logs"] = copy.deepcopy(MIKROTIK_LOGS_DEFAULTS)
     payload = {
         "format": "threejnotif.settings.backup",
         "version": 2,

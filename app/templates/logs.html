@@ -8,125 +8,491 @@
 <style>
   .logs-table th, .logs-table td { padding: .72rem .9rem !important; vertical-align: top; }
   .logs-table .logs-activity-cell { line-height: 1.35; }
+  .logs-kpi { border: 1px solid rgba(31, 41, 55, .08); border-radius: 14px; padding: .9rem 1rem; background: var(--tblr-bg-surface); }
+  .logs-kpi .value { font-size: 1.45rem; font-weight: 700; line-height: 1; }
+  .mikrotik-command { white-space: pre-wrap; word-break: break-word; background: #111827; color: #e5eefc; border-radius: 12px; padding: .9rem 1rem; }
+  .topic-drop-grid { max-height: 260px; overflow: auto; border: 1px solid rgba(31, 41, 55, .1); border-radius: 12px; padding: .65rem; background: var(--tblr-bg-surface); }
+  .topic-drop-chip { border: 1px solid rgba(31, 41, 55, .12); border-radius: 999px; padding: .38rem .65rem; display: inline-flex; align-items: center; gap: .4rem; margin: .2rem; cursor: pointer; background: var(--tblr-bg-surface); }
+  .topic-drop-chip input { margin: 0; }
+  .topic-drop-chip.is-suggested { border-color: rgba(245, 159, 0, .38); background: rgba(245, 159, 0, .08); }
 </style>
-<div class="row row-cards">
-  <div class="col-12">
-    <form method="get" action="/logs" class="card">
-      <div class="card-header">
-        <h3 class="card-title"><i class="ti ti-filter me-2"></i>Filters</h3>
-      </div>
-      <div class="card-body">
-        <div class="row g-2">
-          <div class="col-md-4">
-            <label class="form-label">Search</label>
-            <input type="text" class="form-control" name="q" value="{{ logs_query or '' }}" placeholder="Search user, account, message, details..." />
-          </div>
-          <div class="col-md-2">
-            <label class="form-label">Window</label>
-            <select class="form-select" name="window">
-              <option value="all" {% if (logs_window or 'all') == 'all' %}selected{% endif %}>All Time</option>
-              <option value="24h" {% if logs_window == '24h' %}selected{% endif %}>Last 24 Hours</option>
-              <option value="7d" {% if logs_window == '7d' %}selected{% endif %}>Last 7 Days</option>
-              <option value="30d" {% if logs_window == '30d' %}selected{% endif %}>Last 30 Days</option>
-            </select>
-          </div>
-          <div class="col-md-2">
-            <label class="form-label">Category</label>
-            <select class="form-select" name="category">
-              <option value="all" {% if (logs_category or 'all') == 'all' %}selected{% endif %}>All</option>
-              {% for category_name in logs_category_options or [] %}
-                <option value="{{ category_name }}" {% if logs_category == category_name %}selected{% endif %}>{{ category_name }}</option>
-              {% endfor %}
-            </select>
-          </div>
-          <div class="col-md-2">
-            <label class="form-label">User</label>
-            <select class="form-select" name="user">
-              <option value="">All Users</option>
-              {% for user in logs_users %}
-                <option value="{{ user }}" {% if logs_user == user %}selected{% endif %}>{{ user }}</option>
-              {% endfor %}
-            </select>
-          </div>
-          <div class="col-md-2">
-            <label class="form-label">Action Code</label>
-            <select class="form-select" name="action">
-              <option value="">All Actions</option>
-              {% for action_code in logs_actions %}
-                <option value="{{ action_code }}" {% if logs_action == action_code %}selected{% endif %}>{{ action_code }}</option>
-              {% endfor %}
-            </select>
-          </div>
-        </div>
-      </div>
-      <div class="card-footer d-flex gap-2">
-        <button type="submit" class="btn btn-primary">
-          <i class="ti ti-search me-1"></i>Apply
-        </button>
-        <a href="/logs" class="btn btn-outline-secondary">Reset</a>
-      </div>
-    </form>
-  </div>
 
-  <div class="col-12">
-    <div class="card">
-      <div class="card-header">
-        <h3 class="card-title"><i class="ti ti-history me-2"></i>Activity Logs</h3>
-        <div class="card-actions">
-          <span class="badge bg-indigo-lt text-indigo">Total: {{ logs_total or 0 }}</span>
+{% if request.query_params.get('saved') %}
+  <div class="alert alert-success auto-dismiss-alert">
+    <div class="d-flex align-items-start">
+      <span class="me-2"><i class="ti ti-check"></i></span>
+      <div>MikroTik Logs settings saved. The receiver will apply changes automatically within a few seconds.</div>
+    </div>
+  </div>
+{% endif %}
+
+<div class="card">
+  <div class="card-body">
+    <ul class="nav nav-tabs mb-3">
+      {% if can_view_system_logs %}
+        <li class="nav-item">
+          <a class="nav-link {% if active_tab == 'system' %}active{% endif %}" href="/logs?tab=system">System Logs</a>
+        </li>
+      {% endif %}
+      {% if can_view_mikrotik_logs %}
+        <li class="nav-item">
+          <a class="nav-link {% if active_tab == 'mikrotik' %}active{% endif %}" href="/logs?tab=mikrotik">MikroTik Logs</a>
+        </li>
+      {% endif %}
+    </ul>
+
+    {% if active_tab == 'system' %}
+      <div class="row row-cards">
+        <div class="col-12">
+          <form method="get" action="/logs" class="card">
+            <input type="hidden" name="tab" value="system" />
+            <div class="card-header">
+              <h3 class="card-title"><i class="ti ti-filter me-2"></i>System Log Filters</h3>
+            </div>
+            <div class="card-body">
+              <div class="row g-2">
+                <div class="col-md-4">
+                  <label class="form-label">Search</label>
+                  <input type="text" class="form-control" name="q" value="{{ logs_query or '' }}" placeholder="Search user, account, message, details..." />
+                </div>
+                <div class="col-md-2">
+                  <label class="form-label">Window</label>
+                  <select class="form-select" name="window">
+                    <option value="all" {% if (logs_window or 'all') == 'all' %}selected{% endif %}>All Time</option>
+                    <option value="24h" {% if logs_window == '24h' %}selected{% endif %}>Last 24 Hours</option>
+                    <option value="7d" {% if logs_window == '7d' %}selected{% endif %}>Last 7 Days</option>
+                    <option value="30d" {% if logs_window == '30d' %}selected{% endif %}>Last 30 Days</option>
+                  </select>
+                </div>
+                <div class="col-md-2">
+                  <label class="form-label">Category</label>
+                  <select class="form-select" name="category">
+                    <option value="all" {% if (logs_category or 'all') == 'all' %}selected{% endif %}>All</option>
+                    {% for category_name in logs_category_options or [] %}
+                      <option value="{{ category_name }}" {% if logs_category == category_name %}selected{% endif %}>{{ category_name }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div class="col-md-2">
+                  <label class="form-label">User</label>
+                  <select class="form-select" name="user">
+                    <option value="">All Users</option>
+                    {% for user in logs_users %}
+                      <option value="{{ user }}" {% if logs_user == user %}selected{% endif %}>{{ user }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div class="col-md-2">
+                  <label class="form-label">Action Code</label>
+                  <select class="form-select" name="action">
+                    <option value="">All Actions</option>
+                    {% for action_code in logs_actions %}
+                      <option value="{{ action_code }}" {% if logs_action == action_code %}selected{% endif %}>{{ action_code }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div class="card-footer d-flex gap-2">
+              <button type="submit" class="btn btn-primary"><i class="ti ti-search me-1"></i>Apply</button>
+              <a href="/logs?tab=system" class="btn btn-outline-secondary">Reset</a>
+            </div>
+          </form>
         </div>
-      </div>
-      <div class="card-body p-0">
-        <div class="table-responsive" style="max-height: 72vh; overflow: auto;">
-          <table class="table table-vcenter table-hover mb-0 logs-table">
-            <thead>
-              <tr>
-                <th style="min-width: 150px;">Time (PHT)</th>
-                <th style="min-width: 320px;">Activity</th>
-                <th style="min-width: 120px;">User</th>
-                <th style="min-width: 120px;">Category</th>
-                <th style="min-width: 180px;">Action Code</th>
-                <th style="min-width: 180px;">Resource</th>
-                <th style="min-width: 140px;">IP</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for row in logs_rows %}
-                <tr>
-                  <td class="text-muted">{{ row.timestamp_ph }}</td>
-                  <td class="logs-activity-cell">
-                    <div>{{ row.message or 'No activity message.' }}</div>
-                    {% if row.details %}
-                      <div class="text-muted text-truncate" style="max-width: 520px;" title="{{ row.details }}">{{ row.details }}</div>
-                    {% endif %}
-                  </td>
-                  <td>{{ row.username or 'system' }}</td>
-                  <td><span class="badge bg-blue-lt text-blue">{{ row.category or 'System' }}</span></td>
-                  <td class="text-muted">{{ row.action or 'n/a' }}</td>
-                  <td class="text-muted">{{ row.resource or 'n/a' }}</td>
-                  <td class="text-muted">{{ row.ip_address or 'n/a' }}</td>
-                </tr>
-              {% else %}
-                <tr>
-                  <td colspan="7" class="text-muted p-3">No logs found for the selected filters.</td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-      </div>
-      {% if logs_pages and logs_pages > 1 %}
-        <div class="card-footer d-flex align-items-center justify-content-between">
-          <div class="text-muted small">Page {{ logs_page }} of {{ logs_pages }}</div>
-          <div class="btn-group">
-            {% set prev_page = logs_page - 1 %}
-            {% set next_page = logs_page + 1 %}
-            <a class="btn btn-sm btn-outline-secondary {% if logs_page <= 1 %}disabled{% endif %}" href="/logs?page={{ prev_page }}{% if logs_base_query %}&{{ logs_base_query }}{% endif %}">Prev</a>
-            <a class="btn btn-sm btn-outline-secondary {% if logs_page >= logs_pages %}disabled{% endif %}" href="/logs?page={{ next_page }}{% if logs_base_query %}&{{ logs_base_query }}{% endif %}">Next</a>
+
+        <div class="col-12">
+          <div class="card">
+            <div class="card-header">
+              <h3 class="card-title"><i class="ti ti-history me-2"></i>System Activity Logs</h3>
+              <div class="card-actions">
+                <span class="badge bg-indigo-lt text-indigo">Total: {{ logs_total or 0 }}</span>
+              </div>
+            </div>
+            <div class="card-body p-0">
+              <div class="table-responsive" style="max-height: 72vh; overflow: auto;">
+                <table class="table table-vcenter table-hover mb-0 logs-table">
+                  <thead>
+                    <tr>
+                      <th style="min-width: 150px;">Time (PHT)</th>
+                      <th style="min-width: 320px;">Activity</th>
+                      <th style="min-width: 120px;">User</th>
+                      <th style="min-width: 120px;">Category</th>
+                      <th style="min-width: 180px;">Action Code</th>
+                      <th style="min-width: 180px;">Resource</th>
+                      <th style="min-width: 140px;">IP</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for row in logs_rows %}
+                      <tr>
+                        <td class="text-muted">{{ row.timestamp_ph }}</td>
+                        <td class="logs-activity-cell">
+                          <div>{{ row.message or 'No activity message.' }}</div>
+                          {% if row.details %}
+                            <div class="text-muted text-truncate" style="max-width: 520px;" title="{{ row.details }}">{{ row.details }}</div>
+                          {% endif %}
+                        </td>
+                        <td>{{ row.username or 'system' }}</td>
+                        <td><span class="badge bg-blue-lt text-blue">{{ row.category or 'System' }}</span></td>
+                        <td class="text-muted">{{ row.action or 'n/a' }}</td>
+                        <td class="text-muted">{{ row.resource or 'n/a' }}</td>
+                        <td class="text-muted">{{ row.ip_address or 'n/a' }}</td>
+                      </tr>
+                    {% else %}
+                      <tr>
+                        <td colspan="7" class="text-muted p-3">No logs found for the selected filters.</td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            {% if logs_pages and logs_pages > 1 %}
+              <div class="card-footer d-flex align-items-center justify-content-between">
+                <div class="text-muted small">Page {{ logs_page }} of {{ logs_pages }}</div>
+                <div class="btn-group">
+                  {% set prev_page = logs_page - 1 %}
+                  {% set next_page = logs_page + 1 %}
+                  <a class="btn btn-sm btn-outline-secondary {% if logs_page <= 1 %}disabled{% endif %}" href="/logs?page={{ prev_page }}{% if logs_base_query %}&{{ logs_base_query }}{% endif %}">Prev</a>
+                  <a class="btn btn-sm btn-outline-secondary {% if logs_page >= logs_pages %}disabled{% endif %}" href="/logs?page={{ next_page }}{% if logs_base_query %}&{{ logs_base_query }}{% endif %}">Next</a>
+                </div>
+              </div>
+            {% endif %}
           </div>
         </div>
-      {% endif %}
-    </div>
+      </div>
+    {% elif active_tab == 'mikrotik' %}
+      <ul class="nav nav-tabs mb-3">
+        <li class="nav-item">
+          <a class="nav-link {% if mikrotik_logs_active_tab == 'logs' %}active{% endif %}" href="/logs?tab=mikrotik&mt_tab=logs">Logs</a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link {% if mikrotik_logs_active_tab == 'settings' %}active{% endif %}" href="/logs?tab=mikrotik&mt_tab=settings">Settings</a>
+        </li>
+      </ul>
+
+      <div class="row row-cards">
+        {% if mikrotik_logs_active_tab == 'logs' %}
+        <div class="col-12">
+          <div class="alert alert-info mb-0">
+            <div class="d-flex align-items-start">
+              <span class="me-2"><i class="ti ti-info-circle"></i></span>
+              <div>
+                MikroTik Logs is a centralized syslog receiver. This view focuses on received router logs, filters, and searchable history.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-12">
+          <div class="row g-3">
+            <div class="col-sm-6 col-xl-2"><div class="logs-kpi"><div class="text-muted small">Today</div><div class="value">{{ mikrotik_logs_stats.today }}</div></div></div>
+            <div class="col-sm-6 col-xl-2"><div class="logs-kpi"><div class="text-muted small">Total Stored</div><div class="value">{{ mikrotik_logs_stats.total }}</div></div></div>
+            <div class="col-sm-6 col-xl-2"><div class="logs-kpi"><div class="text-muted small">Sources</div><div class="value">{{ mikrotik_logs_stats.sources }}</div></div></div>
+            <div class="col-sm-6 col-xl-2"><div class="logs-kpi"><div class="text-muted small">Warnings</div><div class="value text-yellow">{{ mikrotik_logs_stats.warning }}</div></div></div>
+            <div class="col-sm-6 col-xl-2"><div class="logs-kpi"><div class="text-muted small">Errors</div><div class="value text-red">{{ mikrotik_logs_stats.error }}</div></div></div>
+            <div class="col-sm-6 col-xl-2"><div class="logs-kpi"><div class="text-muted small">Critical</div><div class="value text-red">{{ mikrotik_logs_stats.critical }}</div></div></div>
+          </div>
+        </div>
+
+        <div class="col-12">
+          <div class="card">
+            <div class="card-header">
+              <h3 class="card-title"><i class="ti ti-router me-2"></i>MikroTik Syslog Entries</h3>
+              <div class="card-actions ms-auto d-flex flex-wrap align-items-center justify-content-end gap-2">
+                <span class="badge bg-indigo-lt text-indigo">Filtered: {{ mikrotik_logs_total }}</span>
+                {% if mikrotik_logs_router %}
+                  {% set active_router = (mikrotik_logs_router_tabs or [])|selectattr('value', 'equalto', mikrotik_logs_router)|list %}
+                  <span class="badge bg-blue-lt text-blue">Router: {{ active_router[0].label if active_router else mikrotik_logs_router }}</span>
+                {% endif %}
+                <span class="badge bg-secondary-lt">Last received: {{ mikrotik_logs_state.last_received_at|default('n/a') }}</span>
+                <form method="get" action="/logs" class="d-flex align-items-center gap-2">
+                  <input type="hidden" name="tab" value="mikrotik" />
+                  <input type="hidden" name="mt_tab" value="logs" />
+                  {% if mikrotik_logs_router %}
+                    <input type="hidden" name="mt_router" value="{{ mikrotik_logs_router }}" />
+                  {% endif %}
+                  <input type="hidden" name="mt_window" value="{{ mikrotik_logs_window }}" />
+                  <input type="hidden" name="mt_severity" value="{{ mikrotik_logs_severity }}" />
+                  <input type="hidden" name="mt_topic" value="{{ mikrotik_logs_topic }}" />
+                  <input type="hidden" name="mt_limit" value="{{ mikrotik_logs_limit }}" />
+                  <div class="input-icon" style="min-width: min(320px, 42vw);">
+                    <span class="input-icon-addon"><i class="ti ti-search"></i></span>
+                    <input type="text" class="form-control form-control-sm" name="mt_q" value="{{ mikrotik_logs_query or '' }}" placeholder="Search logs..." />
+                  </div>
+                </form>
+                <button class="btn btn-outline-secondary btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#mikrotik-log-filters" aria-expanded="false" aria-controls="mikrotik-log-filters">
+                  <i class="ti ti-filter me-1"></i>Filter
+                </button>
+              </div>
+            </div>
+            <div class="collapse border-bottom" id="mikrotik-log-filters">
+              <form method="get" action="/logs">
+                <input type="hidden" name="tab" value="mikrotik" />
+                <input type="hidden" name="mt_tab" value="logs" />
+                {% if mikrotik_logs_router %}
+                  <input type="hidden" name="mt_router" value="{{ mikrotik_logs_router }}" />
+                {% endif %}
+                <div class="card-body">
+                  <div class="d-flex align-items-center justify-content-between gap-2 mb-3">
+                    <div>
+                      <div class="fw-semibold"><i class="ti ti-filter me-1"></i>MikroTik Log Filters</div>
+                      <div class="text-muted small">Filter the current router tab without leaving the table.</div>
+                    </div>
+                    <div class="d-flex flex-wrap gap-2">
+                      {% if mikrotik_logs_settings.enabled %}
+                        <span class="badge bg-green-lt text-green">Receiver Enabled</span>
+                      {% else %}
+                        <span class="badge bg-secondary-lt">Receiver Disabled</span>
+                      {% endif %}
+                      <span class="badge bg-blue-lt text-blue">UDP {{ mikrotik_logs_settings.receiver.host }}:{{ mikrotik_logs_settings.receiver.port }}</span>
+                    </div>
+                  </div>
+                  <div class="row g-2">
+                    <input type="hidden" name="mt_q" value="{{ mikrotik_logs_query or '' }}" />
+                    <div class="col-md-2">
+                      <label class="form-label">Window</label>
+                      <select class="form-select" name="mt_window">
+                        <option value="all" {% if mikrotik_logs_window == 'all' %}selected{% endif %}>All Time</option>
+                        <option value="24h" {% if mikrotik_logs_window == '24h' %}selected{% endif %}>Last 24 Hours</option>
+                        <option value="7d" {% if mikrotik_logs_window == '7d' %}selected{% endif %}>Last 7 Days</option>
+                        <option value="30d" {% if mikrotik_logs_window == '30d' %}selected{% endif %}>Last 30 Days</option>
+                      </select>
+                    </div>
+                    <div class="col-md-2">
+                      <label class="form-label">Severity</label>
+                      <select class="form-select" name="mt_severity">
+                        <option value="">All</option>
+                        {% for sev in ['debug', 'info', 'notice', 'warning', 'error', 'critical', 'alert', 'emergency'] %}
+                          <option value="{{ sev }}" {% if mikrotik_logs_severity == sev %}selected{% endif %}>{{ sev|title }}</option>
+                        {% endfor %}
+                      </select>
+                    </div>
+                    <div class="col-md-2">
+                      <label class="form-label">Topic</label>
+                      <select class="form-select" name="mt_topic">
+                        <option value="">All Topics</option>
+                        {% for item in mikrotik_logs_facets.topics %}
+                          <option value="{{ item.value }}" {% if mikrotik_logs_topic == item.value %}selected{% endif %}>{{ item.value }} ({{ item.count }})</option>
+                        {% endfor %}
+                      </select>
+                    </div>
+                    <div class="col-md-1">
+                      <label class="form-label">Show</label>
+                      <select class="form-select" name="mt_limit">
+                        {% for limit in [50, 100, 200, 500, 1000] %}
+                          <option value="{{ limit }}" {% if mikrotik_logs_limit == limit %}selected{% endif %}>{{ limit }}</option>
+                        {% endfor %}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+                <div class="card-footer d-flex gap-2">
+                  <button type="submit" class="btn btn-primary"><i class="ti ti-search me-1"></i>Apply</button>
+                  <a href="/logs?tab=mikrotik&mt_tab=logs" class="btn btn-outline-secondary">Reset</a>
+                </div>
+              </form>
+            </div>
+            <div class="card-body border-bottom py-2">
+              <div class="d-flex flex-wrap align-items-center gap-2">
+                <span class="text-muted small me-1">Routers:</span>
+                <a class="btn btn-sm {% if not mikrotik_logs_router %}btn-primary{% else %}btn-outline-secondary{% endif %}" href="/logs?{% if mikrotik_logs_router_tab_query %}{{ mikrotik_logs_router_tab_query }}{% else %}tab=mikrotik&mt_tab=logs{% endif %}">
+                  All Routers
+                  <span class="badge {% if not mikrotik_logs_router %}bg-white text-primary{% else %}bg-secondary-lt{% endif %} ms-1">{{ mikrotik_logs_stats.total }}</span>
+                </a>
+                {% for item in mikrotik_logs_router_tabs %}
+                  <a class="btn btn-sm {% if mikrotik_logs_router == item.value %}btn-primary{% else %}btn-outline-secondary{% endif %}" href="/logs?{% if mikrotik_logs_router_tab_query %}{{ mikrotik_logs_router_tab_query }}&{% else %}tab=mikrotik&mt_tab=logs&{% endif %}mt_router={{ item.value|urlencode }}">
+                    {{ item.label }}
+                    <span class="badge {% if mikrotik_logs_router == item.value %}bg-white text-primary{% else %}bg-secondary-lt{% endif %} ms-1">{{ item.count }}</span>
+                  </a>
+                {% endfor %}
+              </div>
+            </div>
+            <div class="card-body p-0">
+              <div class="table-responsive" style="max-height: 68vh; overflow: auto;">
+                <table class="table table-vcenter table-hover mb-0 logs-table">
+                  <thead>
+                    <tr>
+                      <th style="min-width: 155px;">Time (PHT)</th>
+                      <th style="min-width: 180px;">Router</th>
+                      <th style="min-width: 100px;">Severity</th>
+                      <th style="min-width: 180px;">Topics</th>
+                      <th style="min-width: 460px;">Message</th>
+                      <th style="min-width: 130px;">Source IP</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for row in mikrotik_logs_rows %}
+                      {% set sev = (row.severity or 'info')|lower %}
+                      <tr>
+                        <td class="text-muted" title="Received: {{ row.received_at_ph }}">{{ row.timestamp_ph }}</td>
+                        <td title="{{ row.router_id or row.source_ip }}">
+                          <div class="fw-semibold">{{ row.router_name or row.source_ip }}</div>
+                          <div class="text-muted small">{{ row.router_kind or 'unknown' }}</div>
+                        </td>
+                        <td>
+                          <span class="badge {% if sev in ['error', 'critical', 'alert', 'emergency'] %}bg-red-lt text-red{% elif sev == 'warning' %}bg-yellow-lt text-yellow{% elif sev == 'debug' %}bg-secondary-lt{% else %}bg-blue-lt text-blue{% endif %}">{{ row.severity or 'info' }}</span>
+                        </td>
+                        <td class="text-muted" title="{{ row.topics or 'n/a' }}">{{ row.topics or 'n/a' }}</td>
+                        <td class="logs-activity-cell">
+                          <div title="{{ row.raw_message }}">{{ row.message }}</div>
+                        </td>
+                        <td class="text-muted">{{ row.source_ip }}{% if row.source_port %}:{{ row.source_port }}{% endif %}</td>
+                      </tr>
+                    {% else %}
+                      <tr>
+                        <td colspan="6" class="text-muted p-3">No MikroTik logs found. Enable the receiver and configure routers to send remote syslog to this server.</td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div class="card-footer d-flex align-items-center justify-content-between">
+              <div class="text-muted small">Page {{ mikrotik_logs_page }} of {{ mikrotik_logs_pages }}</div>
+              <div class="btn-group">
+                {% set mt_prev_page = mikrotik_logs_page - 1 %}
+                {% set mt_next_page = mikrotik_logs_page + 1 %}
+                <a class="btn btn-sm btn-outline-secondary {% if mikrotik_logs_page <= 1 %}disabled{% endif %}" href="/logs?mt_page={{ mt_prev_page }}{% if mikrotik_logs_base_query %}&{{ mikrotik_logs_base_query }}{% endif %}">Prev</a>
+                <a class="btn btn-sm btn-outline-secondary {% if mikrotik_logs_page >= mikrotik_logs_pages %}disabled{% endif %}" href="/logs?mt_page={{ mt_next_page }}{% if mikrotik_logs_base_query %}&{{ mikrotik_logs_base_query }}{% endif %}">Next</a>
+              </div>
+            </div>
+          </div>
+        </div>
+        {% elif mikrotik_logs_active_tab == 'settings' %}
+        <div class="col-12">
+          <div class="alert alert-info mb-0">
+            <div class="d-flex align-items-start">
+              <span class="me-2"><i class="ti ti-info-circle"></i></span>
+              <div>
+                Configure the UDP syslog receiver here, then use the setup commands to point each MikroTik router to this server.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-lg-6">
+          <div class="card h-100">
+            <div class="card-header">
+              <h3 class="card-title"><i class="ti ti-terminal-2 me-2"></i>Router Setup Commands</h3>
+            </div>
+            <div class="card-body">
+              <div class="text-muted mb-2">Run these on each MikroTik router that should send logs to ThreeJMon.</div>
+              <div class="mikrotik-command">{{ mikrotik_logs_commands|join('\n') }}</div>
+              <div class="form-hint mt-2">If the router already has a logging action named <span class="fw-semibold">threejmon</span>, update it instead of adding a duplicate.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-lg-6">
+          <form method="post" action="/logs/mikrotik/settings" class="card h-100">
+            <div class="card-header">
+              <h3 class="card-title"><i class="ti ti-settings me-2"></i>MikroTik Logs Settings</h3>
+            </div>
+            <div class="card-body">
+              <ul class="nav nav-tabs mb-3" data-bs-toggle="tabs">
+                <li class="nav-item">
+                  <a href="#mikrotik-log-settings-general" class="nav-link active" data-bs-toggle="tab">General</a>
+                </li>
+                <li class="nav-item">
+                  <a href="#mikrotik-log-settings-drop-topics" class="nav-link" data-bs-toggle="tab">Drop Topics</a>
+                </li>
+              </ul>
+              <div class="tab-content">
+                <div class="tab-pane active" id="mikrotik-log-settings-general">
+                  <label class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" name="enabled" {% if mikrotik_logs_settings.enabled %}checked{% endif %} {% if not can_edit_mikrotik_logs %}disabled{% endif %} />
+                    <span class="form-check-label">Enable UDP syslog receiver</span>
+                  </label>
+                  <div class="row g-3">
+                    <div class="col-md-6">
+                      <label class="form-label">Listen Host</label>
+                      <input class="form-control" name="receiver_host" value="{{ mikrotik_logs_settings.receiver.host }}" {% if not can_edit_mikrotik_logs %}readonly{% endif %} />
+                      <div class="form-hint">Use 0.0.0.0 to accept logs from the network.</div>
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label">UDP Port</label>
+                      <input class="form-control" type="number" min="1" max="65535" name="receiver_port" value="{{ mikrotik_logs_settings.receiver.port }}" {% if not can_edit_mikrotik_logs %}readonly{% endif %} />
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label">Retention Days</label>
+                      <input class="form-control" type="number" min="1" max="3650" name="retention_days" value="{{ mikrotik_logs_settings.storage.retention_days }}" {% if not can_edit_mikrotik_logs %}readonly{% endif %} />
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label">Minimum Severity</label>
+                      <select class="form-select" name="min_severity" {% if not can_edit_mikrotik_logs %}disabled{% endif %}>
+                        {% for sev in ['debug', 'info', 'notice', 'warning', 'error', 'critical', 'alert', 'emergency'] %}
+                          <option value="{{ sev }}" {% if mikrotik_logs_settings.filters.min_severity == sev %}selected{% endif %}>{{ sev|title }}</option>
+                        {% endfor %}
+                      </select>
+                    </div>
+                    <div class="col-12">
+                      <div class="alert alert-info mb-0">
+                        <div class="d-flex align-items-start">
+                          <span class="me-2"><i class="ti ti-info-circle"></i></span>
+                          <div>
+                            <div class="fw-semibold">Minimum Severity controls what gets saved.</div>
+                            <div class="small mt-1">
+                              <span class="badge bg-secondary-lt me-1">Debug</span> saves everything and is best only for troubleshooting.
+                              <span class="badge bg-blue-lt text-blue mx-1">Info</span> saves normal router activity.
+                              <span class="badge bg-yellow-lt text-yellow mx-1">Warning</span> ignores normal activity and keeps warnings or worse.
+                              <span class="badge bg-red-lt text-red mx-1">Error/Critical</span> keeps only serious problems.
+                            </div>
+                            <div class="small text-muted mt-1">Example: if this is set to Warning, Info and Debug logs will be ignored before they reach the database.</div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label">Batch Size</label>
+                      <input class="form-control" type="number" min="1" max="1000" name="batch_size" value="{{ mikrotik_logs_settings.storage.batch_size }}" {% if not can_edit_mikrotik_logs %}readonly{% endif %} />
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label">Flush Interval Seconds</label>
+                      <input class="form-control" type="number" min="1" max="30" name="flush_interval_seconds" value="{{ mikrotik_logs_settings.storage.flush_interval_seconds }}" {% if not can_edit_mikrotik_logs %}readonly{% endif %} />
+                    </div>
+                    <div class="col-12">
+                      <label class="form-check">
+                        <input class="form-check-input" type="checkbox" name="allow_unknown_sources" {% if mikrotik_logs_settings.filters.allow_unknown_sources %}checked{% endif %} {% if not can_edit_mikrotik_logs %}disabled{% endif %} />
+                        <span class="form-check-label">Allow logs from sources not saved in System Settings routers</span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+                <div class="tab-pane" id="mikrotik-log-settings-drop-topics">
+                  <label class="form-label">Drop Topics</label>
+                  <div class="text-muted small mb-2">
+                    Select noisy or redundant topics that should not be stored. The list is built from topics already received from MikroTik; suggested noisy topics are highlighted.
+                  </div>
+                  <div class="topic-drop-grid mb-3">
+                    {% for item in mikrotik_logs_drop_topic_options %}
+                      <label class="topic-drop-chip {% if item.suggested %}is-suggested{% endif %}">
+                        <input type="checkbox" name="drop_topics" value="{{ item.value }}" {% if item.selected %}checked{% endif %} {% if not can_edit_mikrotik_logs %}disabled{% endif %} />
+                        <span>{{ item.value }}</span>
+                        <span class="badge {% if item.suggested %}bg-yellow-lt text-yellow{% else %}bg-secondary-lt{% endif %}">{{ item.count }}</span>
+                      </label>
+                    {% else %}
+                      <div class="text-muted p-2">No MikroTik topics have been received yet. After logs arrive, selectable topics will appear here.</div>
+                    {% endfor %}
+                  </div>
+                  <label class="form-label">Custom Drop Topics</label>
+                  <textarea class="form-control" name="drop_topics_custom" rows="3" placeholder="one topic per line" {% if not can_edit_mikrotik_logs %}readonly{% endif %}>{{ mikrotik_logs_custom_drop_topics|join('\n') }}</textarea>
+                  <div class="form-hint">Use custom entries for topics that are not visible yet. Example: debug,packet</div>
+                </div>
+              </div>
+            </div>
+            <div class="card-footer d-flex justify-content-between align-items-center">
+              <div class="text-muted small">
+                Job: {{ mikrotik_logs_job.last_run_at_ph or 'not started' }}
+                {% if mikrotik_logs_job.last_error %}<span class="text-danger ms-2">{{ mikrotik_logs_job.last_error }}</span>{% endif %}
+              </div>
+              <button type="submit" class="btn btn-primary" {% if not can_edit_mikrotik_logs %}disabled{% endif %}>Save Settings</button>
+            </div>
+          </form>
+        </div>
+        {% endif %}
+      </div>
+    {% endif %}
   </div>
 </div>
 {% endblock %}

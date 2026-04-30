@@ -39,6 +39,26 @@ TABLE_SPECS = [
         ],
         "id",
     ),
+    (
+        "mikrotik_logs",
+        [
+            "id",
+            "timestamp",
+            "received_at",
+            "source_ip",
+            "source_port",
+            "router_id",
+            "router_name",
+            "router_kind",
+            "severity",
+            "facility",
+            "priority",
+            "topics",
+            "message",
+            "raw_message",
+        ],
+        "id",
+    ),
 ]
 
 
@@ -73,7 +93,8 @@ def _pg_truncate_all(pg_con):
               rto_results,
               optical_results,
               wan_status_history,
-              isp_status_samples
+              isp_status_samples,
+              mikrotik_logs
             RESTART IDENTITY
             """
         )

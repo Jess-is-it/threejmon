@@ -585,6 +585,24 @@ ISP_STATUS_DEFAULTS = {
     },
 }
 
+MIKROTIK_LOGS_DEFAULTS = {
+    "enabled": False,
+    "receiver": {
+        "host": "0.0.0.0",
+        "port": 5514,
+    },
+    "storage": {
+        "retention_days": 30,
+        "batch_size": 100,
+        "flush_interval_seconds": 2,
+    },
+    "filters": {
+        "allow_unknown_sources": True,
+        "min_severity": "debug",
+        "drop_topics": [],
+    },
+}
+
 WAN_MESSAGE_DEFAULTS = {
     "down_msg": "🔴 {label} {target} is DOWN {{datetime}} 😢😤",
     "up_msg": "🟢 {label} {target} is UP {{datetime}}\n  Target: {target}\n  Source: {local-ip}\n  {ping5}",
