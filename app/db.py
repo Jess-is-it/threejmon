@@ -1419,6 +1419,7 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ping_results_isp_ts ON ping_results (isp_id, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ping_rollups_isp_bucket ON ping_rollups (isp_id, bucket_ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_ping_results_acct_ts ON accounts_ping_results (account_id, timestamp)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_ping_results_name_ts ON accounts_ping_results (name, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_ping_results_ip_ts ON accounts_ping_results (ip, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_ping_rollups_acct_bucket ON accounts_ping_rollups (account_id, bucket_ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pppoe_usage_samples_pppoe_ts ON pppoe_usage_samples (pppoe, timestamp)")
@@ -1972,7 +1973,7 @@ def delete_offline_history_for_pppoe(pppoe):
     conn = get_conn()
     try:
         with conn:
-            conn.execute("DELETE FROM offline_history WHERE LOWER(pppoe) = LOWER(?)", (pppoe,))
+            conn.execute("DELETE FROM offline_history WHERE pppoe = ?", (pppoe,))
     finally:
         conn.close()
 
@@ -2492,7 +2493,7 @@ def delete_surveillance_sessions_for_pppoe(pppoe):
     conn = get_conn()
     try:
         with conn:
-            conn.execute("DELETE FROM surveillance_sessions WHERE LOWER(pppoe) = LOWER(?)", (pppoe,))
+            conn.execute("DELETE FROM surveillance_sessions WHERE pppoe = ?", (pppoe,))
     finally:
         conn.close()
 
@@ -4029,23 +4030,17 @@ def delete_accounts_ping_results_for_pppoe(pppoe, account_ids=None):
     conn = get_conn()
     try:
         with conn:
-            clauses = []
-            params = []
             if pppoe:
-                clauses.append("LOWER(COALESCE(name, '')) = LOWER(?)")
-                params.append(pppoe)
+                conn.execute("DELETE FROM accounts_ping_results WHERE name = ?", (pppoe,))
             if account_ids:
                 if _use_postgres():
-                    clauses.append("account_id = ANY(?)")
-                    params.append(list(account_ids))
+                    conn.execute(
+                        "DELETE FROM accounts_ping_results WHERE account_id = ANY(?)",
+                        (list(account_ids),),
+                    )
                 else:
                     placeholders = ",".join("?" for _ in account_ids)
-                    clauses.append(f"account_id IN ({placeholders})")
-                    params.extend(account_ids)
-            conn.execute(
-                f"DELETE FROM accounts_ping_results WHERE {' OR '.join(clauses)}",
-                params,
-            )
+                    conn.execute(f"DELETE FROM accounts_ping_results WHERE account_id IN ({placeholders})", account_ids)
     finally:
         conn.close()
 
@@ -5628,33 +5623,21 @@ def delete_optical_results_for_pppoe(pppoe):
     try:
         with conn:
             device_rows = conn.execute(
-                "SELECT DISTINCT device_id FROM optical_results WHERE LOWER(COALESCE(pppoe, '')) = LOWER(?)",
+                "SELECT DISTINCT device_id FROM optical_results WHERE pppoe = ?",
                 (pppoe,),
             ).fetchall()
             device_ids = [str(_row_get(row, "device_id", "") or "").strip() for row in (device_rows or [])]
             device_ids = [item for item in device_ids if item]
+            conn.execute("DELETE FROM optical_results WHERE pppoe = ?", (pppoe,))
             if device_ids:
                 if _use_postgres():
                     conn.execute(
-                        """
-                        DELETE FROM optical_results
-                        WHERE LOWER(COALESCE(pppoe, '')) = LOWER(?)
-                           OR device_id = ANY(?)
-                        """,
-                        (pppoe, list(device_ids)),
+                        "DELETE FROM optical_results WHERE device_id = ANY(?)",
+                        (list(device_ids),),
                     )
                 else:
                     placeholders = ",".join("?" for _ in device_ids)
-                    conn.execute(
-                        f"""
-                        DELETE FROM optical_results
-                        WHERE LOWER(COALESCE(pppoe, '')) = LOWER(?)
-                           OR device_id IN ({placeholders})
-                        """,
-                        [pppoe] + device_ids,
-                    )
-            else:
-                conn.execute("DELETE FROM optical_results WHERE LOWER(COALESCE(pppoe, '')) = LOWER(?)", (pppoe,))
+                    conn.execute(f"DELETE FROM optical_results WHERE device_id IN ({placeholders})", device_ids)
     finally:
         conn.close()
 
@@ -5726,7 +5709,7 @@ def delete_pppoe_usage_samples_for_pppoe(pppoe):
     conn = get_conn()
     try:
         with conn:
-            conn.execute("DELETE FROM pppoe_usage_samples WHERE LOWER(pppoe) = LOWER(?)", (pppoe,))
+            conn.execute("DELETE FROM pppoe_usage_samples WHERE pppoe = ?", (pppoe,))
     finally:
         conn.close()
 
@@ -6096,7 +6079,7 @@ def delete_usage_modem_reboot_history_for_pppoe(pppoe):
     conn = get_conn()
     try:
         with conn:
-            conn.execute("DELETE FROM usage_modem_reboot_history WHERE LOWER(pppoe) = LOWER(?)", (pppoe,))
+            conn.execute("DELETE FROM usage_modem_reboot_history WHERE pppoe = ?", (pppoe,))
     finally:
         conn.close()
 
