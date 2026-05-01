@@ -79,6 +79,7 @@ from .usage_logic import (
     usage_issue_key,
 )
 from .mikrotik import RouterOSClient
+from .mikrotik_logs_setup import auto_configure_mikrotik_logs
 from .feature_usage import add_feature_cpu, register_feature
 
 
@@ -138,10 +139,11 @@ def _normalize_mikrotik_logs_settings(settings):
         "receiver": dict(MIKROTIK_LOGS_DEFAULTS.get("receiver") or {}),
         "storage": dict(MIKROTIK_LOGS_DEFAULTS.get("storage") or {}),
         "filters": dict(MIKROTIK_LOGS_DEFAULTS.get("filters") or {}),
+        "auto_setup": dict(MIKROTIK_LOGS_DEFAULTS.get("auto_setup") or {}),
     }
     if isinstance(settings, dict):
         cfg["enabled"] = bool(settings.get("enabled", cfg["enabled"]))
-        for section in ("receiver", "storage", "filters"):
+        for section in ("receiver", "storage", "filters", "auto_setup"):
             if isinstance(settings.get(section), dict):
                 cfg[section].update(settings.get(section) or {})
     receiver = cfg["receiver"]
@@ -170,11 +172,28 @@ def _normalize_mikrotik_logs_settings(settings):
         filters["drop_topics"] = [str(item or "").strip().lower() for item in filters["drop_topics"] if str(item or "").strip()]
     else:
         filters["drop_topics"] = []
+    auto_setup = cfg["auto_setup"]
+    auto_setup["enabled"] = bool(auto_setup.get("enabled", False))
+    auto_setup["server_host"] = (auto_setup.get("server_host") or "").strip()
+    for key, default, low, high in (
+        ("check_interval_hours", 24, 1, 720),
+        ("timeout_seconds", 8, 1, 60),
+    ):
+        try:
+            auto_setup[key] = max(low, min(int(auto_setup.get(key) or default), high))
+        except Exception:
+            auto_setup[key] = default
     return cfg
 
 
 def _mikrotik_logs_router_map():
     out = {}
+    def add_aliases(router_info, aliases):
+        for alias in aliases or []:
+            alias = str(alias or "").strip()
+            if alias:
+                out[alias] = dict(router_info)
+
     try:
         pulse = get_settings("isp_ping", {})
         cores = (((pulse.get("pulsewatch") or {}).get("mikrotik") or {}).get("cores") or [])
@@ -204,6 +223,24 @@ def _mikrotik_logs_router_map():
                 "router_name": (router.get("name") or router.get("id") or host).strip(),
                 "router_kind": "pppoe",
             }
+    except Exception:
+        pass
+    try:
+        state = get_state("mikrotik_logs_state", {})
+        setup = state.get("setup") if isinstance(state, dict) and isinstance(state.get("setup"), dict) else {}
+        for item in setup.get("results") or []:
+            if not isinstance(item, dict):
+                continue
+            router_id = (item.get("router_id") or "").strip()
+            router_name = (item.get("router_name") or router_id).strip()
+            if not router_id and not router_name:
+                continue
+            info = {
+                "router_id": router_id or router_name,
+                "router_name": router_name or router_id,
+                "router_kind": (item.get("router_kind") or "").strip() or "mikrotik",
+            }
+            add_aliases(info, item.get("source_aliases") or [])
     except Exception:
         pass
     return out
@@ -250,9 +287,13 @@ def _parse_mikrotik_syslog(raw_message, source_ip, source_port, router_info):
         topics = (topic_match.group("topics") or "").strip()
         msg = (topic_match.group("message") or "").strip()
     else:
+        first_token = msg.split(" ", 1)[0].strip().rstrip(":")
+        if "," in first_token and re.match(r"^[A-Za-z0-9_,.!-]+$", first_token):
+            topics = first_token
+            msg = msg[len(first_token):].strip(" :")
         lower_msg = msg.lower()
         for candidate in ("critical", "error", "warning", "info", "debug"):
-            if lower_msg.startswith(candidate + ","):
+            if not topics and lower_msg.startswith(candidate + ","):
                 topics = msg.split(" ", 1)[0].strip().rstrip(":")
                 msg = msg[len(topics):].strip(" :")
                 break
@@ -2647,6 +2688,7 @@ class JobsManager:
         last_flush = time_module.monotonic()
         last_settings_check = 0.0
         last_prune = 0.0
+        last_setup_check = 0.0
         cfg = _normalize_mikrotik_logs_settings(get_settings("mikrotik_logs", MIKROTIK_LOGS_DEFAULTS))
         router_map = _mikrotik_logs_router_map()
 
@@ -2694,6 +2736,14 @@ class JobsManager:
                     time_module.sleep(2)
                     continue
 
+                auto_setup = cfg.get("auto_setup") if isinstance(cfg.get("auto_setup"), dict) else {}
+                setup_interval = max(int(auto_setup.get("check_interval_hours") or 24), 1) * 3600
+                if bool(auto_setup.get("enabled")) and (time_module.monotonic() - last_setup_check >= setup_interval):
+                    try:
+                        auto_configure_mikrotik_logs(cfg)
+                    finally:
+                        last_setup_check = time_module.monotonic()
+
                 receiver = cfg.get("receiver") or {}
                 desired_addr = ((receiver.get("host") or "0.0.0.0").strip(), int(receiver.get("port") or 5514))
                 if sock is None or bound_addr != desired_addr:
@@ -2727,10 +2777,21 @@ class JobsManager:
                         min_sev = (filters.get("min_severity") or "debug").strip().lower()
                         row_sev = (row.get("severity") or "info").strip().lower()
                         drop_topics = filters.get("drop_topics") if isinstance(filters.get("drop_topics"), list) else []
+                        router_blob = (row.get("router_id") or row.get("source_ip") or "").lower()
                         topic_blob = (row.get("topics") or "").lower()
+                        message_blob = (row.get("message") or "").lower()
+                        dropped_exact = False
+                        for raw_rule in drop_topics:
+                            rule = str(raw_rule or "").strip().lower()
+                            if rule.count("\t") < 2:
+                                continue
+                            rule_router, rule_topic, rule_message = rule.split("\t", 2)
+                            if router_blob == rule_router.strip() and topic_blob == rule_topic.strip() and message_blob == rule_message.strip():
+                                dropped_exact = True
+                                break
                         if (
                             _SYSLOG_SEVERITY_RANK.get(row_sev, 1) >= _SYSLOG_SEVERITY_RANK.get(min_sev, 0)
-                            and not any(topic and topic in topic_blob for topic in drop_topics)
+                            and not dropped_exact
                         ):
                             pending.append(row)
 

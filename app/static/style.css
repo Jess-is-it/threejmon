@@ -191,18 +191,104 @@ aside.navbar .navbar-brand-logo {
 }
 
 @media (min-width: 992px) {
+  :root {
+    --threej-sidebar-width: calc(15rem + 56px);
+  }
+
+  aside.navbar.navbar-vertical {
+    width: var(--threej-sidebar-width) !important;
+    overflow-x: hidden;
+    overflow-y: hidden;
+  }
+
+  .page-wrapper {
+    margin-left: var(--threej-sidebar-width) !important;
+  }
+
   aside.navbar .container-fluid {
     min-height: 100vh;
     display: flex;
     flex-direction: column;
+    overflow-x: hidden;
+    overflow-y: hidden;
   }
   aside.navbar #sidebar-menu {
     flex: 1 1 auto;
     align-items: stretch;
+    overflow-x: hidden;
+    overflow-y: hidden;
+    padding-left: 24px;
+    padding-right: 24px;
   }
   aside.navbar #sidebar-menu .navbar-nav {
     flex: 1 1 auto;
+    overflow-x: hidden;
   }
+}
+
+aside.navbar #sidebar-menu > .navbar-nav > .nav-item > .nav-link {
+  border-radius: 10px;
+  padding-right: 8px !important;
+  transition: background-color .15s ease, color .15s ease;
+}
+
+aside.navbar #sidebar-menu > .navbar-nav > .nav-item > .nav-link > .badge.ms-auto {
+  position: static !important;
+  inset: auto !important;
+  transform: none !important;
+  align-self: center;
+  margin-left: auto !important;
+  margin-right: 0 !important;
+  min-width: 1.75rem;
+  flex: 0 0 1.75rem;
+  line-height: 1;
+  justify-content: center;
+  text-align: center;
+}
+
+aside.navbar #sidebar-menu > .navbar-nav > .nav-item > .nav-link:hover,
+aside.navbar #sidebar-menu > .navbar-nav > .nav-item > .nav-link:focus {
+  color: rgba(255, 255, 255, 0.95);
+  background: rgba(255, 255, 255, 0.06);
+  text-decoration: none;
+}
+
+aside.navbar #sidebar-menu > .navbar-nav > .nav-item > .nav-link.active {
+  color: #fff !important;
+  background: rgba(255, 255, 255, 0.12) !important;
+}
+
+aside.navbar #sidebar-menu > .navbar-nav > .nav-item > .nav-link.active .nav-link-icon,
+aside.navbar #sidebar-menu > .navbar-nav > .nav-item > .nav-link.active .nav-link-title {
+  color: #fff !important;
+}
+
+aside.navbar .sidebar-subnav {
+  flex: 0 0 auto !important;
+  gap: 0.125rem;
+  margin: 0.15rem 0 0.35rem 10px;
+  padding: 0 0 0 16px;
+  border-left: 1px solid rgba(255, 255, 255, 0.14);
+  overflow: hidden;
+}
+
+aside.navbar .sidebar-subnav .nav-link {
+  border-radius: 10px;
+  padding-left: 0.75rem;
+  padding-right: 0.75rem;
+  transition: background-color .15s ease, color .15s ease;
+}
+
+aside.navbar .sidebar-subnav .nav-link:hover,
+aside.navbar .sidebar-subnav .nav-link:focus {
+  color: rgba(255, 255, 255, 0.95);
+  background: rgba(255, 255, 255, 0.06);
+  text-decoration: none;
+}
+
+aside.navbar .sidebar-subnav .nav-link.active {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .sidebar-user {

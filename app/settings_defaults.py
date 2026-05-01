@@ -601,6 +601,12 @@ MIKROTIK_LOGS_DEFAULTS = {
         "min_severity": "debug",
         "drop_topics": [],
     },
+    "auto_setup": {
+        "enabled": False,
+        "server_host": "",
+        "check_interval_hours": 24,
+        "timeout_seconds": 8,
+    },
 }
 
 WAN_MESSAGE_DEFAULTS = {

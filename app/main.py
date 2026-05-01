@@ -130,6 +130,7 @@ from .db import (
     update_auth_role,
     insert_wan_target_ping_result,
     delete_mikrotik_logs_older_than,
+    update_mikrotik_logs_router_for_sources,
     utc_now_iso,
 )
 from .accounts_ping_sources import (
@@ -148,6 +149,12 @@ from .accounts_missing_support import (
     purge_pppoe_account_data,
     reconcile_accounts_missing_state,
     selected_accounts_missing_routers,
+)
+from .mikrotik_logs_setup import (
+    auto_configure_mikrotik_log_router,
+    auto_configure_mikrotik_logs,
+    build_mikrotik_log_setup_commands,
+    get_mikrotik_log_setup_routers,
 )
 from .forms import parse_bool, parse_float, parse_int, parse_int_list, parse_lines
 from .jobs import JobsManager
@@ -2254,6 +2261,11 @@ def make_context(request, extra=None):
     ctx["auth_permission_codes"] = perms
     ctx["has_perm"] = lambda code: _auth_check_permission(perm_set, (code or "").strip())
     ctx["can_view_logs_page"] = _auth_can_view_logs_page(perm_set)
+    ctx["can_view_system_logs_page"] = bool(
+        _auth_allowed_log_categories(perm_set)
+        or _auth_check_permission(perm_set, "logs.system.view")
+        or _auth_check_permission(perm_set, "logs.timeline.view")
+    )
     try:
         system_settings = get_settings("system", SYSTEM_DEFAULTS)
         branding = system_settings.get("branding") or {}
@@ -4600,7 +4612,7 @@ def normalize_mikrotik_logs_settings(settings):
     cfg = copy.deepcopy(MIKROTIK_LOGS_DEFAULTS)
     if isinstance(settings, dict):
         cfg["enabled"] = bool(settings.get("enabled", cfg["enabled"]))
-        for section in ("receiver", "storage", "filters"):
+        for section in ("receiver", "storage", "filters", "auto_setup"):
             if isinstance(settings.get(section), dict):
                 cfg[section].update(settings.get(section) or {})
 
@@ -4639,7 +4651,39 @@ def normalize_mikrotik_logs_settings(settings):
         filters["drop_topics"] = [str(item or "").strip().lower() for item in filters["drop_topics"] if str(item or "").strip()]
     else:
         filters["drop_topics"] = []
+
+    auto_setup = cfg.setdefault("auto_setup", {})
+    auto_setup["enabled"] = bool(auto_setup.get("enabled", False))
+    auto_setup["server_host"] = (auto_setup.get("server_host") or "").strip()
+    try:
+        auto_setup["check_interval_hours"] = max(1, min(int(auto_setup.get("check_interval_hours") or 24), 720))
+    except Exception:
+        auto_setup["check_interval_hours"] = 24
+    try:
+        auto_setup["timeout_seconds"] = max(1, min(int(auto_setup.get("timeout_seconds") or 8), 60))
+    except Exception:
+        auto_setup["timeout_seconds"] = 8
     return cfg
+
+
+def _apply_mikrotik_log_source_aliases_to_history(results):
+    updated = 0
+    for item in results or []:
+        if not isinstance(item, dict) or item.get("status") != "configured":
+            continue
+        aliases = item.get("source_aliases") if isinstance(item.get("source_aliases"), list) else []
+        if not aliases:
+            continue
+        try:
+            updated += update_mikrotik_logs_router_for_sources(
+                aliases,
+                item.get("router_id") or item.get("router_name") or "",
+                item.get("router_name") or item.get("router_id") or "",
+                item.get("router_kind") or "mikrotik",
+            )
+        except Exception:
+            continue
+    return updated
 
 
 def normalize_offline_settings(settings):
@@ -7716,8 +7760,16 @@ async def dashboard_kpis_live(request: Request):
 
 
 @app.get("/logs", response_class=HTMLResponse)
+@app.get("/logs/system", response_class=HTMLResponse)
+@app.get("/logs/mikrotik", response_class=HTMLResponse)
 async def logs_page(request: Request):
-    active_tab = (request.query_params.get("tab") or "system").strip().lower()
+    path = request.url.path.rstrip("/")
+    if path.endswith("/mikrotik"):
+        active_tab = "mikrotik"
+    elif path.endswith("/system"):
+        active_tab = "system"
+    else:
+        active_tab = (request.query_params.get("tab") or "system").strip().lower()
     query = (request.query_params.get("q") or "").strip()
     category = (request.query_params.get("category") or "all").strip()
     action_filter = (request.query_params.get("action") or "").strip()
@@ -7732,8 +7784,14 @@ async def logs_page(request: Request):
     mt_limit = _parse_table_limit(request.query_params.get("mt_limit"), default=100)
     mt_page = _parse_table_page(request.query_params.get("mt_page"), default=1)
     mt_tab = (request.query_params.get("mt_tab") or "logs").strip().lower()
+    mt_settings_panel_tab = (request.query_params.get("setup_tab") or "router").strip().lower()
+    mt_router_setup_tab = (request.query_params.get("router_setup_tab") or "manual").strip().lower()
     if mt_tab not in {"logs", "settings"}:
         mt_tab = "logs"
+    if mt_settings_panel_tab not in {"router", "settings"}:
+        mt_settings_panel_tab = "router"
+    if mt_router_setup_tab not in {"manual", "auto"}:
+        mt_router_setup_tab = "manual"
 
     all_categories = list(LOG_CATEGORY_PERMISSION_MAP.keys())
     can_view_system_logs = _auth_request_has_permission(request, "logs.system.view") or _auth_request_has_permission(request, "logs.timeline.view")
@@ -7838,7 +7896,6 @@ async def logs_page(request: Request):
     rows_page = filtered_rows[start_idx:end_idx]
 
     base_params = {
-        "tab": "system",
         "q": query,
         "category": category if category != "all" else "",
         "action": action_filter,
@@ -7858,6 +7915,11 @@ async def logs_page(request: Request):
     mt_facets = {"routers": [], "severities": [], "topics": []}
     mt_stats = {"total": 0, "today": 0, "warning": 0, "error": 0, "critical": 0, "sources": 0}
     mt_settings = normalize_mikrotik_logs_settings(get_settings("mikrotik_logs", MIKROTIK_LOGS_DEFAULTS))
+    mt_drop_topics = [
+        str(item or "").strip()
+        for item in (((mt_settings.get("filters") or {}).get("drop_topics")) or [])
+        if str(item or "").strip() and str(item or "").count("\t") >= 2
+    ]
     mt_state = get_state("mikrotik_logs_state", {})
     if not isinstance(mt_state, dict):
         mt_state = {}
@@ -7870,9 +7932,10 @@ async def logs_page(request: Request):
             severity=mt_severity,
             topic=mt_topic,
             window=mt_window,
+            drop_topics=mt_drop_topics,
         )
-        mt_facets = get_mikrotik_log_facets()
-        mt_stats = get_mikrotik_log_stats()
+        mt_facets = get_mikrotik_log_facets(drop_topics=mt_drop_topics)
+        mt_stats = get_mikrotik_log_stats(drop_topics=mt_drop_topics)
     mt_pages = max((mt_total + mt_limit - 1) // mt_limit, 1)
     if mt_page > mt_pages and can_view_mikrotik_logs:
         mt_page = mt_pages
@@ -7885,6 +7948,7 @@ async def logs_page(request: Request):
             severity=mt_severity,
             topic=mt_topic,
             window=mt_window,
+            drop_topics=mt_drop_topics,
         )
     mt_page = max(1, min(mt_page, mt_pages))
     mt_router_tabs_map = {}
@@ -7935,9 +7999,21 @@ async def logs_page(request: Request):
             )
     except Exception:
         pass
+    mt_drop_counts_by_router = {}
+    for drop_rule in mt_drop_topics:
+        router_value = drop_rule.split("\t", 1)[0].strip()
+        if not router_value:
+            continue
+        router_key = router_value.lower()
+        mt_drop_counts_by_router[router_key] = mt_drop_counts_by_router.get(router_key, 0) + 1
+    for item in mt_router_tabs_map.values():
+        item["drop_count"] = mt_drop_counts_by_router.get(str(item.get("value") or "").strip().lower(), 0)
     mt_router_tabs = sorted(mt_router_tabs_map.values(), key=lambda item: (item.get("label") or item.get("value") or "").lower())
+    mt_active_router_label = ""
+    if mt_router:
+        active_router_info = mt_router_tabs_map.get(mt_router) or {}
+        mt_active_router_label = (active_router_info.get("label") or mt_router).strip()
     mt_base_params = {
-        "tab": "mikrotik",
         "mt_tab": "logs",
         "mt_q": mt_query,
         "mt_router": mt_router,
@@ -7948,7 +8024,6 @@ async def logs_page(request: Request):
     }
     mt_base_query = urllib.parse.urlencode({key: value for key, value in mt_base_params.items() if value})
     mt_router_tab_params = {
-        "tab": "mikrotik",
         "mt_tab": "logs",
         "mt_q": mt_query,
         "mt_severity": mt_severity,
@@ -7957,11 +8032,7 @@ async def logs_page(request: Request):
         "mt_limit": mt_limit if mt_limit != 100 else "",
     }
     mt_router_tab_query = urllib.parse.urlencode({key: value for key, value in mt_router_tab_params.items() if value})
-    configured_drop_topics = {
-        str(item or "").strip().lower()
-        for item in (((mt_settings.get("filters") or {}).get("drop_topics")) or [])
-        if str(item or "").strip()
-    }
+    configured_drop_topics = {item.lower() for item in mt_drop_topics}
     noisy_topic_keywords = ("debug", "packet", "firewall", "dhcp", "dns", "route", "wireless")
     mt_drop_topic_options = []
     seen_topic_values = set()
@@ -7991,17 +8062,36 @@ async def logs_page(request: Request):
     )
     mt_custom_drop_topics = [
         item
-        for item in (((mt_settings.get("filters") or {}).get("drop_topics")) or [])
+        for item in mt_drop_topics
         if str(item or "").strip().lower() not in seen_topic_values
     ]
+    mt_router_drop_topics = [
+        item
+        for item in mt_drop_topics
+        if mt_router and item.split("\t", 1)[0].strip().lower() == mt_router.lower()
+    ]
     server_host = (request.url.hostname or "SERVER_IP").strip()
+    auto_setup_cfg = mt_settings.get("auto_setup") if isinstance(mt_settings.get("auto_setup"), dict) else {}
+    mt_setup_host = (auto_setup_cfg.get("server_host") or server_host or "SERVER_IP").strip()
     mt_port = int((mt_settings.get("receiver") or {}).get("port") or 5514)
-    mt_commands = [
-        f"/system logging action add name=threejmon target=remote remote={server_host} remote-port={mt_port} bsd-syslog=yes syslog-facility=local7",
-        "/system logging add topics=info action=threejmon",
-        "/system logging add topics=warning action=threejmon",
-        "/system logging add topics=error action=threejmon",
-        "/system logging add topics=critical action=threejmon",
+    mt_commands = build_mikrotik_log_setup_commands(mt_setup_host, mt_port)
+    mt_setup_routers = get_mikrotik_log_setup_routers()
+    mt_setup_state = mt_state.get("setup") if isinstance(mt_state.get("setup"), dict) else {}
+    mt_setup_results = mt_setup_state.get("results") if isinstance(mt_setup_state.get("results"), list) else []
+    mt_setup_result_map = {
+        f"{(item.get('router_kind') or '').strip()}::{(item.get('router_id') or '').strip()}": item
+        for item in mt_setup_results
+        if isinstance(item, dict)
+    }
+    mt_setup_routers = [
+        {
+            **router,
+            "setup_status": mt_setup_result_map.get(
+                f"{(router.get('kind') or '').strip()}::{(router.get('id') or '').strip()}",
+                {},
+            ),
+        }
+        for router in mt_setup_routers
     ]
     status_map = {item["job_name"]: dict(item) for item in get_job_status()}
     mt_job = status_map.get("mikrotik_logs", {})
@@ -8052,12 +8142,20 @@ async def logs_page(request: Request):
                 "mikrotik_logs_router_tab_query": mt_router_tab_query,
                 "mikrotik_logs_router_tabs": mt_router_tabs,
                 "mikrotik_logs_active_tab": mt_tab,
+                "mikrotik_logs_settings_panel_tab": mt_settings_panel_tab,
+                "mikrotik_logs_router_setup_tab": mt_router_setup_tab,
                 "mikrotik_logs_facets": mt_facets,
                 "mikrotik_logs_stats": mt_stats,
                 "mikrotik_logs_settings": mt_settings,
                 "mikrotik_logs_drop_topic_options": mt_drop_topic_options,
                 "mikrotik_logs_custom_drop_topics": mt_custom_drop_topics,
+                "mikrotik_logs_drop_topics": mt_drop_topics,
+                "mikrotik_logs_router_drop_topics": mt_router_drop_topics,
+                "mikrotik_logs_active_router_label": mt_active_router_label,
                 "mikrotik_logs_state": mt_state,
+                "mikrotik_logs_setup_state": mt_setup_state,
+                "mikrotik_logs_setup_routers": mt_setup_routers,
+                "mikrotik_logs_setup_host": mt_setup_host,
                 "mikrotik_logs_job": mt_job,
                 "mikrotik_logs_commands": mt_commands,
             },
@@ -8070,12 +8168,19 @@ async def mikrotik_logs_settings_save(request: Request):
     if not _auth_request_has_permission(request, "logs.mikrotik.edit"):
         return _auth_forbidden_response(request, "logs.mikrotik.edit")
     form = await request.form()
-    selected_drop_topics = []
-    try:
-        selected_drop_topics.extend([str(item or "").strip() for item in form.getlist("drop_topics") if str(item or "").strip()])
-    except Exception:
-        selected_drop_topics.extend(parse_lines(form.get("drop_topics")))
-    selected_drop_topics.extend(parse_lines(form.get("drop_topics_custom")))
+    existing = normalize_mikrotik_logs_settings(get_settings("mikrotik_logs", MIKROTIK_LOGS_DEFAULTS))
+    selected_drop_topics = [
+        str(item or "").strip()
+        for item in (((existing.get("filters") or {}).get("drop_topics")) or [])
+        if str(item or "").strip() and str(item or "").count("\t") >= 2
+    ]
+    if "drop_topics" in form or "drop_topics_custom" in form:
+        selected_drop_topics = []
+        try:
+            selected_drop_topics.extend([str(item or "").strip() for item in form.getlist("drop_topics") if str(item or "").strip()])
+        except Exception:
+            selected_drop_topics.extend(parse_lines(form.get("drop_topics")))
+        selected_drop_topics.extend(parse_lines(form.get("drop_topics_custom")))
     settings = {
         "enabled": parse_bool(form, "enabled"),
         "receiver": {
@@ -8092,16 +8197,125 @@ async def mikrotik_logs_settings_save(request: Request):
             "min_severity": (form.get("min_severity") or "debug").strip().lower(),
             "drop_topics": sorted({item.lower(): item for item in selected_drop_topics if item}.values(), key=lambda value: value.lower()),
         },
+        "auto_setup": {
+            "enabled": parse_bool(form, "auto_setup_enabled"),
+            "server_host": (form.get("auto_setup_server_host") or "").strip(),
+            "check_interval_hours": parse_int(form, "auto_setup_check_interval_hours", 24),
+            "timeout_seconds": parse_int(form, "auto_setup_timeout_seconds", 8),
+        },
     }
     settings = normalize_mikrotik_logs_settings(settings)
     save_settings("mikrotik_logs", settings)
     _auth_log_event(
         request,
         "mikrotik_logs.settings_saved",
-        resource="/logs?tab=mikrotik",
+        resource="/logs/mikrotik",
         details=f"enabled={int(bool(settings.get('enabled')))};port={(settings.get('receiver') or {}).get('port')}",
     )
-    return RedirectResponse(url="/logs?tab=mikrotik&mt_tab=settings&saved=1", status_code=303)
+    return RedirectResponse(url="/logs/mikrotik?mt_tab=settings&setup_tab=settings&saved=1", status_code=303)
+
+
+@app.post("/logs/mikrotik/drop-topics", response_class=HTMLResponse)
+async def mikrotik_logs_drop_topics(request: Request):
+    if not _auth_request_has_permission(request, "logs.mikrotik.edit"):
+        return _auth_forbidden_response(request, "logs.mikrotik.edit")
+    form = await request.form()
+    settings = normalize_mikrotik_logs_settings(get_settings("mikrotik_logs", MIKROTIK_LOGS_DEFAULTS))
+    existing = [
+        str(item or "").strip()
+        for item in (((settings.get("filters") or {}).get("drop_topics")) or [])
+        if str(item or "").strip() and str(item or "").count("\t") >= 2
+    ]
+    selected = []
+    try:
+        selected.extend([str(item or "").strip() for item in form.getlist("topics") if str(item or "").strip()])
+    except Exception:
+        selected.extend(parse_lines(form.get("topics")))
+    selected.extend(parse_lines(form.get("topics_custom")))
+    selected = [item for item in selected if item and item.count("\t") >= 2]
+    merged = sorted({item.lower(): item for item in (existing + selected) if item}.values(), key=lambda value: value.lower())
+    settings.setdefault("filters", {})["drop_topics"] = merged
+    save_settings("mikrotik_logs", normalize_mikrotik_logs_settings(settings))
+    added = [item for item in selected if item and item.lower() not in {value.lower() for value in existing}]
+    _auth_log_event(
+        request,
+        "mikrotik_logs.drop_topics",
+        resource=f"count={len(added)}",
+        details=", ".join(added[:20]),
+    )
+    return RedirectResponse(url="/logs/mikrotik?mt_tab=logs&drop_topics=1", status_code=303)
+
+
+@app.post("/logs/mikrotik/drop-topics/remove", response_class=HTMLResponse)
+async def mikrotik_logs_drop_topics_remove(request: Request):
+    if not _auth_request_has_permission(request, "logs.mikrotik.edit"):
+        return _auth_forbidden_response(request, "logs.mikrotik.edit")
+    form = await request.form()
+    remove_topic = (form.get("topic") or "").strip().lower()
+    settings = normalize_mikrotik_logs_settings(get_settings("mikrotik_logs", MIKROTIK_LOGS_DEFAULTS))
+    existing = [
+        str(item or "").strip()
+        for item in (((settings.get("filters") or {}).get("drop_topics")) or [])
+        if str(item or "").strip() and str(item or "").count("\t") >= 2
+    ]
+    settings.setdefault("filters", {})["drop_topics"] = [item for item in existing if item.lower() != remove_topic]
+    save_settings("mikrotik_logs", normalize_mikrotik_logs_settings(settings))
+    _auth_log_event(request, "mikrotik_logs.drop_topic_removed", resource=remove_topic, details="")
+    return RedirectResponse(url="/logs/mikrotik?mt_tab=logs&drop_topics=1", status_code=303)
+
+
+@app.post("/logs/mikrotik/auto-setup", response_class=HTMLResponse)
+async def mikrotik_logs_auto_setup(request: Request):
+    if not _auth_request_has_permission(request, "logs.mikrotik.edit"):
+        return _auth_forbidden_response(request, "logs.mikrotik.edit")
+    settings = normalize_mikrotik_logs_settings(get_settings("mikrotik_logs", MIKROTIK_LOGS_DEFAULTS))
+    auto_setup = settings.get("auto_setup") if isinstance(settings.get("auto_setup"), dict) else {}
+    remote_host = (auto_setup.get("server_host") or request.url.hostname or "").strip()
+    results = auto_configure_mikrotik_logs(settings, remote_host=remote_host, update_state=True)
+    updated_rows = _apply_mikrotik_log_source_aliases_to_history(results)
+    ok_count = sum(1 for item in results if item.get("status") == "configured")
+    fail_count = len(results) - ok_count
+    _auth_log_event(
+        request,
+        "mikrotik_logs.auto_setup",
+        resource="/logs/mikrotik",
+        details=f"configured={ok_count};failed={fail_count};updated_logs={updated_rows};target={remote_host}",
+    )
+    return RedirectResponse(
+        url=f"/logs/mikrotik?mt_tab=settings&setup_tab=router&router_setup_tab=auto&auto_setup=1&ok={ok_count}&failed={fail_count}",
+        status_code=303,
+    )
+
+
+@app.post("/logs/mikrotik/auto-setup-router", response_class=HTMLResponse)
+async def mikrotik_logs_auto_setup_router(request: Request):
+    if not _auth_request_has_permission(request, "logs.mikrotik.edit"):
+        return _auth_forbidden_response(request, "logs.mikrotik.edit")
+    form = await request.form()
+    router_id = (form.get("router_id") or "").strip()
+    router_kind = (form.get("router_kind") or "").strip()
+    settings = normalize_mikrotik_logs_settings(get_settings("mikrotik_logs", MIKROTIK_LOGS_DEFAULTS))
+    auto_setup = settings.get("auto_setup") if isinstance(settings.get("auto_setup"), dict) else {}
+    remote_host = (auto_setup.get("server_host") or request.url.hostname or "").strip()
+    result = auto_configure_mikrotik_log_router(
+        settings,
+        router_id,
+        router_kind=router_kind,
+        remote_host=remote_host,
+        update_state=True,
+    )
+    updated_rows = _apply_mikrotik_log_source_aliases_to_history([result])
+    status = result.get("status") or "error"
+    _auth_log_event(
+        request,
+        "mikrotik_logs.auto_setup_router",
+        resource=router_id,
+        details=f"kind={router_kind};status={status};updated_logs={updated_rows};target={remote_host};message={(result.get('message') or '')[:160]}",
+    )
+    return RedirectResponse(
+        url=f"/logs/mikrotik?mt_tab=settings&setup_tab=router&router_setup_tab=auto&router_setup={urllib.parse.quote(router_id)}&status={urllib.parse.quote(status)}",
+        status_code=303,
+    )
 
 
 @app.get("/wan/latency-series")
@@ -21268,7 +21482,7 @@ _SYSTEM_DANGER_ACTIONS = {
         "button_label": "Format MikroTik Logs",
         "permission": "logs.mikrotik.danger.run",
         "summary": "Clears centralized MikroTik syslog entries. Receiver settings are preserved.",
-        "path": "/logs?tab=mikrotik",
+        "path": "/logs/mikrotik",
     },
     "all": {
         "label": "All Monitoring Features",

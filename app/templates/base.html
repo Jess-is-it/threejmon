@@ -9,7 +9,7 @@
   {% endif %}
   <link rel="stylesheet" href="/static/tabler/css/tabler.min.css" />
   <link rel="stylesheet" href="/static/tabler/css/tabler-icons.min.css" />
-  <link rel="stylesheet" href="/static/style.css?v=tabler7" />
+  <link rel="stylesheet" href="/static/style.css?v=tabler19" />
   <style>
     .input-icon[data-search-clearable] .search-addon-btn {
       border: 0;
@@ -70,7 +70,7 @@
           <ul class="navbar-nav pt-lg-3">
             {% if not auth_enabled or has_perm('dashboard.view') %}
               <li class="nav-item">
-                <a class="nav-link" href="/">
+                <a class="nav-link {% if request.url.path == '/' %}active{% endif %}" href="/">
                   <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-dashboard"></i></span>
                   <span class="nav-link-title">Dashboard</span>
                 </a>
@@ -78,7 +78,7 @@
             {% endif %}
             {% if not auth_enabled or has_perm('surveillance.view') %}
               <li class="nav-item">
-                <a class="nav-link" href="/surveillance">
+                <a class="nav-link {% if request.url.path.startswith('/surveillance') %}active{% endif %}" href="/surveillance">
                   <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-binoculars"></i></span>
                   <span class="nav-link-title">Under Surveillance</span>
                   <span class="badge bg-yellow-lt text-yellow ms-auto d-none" id="nav-surveillance-new-badge">0</span>
@@ -87,7 +87,7 @@
             {% endif %}
             {% if not auth_enabled or has_perm('profile_review.view') %}
               <li class="nav-item">
-                <a class="nav-link" href="/profile-review">
+                <a class="nav-link {% if request.url.path.startswith('/profile-review') %}active{% endif %}" href="/profile-review">
                   <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-user-search"></i></span>
                   <span class="nav-link-title">Profile Review</span>
                 </a>
@@ -95,7 +95,7 @@
             {% endif %}
             {% if not auth_enabled or has_perm('optical.view') %}
               <li class="nav-item">
-                <a class="nav-link" href="/settings/optical">
+                <a class="nav-link {% if request.url.path.startswith('/settings/optical') %}active{% endif %}" href="/settings/optical">
                   <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-sun"></i></span>
                   <span class="nav-link-title">Optical</span>
                 </a>
@@ -103,7 +103,7 @@
             {% endif %}
             {% if not auth_enabled or has_perm('accounts_ping.view') %}
               <li class="nav-item">
-                <a class="nav-link" href="/settings/accounts-ping">
+                <a class="nav-link {% if request.url.path.startswith('/settings/accounts-ping') %}active{% endif %}" href="/settings/accounts-ping">
                   <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-wifi"></i></span>
                   <span class="nav-link-title">Accounts Ping</span>
                 </a>
@@ -111,7 +111,7 @@
             {% endif %}
             {% if not auth_enabled or has_perm('accounts_missing.view') %}
               <li class="nav-item">
-                <a class="nav-link" href="/settings/accounts-missing">
+                <a class="nav-link {% if request.url.path.startswith('/settings/accounts-missing') %}active{% endif %}" href="/settings/accounts-missing">
                   <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-user-x"></i></span>
                   <span class="nav-link-title">Missing Secrets</span>
                   <span class="badge bg-yellow-lt text-yellow ms-auto d-none" id="nav-missing-secrets-new-badge">0</span>
@@ -120,7 +120,7 @@
             {% endif %}
             {% if not auth_enabled or has_perm('usage.view') %}
               <li class="nav-item">
-                <a class="nav-link" href="/settings/usage">
+                <a class="nav-link {% if request.url.path.startswith('/settings/usage') %}active{% endif %}" href="/settings/usage">
                   <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-chart-bar"></i></span>
                   <span class="nav-link-title">Usage</span>
                   <span class="badge bg-orange-lt text-orange ms-auto d-none" id="nav-usage-new-badge">0</span>
@@ -129,7 +129,7 @@
             {% endif %}
             {% if not auth_enabled or has_perm('offline.view') %}
               <li class="nav-item">
-                <a class="nav-link" href="/settings/offline">
+                <a class="nav-link {% if request.url.path.startswith('/settings/offline') %}active{% endif %}" href="/settings/offline">
                   <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-cloud-off"></i></span>
                   <span class="nav-link-title">Offline</span>
                   <span class="badge bg-red-lt text-red ms-auto d-none" id="nav-offline-new-badge">0</span>
@@ -138,7 +138,7 @@
             {% endif %}
             {% if not auth_enabled or has_perm('wan.view') %}
               <li class="nav-item">
-                <a class="nav-link" href="/settings/wan">
+                <a class="nav-link {% if request.url.path.startswith('/settings/wan') %}active{% endif %}" href="/settings/wan">
                   <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-world"></i></span>
                   <span class="nav-link-title">WAN Ping</span>
                 </a>
@@ -146,7 +146,7 @@
             {% endif %}
             {% if not auth_enabled or has_perm('isp_status.view') %}
               <li class="nav-item">
-                <a class="nav-link" href="/settings/isp-status">
+                <a class="nav-link {% if request.url.path.startswith('/settings/isp-status') %}active{% endif %}" href="/settings/isp-status">
                   <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-chart-area-line"></i></span>
                   <span class="nav-link-title">ISP Port Status</span>
                   <span class="badge bg-red-lt text-red ms-auto d-none" id="nav-isp-status-100m-badge">0</span>
@@ -155,18 +155,40 @@
             {% endif %}
             {% if not auth_enabled or has_perm('system.view') %}
               <li class="nav-item">
-                <a class="nav-link" href="/settings/system">
+                <a class="nav-link {% if request.url.path.startswith('/settings/system') %}active{% endif %}" href="/settings/system">
                   <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-settings"></i></span>
                   <span class="nav-link-title">System Settings</span>
                 </a>
               </li>
             {% endif %}
-            {% if not auth_enabled or can_view_logs_page %}
+            {% if not auth_enabled or has_perm('logs.mikrotik.view') or can_view_system_logs_page %}
+              {% set logs_nav_open = request.url.path.startswith('/logs') %}
               <li class="nav-item">
-                <a class="nav-link" href="/logs">
+                <a class="nav-link {% if logs_nav_open %}active{% endif %}" data-bs-toggle="collapse" href="#sidebar-logs-menu" role="button" aria-expanded="{{ 'true' if logs_nav_open else 'false' }}" aria-controls="sidebar-logs-menu">
                   <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-list-details"></i></span>
                   <span class="nav-link-title">Logs</span>
+                  <span class="ms-auto"><i class="ti ti-chevron-down"></i></span>
                 </a>
+                <div class="collapse{% if logs_nav_open %} show{% endif %}" id="sidebar-logs-menu">
+                  <ul class="navbar-nav sidebar-subnav">
+                    {% if not auth_enabled or has_perm('logs.mikrotik.view') %}
+                      <li class="nav-item">
+                        <a class="nav-link {% if request.url.path.startswith('/logs/mikrotik') %}active{% endif %}" href="/logs/mikrotik">
+                          <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-router"></i></span>
+                          <span class="nav-link-title">MikroTik Logs</span>
+                        </a>
+                      </li>
+                    {% endif %}
+                    {% if not auth_enabled or can_view_system_logs_page %}
+                      <li class="nav-item">
+                        <a class="nav-link {% if request.url.path.startswith('/logs/system') or request.url.path == '/logs' %}active{% endif %}" href="/logs/system">
+                          <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-file-text"></i></span>
+                          <span class="nav-link-title">System Logs</span>
+                        </a>
+                      </li>
+                    {% endif %}
+                  </ul>
+                </div>
               </li>
             {% endif %}
           </ul>

@@ -1,6 +1,6 @@
 {% extends "base.html" %}
-{% block title %}Logs{% endblock %}
-{% block header_title %}Logs{% endblock %}
+{% block title %}{% if active_tab == 'mikrotik' %}MikroTik Logs{% else %}System Logs{% endif %}{% endblock %}
+{% block header_title %}{% if active_tab == 'mikrotik' %}MikroTik Logs{% else %}System Logs{% endif %}{% endblock %}
 {% block header_badge %}
   <span class="badge bg-blue-lt text-blue header-icon-badge"><i class="ti ti-list-details"></i></span>
 {% endblock %}
@@ -15,6 +15,10 @@
   .topic-drop-chip { border: 1px solid rgba(31, 41, 55, .12); border-radius: 999px; padding: .38rem .65rem; display: inline-flex; align-items: center; gap: .4rem; margin: .2rem; cursor: pointer; background: var(--tblr-bg-surface); }
   .topic-drop-chip input { margin: 0; }
   .topic-drop-chip.is-suggested { border-color: rgba(245, 159, 0, .38); background: rgba(245, 159, 0, .08); }
+  .mikrotik-drop-select-col { width: 46px; }
+  .mikrotik-router-tabs.is-drop-selecting a { opacity: .5; pointer-events: none; }
+  .mikrotik-router-tabs.is-drop-selecting a.active { opacity: 1; }
+  .drop-topic-mini { width: min(420px, 90vw); }
 </style>
 
 {% if request.query_params.get('saved') %}
@@ -28,23 +32,10 @@
 
 <div class="card">
   <div class="card-body">
-    <ul class="nav nav-tabs mb-3">
-      {% if can_view_system_logs %}
-        <li class="nav-item">
-          <a class="nav-link {% if active_tab == 'system' %}active{% endif %}" href="/logs?tab=system">System Logs</a>
-        </li>
-      {% endif %}
-      {% if can_view_mikrotik_logs %}
-        <li class="nav-item">
-          <a class="nav-link {% if active_tab == 'mikrotik' %}active{% endif %}" href="/logs?tab=mikrotik">MikroTik Logs</a>
-        </li>
-      {% endif %}
-    </ul>
-
     {% if active_tab == 'system' %}
       <div class="row row-cards">
         <div class="col-12">
-          <form method="get" action="/logs" class="card">
+          <form method="get" action="/logs/system" class="card">
             <input type="hidden" name="tab" value="system" />
             <div class="card-header">
               <h3 class="card-title"><i class="ti ti-filter me-2"></i>System Log Filters</h3>
@@ -95,7 +86,7 @@
             </div>
             <div class="card-footer d-flex gap-2">
               <button type="submit" class="btn btn-primary"><i class="ti ti-search me-1"></i>Apply</button>
-              <a href="/logs?tab=system" class="btn btn-outline-secondary">Reset</a>
+              <a href="/logs/system" class="btn btn-outline-secondary">Reset</a>
             </div>
           </form>
         </div>
@@ -153,8 +144,8 @@
                 <div class="btn-group">
                   {% set prev_page = logs_page - 1 %}
                   {% set next_page = logs_page + 1 %}
-                  <a class="btn btn-sm btn-outline-secondary {% if logs_page <= 1 %}disabled{% endif %}" href="/logs?page={{ prev_page }}{% if logs_base_query %}&{{ logs_base_query }}{% endif %}">Prev</a>
-                  <a class="btn btn-sm btn-outline-secondary {% if logs_page >= logs_pages %}disabled{% endif %}" href="/logs?page={{ next_page }}{% if logs_base_query %}&{{ logs_base_query }}{% endif %}">Next</a>
+                  <a class="btn btn-sm btn-outline-secondary {% if logs_page <= 1 %}disabled{% endif %}" href="/logs/system?page={{ prev_page }}{% if logs_base_query %}&{{ logs_base_query }}{% endif %}">Prev</a>
+                  <a class="btn btn-sm btn-outline-secondary {% if logs_page >= logs_pages %}disabled{% endif %}" href="/logs/system?page={{ next_page }}{% if logs_base_query %}&{{ logs_base_query }}{% endif %}">Next</a>
                 </div>
               </div>
             {% endif %}
@@ -164,10 +155,10 @@
     {% elif active_tab == 'mikrotik' %}
       <ul class="nav nav-tabs mb-3">
         <li class="nav-item">
-          <a class="nav-link {% if mikrotik_logs_active_tab == 'logs' %}active{% endif %}" href="/logs?tab=mikrotik&mt_tab=logs">Logs</a>
+          <a class="nav-link {% if mikrotik_logs_active_tab == 'logs' %}active{% endif %}" href="/logs/mikrotik?mt_tab=logs">Logs</a>
         </li>
         <li class="nav-item">
-          <a class="nav-link {% if mikrotik_logs_active_tab == 'settings' %}active{% endif %}" href="/logs?tab=mikrotik&mt_tab=settings">Settings</a>
+          <a class="nav-link {% if mikrotik_logs_active_tab == 'settings' %}active{% endif %}" href="/logs/mikrotik?mt_tab=settings">Settings</a>
         </li>
       </ul>
 
@@ -206,8 +197,7 @@
                   <span class="badge bg-blue-lt text-blue">Router: {{ active_router[0].label if active_router else mikrotik_logs_router }}</span>
                 {% endif %}
                 <span class="badge bg-secondary-lt">Last received: {{ mikrotik_logs_state.last_received_at|default('n/a') }}</span>
-                <form method="get" action="/logs" class="d-flex align-items-center gap-2">
-                  <input type="hidden" name="tab" value="mikrotik" />
+                <form method="get" action="/logs/mikrotik" class="d-flex align-items-center gap-2">
                   <input type="hidden" name="mt_tab" value="logs" />
                   {% if mikrotik_logs_router %}
                     <input type="hidden" name="mt_router" value="{{ mikrotik_logs_router }}" />
@@ -224,11 +214,54 @@
                 <button class="btn btn-outline-secondary btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#mikrotik-log-filters" aria-expanded="false" aria-controls="mikrotik-log-filters">
                   <i class="ti ti-filter me-1"></i>Filter
                 </button>
+                {% if mikrotik_logs_router %}
+                <div class="dropdown ms-auto">
+                  <button class="btn btn-outline-danger btn-sm" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                    <i class="ti ti-ban me-1"></i>Drop Topics
+                    <span class="badge bg-red-lt text-red ms-1">{{ (mikrotik_logs_router_drop_topics or [])|length }}</span>
+                  </button>
+                  <div class="dropdown-menu dropdown-menu-end p-0 drop-topic-mini">
+                    <div class="p-3 border-bottom">
+                      <div class="fw-semibold">Dropped Topics</div>
+                      <div class="text-muted small">Router: <span class="fw-semibold">{{ mikrotik_logs_active_router_label or mikrotik_logs_router }}</span></div>
+                      <div class="text-muted small">Only matching logs from this router are hidden.</div>
+                    </div>
+                    <div class="p-3">
+                      {% for topic in (mikrotik_logs_router_drop_topics or [])[:5] %}
+                        {% set signature_parts = topic.split('\t', 2) %}
+                        <div class="d-flex align-items-center justify-content-between gap-2 py-1">
+                          <span class="badge bg-red-lt text-red text-truncate" title="{{ topic }}">{% if signature_parts|length > 1 %}{{ signature_parts[1] }}{% endif %}{% if signature_parts|length > 2 %} · {{ signature_parts[2] }}{% endif %}</span>
+                          <form method="post" action="/logs/mikrotik/drop-topics/remove">
+                            <input type="hidden" name="topic" value="{{ topic }}" />
+                            <button class="btn btn-icon btn-sm btn-outline-secondary" type="submit" title="Remove dropped topic"><i class="ti ti-x"></i></button>
+                          </form>
+                        </div>
+                      {% else %}
+                        <div class="text-muted small">No dropped topics yet.</div>
+                      {% endfor %}
+                    </div>
+                    <div class="border-top p-2 d-flex justify-content-between gap-2">
+                      <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#mikrotik-drop-topics-modal">
+                        Show More
+                      </button>
+                      <button type="button" class="btn btn-sm btn-danger" id="mikrotik-drop-topic-select-start">
+                        <i class="ti ti-plus me-1"></i>Add
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                {% endif %}
+                <form method="post" action="/logs/mikrotik/drop-topics" id="mikrotik-drop-selected-form" class="d-none align-items-center gap-2">
+                  <span class="badge bg-red-lt text-red" id="mikrotik-drop-selected-count">0 selected</span>
+                  <button type="submit" class="btn btn-danger btn-sm" id="mikrotik-drop-submit" disabled>
+                    <i class="ti ti-ban me-1"></i>Drop
+                  </button>
+                  <button type="button" class="btn btn-outline-secondary btn-sm" id="mikrotik-drop-cancel">Cancel</button>
+                </form>
               </div>
             </div>
             <div class="collapse border-bottom" id="mikrotik-log-filters">
-              <form method="get" action="/logs">
-                <input type="hidden" name="tab" value="mikrotik" />
+              <form method="get" action="/logs/mikrotik">
                 <input type="hidden" name="mt_tab" value="logs" />
                 {% if mikrotik_logs_router %}
                   <input type="hidden" name="mt_router" value="{{ mikrotik_logs_router }}" />
@@ -289,21 +322,27 @@
                 </div>
                 <div class="card-footer d-flex gap-2">
                   <button type="submit" class="btn btn-primary"><i class="ti ti-search me-1"></i>Apply</button>
-                  <a href="/logs?tab=mikrotik&mt_tab=logs" class="btn btn-outline-secondary">Reset</a>
+                  <a href="/logs/mikrotik?mt_tab=logs" class="btn btn-outline-secondary">Reset</a>
                 </div>
               </form>
             </div>
             <div class="card-body border-bottom py-2">
-              <div class="d-flex flex-wrap align-items-center gap-2">
+              <div class="d-flex flex-wrap align-items-center gap-2 mikrotik-router-tabs" id="mikrotik-router-tabs">
                 <span class="text-muted small me-1">Routers:</span>
-                <a class="btn btn-sm {% if not mikrotik_logs_router %}btn-primary{% else %}btn-outline-secondary{% endif %}" href="/logs?{% if mikrotik_logs_router_tab_query %}{{ mikrotik_logs_router_tab_query }}{% else %}tab=mikrotik&mt_tab=logs{% endif %}">
+                <a class="btn btn-sm {% if not mikrotik_logs_router %}btn-primary{% else %}btn-outline-secondary{% endif %}" href="/logs/mikrotik{% if mikrotik_logs_router_tab_query %}?{{ mikrotik_logs_router_tab_query }}{% else %}?mt_tab=logs{% endif %}">
                   All Routers
                   <span class="badge {% if not mikrotik_logs_router %}bg-white text-primary{% else %}bg-secondary-lt{% endif %} ms-1">{{ mikrotik_logs_stats.total }}</span>
                 </a>
                 {% for item in mikrotik_logs_router_tabs %}
-                  <a class="btn btn-sm {% if mikrotik_logs_router == item.value %}btn-primary{% else %}btn-outline-secondary{% endif %}" href="/logs?{% if mikrotik_logs_router_tab_query %}{{ mikrotik_logs_router_tab_query }}&{% else %}tab=mikrotik&mt_tab=logs&{% endif %}mt_router={{ item.value|urlencode }}">
+                  <a class="btn btn-sm {% if mikrotik_logs_router == item.value %}btn-primary{% else %}btn-outline-secondary{% endif %}" href="/logs/mikrotik?{% if mikrotik_logs_router_tab_query %}{{ mikrotik_logs_router_tab_query }}&{% else %}mt_tab=logs&{% endif %}mt_router={{ item.value|urlencode }}">
                     {{ item.label }}
                     <span class="badge {% if mikrotik_logs_router == item.value %}bg-white text-primary{% else %}bg-secondary-lt{% endif %} ms-1">{{ item.count }}</span>
+                    {% if item.drop_count %}
+                      <span
+                        class="badge {% if mikrotik_logs_router == item.value %}bg-white text-primary{% else %}bg-red-lt text-red{% endif %} ms-1"
+                        title="{{ item.drop_count }} dropped log signature{% if item.drop_count != 1 %}s{% endif %} hidden for {{ item.label }}. These logs are filtered only for this router and can be managed from Drop Topics."
+                      >{{ item.drop_count }}</span>
+                    {% endif %}
                   </a>
                 {% endfor %}
               </div>
@@ -313,6 +352,7 @@
                 <table class="table table-vcenter table-hover mb-0 logs-table">
                   <thead>
                     <tr>
+                      <th class="mikrotik-drop-select-col d-none" data-mikrotik-drop-select-col></th>
                       <th style="min-width: 155px;">Time (PHT)</th>
                       <th style="min-width: 180px;">Router</th>
                       <th style="min-width: 100px;">Severity</th>
@@ -325,6 +365,11 @@
                     {% for row in mikrotik_logs_rows %}
                       {% set sev = (row.severity or 'info')|lower %}
                       <tr>
+                        <td class="d-none" data-mikrotik-drop-select-col>
+                          <label class="form-check m-0">
+                            <input class="form-check-input" type="checkbox" name="topics" value="{{ row.router_id or row.source_ip }}&#9;{{ row.topics }}&#9;{{ row.message }}" data-mikrotik-drop-topic-check {% if not (row.router_id or row.source_ip) or not row.topics or not row.message %}disabled{% endif %} />
+                          </label>
+                        </td>
                         <td class="text-muted" title="Received: {{ row.received_at_ph }}">{{ row.timestamp_ph }}</td>
                         <td title="{{ row.router_id or row.source_ip }}">
                           <div class="fw-semibold">{{ row.router_name or row.source_ip }}</div>
@@ -341,7 +386,7 @@
                       </tr>
                     {% else %}
                       <tr>
-                        <td colspan="6" class="text-muted p-3">No MikroTik logs found. Enable the receiver and configure routers to send remote syslog to this server.</td>
+                        <td colspan="7" class="text-muted p-3">No MikroTik logs found. Enable the receiver and configure routers to send remote syslog to this server.</td>
                       </tr>
                     {% endfor %}
                   </tbody>
@@ -353,8 +398,8 @@
               <div class="btn-group">
                 {% set mt_prev_page = mikrotik_logs_page - 1 %}
                 {% set mt_next_page = mikrotik_logs_page + 1 %}
-                <a class="btn btn-sm btn-outline-secondary {% if mikrotik_logs_page <= 1 %}disabled{% endif %}" href="/logs?mt_page={{ mt_prev_page }}{% if mikrotik_logs_base_query %}&{{ mikrotik_logs_base_query }}{% endif %}">Prev</a>
-                <a class="btn btn-sm btn-outline-secondary {% if mikrotik_logs_page >= mikrotik_logs_pages %}disabled{% endif %}" href="/logs?mt_page={{ mt_next_page }}{% if mikrotik_logs_base_query %}&{{ mikrotik_logs_base_query }}{% endif %}">Next</a>
+                <a class="btn btn-sm btn-outline-secondary {% if mikrotik_logs_page <= 1 %}disabled{% endif %}" href="/logs/mikrotik?mt_page={{ mt_prev_page }}{% if mikrotik_logs_base_query %}&{{ mikrotik_logs_base_query }}{% endif %}">Prev</a>
+                <a class="btn btn-sm btn-outline-secondary {% if mikrotik_logs_page >= mikrotik_logs_pages %}disabled{% endif %}" href="/logs/mikrotik?mt_page={{ mt_next_page }}{% if mikrotik_logs_base_query %}&{{ mikrotik_logs_base_query }}{% endif %}">Next</a>
               </div>
             </div>
           </div>
@@ -371,20 +416,112 @@
           </div>
         </div>
 
-        <div class="col-lg-6">
+        <div class="col-12">
+          <ul class="nav nav-tabs mb-3" data-bs-toggle="tabs">
+            <li class="nav-item">
+              <a href="#mikrotik-logs-router-setup" class="nav-link {% if mikrotik_logs_settings_panel_tab != 'settings' %}active{% endif %}" data-bs-toggle="tab">
+                <i class="ti ti-terminal-2 me-1"></i>Router Setup
+              </a>
+            </li>
+            <li class="nav-item">
+              <a href="#mikrotik-logs-settings-panel" class="nav-link {% if mikrotik_logs_settings_panel_tab == 'settings' %}active{% endif %}" data-bs-toggle="tab">
+                <i class="ti ti-settings me-1"></i>MikroTik Logs Settings
+              </a>
+            </li>
+          </ul>
+        </div>
+
+        <div class="tab-content col-12">
+        <div class="tab-pane {% if mikrotik_logs_settings_panel_tab != 'settings' %}active show{% endif %}" id="mikrotik-logs-router-setup">
           <div class="card h-100">
             <div class="card-header">
               <h3 class="card-title"><i class="ti ti-terminal-2 me-2"></i>Router Setup Commands</h3>
             </div>
             <div class="card-body">
-              <div class="text-muted mb-2">Run these on each MikroTik router that should send logs to ThreeJMon.</div>
-              <div class="mikrotik-command">{{ mikrotik_logs_commands|join('\n') }}</div>
-              <div class="form-hint mt-2">If the router already has a logging action named <span class="fw-semibold">threejmon</span>, update it instead of adding a duplicate.</div>
+              <ul class="nav nav-tabs mb-3" data-bs-toggle="tabs">
+                <li class="nav-item">
+                  <a href="#mikrotik-log-setup-manual" class="nav-link {% if mikrotik_logs_router_setup_tab != 'auto' %}active{% endif %}" data-bs-toggle="tab">Manual Setup</a>
+                </li>
+                <li class="nav-item">
+                  <a href="#mikrotik-log-setup-auto" class="nav-link {% if mikrotik_logs_router_setup_tab == 'auto' %}active{% endif %}" data-bs-toggle="tab">Automatic Setup</a>
+                </li>
+              </ul>
+              <div class="tab-content">
+                <div class="tab-pane {% if mikrotik_logs_router_setup_tab != 'auto' %}active show{% endif %}" id="mikrotik-log-setup-manual">
+                  <div class="text-muted mb-2">Copy and paste this idempotent script in each MikroTik Terminal. It creates or updates the <span class="fw-semibold">threejmon</span> remote logging action and adds the required logging topics without duplicating existing rules.</div>
+                  <div class="mikrotik-command">{{ mikrotik_logs_commands|join('\n') }}</div>
+                  <div class="form-hint mt-2">Target receiver: <span class="fw-semibold">{{ mikrotik_logs_setup_host }}:{{ mikrotik_logs_settings.receiver.port }}</span>. If this is not reachable from the routers, set a reachable Server IP/Hostname in Automatic Setup settings below and save.</div>
+                </div>
+                <div class="tab-pane {% if mikrotik_logs_router_setup_tab == 'auto' %}active show{% endif %}" id="mikrotik-log-setup-auto">
+                  <div class="row g-3">
+                    <div class="col-lg-5">
+                      <div class="alert alert-info mb-0">
+                        <div class="d-flex align-items-start">
+                          <span class="me-2"><i class="ti ti-info-circle"></i></span>
+                          <div>
+                            <div class="fw-semibold">Automatic setup uses the saved RouterOS API credentials.</div>
+                            <div class="small mt-1">Use the button beside a specific router. ThreeJMon will log in to that router, verify the MikroTik logging action/rules, and recreate them if they were deleted. When automatic repair is enabled in settings, the system still checks all routers based on the configured interval.</div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="col-lg-7">
+                      <div class="table-responsive">
+                        <table class="table table-sm table-vcenter mb-0">
+                          <thead>
+                            <tr>
+                              <th>Router</th>
+                              <th>Type</th>
+                              <th>Host</th>
+                              <th>Last Setup Status</th>
+                              <th class="text-end">Action</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {% for router in mikrotik_logs_setup_routers %}
+                              {% set status = router.setup_status if router.setup_status is defined else {} %}
+                              <tr>
+                                <td class="fw-semibold">{{ router.name }}</td>
+                                <td class="text-muted text-capitalize">{{ router.kind }}</td>
+                                <td>{{ router.host }}</td>
+                                <td>
+                                  {% if status.status == 'configured' %}
+                                    <span class="badge bg-green-lt text-green">Configured</span>
+                                  {% elif status.status %}
+                                    <span class="badge bg-red-lt text-red">Failed</span>
+                                  {% else %}
+                                    <span class="badge bg-secondary-lt">Not checked</span>
+                                  {% endif %}
+                                  {% if status.message %}
+                                    <span class="text-muted small ms-1" title="{{ status.message }}">{{ status.message }}</span>
+                                  {% endif %}
+                                </td>
+                                <td class="text-end">
+                                  <form method="post" action="/logs/mikrotik/auto-setup-router" class="d-inline">
+                                    <input type="hidden" name="router_id" value="{{ router.id }}" />
+                                    <input type="hidden" name="router_kind" value="{{ router.kind }}" />
+                                    <button type="submit" class="btn btn-sm btn-primary" {% if not can_edit_mikrotik_logs %}disabled{% endif %}>
+                                      <i class="ti ti-plug-connected me-1"></i>Auto Configure
+                                    </button>
+                                  </form>
+                                </td>
+                              </tr>
+                            {% else %}
+                              <tr><td colspan="5" class="text-muted">No MikroTik routers are saved yet.</td></tr>
+                            {% endfor %}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div class="form-hint mt-2">Last automatic check: {{ mikrotik_logs_setup_state.last_checked_at or 'not checked' }}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
 
-        <div class="col-lg-6">
+        <div class="tab-pane {% if mikrotik_logs_settings_panel_tab == 'settings' %}active show{% endif %}" id="mikrotik-logs-settings-panel">
           <form method="post" action="/logs/mikrotik/settings" class="card h-100">
             <div class="card-header">
               <h3 class="card-title"><i class="ti ti-settings me-2"></i>MikroTik Logs Settings</h3>
@@ -393,9 +530,6 @@
               <ul class="nav nav-tabs mb-3" data-bs-toggle="tabs">
                 <li class="nav-item">
                   <a href="#mikrotik-log-settings-general" class="nav-link active" data-bs-toggle="tab">General</a>
-                </li>
-                <li class="nav-item">
-                  <a href="#mikrotik-log-settings-drop-topics" class="nav-link" data-bs-toggle="tab">Drop Topics</a>
                 </li>
               </ul>
               <div class="tab-content">
@@ -457,27 +591,28 @@
                         <span class="form-check-label">Allow logs from sources not saved in System Settings routers</span>
                       </label>
                     </div>
-                  </div>
-                </div>
-                <div class="tab-pane" id="mikrotik-log-settings-drop-topics">
-                  <label class="form-label">Drop Topics</label>
-                  <div class="text-muted small mb-2">
-                    Select noisy or redundant topics that should not be stored. The list is built from topics already received from MikroTik; suggested noisy topics are highlighted.
-                  </div>
-                  <div class="topic-drop-grid mb-3">
-                    {% for item in mikrotik_logs_drop_topic_options %}
-                      <label class="topic-drop-chip {% if item.suggested %}is-suggested{% endif %}">
-                        <input type="checkbox" name="drop_topics" value="{{ item.value }}" {% if item.selected %}checked{% endif %} {% if not can_edit_mikrotik_logs %}disabled{% endif %} />
-                        <span>{{ item.value }}</span>
-                        <span class="badge {% if item.suggested %}bg-yellow-lt text-yellow{% else %}bg-secondary-lt{% endif %}">{{ item.count }}</span>
+                    <div class="col-12"><hr class="my-1" /></div>
+                    <div class="col-12">
+                      <label class="form-check form-switch mb-0">
+                        <input class="form-check-input" type="checkbox" name="auto_setup_enabled" {% if mikrotik_logs_settings.auto_setup.enabled %}checked{% endif %} {% if not can_edit_mikrotik_logs %}disabled{% endif %} />
+                        <span class="form-check-label">Enable automatic router setup repair</span>
                       </label>
-                    {% else %}
-                      <div class="text-muted p-2">No MikroTik topics have been received yet. After logs arrive, selectable topics will appear here.</div>
-                    {% endfor %}
+                      <div class="form-hint">If a router logging action or topic rule is deleted, ThreeJMon will recreate it during the next check.</div>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Server IP/Hostname for Routers</label>
+                      <input class="form-control" name="auto_setup_server_host" value="{{ mikrotik_logs_settings.auto_setup.server_host }}" placeholder="{{ request.url.hostname or 'SERVER_IP' }}" {% if not can_edit_mikrotik_logs %}readonly{% endif %} />
+                      <div class="form-hint">Use the IP/hostname that MikroTik routers can reach. Do not use 0.0.0.0 for automatic setup.</div>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Check Interval Hours</label>
+                      <input class="form-control" type="number" min="1" max="720" name="auto_setup_check_interval_hours" value="{{ mikrotik_logs_settings.auto_setup.check_interval_hours }}" {% if not can_edit_mikrotik_logs %}readonly{% endif %} />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Router API Timeout Seconds</label>
+                      <input class="form-control" type="number" min="1" max="60" name="auto_setup_timeout_seconds" value="{{ mikrotik_logs_settings.auto_setup.timeout_seconds }}" {% if not can_edit_mikrotik_logs %}readonly{% endif %} />
+                    </div>
                   </div>
-                  <label class="form-label">Custom Drop Topics</label>
-                  <textarea class="form-control" name="drop_topics_custom" rows="3" placeholder="one topic per line" {% if not can_edit_mikrotik_logs %}readonly{% endif %}>{{ mikrotik_logs_custom_drop_topics|join('\n') }}</textarea>
-                  <div class="form-hint">Use custom entries for topics that are not visible yet. Example: debug,packet</div>
                 </div>
               </div>
             </div>
@@ -490,9 +625,110 @@
             </div>
           </form>
         </div>
+        </div>
         {% endif %}
       </div>
     {% endif %}
   </div>
 </div>
+
+{% if active_tab == 'mikrotik' and mikrotik_logs_active_tab == 'logs' and mikrotik_logs_router %}
+  <div class="modal modal-blur fade" id="mikrotik-drop-topics-modal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title"><i class="ti ti-ban me-2"></i>Dropped Topics · {{ mikrotik_logs_active_router_label or mikrotik_logs_router }}</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="alert alert-info">
+            <div class="d-flex align-items-start">
+              <span class="me-2"><i class="ti ti-info-circle"></i></span>
+              <div>These dropped signatures apply only to <span class="fw-semibold">{{ mikrotik_logs_active_router_label or mikrotik_logs_router }}</span>. Other routers keep showing the same topic/message unless they also have their own drop rule.</div>
+            </div>
+          </div>
+          <div class="row g-2">
+            {% for topic in mikrotik_logs_router_drop_topics or [] %}
+              {% set signature_parts = topic.split('\t', 2) %}
+              <div class="col-md-6">
+                <div class="border rounded d-flex align-items-center justify-content-between gap-2 p-2">
+                  <span class="text-truncate" title="{{ topic }}">
+                    {% if signature_parts|length > 1 %}
+                      <span class="fw-semibold">{{ signature_parts[1] }}</span>
+                    {% endif %}
+                    {% if signature_parts|length > 2 %}
+                      <span class="text-muted"> · {{ signature_parts[2] }}</span>
+                    {% endif %}
+                  </span>
+                  <form method="post" action="/logs/mikrotik/drop-topics/remove">
+                    <input type="hidden" name="topic" value="{{ topic }}" />
+                    <button class="btn btn-icon btn-sm btn-outline-danger" type="submit" title="Remove dropped topic"><i class="ti ti-trash"></i></button>
+                  </form>
+                </div>
+              </div>
+            {% else %}
+              <div class="col-12 text-muted">No dropped topics yet.</div>
+            {% endfor %}
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      const startBtn = document.getElementById("mikrotik-drop-topic-select-start");
+      const cancelBtn = document.getElementById("mikrotik-drop-cancel");
+      const form = document.getElementById("mikrotik-drop-selected-form");
+      const submitBtn = document.getElementById("mikrotik-drop-submit");
+      const countEl = document.getElementById("mikrotik-drop-selected-count");
+      const routerTabs = document.getElementById("mikrotik-router-tabs");
+      const cols = Array.from(document.querySelectorAll("[data-mikrotik-drop-select-col]"));
+      const checks = Array.from(document.querySelectorAll("[data-mikrotik-drop-topic-check]"));
+
+      const selectedTopics = () => {
+        const values = checks
+          .filter((check) => check.checked && !check.disabled)
+          .map((check) => (check.value || "").trim())
+          .filter(Boolean);
+        return Array.from(new Set(values));
+      };
+
+      const updateDropUi = () => {
+        const count = selectedTopics().length;
+        if (countEl) countEl.textContent = `${count} selected`;
+        if (submitBtn) submitBtn.disabled = count === 0;
+      };
+
+      const setSelecting = (enabled) => {
+        cols.forEach((el) => el.classList.toggle("d-none", !enabled));
+        if (form) {
+          form.classList.toggle("d-none", !enabled);
+          form.classList.toggle("d-flex", !!enabled);
+        }
+        if (routerTabs) routerTabs.classList.toggle("is-drop-selecting", !!enabled);
+        if (!enabled) checks.forEach((check) => { check.checked = false; });
+        updateDropUi();
+      };
+
+      startBtn?.addEventListener("click", () => setSelecting(true));
+      cancelBtn?.addEventListener("click", () => setSelecting(false));
+      checks.forEach((check) => check.addEventListener("change", updateDropUi));
+      form?.addEventListener("submit", () => {
+        form.querySelectorAll("input[data-generated-topic]").forEach((input) => input.remove());
+        selectedTopics().forEach((topic) => {
+          const input = document.createElement("input");
+          input.type = "hidden";
+          input.name = "topics";
+          input.value = topic;
+          input.setAttribute("data-generated-topic", "1");
+          form.appendChild(input);
+        });
+      });
+    });
+  </script>
+{% endif %}
 {% endblock %}

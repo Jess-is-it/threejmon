@@ -5395,6 +5395,40 @@ def clear_mikrotik_logs():
         conn.close()
 
 
+def update_mikrotik_logs_router_for_sources(source_ips, router_id, router_name, router_kind):
+    source_ips = [str(item or "").strip() for item in (source_ips or []) if str(item or "").strip()]
+    if not source_ips:
+        return 0
+    router_id = str(router_id or "").strip()
+    router_name = str(router_name or router_id or "").strip()
+    router_kind = str(router_kind or "").strip()
+    conn = get_conn()
+    try:
+        with conn:
+            if _use_postgres():
+                cur = conn.execute(
+                    """
+                    UPDATE mikrotik_logs
+                    SET router_id = ?, router_name = ?, router_kind = ?
+                    WHERE source_ip = ANY(?)
+                    """,
+                    (router_id, router_name, router_kind, list(source_ips)),
+                )
+                return int(getattr(cur, "rowcount", 0) or 0)
+            placeholders = ",".join("?" for _ in source_ips)
+            cur = conn.execute(
+                f"""
+                UPDATE mikrotik_logs
+                SET router_id = ?, router_name = ?, router_kind = ?
+                WHERE source_ip IN ({placeholders})
+                """,
+                [router_id, router_name, router_kind] + source_ips,
+            )
+            return int(getattr(cur, "rowcount", 0) or 0)
+    finally:
+        conn.close()
+
+
 def list_mikrotik_logs(
     *,
     limit=100,
@@ -5404,6 +5438,7 @@ def list_mikrotik_logs(
     severity="",
     topic="",
     window="all",
+    drop_topics=None,
 ):
     try:
         limit = max(1, min(int(limit or 100), 1000))
@@ -5429,6 +5464,18 @@ def list_mikrotik_logs(
         like = f"%{str(topic).strip().lower()}%"
         filters.append("LOWER(topics) LIKE ?")
         params.append(like)
+    for raw_rule in drop_topics or []:
+        dropped = str(raw_rule or "").strip().lower()
+        if not dropped or dropped.count("\t") < 2:
+            continue
+        dropped_router, dropped_topic, dropped_message = dropped.split("\t", 2)
+        dropped_router = dropped_router.strip()
+        dropped_topic = dropped_topic.strip()
+        dropped_message = dropped_message.strip()
+        if not dropped_router or not dropped_topic or not dropped_message:
+            continue
+        filters.append("NOT (LOWER(COALESCE(NULLIF(router_id, ''), source_ip, '')) = ? AND LOWER(COALESCE(topics, '')) = ? AND LOWER(COALESCE(message, '')) = ?)")
+        params.extend([dropped_router, dropped_topic, dropped_message])
     now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
     if window == "24h":
         filters.append("timestamp >= ?")
@@ -5460,38 +5507,59 @@ def list_mikrotik_logs(
         conn.close()
 
 
-def get_mikrotik_log_facets():
+def get_mikrotik_log_facets(drop_topics=None):
+    filters = []
+    params = []
+    for raw_rule in drop_topics or []:
+        dropped = str(raw_rule or "").strip().lower()
+        if not dropped or dropped.count("\t") < 2:
+            continue
+        dropped_router, dropped_topic, dropped_message = dropped.split("\t", 2)
+        dropped_router = dropped_router.strip()
+        dropped_topic = dropped_topic.strip()
+        dropped_message = dropped_message.strip()
+        if not dropped_router or not dropped_topic or not dropped_message:
+            continue
+        filters.append("NOT (LOWER(COALESCE(NULLIF(router_id, ''), source_ip, '')) = ? AND LOWER(COALESCE(topics, '')) = ? AND LOWER(COALESCE(message, '')) = ?)")
+        params.extend([dropped_router, dropped_topic, dropped_message])
+    where_sql = ("WHERE " + " AND ".join(filters)) if filters else ""
+    severity_where_sql = where_sql + (" AND " if where_sql else "WHERE ") + "severity IS NOT NULL AND severity <> ''"
+    topics_where_sql = where_sql + (" AND " if where_sql else "WHERE ") + "topics IS NOT NULL AND topics <> ''"
     conn = get_conn()
     try:
         routers = conn.execute(
-            """
+            f"""
             SELECT COALESCE(NULLIF(router_id, ''), source_ip) AS value,
                    COALESCE(NULLIF(router_name, ''), source_ip) AS label,
                    COUNT(1) AS count
             FROM mikrotik_logs
+            {where_sql}
             GROUP BY value, label
             ORDER BY label ASC
             LIMIT 500
-            """
+            """,
+            params,
         ).fetchall()
         severities = conn.execute(
-            """
+            f"""
             SELECT severity AS value, COUNT(1) AS count
             FROM mikrotik_logs
-            WHERE severity IS NOT NULL AND severity <> ''
+            {severity_where_sql}
             GROUP BY severity
             ORDER BY count DESC, severity ASC
-            """
+            """,
+            params,
         ).fetchall()
         topics = conn.execute(
-            """
+            f"""
             SELECT topics AS value, COUNT(1) AS count
             FROM mikrotik_logs
-            WHERE topics IS NOT NULL AND topics <> ''
+            {topics_where_sql}
             GROUP BY topics
             ORDER BY count DESC, topics ASC
             LIMIT 500
-            """
+            """,
+            params,
         ).fetchall()
         return {
             "routers": [dict(row) for row in routers],
@@ -5502,12 +5570,27 @@ def get_mikrotik_log_facets():
         conn.close()
 
 
-def get_mikrotik_log_stats():
+def get_mikrotik_log_stats(drop_topics=None):
+    filters = []
+    params = []
+    for raw_rule in drop_topics or []:
+        dropped = str(raw_rule or "").strip().lower()
+        if not dropped or dropped.count("\t") < 2:
+            continue
+        dropped_router, dropped_topic, dropped_message = dropped.split("\t", 2)
+        dropped_router = dropped_router.strip()
+        dropped_topic = dropped_topic.strip()
+        dropped_message = dropped_message.strip()
+        if not dropped_router or not dropped_topic or not dropped_message:
+            continue
+        filters.append("NOT (LOWER(COALESCE(NULLIF(router_id, ''), source_ip, '')) = ? AND LOWER(COALESCE(topics, '')) = ? AND LOWER(COALESCE(message, '')) = ?)")
+        params.extend([dropped_router, dropped_topic, dropped_message])
+    where_sql = ("WHERE " + " AND ".join(filters)) if filters else ""
     conn = get_conn()
     try:
         today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0).isoformat() + "Z"
         rows = conn.execute(
-            """
+            f"""
             SELECT
               COUNT(1) AS total,
               SUM(CASE WHEN timestamp >= ? THEN 1 ELSE 0 END) AS today,
@@ -5516,8 +5599,9 @@ def get_mikrotik_log_stats():
               SUM(CASE WHEN LOWER(severity) = 'critical' THEN 1 ELSE 0 END) AS critical,
               COUNT(DISTINCT source_ip) AS sources
             FROM mikrotik_logs
+            {where_sql}
             """,
-            (today_start,),
+            [today_start] + params,
         ).fetchone()
         return {
             "total": int(_row_get(rows, "total", 0) or 0),
