@@ -180,18 +180,18 @@ AUTH_DEFAULT_PERMISSIONS = [
     {"code": "system.access.users.view", "label": "System Access · Users View", "description": "View users list."},
     {"code": "system.access.users.edit", "label": "System Access · Users Edit", "description": "Add/edit/delete users and reset passwords."},
     {"code": "system.danger.uninstall.run", "label": "System Danger · Uninstall", "description": "Run system uninstall action."},
-    {"code": "logs.category.surveillance.view", "label": "Logs · Category · Surveillance", "description": "View Surveillance logs on the Logs page."},
-    {"code": "logs.category.access.view", "label": "Logs · Category · Access", "description": "View Access logs on the Logs page."},
-    {"code": "logs.category.user_action.view", "label": "Logs · Category · User Action", "description": "View User Action logs on the Logs page."},
-    {"code": "logs.category.settings.view", "label": "Logs · Category · Settings", "description": "View Settings logs on the Logs page."},
-    {"code": "logs.category.system.view", "label": "Logs · Category · System", "description": "View System logs on the Logs page."},
-    {"code": "logs.system.view", "label": "Logs · System Logs", "description": "View application/system logs on the Logs page."},
-    {"code": "logs.mikrotik.view", "label": "Logs · MikroTik Logs", "description": "View centralized MikroTik syslog entries."},
-    {"code": "logs.mikrotik.edit", "label": "Logs · MikroTik Logs Settings", "description": "Edit MikroTik log receiver settings."},
-    {"code": "logs.mikrotik.danger.run", "label": "Logs · MikroTik Logs Danger", "description": "Format/delete stored MikroTik logs."},
-    {"code": "logs.search.view", "label": "Logs · Search", "description": "Use logs search on logs page."},
-    {"code": "logs.filter.view", "label": "Logs · Filters", "description": "Use logs filters/date/category controls."},
-    {"code": "logs.timeline.view", "label": "Logs · Timeline", "description": "View detailed logs timeline table/cards."},
+    {"code": "logs.category.surveillance.view", "label": "System Logs · Category · Surveillance", "description": "View Surveillance logs on the System Logs page."},
+    {"code": "logs.category.access.view", "label": "System Logs · Category · Access", "description": "View Access logs on the System Logs page."},
+    {"code": "logs.category.user_action.view", "label": "System Logs · Category · User Action", "description": "View User Action logs on the System Logs page."},
+    {"code": "logs.category.settings.view", "label": "System Logs · Category · Settings", "description": "View Settings logs on the System Logs page."},
+    {"code": "logs.category.system.view", "label": "System Logs · Category · System", "description": "View System logs on the System Logs page."},
+    {"code": "logs.system.view", "label": "System Logs · View", "description": "View application/system logs on the System Logs page."},
+    {"code": "logs.mikrotik.view", "label": "MikroTik Logs · View", "description": "View centralized MikroTik syslog entries."},
+    {"code": "logs.mikrotik.edit", "label": "MikroTik Logs · Settings Edit", "description": "Edit MikroTik log receiver settings."},
+    {"code": "logs.mikrotik.danger.run", "label": "MikroTik Logs · Danger Run", "description": "Format/delete stored MikroTik logs."},
+    {"code": "logs.search.view", "label": "System Logs · Search", "description": "Use search on the System Logs page."},
+    {"code": "logs.filter.view", "label": "System Logs · Filters", "description": "Use filters/date/category controls on the System Logs page."},
+    {"code": "logs.timeline.view", "label": "System Logs · Timeline", "description": "View detailed System Logs timeline table/cards."},
     {"code": "VIEW_Dashboard", "label": "VIEW_Dashboard", "description": "View dashboard KPIs and overview."},
     {"code": "VIEW_ProfileReview", "label": "VIEW_ProfileReview", "description": "View Profile Review page."},
     {"code": "VIEW_UnderSurveillance", "label": "VIEW_UnderSurveillance", "description": "View Under Surveillance workflow page."},
@@ -332,6 +332,15 @@ def _seed_auth_defaults(conn):
                 (code, label, description, now),
             )
             row = conn.execute("SELECT id FROM auth_permissions WHERE code = ? LIMIT 1", (code,)).fetchone()
+        else:
+            conn.execute(
+                """
+                UPDATE auth_permissions
+                SET label = ?, description = ?
+                WHERE code = ? AND (label <> ? OR description <> ?)
+                """,
+                (label, description, code, label, description),
+            )
         permission_id = _row_get(row, "id")
         if permission_id is not None:
             try:

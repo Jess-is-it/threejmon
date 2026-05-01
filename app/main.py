@@ -478,6 +478,8 @@ AUTH_PERMISSION_FEATURE_ORDER = [
     "wan_ping",
     "isp_status",
     "system_settings",
+    "system_logs",
+    "mikrotik_logs",
     "logs",
     "other",
 ]
@@ -493,6 +495,7 @@ AUTH_PERMISSION_FEATURE_LABELS = {
     "wan_ping": "WAN Ping",
     "isp_status": "ISP Port Status",
     "system_settings": "System Settings",
+    "system_logs": "System Logs",
     "logs": "Logs",
     "mikrotik_logs": "MikroTik Logs",
     "other": "Other",
@@ -818,7 +821,9 @@ def _auth_permission_feature_key(code: str) -> str:
     if lowered.startswith("dashboard.") or lowered.startswith("view_dashboard"):
         return "dashboard"
     if lowered.startswith("logs."):
-        return "logs"
+        if lowered.startswith("logs.mikrotik."):
+            return "mikrotik_logs"
+        return "system_logs"
     if lowered.startswith("profile_review.") or lowered.startswith("view_profilereview"):
         return "profile_review"
     if (
@@ -1268,6 +1273,20 @@ def _auth_permission_section_meta(code: str):
             return second, _auth_permission_part_label(second)
         if second in {"targets"}:
             return second, _auth_permission_part_label(second)
+
+    if root == "logs":
+        if second == "mikrotik":
+            if len(parts) >= 3 and parts[2].lower() == "danger":
+                return ("danger", "Danger")
+            if len(parts) >= 3 and parts[2].lower() in {"edit", "settings"}:
+                return ("settings", "Settings")
+            return ("general", "General")
+        if second == "category" and len(parts) >= 3:
+            third = parts[2].lower()
+            return (f"system_logs.category.{third}", f"System Logs · Category · {_auth_permission_part_label(third)}")
+        if second in {"system", "search", "filter", "timeline"}:
+            return (f"system_logs.{second}", f"System Logs · {_auth_permission_part_label(second)}")
+        return ("system_logs", "System Logs")
 
     if second in {"tab", "status", "settings", "action", "chart", "split_view", "table", "kpi"}:
         if len(parts) >= 3:
