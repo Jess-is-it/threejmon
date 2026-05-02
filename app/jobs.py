@@ -240,10 +240,26 @@ def _mikrotik_logs_router_map():
                 "router_name": router_name or router_id,
                 "router_kind": (item.get("router_kind") or "").strip() or "mikrotik",
             }
-            add_aliases(info, item.get("source_aliases") or [])
+            add_aliases(info, [item.get("host"), *(item.get("source_aliases") or [])])
     except Exception:
         pass
     return out
+
+
+def _apply_mikrotik_log_router_map_to_rows(rows, router_map):
+    if not rows or not isinstance(router_map, dict):
+        return rows
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        source_ip = str(row.get("source_ip") or "").strip()
+        info = router_map.get(source_ip) or {}
+        if not info:
+            continue
+        row["router_id"] = info.get("router_id") or row.get("router_id") or source_ip
+        row["router_name"] = info.get("router_name") or row.get("router_name") or source_ip
+        row["router_kind"] = info.get("router_kind") or row.get("router_kind") or "mikrotik"
+    return rows
 
 
 def _parse_mikrotik_syslog(raw_message, source_ip, source_port, router_info):
@@ -2703,10 +2719,12 @@ class JobsManager:
             bound_addr = None
 
         def _flush():
-            nonlocal pending, last_flush
+            nonlocal pending, last_flush, router_map
             if not pending:
                 last_flush = time_module.monotonic()
                 return
+            router_map = _mikrotik_logs_router_map()
+            _apply_mikrotik_log_router_map_to_rows(pending, router_map)
             count = len(pending)
             insert_mikrotik_logs(pending)
             state = get_state("mikrotik_logs_state", {})
@@ -2741,6 +2759,7 @@ class JobsManager:
                 if bool(auto_setup.get("enabled")) and (time_module.monotonic() - last_setup_check >= setup_interval):
                     try:
                         auto_configure_mikrotik_logs(cfg)
+                        router_map = _mikrotik_logs_router_map()
                     finally:
                         last_setup_check = time_module.monotonic()
 

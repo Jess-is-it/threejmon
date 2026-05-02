@@ -5420,8 +5420,13 @@ def update_mikrotik_logs_router_for_sources(source_ips, router_id, router_name, 
                     UPDATE mikrotik_logs
                     SET router_id = ?, router_name = ?, router_kind = ?
                     WHERE source_ip = ANY(?)
+                      AND (
+                        COALESCE(router_id, '') <> ?
+                        OR COALESCE(router_name, '') <> ?
+                        OR COALESCE(router_kind, '') <> ?
+                      )
                     """,
-                    (router_id, router_name, router_kind, list(source_ips)),
+                    (router_id, router_name, router_kind, list(source_ips), router_id, router_name, router_kind),
                 )
                 return int(getattr(cur, "rowcount", 0) or 0)
             placeholders = ",".join("?" for _ in source_ips)
@@ -5430,8 +5435,13 @@ def update_mikrotik_logs_router_for_sources(source_ips, router_id, router_name, 
                 UPDATE mikrotik_logs
                 SET router_id = ?, router_name = ?, router_kind = ?
                 WHERE source_ip IN ({placeholders})
+                  AND (
+                    COALESCE(router_id, '') <> ?
+                    OR COALESCE(router_name, '') <> ?
+                    OR COALESCE(router_kind, '') <> ?
+                  )
                 """,
-                [router_id, router_name, router_kind] + source_ips,
+                [router_id, router_name, router_kind] + source_ips + [router_id, router_name, router_kind],
             )
             return int(getattr(cur, "rowcount", 0) or 0)
     finally:

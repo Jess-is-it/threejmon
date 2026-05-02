@@ -4691,6 +4691,7 @@ def _apply_mikrotik_log_source_aliases_to_history(results):
         if not isinstance(item, dict) or item.get("status") != "configured":
             continue
         aliases = item.get("source_aliases") if isinstance(item.get("source_aliases"), list) else []
+        aliases = [*aliases, item.get("host")]
         if not aliases:
             continue
         try:
@@ -7942,6 +7943,11 @@ async def logs_page(request: Request):
     mt_state = get_state("mikrotik_logs_state", {})
     if not isinstance(mt_state, dict):
         mt_state = {}
+    if can_view_mikrotik_logs:
+        mt_setup_state_for_repair = mt_state.get("setup") if isinstance(mt_state.get("setup"), dict) else {}
+        _apply_mikrotik_log_source_aliases_to_history(
+            mt_setup_state_for_repair.get("results") if isinstance(mt_setup_state_for_repair.get("results"), list) else []
+        )
     if can_view_mikrotik_logs:
         mt_total, mt_rows = list_mikrotik_logs(
             limit=mt_limit,
