@@ -8188,6 +8188,99 @@ async def logs_page(request: Request):
     )
 
 
+@app.get("/logs/mikrotik/live", response_class=JSONResponse)
+async def mikrotik_logs_live(request: Request):
+    if not _auth_request_has_permission(request, "logs.mikrotik.view"):
+        return _json_no_store({"ok": False, "error": "Permission denied.", "required_permission": "logs.mikrotik.view"}, status_code=403)
+
+    mt_query = (request.query_params.get("mt_q") or "").strip()
+    mt_router = (request.query_params.get("mt_router") or "").strip()
+    mt_severity = (request.query_params.get("mt_severity") or "").strip().lower()
+    mt_topic = (request.query_params.get("mt_topic") or "").strip()
+    mt_window = (request.query_params.get("mt_window") or "24h").strip().lower()
+    mt_limit = _parse_table_limit(request.query_params.get("mt_limit"), default=100)
+    mt_page = _parse_table_page(request.query_params.get("mt_page"), default=1)
+    if mt_window not in {"all", "24h", "7d", "30d"}:
+        mt_window = "24h"
+    if mt_severity not in {"", "debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"}:
+        mt_severity = ""
+    include_summary = (request.query_params.get("summary") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    mt_settings = normalize_mikrotik_logs_settings(get_settings("mikrotik_logs", MIKROTIK_LOGS_DEFAULTS))
+    mt_drop_topics = [
+        str(item or "").strip()
+        for item in (((mt_settings.get("filters") or {}).get("drop_topics")) or [])
+        if str(item or "").strip() and str(item or "").count("\t") >= 2
+    ]
+    mt_offset = (mt_page - 1) * mt_limit
+    mt_total, mt_rows = list_mikrotik_logs(
+        limit=mt_limit,
+        offset=mt_offset,
+        query=mt_query,
+        router=mt_router,
+        severity=mt_severity,
+        topic=mt_topic,
+        window=mt_window,
+        drop_topics=mt_drop_topics,
+    )
+    mt_pages = max((mt_total + mt_limit - 1) // mt_limit, 1)
+    if mt_page > mt_pages:
+        mt_page = mt_pages
+        mt_offset = (mt_page - 1) * mt_limit
+        mt_total, mt_rows = list_mikrotik_logs(
+            limit=mt_limit,
+            offset=mt_offset,
+            query=mt_query,
+            router=mt_router,
+            severity=mt_severity,
+            topic=mt_topic,
+            window=mt_window,
+            drop_topics=mt_drop_topics,
+        )
+    mt_facets = {"routers": [], "severities": [], "topics": []}
+    mt_stats = None
+    if include_summary:
+        mt_facets = get_mikrotik_log_facets(drop_topics=mt_drop_topics)
+        mt_stats = get_mikrotik_log_stats(drop_topics=mt_drop_topics)
+    mt_state = get_state("mikrotik_logs_state", {})
+    if not isinstance(mt_state, dict):
+        mt_state = {}
+
+    rows_payload = []
+    for row in mt_rows:
+        row_dict = dict(row)
+        rows_payload.append(
+            {
+                **row_dict,
+                "timestamp_ph": format_ts_ph(row_dict.get("timestamp")),
+                "received_at_ph": format_ts_ph(row_dict.get("received_at")),
+                "drop_value": "\t".join(
+                    [
+                        str(row_dict.get("router_id") or row_dict.get("source_ip") or ""),
+                        str(row_dict.get("topics") or ""),
+                        str(row_dict.get("message") or ""),
+                    ]
+                ),
+            }
+        )
+
+    return _json_no_store(
+        {
+            "ok": True,
+            "rows": rows_payload,
+            "total": mt_total,
+            "page": mt_page,
+            "pages": mt_pages,
+            "limit": mt_limit,
+            "stats": mt_stats,
+            "facets": mt_facets,
+            "summary_included": include_summary,
+            "last_received_at": mt_state.get("last_received_at") or "n/a",
+            "updated_at": utc_now_iso(),
+        }
+    )
+
+
 @app.post("/logs/mikrotik/settings", response_class=HTMLResponse)
 async def mikrotik_logs_settings_save(request: Request):
     if not _auth_request_has_permission(request, "logs.mikrotik.edit"):

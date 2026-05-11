@@ -177,26 +177,38 @@
 
         <div class="col-12">
           <div class="row g-3">
-            <div class="col-sm-6 col-xl-2"><div class="logs-kpi"><div class="text-muted small">Today</div><div class="value">{{ mikrotik_logs_stats.today }}</div></div></div>
-            <div class="col-sm-6 col-xl-2"><div class="logs-kpi"><div class="text-muted small">Total Stored</div><div class="value">{{ mikrotik_logs_stats.total }}</div></div></div>
-            <div class="col-sm-6 col-xl-2"><div class="logs-kpi"><div class="text-muted small">Sources</div><div class="value">{{ mikrotik_logs_stats.sources }}</div></div></div>
-            <div class="col-sm-6 col-xl-2"><div class="logs-kpi"><div class="text-muted small">Warnings</div><div class="value text-yellow">{{ mikrotik_logs_stats.warning }}</div></div></div>
-            <div class="col-sm-6 col-xl-2"><div class="logs-kpi"><div class="text-muted small">Errors</div><div class="value text-red">{{ mikrotik_logs_stats.error }}</div></div></div>
-            <div class="col-sm-6 col-xl-2"><div class="logs-kpi"><div class="text-muted small">Critical</div><div class="value text-red">{{ mikrotik_logs_stats.critical }}</div></div></div>
+            <div class="col-sm-6 col-xl-2"><div class="logs-kpi"><div class="text-muted small">Today</div><div class="value" data-mikrotik-stat="today">{{ mikrotik_logs_stats.today }}</div></div></div>
+            <div class="col-sm-6 col-xl-2"><div class="logs-kpi"><div class="text-muted small">Total Stored</div><div class="value" data-mikrotik-stat="total">{{ mikrotik_logs_stats.total }}</div></div></div>
+            <div class="col-sm-6 col-xl-2"><div class="logs-kpi"><div class="text-muted small">Sources</div><div class="value" data-mikrotik-stat="sources">{{ mikrotik_logs_stats.sources }}</div></div></div>
+            <div class="col-sm-6 col-xl-2"><div class="logs-kpi"><div class="text-muted small">Warnings</div><div class="value text-yellow" data-mikrotik-stat="warning">{{ mikrotik_logs_stats.warning }}</div></div></div>
+            <div class="col-sm-6 col-xl-2"><div class="logs-kpi"><div class="text-muted small">Errors</div><div class="value text-red" data-mikrotik-stat="error">{{ mikrotik_logs_stats.error }}</div></div></div>
+            <div class="col-sm-6 col-xl-2"><div class="logs-kpi"><div class="text-muted small">Critical</div><div class="value text-red" data-mikrotik-stat="critical">{{ mikrotik_logs_stats.critical }}</div></div></div>
           </div>
         </div>
 
         <div class="col-12">
-          <div class="card">
+          <div
+            class="card"
+            id="mikrotik-logs-live"
+            data-endpoint="/logs/mikrotik/live"
+            data-mt-q="{{ mikrotik_logs_query or '' }}"
+            data-mt-router="{{ mikrotik_logs_router or '' }}"
+            data-mt-severity="{{ mikrotik_logs_severity or '' }}"
+            data-mt-topic="{{ mikrotik_logs_topic or '' }}"
+            data-mt-window="{{ mikrotik_logs_window or '24h' }}"
+            data-mt-limit="{{ mikrotik_logs_limit }}"
+            data-mt-page="{{ mikrotik_logs_page }}"
+          >
             <div class="card-header">
               <h3 class="card-title"><i class="ti ti-router me-2"></i>MikroTik Syslog Entries</h3>
               <div class="card-actions ms-auto d-flex flex-wrap align-items-center justify-content-end gap-2">
-                <span class="badge bg-indigo-lt text-indigo">Filtered: {{ mikrotik_logs_total }}</span>
+                <span class="badge bg-green-lt text-green" id="mikrotik-live-status">Live</span>
+                <span class="badge bg-indigo-lt text-indigo" id="mikrotik-filtered-count">Filtered: {{ mikrotik_logs_total }}</span>
                 {% if mikrotik_logs_router %}
                   {% set active_router = (mikrotik_logs_router_tabs or [])|selectattr('value', 'equalto', mikrotik_logs_router)|list %}
                   <span class="badge bg-blue-lt text-blue">Router: {{ active_router[0].label if active_router else mikrotik_logs_router }}</span>
                 {% endif %}
-                <span class="badge bg-secondary-lt">Last received: {{ mikrotik_logs_state.last_received_at|default('n/a') }}</span>
+                <span class="badge bg-secondary-lt" id="mikrotik-last-received">Last received: {{ mikrotik_logs_state.last_received_at|default('n/a') }}</span>
                 <form method="get" action="/logs/mikrotik" class="d-flex align-items-center gap-2">
                   <input type="hidden" name="mt_tab" value="logs" />
                   {% if mikrotik_logs_router %}
@@ -331,12 +343,12 @@
                 <span class="text-muted small me-1">Routers:</span>
                 <a class="btn btn-sm {% if not mikrotik_logs_router %}btn-primary{% else %}btn-outline-secondary{% endif %}" href="/logs/mikrotik{% if mikrotik_logs_router_tab_query %}?{{ mikrotik_logs_router_tab_query }}{% else %}?mt_tab=logs{% endif %}">
                   All Routers
-                  <span class="badge {% if not mikrotik_logs_router %}bg-white text-primary{% else %}bg-secondary-lt{% endif %} ms-1">{{ mikrotik_logs_stats.total }}</span>
+                  <span class="badge {% if not mikrotik_logs_router %}bg-white text-primary{% else %}bg-secondary-lt{% endif %} ms-1" data-mikrotik-router-count="__all__">{{ mikrotik_logs_stats.total }}</span>
                 </a>
                 {% for item in mikrotik_logs_router_tabs %}
                   <a class="btn btn-sm {% if mikrotik_logs_router == item.value %}btn-primary{% else %}btn-outline-secondary{% endif %}" href="/logs/mikrotik?{% if mikrotik_logs_router_tab_query %}{{ mikrotik_logs_router_tab_query }}&{% else %}mt_tab=logs&{% endif %}mt_router={{ item.value|urlencode }}">
                     {{ item.label }}
-                    <span class="badge {% if mikrotik_logs_router == item.value %}bg-white text-primary{% else %}bg-secondary-lt{% endif %} ms-1">{{ item.count }}</span>
+                    <span class="badge {% if mikrotik_logs_router == item.value %}bg-white text-primary{% else %}bg-secondary-lt{% endif %} ms-1" data-mikrotik-router-count="{{ item.value }}">{{ item.count }}</span>
                     {% if item.drop_count %}
                       <span
                         class="badge {% if mikrotik_logs_router == item.value %}bg-white text-primary{% else %}bg-red-lt text-red{% endif %} ms-1"
@@ -361,10 +373,10 @@
                       <th style="min-width: 130px;">Source IP</th>
                     </tr>
                   </thead>
-                  <tbody>
+                  <tbody id="mikrotik-logs-tbody">
                     {% for row in mikrotik_logs_rows %}
                       {% set sev = (row.severity or 'info')|lower %}
-                      <tr>
+                      <tr data-log-id="{{ row.id }}">
                         <td class="d-none" data-mikrotik-drop-select-col>
                           <label class="form-check m-0">
                             <input class="form-check-input" type="checkbox" name="topics" value="{{ row.router_id or row.source_ip }}&#9;{{ row.topics }}&#9;{{ row.message }}" data-mikrotik-drop-topic-check {% if not (row.router_id or row.source_ip) or not row.topics or not row.message %}disabled{% endif %} />
@@ -394,12 +406,12 @@
               </div>
             </div>
             <div class="card-footer d-flex align-items-center justify-content-between">
-              <div class="text-muted small">Page {{ mikrotik_logs_page }} of {{ mikrotik_logs_pages }}</div>
+              <div class="text-muted small" id="mikrotik-logs-page-label">Page {{ mikrotik_logs_page }} of {{ mikrotik_logs_pages }}</div>
               <div class="btn-group">
                 {% set mt_prev_page = mikrotik_logs_page - 1 %}
                 {% set mt_next_page = mikrotik_logs_page + 1 %}
-                <a class="btn btn-sm btn-outline-secondary {% if mikrotik_logs_page <= 1 %}disabled{% endif %}" href="/logs/mikrotik?mt_page={{ mt_prev_page }}{% if mikrotik_logs_base_query %}&{{ mikrotik_logs_base_query }}{% endif %}">Prev</a>
-                <a class="btn btn-sm btn-outline-secondary {% if mikrotik_logs_page >= mikrotik_logs_pages %}disabled{% endif %}" href="/logs/mikrotik?mt_page={{ mt_next_page }}{% if mikrotik_logs_base_query %}&{{ mikrotik_logs_base_query }}{% endif %}">Next</a>
+                <a id="mikrotik-logs-prev" class="btn btn-sm btn-outline-secondary {% if mikrotik_logs_page <= 1 %}disabled{% endif %}" href="/logs/mikrotik?mt_page={{ mt_prev_page }}{% if mikrotik_logs_base_query %}&{{ mikrotik_logs_base_query }}{% endif %}">Prev</a>
+                <a id="mikrotik-logs-next" class="btn btn-sm btn-outline-secondary {% if mikrotik_logs_page >= mikrotik_logs_pages %}disabled{% endif %}" href="/logs/mikrotik?mt_page={{ mt_next_page }}{% if mikrotik_logs_base_query %}&{{ mikrotik_logs_base_query }}{% endif %}">Next</a>
               </div>
             </div>
           </div>
@@ -632,6 +644,174 @@
   </div>
 </div>
 
+{% if active_tab == 'mikrotik' and mikrotik_logs_active_tab == 'logs' %}
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      const liveRoot = document.getElementById("mikrotik-logs-live");
+      const tbody = document.getElementById("mikrotik-logs-tbody");
+      if (!liveRoot || !tbody) return;
+
+      const statusEl = document.getElementById("mikrotik-live-status");
+      const filteredEl = document.getElementById("mikrotik-filtered-count");
+      const lastReceivedEl = document.getElementById("mikrotik-last-received");
+      const pageLabelEl = document.getElementById("mikrotik-logs-page-label");
+      const prevEl = document.getElementById("mikrotik-logs-prev");
+      const nextEl = document.getElementById("mikrotik-logs-next");
+      let lastSummaryAt = 0;
+      const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        "\"": "&quot;",
+        "'": "&#39;",
+      }[char]));
+      const numberText = (value) => {
+        const numeric = Number(value || 0);
+        return Number.isFinite(numeric) ? numeric.toLocaleString() : "0";
+      };
+      const isDropSelecting = () => {
+        if (window.ThreeJMikrotikLogsDrop?.isSelecting) return window.ThreeJMikrotikLogsDrop.isSelecting();
+        const form = document.getElementById("mikrotik-drop-selected-form");
+        return !!form && !form.classList.contains("d-none");
+      };
+      const severityClass = (severity) => {
+        const sev = String(severity || "info").toLowerCase();
+        if (["error", "critical", "alert", "emergency"].includes(sev)) return "bg-red-lt text-red";
+        if (sev === "warning") return "bg-yellow-lt text-yellow";
+        if (sev === "debug") return "bg-secondary-lt";
+        return "bg-blue-lt text-blue";
+      };
+      const params = (includeSummary = false) => {
+        const url = new URL(liveRoot.dataset.endpoint || "/logs/mikrotik/live", window.location.origin);
+        [
+          ["mt_q", liveRoot.dataset.mtQ || ""],
+          ["mt_router", liveRoot.dataset.mtRouter || ""],
+          ["mt_severity", liveRoot.dataset.mtSeverity || ""],
+          ["mt_topic", liveRoot.dataset.mtTopic || ""],
+          ["mt_window", liveRoot.dataset.mtWindow || "24h"],
+          ["mt_limit", liveRoot.dataset.mtLimit || "100"],
+          ["mt_page", liveRoot.dataset.mtPage || "1"],
+        ].forEach(([key, value]) => {
+          if (value !== "") url.searchParams.set(key, value);
+        });
+        if (includeSummary) url.searchParams.set("summary", "1");
+        return url;
+      };
+      const pageHref = (page) => {
+        const url = new URL("/logs/mikrotik", window.location.origin);
+        url.searchParams.set("mt_tab", "logs");
+        [
+          ["mt_q", liveRoot.dataset.mtQ || ""],
+          ["mt_router", liveRoot.dataset.mtRouter || ""],
+          ["mt_severity", liveRoot.dataset.mtSeverity || ""],
+          ["mt_topic", liveRoot.dataset.mtTopic || ""],
+          ["mt_window", liveRoot.dataset.mtWindow || "24h"],
+          ["mt_limit", liveRoot.dataset.mtLimit || "100"],
+        ].forEach(([key, value]) => {
+          if (value !== "") url.searchParams.set(key, value);
+        });
+        url.searchParams.set("mt_page", String(page));
+        return `${url.pathname}?${url.searchParams.toString()}`;
+      };
+      const setStatus = (label, tone) => {
+        if (!statusEl) return;
+        statusEl.textContent = label;
+        statusEl.className = `badge ${tone}`;
+      };
+      const renderRows = (rows) => {
+        const oldIds = new Set(Array.from(tbody.querySelectorAll("tr[data-log-id]")).map((row) => row.dataset.logId).filter(Boolean));
+        if (!rows.length) {
+          tbody.innerHTML = '<tr><td colspan="7" class="text-muted p-3">No MikroTik logs found. Enable the receiver and configure routers to send remote syslog to this server.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = rows.map((row) => {
+          const rowId = String(row.id || "");
+          const isNew = oldIds.size > 0 && rowId && !oldIds.has(rowId);
+          const routerValue = row.router_id || row.source_ip || "";
+          const sourcePort = row.source_port ? `:${escapeHtml(row.source_port)}` : "";
+          const dropValue = [routerValue, row.topics || "", row.message || ""].join("\t");
+          const dropDisabled = (!routerValue || !row.topics || !row.message) ? " disabled" : "";
+          return `
+            <tr data-log-id="${escapeHtml(rowId)}" class="${isNew ? "table-primary mikrotik-log-live-new" : ""}">
+              <td class="d-none" data-mikrotik-drop-select-col>
+                <label class="form-check m-0">
+                  <input class="form-check-input" type="checkbox" name="topics" value="${escapeHtml(dropValue)}" data-mikrotik-drop-topic-check${dropDisabled} />
+                </label>
+              </td>
+              <td class="text-muted" title="Received: ${escapeHtml(row.received_at_ph || "n/a")}">${escapeHtml(row.timestamp_ph || "n/a")}</td>
+              <td title="${escapeHtml(routerValue)}">
+                <div class="fw-semibold">${escapeHtml(row.router_name || row.source_ip || "n/a")}</div>
+                <div class="text-muted small">${escapeHtml(row.router_kind || "unknown")}</div>
+              </td>
+              <td><span class="badge ${severityClass(row.severity)}">${escapeHtml(row.severity || "info")}</span></td>
+              <td class="text-muted" title="${escapeHtml(row.topics || "n/a")}">${escapeHtml(row.topics || "n/a")}</td>
+              <td class="logs-activity-cell"><div title="${escapeHtml(row.raw_message || row.message || "")}">${escapeHtml(row.message || "")}</div></td>
+              <td class="text-muted">${escapeHtml(row.source_ip || "n/a")}${sourcePort}</td>
+            </tr>
+          `;
+        }).join("");
+        window.setTimeout(() => {
+          tbody.querySelectorAll(".mikrotik-log-live-new").forEach((row) => row.classList.remove("table-primary", "mikrotik-log-live-new"));
+        }, 2500);
+        window.ThreeJMikrotikLogsDrop?.sync?.();
+      };
+      const updateStats = (data) => {
+        if (filteredEl) filteredEl.textContent = `Filtered: ${numberText(data?.total)}`;
+        if (lastReceivedEl) lastReceivedEl.textContent = `Last received: ${data?.last_received_at || "n/a"}`;
+        const stats = data?.stats || null;
+        if (stats) {
+          document.querySelectorAll("[data-mikrotik-stat]").forEach((el) => {
+            el.textContent = numberText(stats[el.dataset.mikrotikStat]);
+          });
+          const allCount = document.querySelector('[data-mikrotik-router-count="__all__"]');
+          if (allCount) allCount.textContent = numberText(stats.total);
+        }
+        if (data?.facets?.routers) {
+          data.facets.routers.forEach((router) => {
+            const badge = Array.from(document.querySelectorAll("[data-mikrotik-router-count]")).find((item) => item.dataset.mikrotikRouterCount === String(router.value || ""));
+            if (badge) badge.textContent = numberText(router.count);
+          });
+        }
+        const page = Math.max(1, Number(data?.page || liveRoot.dataset.mtPage || 1));
+        const pages = Math.max(1, Number(data?.pages || 1));
+        liveRoot.dataset.mtPage = String(page);
+        if (pageLabelEl) pageLabelEl.textContent = `Page ${page} of ${pages}`;
+        if (prevEl) {
+          prevEl.classList.toggle("disabled", page <= 1);
+          prevEl.href = pageHref(Math.max(1, page - 1));
+        }
+        if (nextEl) {
+          nextEl.classList.toggle("disabled", page >= pages);
+          nextEl.href = pageHref(Math.min(pages, page + 1));
+        }
+      };
+      const refresh = async () => {
+        if (isDropSelecting()) return;
+        try {
+          const includeSummary = Date.now() - lastSummaryAt > 15000;
+          const res = await fetch(params(includeSummary), { headers: { "Accept": "application/json" }, cache: "no-store" });
+          if (!res.ok) throw new Error("request failed");
+          const data = await res.json();
+          if (!data?.ok) throw new Error(data?.error || "request failed");
+          if (includeSummary && data?.summary_included) lastSummaryAt = Date.now();
+          renderRows(data.rows || []);
+          updateStats(data);
+          setStatus("Live", "bg-green-lt text-green");
+        } catch (_err) {
+          setStatus("Paused", "bg-yellow-lt text-yellow");
+        }
+      };
+
+      if (window.ThreeJPolling?.createTask) {
+        window.ThreeJPolling.createTask(refresh, { intervalMs: 3000, resumeDelayMs: 250 });
+      } else {
+        refresh();
+        window.setInterval(refresh, 3000);
+      }
+    });
+  </script>
+{% endif %}
+
 {% if active_tab == 'mikrotik' and mikrotik_logs_active_tab == 'logs' and mikrotik_logs_router %}
   <div class="modal modal-blur fade" id="mikrotik-drop-topics-modal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
@@ -686,11 +866,11 @@
       const submitBtn = document.getElementById("mikrotik-drop-submit");
       const countEl = document.getElementById("mikrotik-drop-selected-count");
       const routerTabs = document.getElementById("mikrotik-router-tabs");
-      const cols = Array.from(document.querySelectorAll("[data-mikrotik-drop-select-col]"));
-      const checks = Array.from(document.querySelectorAll("[data-mikrotik-drop-topic-check]"));
+      const getCols = () => Array.from(document.querySelectorAll("[data-mikrotik-drop-select-col]"));
+      const getChecks = () => Array.from(document.querySelectorAll("[data-mikrotik-drop-topic-check]"));
 
       const selectedTopics = () => {
-        const values = checks
+        const values = getChecks()
           .filter((check) => check.checked && !check.disabled)
           .map((check) => (check.value || "").trim())
           .filter(Boolean);
@@ -704,19 +884,21 @@
       };
 
       const setSelecting = (enabled) => {
-        cols.forEach((el) => el.classList.toggle("d-none", !enabled));
+        getCols().forEach((el) => el.classList.toggle("d-none", !enabled));
         if (form) {
           form.classList.toggle("d-none", !enabled);
           form.classList.toggle("d-flex", !!enabled);
         }
         if (routerTabs) routerTabs.classList.toggle("is-drop-selecting", !!enabled);
-        if (!enabled) checks.forEach((check) => { check.checked = false; });
+        if (!enabled) getChecks().forEach((check) => { check.checked = false; });
         updateDropUi();
       };
 
       startBtn?.addEventListener("click", () => setSelecting(true));
       cancelBtn?.addEventListener("click", () => setSelecting(false));
-      checks.forEach((check) => check.addEventListener("change", updateDropUi));
+      document.addEventListener("change", (event) => {
+        if (event.target?.matches?.("[data-mikrotik-drop-topic-check]")) updateDropUi();
+      });
       form?.addEventListener("submit", () => {
         form.querySelectorAll("input[data-generated-topic]").forEach((input) => input.remove());
         selectedTopics().forEach((topic) => {
@@ -728,6 +910,10 @@
           form.appendChild(input);
         });
       });
+      window.ThreeJMikrotikLogsDrop = {
+        isSelecting: () => !!form && !form.classList.contains("d-none"),
+        sync: updateDropUi,
+      };
     });
   </script>
 {% endif %}
