@@ -200,6 +200,19 @@ def fetch_pppoe_secrets(client):
     return routeros_print(client, "/ppp/secret/print", proplist=proplist, raise_on_trap=True)
 
 
+def fetch_ppp_profiles(client):
+    proplist = [
+        ".id",
+        "name",
+        "local-address",
+        "remote-address",
+        "rate-limit",
+        "only-one",
+        "comment",
+    ]
+    return routeros_print(client, "/ppp/profile/print", proplist=proplist, raise_on_trap=True)
+
+
 def fetch_simple_queues(client):
     # Simple queues often expose live rate + byte counters per subscriber.
     proplist = [

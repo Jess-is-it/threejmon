@@ -355,6 +355,7 @@ ACCOUNTS_PING_DEFAULTS = {
         "refresh_minutes": 15,
         "mikrotik": {
             "router_enabled": {},
+            "profile_enabled": {},
         },
     },
     "general": {

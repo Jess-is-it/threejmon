@@ -136,9 +136,12 @@ from .db import (
 from .accounts_ping_sources import (
     ACCOUNTS_PING_SOURCE_MIKROTIK,
     ACCOUNTS_PING_SOURCE_SSH_CSV,
+    accounts_ping_profile_enabled_map,
+    build_accounts_ping_disabled_account_lookup,
     build_accounts_ping_account_id,
     build_accounts_ping_account_ids_by_pppoe,
     build_accounts_ping_source_devices,
+    is_accounts_ping_disabled_account,
     normalize_accounts_ping_device,
     normalize_accounts_ping_source_mode,
 )
@@ -7384,7 +7387,9 @@ def _build_dashboard_kpis(job_status):
         device_account_ids = {
             (device.get("account_id") or "").strip()
             for device in devices
-            if isinstance(device, dict) and (device.get("account_id") or "").strip()
+            if isinstance(device, dict)
+            and (device.get("account_id") or "").strip()
+            and not bool(device.get("profile_disabled"))
         }
 
         tracked_ids = device_account_ids or set(accounts.keys())
@@ -9050,8 +9055,119 @@ async def wan_targets_ping_stream(
     return StreamingResponse(_stream(), media_type="text/event-stream")
 
 
+def _accounts_ping_tracking_profile_context():
+    settings = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
+    state = get_state("accounts_ping_state", {})
+    return (
+        accounts_ping_profile_enabled_map(settings),
+        build_accounts_ping_disabled_account_lookup(
+            state.get("devices") if isinstance(state.get("devices"), list) else []
+        ),
+    )
+
+
+def _row_disabled_by_accounts_ping_profile(row, profile_enabled, disabled_lookup):
+    if not isinstance(row, dict):
+        return False
+    pppoe = (
+        row.get("pppoe")
+        or row.get("name")
+        or row.get("username")
+        or row.get("account")
+        or ""
+    )
+    router_id = row.get("router_id") or ""
+    profile = row.get("profile") or row.get("service_profile") or row.get("groups") or ""
+    return is_accounts_ping_disabled_account(
+        router_id,
+        pppoe,
+        profile=profile,
+        profile_enabled=profile_enabled,
+        disabled_lookup=disabled_lookup,
+    )
+
+
+def _filter_rows_excluding_accounts_ping_disabled(rows, profile_enabled, disabled_lookup):
+    if not isinstance(rows, list):
+        return []
+    return [
+        row
+        for row in rows
+        if isinstance(row, dict) and not _row_disabled_by_accounts_ping_profile(row, profile_enabled, disabled_lookup)
+    ]
+
+
+def _filter_offline_state_excluding_accounts_ping_disabled(state):
+    profile_enabled, disabled_lookup = _accounts_ping_tracking_profile_context()
+    filtered = copy.deepcopy(state if isinstance(state, dict) else {})
+    filtered["rows"] = _filter_rows_excluding_accounts_ping_disabled(
+        filtered.get("rows"),
+        profile_enabled,
+        disabled_lookup,
+    )
+    filtered["source_accounts"] = _filter_rows_excluding_accounts_ping_disabled(
+        filtered.get("source_accounts"),
+        profile_enabled,
+        disabled_lookup,
+    )
+    tracker = filtered.get("tracker") if isinstance(filtered.get("tracker"), dict) else {}
+    filtered_tracker = {}
+    for key, item in tracker.items():
+        if not isinstance(item, dict):
+            continue
+        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        if _row_disabled_by_accounts_ping_profile(meta, profile_enabled, disabled_lookup):
+            continue
+        filtered_tracker[key] = item
+    filtered["tracker"] = filtered_tracker
+    active_count = sum(
+        1
+        for row in filtered.get("source_accounts") or []
+        if isinstance(row, dict) and str(row.get("source_status") or "").strip().lower() == "active"
+    )
+    filtered["active_accounts"] = active_count
+    return filtered
+
+
+def _accounts_ping_router_profile_context_for_wan(wan_settings):
+    accounts_ping_settings = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
+    accounts_ping_state = get_state("accounts_ping_state", {})
+    router_state_rows = (
+        accounts_ping_state.get("router_status")
+        if isinstance(accounts_ping_state.get("router_status"), list)
+        else []
+    )
+    router_state_map = {
+        (row.get("router_id") or "").strip(): row
+        for row in router_state_rows
+        if isinstance(row, dict) and (row.get("router_id") or "").strip()
+    }
+    return _build_accounts_ping_router_profile_context(
+        accounts_ping_settings,
+        router_state_map,
+        wan_settings,
+    )
+
+
 def _build_usage_summary_data(settings, state):
-    return build_usage_summary_data_shared(settings, state)
+    profile_enabled, disabled_lookup = _accounts_ping_tracking_profile_context()
+    filtered_state = copy.deepcopy(state if isinstance(state, dict) else {})
+    filtered_state["active_rows"] = _filter_rows_excluding_accounts_ping_disabled(
+        filtered_state.get("active_rows"),
+        profile_enabled,
+        disabled_lookup,
+    )
+    filtered_state["offline_rows"] = _filter_rows_excluding_accounts_ping_disabled(
+        filtered_state.get("offline_rows"),
+        profile_enabled,
+        disabled_lookup,
+    )
+    return build_usage_summary_data_shared(settings, filtered_state)
+
+
+def _usage_reboot_account_stats_excluding_disabled(rows):
+    profile_enabled, disabled_lookup = _accounts_ping_tracking_profile_context()
+    return _filter_rows_excluding_accounts_ping_disabled(rows, profile_enabled, disabled_lookup)
 
 
 def _usage_account_key(router_id, pppoe):
@@ -9248,7 +9364,11 @@ async def usage_summary(request: Request):
     )
     reboot_history_rows = []
     reboot_history_count = 0
-    reboot_account_stats = list_usage_modem_reboot_account_stats() if can_view_reboot_history else []
+    reboot_account_stats = (
+        _usage_reboot_account_stats_excluding_disabled(list_usage_modem_reboot_account_stats())
+        if can_view_reboot_history
+        else []
+    )
     if reboot_settings.get("enabled") and can_view_reboot_history:
         reboot_history_count = count_usage_modem_reboot_history()
         for row in list_usage_modem_reboot_history(limit=250):
@@ -9364,7 +9484,7 @@ async def usage_account_detail(pppoe: str, router_id: str = "", hours: int = 168
     settings = get_settings("usage", USAGE_DEFAULTS)
     state = get_state("usage_state", {})
     summary = _build_usage_summary_data(settings, state)
-    reboot_stats = list_usage_modem_reboot_account_stats()
+    reboot_stats = _usage_reboot_account_stats_excluding_disabled(list_usage_modem_reboot_account_stats())
     accounts = _build_usage_accounts_rows(summary, reboot_stats, normalize_usage_modem_reboot_settings(settings))
     account_key = _usage_account_key(router_id_value, pppoe_value)
     account = next(
@@ -9440,7 +9560,7 @@ async def usage_account_detail(pppoe: str, router_id: str = "", hours: int = 168
 @app.get("/offline/summary")
 async def offline_summary(request: Request):
     settings = normalize_offline_settings(get_settings("offline", OFFLINE_DEFAULTS))
-    state = get_state("offline_state", {})
+    state = _filter_offline_state_excluding_accounts_ping_disabled(get_state("offline_state", {}))
     rule_views = _build_offline_rule_views(state, settings)
     source_accounts = state.get("source_accounts") if isinstance(state.get("source_accounts"), list) else []
     payload_rows = rule_views.get("default_rows") if isinstance(rule_views.get("default_rows"), list) else []
@@ -9586,7 +9706,7 @@ async def offline_accounts(request: Request, limit: str | int = 100, page: int =
     sort_dir = str(request.query_params.get("dir") or "asc").strip().lower()
     reverse = sort_dir == "desc"
 
-    state = get_state("offline_state", {})
+    state = _filter_offline_state_excluding_accounts_ping_disabled(get_state("offline_state", {}))
     source_accounts = state.get("source_accounts") if isinstance(state.get("source_accounts"), list) else []
     current_map = _collect_offline_current_keyed_map(state)
     history_stats_map = list_offline_history_account_stats_map()
@@ -9732,7 +9852,7 @@ async def offline_account_detail(pppoe: str, router_id: str = "", mode: str = ""
         return _json_no_store({"ok": False, "error": "Missing account."}, status_code=400)
 
     settings = normalize_offline_settings(get_settings("offline", OFFLINE_DEFAULTS))
-    state = get_state("offline_state", {})
+    state = _filter_offline_state_excluding_accounts_ping_disabled(get_state("offline_state", {}))
     rule_views = _build_offline_rule_views(state, settings)
     current_rows_by_rule = rule_views.get("rows_by_rule") if isinstance(rule_views.get("rows_by_rule"), dict) else {}
     rules = rule_views.get("rules") if isinstance(rule_views.get("rules"), list) else []
@@ -11331,7 +11451,7 @@ async def usage_settings(request: Request):
     usage_account_count = len(
         _build_usage_accounts_rows(
             usage_summary_data,
-            list_usage_modem_reboot_account_stats() if can_view_reboot_history else [],
+            _usage_reboot_account_stats_excluding_disabled(list_usage_modem_reboot_account_stats()) if can_view_reboot_history else [],
             normalize_usage_modem_reboot_settings(settings),
         )
     )
@@ -11340,6 +11460,7 @@ async def usage_settings(request: Request):
     router_state_map = {
         (row.get("router_id") or "").strip(): row for row in router_state_rows if isinstance(row, dict)
     }
+    accounts_ping_router_profiles = _accounts_ping_router_profile_context_for_wan(wan_settings)
     return templates.TemplateResponse(
         "settings_usage.html",
         make_context(
@@ -11353,6 +11474,7 @@ async def usage_settings(request: Request):
                 "usage_job": usage_job,
                 "wan_settings": wan_settings,
                 "usage_router_state": router_state_map,
+                "accounts_ping_router_profiles": accounts_ping_router_profiles,
                 "usage_state": {
                     "last_check": format_ts_ph(state.get("last_check_at")),
                     "genieacs_last_refresh": format_ts_ph(state.get("last_genieacs_refresh_at")),
@@ -11630,7 +11752,7 @@ async def usage_settings_save(request: Request):
     usage_account_count = len(
         _build_usage_accounts_rows(
             usage_summary_data,
-            list_usage_modem_reboot_account_stats() if can_view_reboot_history else [],
+            _usage_reboot_account_stats_excluding_disabled(list_usage_modem_reboot_account_stats()) if can_view_reboot_history else [],
             normalize_usage_modem_reboot_settings(settings),
         )
     )
@@ -11639,6 +11761,7 @@ async def usage_settings_save(request: Request):
     router_state_map = {
         (row.get("router_id") or "").strip(): row for row in router_state_rows if isinstance(row, dict)
     }
+    accounts_ping_router_profiles = _accounts_ping_router_profile_context_for_wan(wan_settings)
     return templates.TemplateResponse(
         "settings_usage.html",
         make_context(
@@ -11651,6 +11774,7 @@ async def usage_settings_save(request: Request):
                 "usage_job": usage_job,
                 "wan_settings": wan_settings,
                 "usage_router_state": router_state_map,
+                "accounts_ping_router_profiles": accounts_ping_router_profiles,
                 "usage_state": {
                     "last_check": format_ts_ph(state.get("last_check_at")),
                     "genieacs_last_refresh": format_ts_ph(state.get("last_genieacs_refresh_at")),
@@ -11721,7 +11845,7 @@ async def usage_test_genieacs(request: Request):
     usage_account_count = len(
         _build_usage_accounts_rows(
             usage_summary_data,
-            list_usage_modem_reboot_account_stats() if can_view_reboot_history else [],
+            _usage_reboot_account_stats_excluding_disabled(list_usage_modem_reboot_account_stats()) if can_view_reboot_history else [],
             normalize_usage_modem_reboot_settings(settings),
         )
     )
@@ -11730,6 +11854,7 @@ async def usage_test_genieacs(request: Request):
     router_state_map = {
         (row.get("router_id") or "").strip(): row for row in router_state_rows if isinstance(row, dict)
     }
+    accounts_ping_router_profiles = _accounts_ping_router_profile_context_for_wan(wan_settings)
     return templates.TemplateResponse(
         "settings_usage.html",
         make_context(
@@ -11742,6 +11867,7 @@ async def usage_test_genieacs(request: Request):
                 "usage_job": usage_job,
                 "wan_settings": wan_settings,
                 "usage_router_state": router_state_map,
+                "accounts_ping_router_profiles": accounts_ping_router_profiles,
                 "usage_state": {
                     "last_check": format_ts_ph(state.get("last_check_at")),
                     "genieacs_last_refresh": format_ts_ph(state.get("last_genieacs_refresh_at")),
@@ -11896,6 +12022,7 @@ async def offline_settings(request: Request):
         (row.get("router_id") or "").strip(): row for row in router_state_rows if isinstance(row, dict)
     }
     wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    accounts_ping_router_profiles = _accounts_ping_router_profile_context_for_wan(wan_settings)
     offline_rule_views = _build_offline_rule_views(state, settings)
     return templates.TemplateResponse(
         "settings_offline.html",
@@ -11913,6 +12040,7 @@ async def offline_settings(request: Request):
                 "offline_rule_tabs": offline_rule_views.get("rules") if isinstance(offline_rule_views.get("rules"), list) else [],
                 "offline_new_view_seconds": _OFFLINE_NEW_VIEW_SECONDS,
                 "wan_settings": wan_settings,
+                "accounts_ping_router_profiles": accounts_ping_router_profiles,
             },
         ),
     )
@@ -12005,7 +12133,7 @@ async def offline_test_radius(request: Request):
     except Exception as exc:
         message = f"Radius test failed: {exc}"
     wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
-    state = get_state("offline_state", {})
+    state = _filter_offline_state_excluding_accounts_ping_disabled(get_state("offline_state", {}))
     offline_state = {
         "last_check": format_ts_ph(state.get("last_check_at")),
         "router_errors": state.get("router_errors") if isinstance(state.get("router_errors"), list) else [],
@@ -12015,6 +12143,7 @@ async def offline_test_radius(request: Request):
     router_state_map = {
         (row.get("router_id") or "").strip(): row for row in router_state_rows if isinstance(row, dict)
     }
+    accounts_ping_router_profiles = _accounts_ping_router_profile_context_for_wan(wan_settings)
     offline_rule_views = _build_offline_rule_views(state, settings)
     return templates.TemplateResponse(
         "settings_offline.html",
@@ -12032,6 +12161,7 @@ async def offline_test_radius(request: Request):
                 "offline_rule_tabs": offline_rule_views.get("rules") if isinstance(offline_rule_views.get("rules"), list) else [],
                 "offline_new_view_seconds": _OFFLINE_NEW_VIEW_SECONDS,
                 "wan_settings": wan_settings,
+                "accounts_ping_router_profiles": accounts_ping_router_profiles,
             },
         ),
     )
@@ -12057,6 +12187,8 @@ def _profile_status_rank(status):
     value = (status or "").strip().lower()
     if value in ("down", "issue"):
         return 5
+    if value == "disabled":
+        return 4
     if value == "monitor":
         return 4
     if value == "tracking":
@@ -12219,6 +12351,7 @@ def _empty_profile_review_profile(window_hours, window_label):
         "pppoe": "",
         "sources": [],
         "accounts_ping": None,
+        "disabled_account": None,
         "optical": None,
         "usage": None,
         "surveillance": None,
@@ -12380,10 +12513,14 @@ def _profile_search_items(query, limit=12):
         router_name = (dev.get("router_name") or "").strip()
         aid = (dev.get("account_id") or "").strip() or _accounts_ping_account_id_for_device(dev)
         st = state_accounts.get(aid) if isinstance(state_accounts.get(aid), dict) else {}
-        last_seen = (st.get("last_check_at") or "").strip()
+        last_seen = (
+            (dev.get("last_profile_seen_at") or dev.get("profile_disabled_since") or dev.get("last_source_seen_at") or "").strip()
+            if bool(dev.get("profile_disabled"))
+            else (st.get("last_check_at") or "").strip()
+        )
         key = f"ppp:{pppoe}|{(dev.get('router_id') or '').strip()}"
-        status = "pending"
-        if last_seen:
+        status = "disabled" if bool(dev.get("profile_disabled")) else "pending"
+        if status != "disabled" and last_seen:
             if not bool(st.get("last_ok")):
                 status = "down"
             else:
@@ -12611,6 +12748,7 @@ def _profile_find_surveillance_entry(entry_map, pppoe="", ip=""):
         for key, entry in entries.items():
             if (key or "").strip().lower() == pppoe_key and isinstance(entry, dict):
                 return entry
+        return None
     ip_value = (ip or "").strip()
     if ip_value:
         for entry in entries.values():
@@ -12622,6 +12760,7 @@ def _profile_find_surveillance_entry(entry_map, pppoe="", ip=""):
 
 
 def _build_profile_review_summary(profile):
+    disabled_account = profile.get("disabled_account") if isinstance(profile.get("disabled_account"), dict) else {}
     surveillance = profile.get("surveillance") if isinstance(profile.get("surveillance"), dict) else {}
     offline = profile.get("offline") if isinstance(profile.get("offline"), dict) else {}
     accounts_ping = profile.get("accounts_ping") if isinstance(profile.get("accounts_ping"), dict) else {}
@@ -12709,7 +12848,10 @@ def _build_profile_review_summary(profile):
     acc_tone = "secondary"
     if accounts_ping:
         acc_status = (accounts_ping.get("status") or "").strip().lower()
-        if acc_status == "down":
+        if acc_status == "disabled":
+            acc_severity = 1
+            acc_tone = "orange"
+        elif acc_status == "down":
             acc_severity = 2
             acc_tone = "red"
         elif acc_status == "monitor":
@@ -12718,22 +12860,29 @@ def _build_profile_review_summary(profile):
         elif acc_status == "stable":
             acc_severity = 0
             acc_tone = "green"
-        acc_value = (
-            f"{float(accounts_ping.get('uptime_pct') or 0.0):.1f}%"
-            if acc_status in ("down", "monitor", "stable")
-            else "Pending"
-        )
-        loss_text = (
-            f"{float(accounts_ping.get('loss_avg')):.1f}% loss"
-            if accounts_ping.get("loss_avg") is not None
-            else "loss n/a"
-        )
-        lat_text = (
-            f"{float(accounts_ping.get('avg_ms_avg')):.1f}ms"
-            if accounts_ping.get("avg_ms_avg") is not None
-            else "latency n/a"
-        )
-        acc_hint = f"{loss_text} · {lat_text}"
+        if acc_status == "disabled":
+            acc_value = "Disabled Account"
+            acc_hint = (
+                f"Profile {accounts_ping.get('disabled_profile') or 'unknown'} · "
+                f"{accounts_ping.get('profile_disabled_since') or 'disabled date n/a'}"
+            )
+        else:
+            acc_value = (
+                f"{float(accounts_ping.get('uptime_pct') or 0.0):.1f}%"
+                if acc_status in ("down", "monitor", "stable")
+                else "Pending"
+            )
+            loss_text = (
+                f"{float(accounts_ping.get('loss_avg')):.1f}% loss"
+                if accounts_ping.get("loss_avg") is not None
+                else "loss n/a"
+            )
+            lat_text = (
+                f"{float(accounts_ping.get('avg_ms_avg')):.1f}ms"
+                if accounts_ping.get("avg_ms_avg") is not None
+                else "latency n/a"
+            )
+            acc_hint = f"{loss_text} · {lat_text}"
     _track(acc_severity)
     module_kpis.append(
         {
@@ -12843,7 +12992,19 @@ def _build_profile_review_summary(profile):
     else:
         overall_summary = "Only partial account identity is available from the current search."
 
-    if surveillance.get("active") and surveillance.get("status") == "level2":
+    if disabled_account:
+        overall_state = "disabled"
+        overall_label = "Disabled Account"
+        overall_tone = "orange"
+        profile_label = disabled_account.get("profile_label") or disabled_account.get("profile") or "unknown"
+        router_label = disabled_account.get("router_label") or "router n/a"
+        disabled_since = disabled_account.get("disabled_since") or "date n/a"
+        overall_summary = f"Excluded from Accounts Ping tracking by disabled PPP profile {profile_label} on {router_label}."
+        recommendation = (
+            f"This account is in Disabled Accounts since {disabled_since}. "
+            "Enable the PPP profile or move the account to an enabled profile before adding it back to Under Surveillance."
+        )
+    elif surveillance.get("active") and surveillance.get("status") == "level2":
         recommendation = "Account is already in Needs Manual Fix. Continue manual-fix validation before closing."
     elif surveillance.get("active"):
         recommendation = "Account is already under surveillance. Use the KPIs below to validate recovery or escalation."
@@ -12857,6 +13018,9 @@ def _build_profile_review_summary(profile):
         recommendation = "Search results are incomplete. Extend the window or confirm the exact PPPoE/IP/device ID."
 
     focus_points = []
+    if disabled_account:
+        focus_points.append("This account is excluded by Accounts Ping profile filtering, so new ACC-Ping checks and surveillance tracking should not continue until the profile is enabled.")
+        focus_points.append(f"Disabled PPP profile: {disabled_account.get('profile_label') or disabled_account.get('profile') or 'unknown'} on {disabled_account.get('router_label') or 'router n/a'}.")
     if surveillance.get("active") and surveillance.get("status") == "level2":
         focus_points.append("Needs Manual Fix workflow is active, so this account already needs manual-fix follow-up.")
     elif surveillance.get("active"):
@@ -12865,7 +13029,9 @@ def _build_profile_review_summary(profile):
         focus_points.append("Telemetry shows this account is a good candidate for Under Surveillance.")
     if offline.get("current"):
         focus_points.append("Check PPPoE active state, secret status, and the last logout record because the account is currently offline.")
-    if (accounts_ping.get("status") or "").strip().lower() == "down":
+    if (accounts_ping.get("status") or "").strip().lower() == "disabled":
+        focus_points.append("ACC-Ping historical data remains available, but the account is no longer part of new ping collection.")
+    elif (accounts_ping.get("status") or "").strip().lower() == "down":
         focus_points.append("ACC-Ping is failing now. Validate reachability from the latest matched IP before closing the case.")
     elif (accounts_ping.get("status") or "").strip().lower() == "monitor":
         focus_points.append("ACC-Ping has elevated loss or latency. Re-run path testing and compare against the selected window.")
@@ -12908,6 +13074,7 @@ def _build_profile_review_summary(profile):
 
 
 def _build_profile_review_status_cards(profile):
+    disabled_account = profile.get("disabled_account") if isinstance(profile.get("disabled_account"), dict) else {}
     accounts_ping = profile.get("accounts_ping") if isinstance(profile.get("accounts_ping"), dict) else {}
     optical = profile.get("optical") if isinstance(profile.get("optical"), dict) else {}
     offline = profile.get("offline") if isinstance(profile.get("offline"), dict) else {}
@@ -12939,11 +13106,31 @@ def _build_profile_review_status_cards(profile):
 
     cards = []
 
+    if disabled_account:
+        disabled_since = disabled_account.get("disabled_since") or "date n/a"
+        profile_label = disabled_account.get("profile_label") or disabled_account.get("profile") or "unknown"
+        router_label = disabled_account.get("router_label") or "router n/a"
+        cards.append(
+            {
+                "key": "disabled_account",
+                "title": "Disabled Account",
+                "value": "Excluded",
+                "tone": "orange",
+                "icon": "ti ti-ban",
+                "hint": f"Since {disabled_since}",
+                "tooltip": f"PPP profile {profile_label} is disabled on {router_label}. Last source seen {disabled_account.get('last_source_seen') or 'n/a'}.",
+            }
+        )
+
     acc_status = (accounts_ping.get("status") or "").strip().lower()
     if not accounts_ping:
         acc_value = "No Data"
         acc_tone = "secondary"
         acc_hint = "No ACC-Ping record matched this profile."
+    elif acc_status == "disabled":
+        acc_value = "Disabled"
+        acc_tone = "orange"
+        acc_hint = f"Profile {accounts_ping.get('disabled_profile') or 'unknown'}"
     elif acc_status == "down":
         acc_value = "Offline"
         acc_tone = "red"
@@ -12956,13 +13143,19 @@ def _build_profile_review_status_cards(profile):
         acc_value = "Online"
         acc_tone = "green" if acc_status == "stable" else "yellow"
         acc_hint = f"{_fmt_percent(accounts_ping.get('uptime_pct'))} uptime"
-    acc_tooltip = " · ".join(
-        [
-            f"Loss { _fmt_percent(accounts_ping.get('loss_avg')) }",
-            f"Latency { _fmt_ms(accounts_ping.get('avg_ms_avg')) }",
-            f"Last check { accounts_ping.get('last_seen') or 'n/a' }",
-        ]
-    ) if accounts_ping else "No ACC-Ping history found for this profile."
+    if accounts_ping and acc_status == "disabled":
+        acc_tooltip = (
+            f"Excluded from new Accounts Ping checks by disabled PPP profile "
+            f"{accounts_ping.get('disabled_profile') or 'unknown'} on {accounts_ping.get('disabled_router') or 'router n/a'}."
+        )
+    else:
+        acc_tooltip = " · ".join(
+            [
+                f"Loss { _fmt_percent(accounts_ping.get('loss_avg')) }",
+                f"Latency { _fmt_ms(accounts_ping.get('avg_ms_avg')) }",
+                f"Last check { accounts_ping.get('last_seen') or 'n/a' }",
+            ]
+        ) if accounts_ping else "No ACC-Ping history found for this profile."
     cards.append(
         {
             "key": "accounts_ping",
@@ -13529,6 +13722,7 @@ async def profile_review(request: Request):
         "pppoe": pppoe,
         "sources": [],
         "accounts_ping": None,
+        "disabled_account": None,
         "optical": None,
         "usage": None,
         "surveillance": None,
@@ -13631,6 +13825,11 @@ async def profile_review(request: Request):
         issue_fail_pct = float(cls.get("issue_rto_pct", ACCOUNTS_PING_DEFAULTS["classification"]["issue_rto_pct"]) or 5.0)
 
         account_ids = _accounts_ping_account_ids_for_pppoe_router(profile["pppoe"], router_id=router_id, state=ping_state)
+        disabled_account = _accounts_ping_disabled_account_info(profile["pppoe"], router_id=router_id, state=ping_state)
+        if not disabled_account and not router_id:
+            disabled_account = _accounts_ping_disabled_account_info(profile["pppoe"], state=ping_state)
+        if disabled_account:
+            profile["disabled_account"] = disabled_account
         account_id = (
             account_ids[0]
             if account_ids
@@ -13658,7 +13857,9 @@ async def profile_review(request: Request):
         uptime_pct = (100.0 - fail_pct) if total else 0.0
 
         status = "pending"
-        if has_recent:
+        if disabled_account:
+            status = "disabled"
+        elif has_recent:
             if not last_ok:
                 status = "down"
             else:
@@ -13677,6 +13878,8 @@ async def profile_review(request: Request):
         chosen_ip = (latest_row.get("ip") or "").strip()
         if not chosen_ip:
             chosen_ip = (st.get("last_ip") or profile.get("ip") or "").strip()
+        if not chosen_ip and disabled_account:
+            chosen_ip = (disabled_account.get("ip") or "").strip()
         if chosen_ip and not profile.get("ip"):
             profile["ip"] = chosen_ip
 
@@ -13707,6 +13910,11 @@ async def profile_review(request: Request):
             "source_missing": bool(st.get("source_missing")),
             "source_missing_since_iso": (st.get("source_missing_since") or "").strip(),
             "source_missing_since": format_ts_ph(st.get("source_missing_since")) if (st.get("source_missing_since") or "").strip() else "",
+            "profile_disabled": bool(disabled_account),
+            "profile_disabled_since_iso": (disabled_account.get("disabled_since_iso") or "").strip() if disabled_account else "",
+            "profile_disabled_since": (disabled_account.get("disabled_since") or "").strip() if disabled_account else "",
+            "disabled_profile": (disabled_account.get("profile_label") or "").strip() if disabled_account else "",
+            "disabled_router": (disabled_account.get("router_label") or "").strip() if disabled_account else "",
             "recent": [
                 {
                     "ts": format_ts_ph(item.get("timestamp")),
@@ -14070,6 +14278,12 @@ async def profile_review(request: Request):
         account_details.append({"label": "Session ID", "value": (profile.get("usage") or {}).get("session_id")})
     if latest_activity_iso:
         account_details.append({"label": "Latest Activity", "value": format_ts_ph(latest_activity_iso)})
+    if profile.get("disabled_account"):
+        disabled_account = profile.get("disabled_account") or {}
+        account_details.append({"label": "Accounts Ping Tracking", "value": "Disabled Account"})
+        account_details.append({"label": "Disabled PPP Profile", "value": disabled_account.get("profile_label") or disabled_account.get("profile") or "unknown"})
+        account_details.append({"label": "Disabled Since", "value": disabled_account.get("disabled_since") or "n/a"})
+        account_details.append({"label": "Disabled Router", "value": disabled_account.get("router_label") or "router n/a"})
     if profile["sources"]:
         account_details.append(
             {
@@ -14970,21 +15184,27 @@ async def accounts_ping_settings(request: Request):
     limit = _parse_table_limit(request.query_params.get("limit"), default=50)
     issues_page = _parse_table_page(request.query_params.get("issues_page"), default=1)
     stable_page = _parse_table_page(request.query_params.get("stable_page"), default=1)
+    disabled_page = _parse_table_page(request.query_params.get("disabled_page"), default=1)
     issues_sort = (request.query_params.get("issues_sort") or "").strip()
     issues_dir = (request.query_params.get("issues_dir") or "").strip().lower()
     stable_sort = (request.query_params.get("stable_sort") or "").strip()
     stable_dir = (request.query_params.get("stable_dir") or "").strip().lower()
     query = (request.query_params.get("q") or "").strip()
+    active_tab = (request.query_params.get("tab") or "status").strip().lower()
+    if active_tab not in ("status", "settings"):
+        active_tab = "status"
+    settings_tab = (request.query_params.get("settings_tab") or "general").strip().lower()
     return render_accounts_ping_response(
         request,
         settings,
         "",
-        "status",
-        "general",
+        active_tab,
+        settings_tab,
         window_hours,
         limit=limit,
         issues_page=issues_page,
         stable_page=stable_page,
+        disabled_page=disabled_page,
         issues_sort=issues_sort,
         issues_dir=issues_dir,
         stable_sort=stable_sort,
@@ -15002,6 +15222,7 @@ def _accounts_ping_tuning_context(settings):
     storage_cfg = normalized.get("storage") if isinstance(normalized.get("storage"), dict) else {}
     mikrotik_cfg = source_cfg.get("mikrotik") if isinstance(source_cfg.get("mikrotik"), dict) else {}
     router_enabled = mikrotik_cfg.get("router_enabled") if isinstance(mikrotik_cfg.get("router_enabled"), dict) else {}
+    profile_enabled = mikrotik_cfg.get("profile_enabled") if isinstance(mikrotik_cfg.get("profile_enabled"), dict) else {}
     source_cfg["mode"] = normalize_accounts_ping_source_mode(source_cfg.get("mode"))
     try:
         refresh_minutes = int(source_cfg.get("refresh_minutes", ACCOUNTS_PING_DEFAULTS["source"]["refresh_minutes"]) or 1)
@@ -15013,6 +15234,17 @@ def _accounts_ping_tuning_context(settings):
         for key, value in router_enabled.items()
         if str(key).strip()
     }
+    normalized_profile_enabled = {}
+    for router_id, profiles in profile_enabled.items():
+        router_key = str(router_id or "").strip()
+        if not router_key or not isinstance(profiles, dict):
+            continue
+        normalized_profile_enabled[router_key] = {
+            str(profile or "").strip(): bool(enabled)
+            for profile, enabled in profiles.items()
+            if str(profile or "").strip()
+        }
+    mikrotik_cfg["profile_enabled"] = normalized_profile_enabled
     source_cfg["mikrotik"] = mikrotik_cfg
 
     try:
@@ -15154,6 +15386,59 @@ async def accounts_ping_series(account_id: str, window: int = 24):
     return _json_no_store({"hours": hours, "series": series})
 
 
+@app.get("/accounts-ping/sparklines", response_class=JSONResponse)
+async def accounts_ping_sparklines(request: Request, window: int = 24):
+    raw_ids = request.query_params.getlist("id")
+    if not raw_ids:
+        raw_ids = [part for part in (request.query_params.get("ids") or "").split(",") if part]
+    account_ids = []
+    seen = set()
+    for raw_id in raw_ids:
+        account_id = (raw_id or "").strip()
+        if not account_id or account_id in seen:
+            continue
+        seen.add(account_id)
+        account_ids.append(account_id)
+        if len(account_ids) >= 150:
+            break
+    if not account_ids:
+        return _json_no_store({"hours": _normalize_wan_window(window), "items": {}})
+
+    hours = _normalize_wan_window(window)
+    since_iso = (datetime.utcnow() - timedelta(hours=hours)).replace(microsecond=0).isoformat() + "Z"
+    state = get_state("accounts_ping_state", {"accounts": {}})
+    state_accounts = state.get("accounts") if isinstance(state.get("accounts"), dict) else {}
+    chosen_ip_map = {}
+    for account_id in account_ids:
+        st = state_accounts.get(account_id) if isinstance(state_accounts.get(account_id), dict) else {}
+        chosen_ip_map[account_id] = (st.get("last_ip") or "").strip()
+
+    spark_values = {account_id: [] for account_id in account_ids}
+    for row in get_accounts_ping_rollups_since(since_iso, account_ids):
+        account_id = (row.get("account_id") or "").strip()
+        if account_id not in spark_values:
+            continue
+        chosen_ip = chosen_ip_map.get(account_id) or ""
+        if chosen_ip and (row.get("ip") or "").strip() != chosen_ip:
+            continue
+        sample_count = int(row.get("sample_count") or 0)
+        ok_count = int(row.get("ok_count") or 0)
+        pct = (ok_count / sample_count) * 100.0 if sample_count > 0 else 0.0
+        spark_values[account_id].append(pct)
+
+    return _json_no_store(
+        {
+            "hours": hours,
+            "items": {
+                account_id: {
+                    "points": _sparkline_points_fixed(values or [0], 0, 100, width=140, height=28),
+                }
+                for account_id, values in spark_values.items()
+            },
+        }
+    )
+
+
 def _parse_iso_z(value):
     if not value:
         return None
@@ -15195,6 +15480,11 @@ ACCOUNTS_PING_CLASSIFICATION_LABELS = {
     "issue_rto_pct": "Issue Fail %",
     "issue_streak": "Issue Streak",
 }
+
+_ACCOUNTS_PING_STATUS_CACHE = {}
+_ACCOUNTS_PING_STATUS_CACHE_LOCK = threading.Lock()
+_ACCOUNTS_PING_STATUS_CACHE_TTL_SECONDS = 30
+_ACCOUNTS_PING_STATUS_CACHE_STALE_SECONDS = 600
 
 
 def _normalize_accounts_ping_classification(raw):
@@ -15271,18 +15561,21 @@ def build_accounts_ping_status(
     limit=50,
     issues_page=1,
     stable_page=1,
+    disabled_page=1,
     issues_sort="",
     issues_dir="",
     stable_sort="",
     stable_dir="",
     query="",
     include_sparklines=True,
+    state=None,
 ):
     window_hours = max(int(window_hours or 24), 1)
     limit = _parse_table_limit(limit, default=50)
     issues_page = _parse_table_page(issues_page, default=1)
     stable_page = _parse_table_page(stable_page, default=1)
-    state = get_state("accounts_ping_state", {"accounts": {}, "devices": []})
+    disabled_page = _parse_table_page(disabled_page, default=1)
+    state = state if isinstance(state, dict) else get_state("accounts_ping_state", {"accounts": {}, "devices": []})
     devices = _accounts_ping_state_devices(state)
     account_map = {}
     for device in devices:
@@ -15297,8 +15590,13 @@ def build_accounts_ping_status(
             "ip": ip,
             "router_id": (device.get("router_id") or "").strip(),
             "router_name": (device.get("router_name") or "").strip(),
+            "profile": (device.get("profile") or "").strip(),
             "source_mode": normalize_accounts_ping_source_mode(device.get("source_mode")),
             "source_missing": bool(device.get("source_missing")),
+            "last_source_seen_at": (device.get("last_source_seen_at") or "").strip(),
+            "profile_disabled": bool(device.get("profile_disabled")),
+            "profile_disabled_since": (device.get("profile_disabled_since") or "").strip(),
+            "last_profile_seen_at": (device.get("last_profile_seen_at") or "").strip(),
         }
 
     account_rows = list(account_map.values())
@@ -15324,6 +15622,7 @@ def build_accounts_ping_status(
 
     issue_rows = []
     stable_rows = []
+    disabled_profile_rows = []
     pending_total = 0
     for account in account_rows:
         aid = account["id"]
@@ -15392,6 +15691,11 @@ def build_accounts_ping_status(
             "ip": chosen_ip or account["ip"],
             "router_id": account.get("router_id") or (st.get("router_id") or "").strip(),
             "router_name": account.get("router_name") or (st.get("router_name") or "").strip(),
+            "profile": account.get("profile") or (st.get("profile") or "").strip(),
+            "profile_disabled": bool(account.get("profile_disabled") or st.get("profile_disabled")),
+            "profile_disabled_since": (account.get("profile_disabled_since") or st.get("profile_disabled_since") or "").strip(),
+            "last_source_seen_at": (account.get("last_source_seen_at") or st.get("last_source_seen_at") or "").strip(),
+            "last_profile_seen_at": (account.get("last_profile_seen_at") or st.get("last_profile_seen_at") or "").strip(),
             "display_name": (
                 f"{account['name']} ({account.get('router_name') or st.get('router_name')})"
                 if (account.get("router_name") or st.get("router_name"))
@@ -15414,6 +15718,14 @@ def build_accounts_ping_status(
             "spark_points_24h_large": "",
             "pending": status == "pending",
         }
+        if row["profile_disabled"]:
+            disabled_since = row.get("profile_disabled_since") or ""
+            row["profile_disabled_since_label"] = format_ts_ph(disabled_since) if disabled_since else "n/a"
+            row["last_source_seen_label"] = format_ts_ph(row.get("last_source_seen_at")) if row.get("last_source_seen_at") else "n/a"
+            row["last_profile_seen_label"] = format_ts_ph(row.get("last_profile_seen_at")) if row.get("last_profile_seen_at") else "n/a"
+            row["reasons"] = [f"Profile disabled: {row.get('profile') or 'unknown'}"]
+            disabled_profile_rows.append(row)
+            continue
         if bool(st.get("source_missing")) and status == "down":
             row["reasons"] = ["Not in active connections"] + [
                 reason for reason in row["reasons"] if reason != "Currently down"
@@ -15463,6 +15775,10 @@ def build_accounts_ping_status(
             return _sort_text(row.get("last_check_at"), desc=desc)
         if key == "reason":
             return _sort_text("; ".join(row.get("reasons") or []), desc=desc)
+        if key == "profile":
+            return _sort_text(row.get("profile"), desc=desc)
+        if key == "disabled_since":
+            return _sort_text(row.get("profile_disabled_since"), desc=desc)
         return _sort_text(row.get("name"), desc=desc)
 
     q = (query or "").strip().lower()
@@ -15473,6 +15789,7 @@ def build_accounts_ping_status(
                     str(row.get("name") or ""),
                     str(row.get("router_name") or ""),
                     str(row.get("ip") or ""),
+                    str(row.get("profile") or ""),
                     " ".join(row.get("reasons") or []),
                 ]
             ).lower()
@@ -15480,6 +15797,7 @@ def build_accounts_ping_status(
 
         issue_rows = [row for row in issue_rows if match_row(row)]
         stable_rows = [row for row in stable_rows if match_row(row)]
+        disabled_profile_rows = [row for row in disabled_profile_rows if match_row(row)]
         pending_total = sum(1 for row in stable_rows if row.get("status") == "pending")
 
     # defaults
@@ -15513,6 +15831,14 @@ def build_accounts_ping_status(
         if stable_sort
         else default_stable
     )
+    disabled_profile_rows = sorted(
+        disabled_profile_rows,
+        key=lambda x: (
+            (x.get("router_name") or "").lower(),
+            (x.get("profile") or "").lower(),
+            (x.get("name") or "").lower(),
+        ),
+    )
 
     stable_up_total = sum(1 for row in stable_rows if row.get("status") == "up")
     down_total = sum(1 for row in issue_rows if row.get("status") == "down")
@@ -15520,6 +15846,7 @@ def build_accounts_ping_status(
 
     paged_issue, issue_page_meta = _paginate_items(issue_rows, issues_page, limit)
     paged_stable, stable_page_meta = _paginate_items(stable_rows, stable_page, limit)
+    paged_disabled, disabled_page_meta = _paginate_items(disabled_profile_rows, disabled_page, limit)
 
     spark_map = {}
     if include_sparklines:
@@ -15558,20 +15885,24 @@ def build_accounts_ping_status(
     window_label = next((label for label, hours in WAN_STATUS_WINDOW_OPTIONS if hours == window_hours), "1D")
     preferred_tab = "issues"
     if str(query or "").strip():
-        if stable_rows and not issue_rows:
+        if disabled_profile_rows and not issue_rows and not stable_rows:
+            preferred_tab = "disabled-profiles"
+        elif stable_rows and not issue_rows:
             preferred_tab = "stable"
         elif issue_rows:
             preferred_tab = "issues"
     return {
-        "total": len(issue_rows) + len(stable_rows),
+        "total": len(issue_rows) + len(stable_rows) + len(disabled_profile_rows),
         "issue_total": len(issue_rows),
         "down_total": down_total,
         "monitor_total": monitor_total,
         "stable_total": stable_up_total,
+        "disabled_profile_total": len(disabled_profile_rows),
         "pending_total": pending_total,
         "preferred_tab": preferred_tab,
         "issue_rows": paged_issue,
         "stable_rows": paged_stable,
+        "disabled_profile_rows": paged_disabled,
         "window_hours": window_hours,
         "window_label": window_label,
         "pagination": {
@@ -15580,6 +15911,7 @@ def build_accounts_ping_status(
             "options": TABLE_PAGE_SIZE_OPTIONS,
             "issues": issue_page_meta,
             "stable": stable_page_meta,
+            "disabled_profiles": disabled_page_meta,
         },
         "sort": {
             "issues": {"key": issues_sort, "dir": "desc" if issues_desc else "asc"},
@@ -15597,8 +15929,151 @@ def build_accounts_ping_status(
     }
 
 
-def _build_accounts_ping_classification_patch_context(settings, window_hours):
-    state = get_state("accounts_ping_state", {})
+def _accounts_ping_status_cache_key(settings, state, window_hours, limit, issues_page, stable_page, disabled_page, issues_sort, issues_dir, stable_sort, stable_dir, query, include_sparklines):
+    classification = _normalize_accounts_ping_classification((settings or {}).get("classification"))
+    devices = state.get("devices") if isinstance(state.get("devices"), list) else []
+    accounts = state.get("accounts") if isinstance(state.get("accounts"), dict) else {}
+    payload = {
+        "classification": classification,
+        "devices_refreshed_at": (state.get("devices_refreshed_at") or "").strip(),
+        "device_count": len(devices),
+        "account_count": len(accounts),
+        "window_hours": int(window_hours or 24),
+        "limit": int(limit or 0),
+        "issues_page": int(issues_page or 1),
+        "stable_page": int(stable_page or 1),
+        "disabled_page": int(disabled_page or 1),
+        "issues_sort": (issues_sort or "").strip(),
+        "issues_dir": (issues_dir or "").strip().lower(),
+        "stable_sort": (stable_sort or "").strip(),
+        "stable_dir": (stable_dir or "").strip().lower(),
+        "query": (query or "").strip(),
+        "sparklines": bool(include_sparklines),
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _refresh_accounts_ping_status_cache(key, settings, state, window_hours, limit, issues_page, stable_page, disabled_page, issues_sort, issues_dir, stable_sort, stable_dir, query, include_sparklines):
+    try:
+        status = build_accounts_ping_status(
+            settings,
+            window_hours,
+            limit=limit,
+            issues_page=issues_page,
+            stable_page=stable_page,
+            disabled_page=disabled_page,
+            issues_sort=issues_sort,
+            issues_dir=issues_dir,
+            stable_sort=stable_sort,
+            stable_dir=stable_dir,
+            query=query,
+            include_sparklines=include_sparklines,
+            state=state,
+        )
+        now = time.monotonic()
+        with _ACCOUNTS_PING_STATUS_CACHE_LOCK:
+            _ACCOUNTS_PING_STATUS_CACHE[key] = {
+                "expires_at": now + _ACCOUNTS_PING_STATUS_CACHE_TTL_SECONDS,
+                "stale_at": now + _ACCOUNTS_PING_STATUS_CACHE_STALE_SECONDS,
+                "refreshing": False,
+                "value": copy.deepcopy(status),
+            }
+    except Exception:
+        with _ACCOUNTS_PING_STATUS_CACHE_LOCK:
+            cached = _ACCOUNTS_PING_STATUS_CACHE.get(key)
+            if cached:
+                cached["refreshing"] = False
+
+
+def _cached_accounts_ping_status(
+    settings,
+    state,
+    _job_status=None,
+    window_hours=24,
+    limit=50,
+    issues_page=1,
+    stable_page=1,
+    disabled_page=1,
+    issues_sort="",
+    issues_dir="",
+    stable_sort="",
+    stable_dir="",
+    query="",
+    include_sparklines=False,
+):
+    now = time.monotonic()
+    key = _accounts_ping_status_cache_key(
+        settings,
+        state,
+        window_hours,
+        limit,
+        issues_page,
+        stable_page,
+        disabled_page,
+        issues_sort,
+        issues_dir,
+        stable_sort,
+        stable_dir,
+        query,
+        include_sparklines,
+    )
+    with _ACCOUNTS_PING_STATUS_CACHE_LOCK:
+        cached = _ACCOUNTS_PING_STATUS_CACHE.get(key)
+        if cached and now < float(cached.get("expires_at") or 0.0):
+            return copy.deepcopy(cached.get("value") or {})
+        if cached and now < float(cached.get("stale_at") or 0.0):
+            if not bool(cached.get("refreshing")):
+                cached["refreshing"] = True
+                threading.Thread(
+                    target=_refresh_accounts_ping_status_cache,
+                    args=(
+                        key,
+                        copy.deepcopy(settings),
+                        copy.deepcopy(state),
+                        window_hours,
+                        limit,
+                        issues_page,
+                        stable_page,
+                        disabled_page,
+                        issues_sort,
+                        issues_dir,
+                        stable_sort,
+                        stable_dir,
+                        query,
+                        include_sparklines,
+                    ),
+                    daemon=True,
+                ).start()
+            return copy.deepcopy(cached.get("value") or {})
+    status = build_accounts_ping_status(
+        settings,
+        window_hours,
+        limit=limit,
+        issues_page=issues_page,
+        stable_page=stable_page,
+        disabled_page=disabled_page,
+        issues_sort=issues_sort,
+        issues_dir=issues_dir,
+        stable_sort=stable_sort,
+        stable_dir=stable_dir,
+        query=query,
+        include_sparklines=include_sparklines,
+        state=state,
+    )
+    with _ACCOUNTS_PING_STATUS_CACHE_LOCK:
+        if len(_ACCOUNTS_PING_STATUS_CACHE) > 32:
+            _ACCOUNTS_PING_STATUS_CACHE.clear()
+        _ACCOUNTS_PING_STATUS_CACHE[key] = {
+            "expires_at": now + _ACCOUNTS_PING_STATUS_CACHE_TTL_SECONDS,
+            "stale_at": now + _ACCOUNTS_PING_STATUS_CACHE_STALE_SECONDS,
+            "refreshing": False,
+            "value": copy.deepcopy(status),
+        }
+    return status
+
+
+def _build_accounts_ping_classification_patch_context(settings, window_hours, state=None):
+    state = state if isinstance(state, dict) else get_state("accounts_ping_state", {})
     saved_classification = _normalize_accounts_ping_classification(settings.get("classification"))
     applied_classification = _accounts_ping_applied_classification(settings, state)
     patch_available = saved_classification != applied_classification
@@ -15623,6 +16098,7 @@ def _build_accounts_ping_classification_patch_context(settings, window_hours):
         limit=0,
         query="",
         include_sparklines=False,
+        state=state,
     )
     after_status = build_accounts_ping_status(
         _accounts_ping_settings_with_classification(settings, saved_classification),
@@ -15630,6 +16106,7 @@ def _build_accounts_ping_classification_patch_context(settings, window_hours):
         limit=0,
         query="",
         include_sparklines=False,
+        state=state,
     )
     before_rows = (before_status.get("issue_rows") or []) + (before_status.get("stable_rows") or [])
     after_rows = (after_status.get("issue_rows") or []) + (after_status.get("stable_rows") or [])
@@ -15699,6 +16176,58 @@ def _build_accounts_ping_classification_patch_context(settings, window_hours):
     return context
 
 
+def _build_accounts_ping_router_profile_context(settings, router_state_map, wan_settings):
+    source_cfg = settings.get("source") if isinstance(settings.get("source"), dict) else {}
+    mikrotik_cfg = source_cfg.get("mikrotik") if isinstance(source_cfg.get("mikrotik"), dict) else {}
+    profile_enabled = mikrotik_cfg.get("profile_enabled") if isinstance(mikrotik_cfg.get("profile_enabled"), dict) else {}
+    routers = wan_settings.get("pppoe_routers") if isinstance(wan_settings.get("pppoe_routers"), list) else []
+    out = {}
+    for router in routers:
+        if not isinstance(router, dict):
+            continue
+        router_id = (router.get("id") or "").strip()
+        if not router_id:
+            continue
+        state_row = router_state_map.get(router_id) if isinstance(router_state_map, dict) else {}
+        state_profiles = state_row.get("profiles") if isinstance(state_row, dict) and isinstance(state_row.get("profiles"), list) else []
+        enabled_map = profile_enabled.get(router_id) if isinstance(profile_enabled.get(router_id), dict) else {}
+        merged = {}
+        for raw_profile in state_profiles:
+            if not isinstance(raw_profile, dict):
+                continue
+            name = (raw_profile.get("name") or "").strip()
+            if not name:
+                continue
+            merged[name] = {
+                "name": name,
+                "enabled": bool(enabled_map.get(name, raw_profile.get("enabled", True))),
+                "active_count": int(raw_profile.get("active_count") or 0),
+                "secret_count": int(raw_profile.get("secret_count") or 0),
+            }
+        for name, enabled in enabled_map.items():
+            profile_name = str(name or "").strip()
+            if not profile_name:
+                continue
+            merged.setdefault(
+                profile_name,
+                {
+                    "name": profile_name,
+                    "enabled": bool(enabled),
+                    "active_count": 0,
+                    "secret_count": 0,
+                },
+            )
+            merged[profile_name]["enabled"] = bool(enabled)
+        profiles = sorted(merged.values(), key=lambda item: (not bool(item.get("enabled")), (item.get("name") or "").lower()))
+        out[router_id] = {
+            "profiles": profiles,
+            "profile_count": len(profiles),
+            "enabled_count": sum(1 for item in profiles if bool(item.get("enabled"))),
+            "disabled_count": sum(1 for item in profiles if not bool(item.get("enabled"))),
+        }
+    return out
+
+
 def render_accounts_ping_response(
     request,
     settings,
@@ -15709,6 +16238,7 @@ def render_accounts_ping_response(
     limit=None,
     issues_page=None,
     stable_page=None,
+    disabled_page=None,
     issues_sort="",
     issues_dir="",
     stable_sort="",
@@ -15720,7 +16250,8 @@ def render_accounts_ping_response(
     if settings_tab not in ("general", "source", "classification", "storage"):
         settings_tab = "general"
     settings, tuning = _accounts_ping_tuning_context(settings)
-    applied_classification = _accounts_ping_applied_classification(settings)
+    ping_state = get_state("accounts_ping_state", {})
+    applied_classification = _accounts_ping_applied_classification(settings, ping_state)
     status_settings = _accounts_ping_settings_with_classification(settings, applied_classification)
     status_map = {item["job_name"]: dict(item) for item in get_job_status()}
     job_status = status_map.get("accounts_ping", {})
@@ -15732,6 +16263,8 @@ def render_accounts_ping_response(
         issues_page = _parse_table_page(request.query_params.get("issues_page"), default=1)
     if stable_page is None:
         stable_page = _parse_table_page(request.query_params.get("stable_page"), default=1)
+    if disabled_page is None:
+        disabled_page = _parse_table_page(request.query_params.get("disabled_page"), default=1)
     if not issues_sort:
         issues_sort = (request.query_params.get("issues_sort") or "").strip()
     if not issues_dir:
@@ -15742,26 +16275,31 @@ def render_accounts_ping_response(
         stable_dir = (request.query_params.get("stable_dir") or "").strip().lower()
     if not query:
         query = (request.query_params.get("q") or "").strip()
-    status = build_accounts_ping_status(
+    status = _cached_accounts_ping_status(
         status_settings,
+        ping_state,
+        job_status,
         window_hours,
         limit=limit,
         issues_page=issues_page,
         stable_page=stable_page,
+        disabled_page=disabled_page,
         issues_sort=issues_sort,
         issues_dir=issues_dir,
         stable_sort=stable_sort,
         stable_dir=stable_dir,
         query=query,
+        include_sparklines=False,
     )
-    classification_patch = _build_accounts_ping_classification_patch_context(settings, window_hours)
-    ping_state = get_state("accounts_ping_state", {})
+    classification_patch = _build_accounts_ping_classification_patch_context(settings, window_hours, state=ping_state)
     router_state_rows = ping_state.get("router_status") if isinstance(ping_state.get("router_status"), list) else []
     router_state_map = {
         (row.get("router_id") or "").strip(): row
         for row in router_state_rows
         if isinstance(row, dict) and (row.get("router_id") or "").strip()
     }
+    wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    router_profile_context = _build_accounts_ping_router_profile_context(settings, router_state_map, wan_settings)
     return templates.TemplateResponse(
         "settings_accounts_ping.html",
         make_context(
@@ -15776,8 +16314,9 @@ def render_accounts_ping_response(
                 "accounts_ping_window_options": WAN_STATUS_WINDOW_OPTIONS,
                 "accounts_ping_tuning": tuning,
                 "can_run_danger_actions": can_run_danger_actions,
-                "wan_settings": normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS)),
+                "wan_settings": wan_settings,
                 "accounts_ping_router_state": router_state_map,
+                "accounts_ping_router_profiles": router_profile_context,
                 "accounts_ping_classification_patch": classification_patch,
             },
         ),
@@ -15789,6 +16328,7 @@ def _accounts_ping_render_params_from_form(request: Request, form) -> dict:
     limit = _parse_table_limit(form.get("limit"), default=_parse_table_limit(request.query_params.get("limit"), default=50))
     issues_page = _parse_table_page(form.get("issues_page"), default=_parse_table_page(request.query_params.get("issues_page"), default=1))
     stable_page = _parse_table_page(form.get("stable_page"), default=_parse_table_page(request.query_params.get("stable_page"), default=1))
+    disabled_page = _parse_table_page(form.get("disabled_page"), default=_parse_table_page(request.query_params.get("disabled_page"), default=1))
     issues_sort = (form.get("issues_sort") or request.query_params.get("issues_sort") or "").strip()
     issues_dir = (form.get("issues_dir") or request.query_params.get("issues_dir") or "").strip().lower()
     stable_sort = (form.get("stable_sort") or request.query_params.get("stable_sort") or "").strip()
@@ -15799,6 +16339,7 @@ def _accounts_ping_render_params_from_form(request: Request, form) -> dict:
         "limit": limit,
         "issues_page": issues_page,
         "stable_page": stable_page,
+        "disabled_page": disabled_page,
         "issues_sort": issues_sort,
         "issues_dir": issues_dir,
         "stable_sort": stable_sort,
@@ -15816,6 +16357,84 @@ def _accounts_ping_state_devices(state=None):
         if device:
             devices.append(device)
     return devices
+
+
+def _accounts_ping_disabled_account_info(pppoe, router_id="", state=None):
+    pppoe_key = (pppoe or "").strip().lower()
+    router_value = (router_id or "").strip()
+    if not pppoe_key:
+        return {}
+    matches = []
+    for device in _accounts_ping_state_devices(state):
+        if not bool(device.get("profile_disabled")):
+            continue
+        if (device.get("pppoe") or device.get("name") or "").strip().lower() != pppoe_key:
+            continue
+        if router_value and (device.get("router_id") or "").strip() != router_value:
+            continue
+        matches.append(device)
+    if not matches:
+        return {}
+
+    def _sort_key(device):
+        return (
+            (device.get("profile_disabled_since") or "").strip(),
+            (device.get("last_profile_seen_at") or "").strip(),
+            (device.get("last_source_seen_at") or "").strip(),
+        )
+
+    matches = sorted(matches, key=_sort_key, reverse=True)
+    primary = matches[0]
+    disabled_since = (primary.get("profile_disabled_since") or "").strip()
+    last_profile_seen = (primary.get("last_profile_seen_at") or "").strip()
+    last_source_seen = (primary.get("last_source_seen_at") or "").strip()
+    profile_names = sorted(
+        {
+            (item.get("profile") or "unknown").strip() or "unknown"
+            for item in matches
+        },
+        key=lambda value: value.lower(),
+    )
+    router_names = sorted(
+        {
+            (item.get("router_name") or item.get("router_id") or "").strip()
+            for item in matches
+            if (item.get("router_name") or item.get("router_id") or "").strip()
+        },
+        key=lambda value: value.lower(),
+    )
+    return {
+        "active": True,
+        "pppoe": (primary.get("pppoe") or primary.get("name") or pppoe or "").strip(),
+        "ip": (primary.get("ip") or "").strip(),
+        "router_id": (primary.get("router_id") or "").strip(),
+        "router_name": (primary.get("router_name") or "").strip(),
+        "profile": (primary.get("profile") or "unknown").strip() or "unknown",
+        "profiles": profile_names,
+        "profile_label": ", ".join(profile_names) if profile_names else "unknown",
+        "router_label": ", ".join(router_names) if router_names else (primary.get("router_name") or primary.get("router_id") or "Router n/a"),
+        "disabled_since_iso": disabled_since,
+        "disabled_since": format_ts_ph(disabled_since) if disabled_since else "",
+        "last_profile_seen_iso": last_profile_seen,
+        "last_profile_seen": format_ts_ph(last_profile_seen) if last_profile_seen else "",
+        "last_source_seen_iso": last_source_seen,
+        "last_source_seen": format_ts_ph(last_source_seen) if last_source_seen else "",
+        "match_count": len(matches),
+    }
+
+
+def _accounts_ping_disabled_account_map(state=None):
+    out = {}
+    for device in _accounts_ping_state_devices(state):
+        if not bool(device.get("profile_disabled")):
+            continue
+        pppoe = (device.get("pppoe") or device.get("name") or "").strip()
+        if not pppoe:
+            continue
+        key = pppoe.lower()
+        if key not in out:
+            out[key] = _accounts_ping_disabled_account_info(pppoe, state=state)
+    return {key: value for key, value in out.items() if isinstance(value, dict) and value.get("active")}
 
 
 def _accounts_ping_account_id_for_pppoe(pppoe, source_mode=ACCOUNTS_PING_SOURCE_SSH_CSV, router_id=""):
@@ -16008,16 +16627,47 @@ def _accounts_ping_settings_from_form(form):
     system_routers = wan_settings.get("pppoe_routers") if isinstance(wan_settings.get("pppoe_routers"), list) else []
     router_count = parse_int(form, "router_count", len(system_routers))
     router_enabled = {}
+    profile_enabled = {}
+    existing_profile_enabled = (
+        existing_mikrotik.get("profile_enabled")
+        if isinstance(existing_mikrotik.get("profile_enabled"), dict)
+        else {}
+    )
     for idx in range(router_count):
         router_id = (form.get(f"router_{idx}_id") or "").strip()
         if not router_id:
             continue
         router_enabled[router_id] = parse_bool(form, f"router_{idx}_enabled")
+        profile_count = parse_int(form, f"router_{idx}_profile_count", 0)
+        if profile_count > 0:
+            profile_enabled[router_id] = {}
+        elif isinstance(existing_profile_enabled.get(router_id), dict):
+            profile_enabled[router_id] = {
+                str(profile).strip(): bool(enabled)
+                for profile, enabled in existing_profile_enabled.get(router_id, {}).items()
+                if str(profile).strip()
+            }
+        for profile_idx in range(profile_count):
+            profile_name = (form.get(f"router_{idx}_profile_{profile_idx}_name") or "").strip()
+            if not profile_name:
+                continue
+            profile_enabled.setdefault(router_id, {})
+            profile_enabled[router_id][profile_name] = parse_bool(form, f"router_{idx}_profile_{profile_idx}_enabled")
     if not router_enabled and isinstance(existing_mikrotik.get("router_enabled"), dict):
         router_enabled = {
             str(key).strip(): bool(value)
             for key, value in existing_mikrotik.get("router_enabled", {}).items()
             if str(key).strip()
+        }
+    if not profile_enabled and isinstance(existing_profile_enabled, dict):
+        profile_enabled = {
+            str(router_id).strip(): {
+                str(profile).strip(): bool(enabled)
+                for profile, enabled in profiles.items()
+                if str(profile).strip()
+            }
+            for router_id, profiles in existing_profile_enabled.items()
+            if str(router_id).strip() and isinstance(profiles, dict)
         }
     return {
         "enabled": parse_bool(form, "enabled"),
@@ -16035,6 +16685,7 @@ def _accounts_ping_settings_from_form(form):
             "refresh_minutes": parse_int(form, "source_refresh_minutes", 15),
             "mikrotik": {
                 "router_enabled": router_enabled,
+                "profile_enabled": profile_enabled,
             },
         },
         "general": {
@@ -16075,6 +16726,9 @@ async def accounts_ping_settings_save(request: Request):
     settings = _accounts_ping_settings_from_form(form)
     settings, tuning = _accounts_ping_tuning_context(settings)
     save_settings("accounts_ping", settings)
+    if settings_tab == "source":
+        state["devices_refreshed_at"] = ""
+        save_state("accounts_ping_state", state)
     render_params = _accounts_ping_render_params_from_form(request, form)
     active_tab = form.get("active_tab", "settings")
     if settings_tab not in ("general", "source", "classification", "storage"):
@@ -16110,11 +16764,14 @@ async def accounts_ping_settings_test(request: Request):
         save_state("accounts_ping_state", state)
         if source_mode == ACCOUNTS_PING_SOURCE_MIKROTIK:
             active_total = sum(1 for item in devices if not bool(item.get("source_missing")))
+            tracked_total = sum(1 for item in devices if not bool(item.get("source_missing")) and not bool(item.get("profile_disabled")))
+            disabled_profile_total = sum(1 for item in devices if bool(item.get("profile_disabled")))
             preserved_total = sum(1 for item in devices if bool(item.get("source_missing")))
             ok_routers = sum(1 for row in router_status if isinstance(row, dict) and bool(row.get("connected")))
             message = (
-                f"MikroTik source OK. Loaded {active_total} active session(s) from {ok_routers} router(s) "
-                f"and kept {preserved_total} inactive tracked session(s) visible as down candidates."
+                f"MikroTik source OK. Loaded {active_total} active session(s) from {ok_routers} router(s). "
+                f"{tracked_total} are trackable, {disabled_profile_total} are disabled accounts, "
+                f"and {preserved_total} inactive tracked session(s) stay visible as down candidates."
             )
         else:
             message = f"SSH OK. Loaded {len(state['devices'])} accounts from CSV."
@@ -17389,6 +18046,52 @@ def _reconcile_surveillance_active_entries(settings, entry_map=None, persist=Fal
     return merged, changed
 
 
+def _auto_remove_disabled_surveillance_accounts(settings, entry_map, disabled_account_map, request=None):
+    if not isinstance(settings, dict) or not isinstance(entry_map, dict) or not isinstance(disabled_account_map, dict):
+        return []
+    removed = []
+    for pppoe, entry in list(entry_map.items()):
+        pppoe_key = (pppoe or "").strip().lower()
+        if not pppoe_key or pppoe_key not in disabled_account_map:
+            continue
+        disabled_info = disabled_account_map.get(pppoe_key) or {}
+        profile_label = (disabled_info.get("profile_label") or disabled_info.get("profile") or "unknown").strip()
+        router_label = (disabled_info.get("router_label") or disabled_info.get("router_name") or "router n/a").strip()
+        note = f"Auto-removed from Under Surveillance because this account is excluded by disabled PPP profile(s): {profile_label} on {router_label}."
+        try:
+            under_seconds, level2_seconds, observe_seconds = _surveillance_stage_seconds(entry)
+            end_surveillance_session(
+                pppoe,
+                "removed",
+                started_at=(entry.get("added_at") or "").strip(),
+                source=(entry.get("source") or "").strip(),
+                ip=(entry.get("ip") or disabled_info.get("ip") or "").strip(),
+                state=(entry.get("status") or "under"),
+                note=note,
+                under_seconds=under_seconds,
+                level2_seconds=level2_seconds,
+                observe_seconds=observe_seconds,
+                create_if_missing=False,
+            )
+        except Exception:
+            pass
+        entry_map.pop(pppoe, None)
+        removed.append({"pppoe": pppoe, "profile": profile_label, "router": router_label})
+    if removed:
+        settings["entries"] = list(entry_map.values())
+        if request is not None:
+            try:
+                _auth_log_event(
+                    request,
+                    action="surveillance.remove_bulk",
+                    resource=f"count={len(removed)}",
+                    details="auto_disabled_accounts=" + ", ".join(item["pppoe"] for item in removed[:20]),
+                )
+            except Exception:
+                pass
+    return removed
+
+
 def _normalize_surveillance_stage_history(raw_items):
     out = []
     if not isinstance(raw_items, list):
@@ -17782,7 +18485,15 @@ async def surveillance_page(request: Request):
     settings = normalize_surveillance_settings(raw)
     entry_map = _surveillance_entry_map(settings)
     entry_map, reconciled_entries = _reconcile_surveillance_active_entries(settings, entry_map=entry_map, persist=False)
-    if settings != raw or reconciled_entries:
+    ping_state = get_state("accounts_ping_state", {"accounts": {}, "devices": []})
+    disabled_account_map = _accounts_ping_disabled_account_map(ping_state)
+    disabled_removed_entries = _auto_remove_disabled_surveillance_accounts(
+        settings,
+        entry_map,
+        disabled_account_map,
+        request=request,
+    )
+    if settings != raw or reconciled_entries or disabled_removed_entries:
         save_settings("surveillance", settings)
 
     active_tab = (request.query_params.get("tab") or "").strip().lower()
@@ -17887,7 +18598,6 @@ async def surveillance_page(request: Request):
     checker_stats_map = _get_surveillance_checker_stats_cached(checker_since_by_account, now_iso)
     optical_latest_map = _get_surveillance_optical_latest_cached(pppoes)
     fixed_cycles_map = get_surveillance_fixed_cycles_map(pppoes, limit_per_pppoe=250)
-    ping_state = get_state("accounts_ping_state", {"accounts": {}})
     ping_accounts = ping_state.get("accounts") if isinstance(ping_state.get("accounts"), dict) else {}
 
     def build_row(pppoe):

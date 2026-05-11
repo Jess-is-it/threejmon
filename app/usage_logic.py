@@ -354,6 +354,8 @@ def build_usage_summary_data(settings, state):
                 "router_id": row.get("router_id") or "",
                 "router_name": row.get("router_name") or row.get("router_id") or "",
                 "address": row.get("address") or "",
+                "profile": row.get("profile") or "",
+                "last_logged_out": row.get("last_logged_out") or "",
                 "uptime": row.get("uptime") or "",
                 "session_id": row.get("session_id") or "",
                 "device_id": device_id,

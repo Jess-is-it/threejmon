@@ -42,9 +42,12 @@ from .db import (
 from .db import delete_accounts_ping_raw_older_than, delete_accounts_ping_rollups_older_than, insert_accounts_ping_result
 from .accounts_ping_sources import (
     ACCOUNTS_PING_SOURCE_MIKROTIK,
+    accounts_ping_profile_enabled_map,
+    build_accounts_ping_disabled_account_lookup,
     build_accounts_ping_account_id,
     build_accounts_ping_account_ids_by_pppoe,
     build_accounts_ping_source_devices,
+    is_accounts_ping_disabled_account,
     normalize_accounts_ping_source_mode,
 )
 from .accounts_missing_support import (
@@ -1381,16 +1384,23 @@ class JobsManager:
                     save_state("accounts_ping_state", state)
 
                 pppoe_ip_map = {}
+                disabled_profile_pppoe = set()
                 for device in devices:
                     pppoe = (device.get("pppoe") or device.get("name") or "").strip()
                     ip = (device.get("ip") or "").strip()
+                    if pppoe and bool(device.get("profile_disabled")):
+                        disabled_profile_pppoe.add(pppoe.lower())
                     if not pppoe or not ip:
+                        continue
+                    if bool(device.get("profile_disabled")):
                         continue
                     pppoe_ip_map[pppoe] = ip
 
                 target_map = {}
                 if cfg.get("enabled"):
                     for device in devices:
+                        if bool(device.get("profile_disabled")):
+                            continue
                         pppoe = (device.get("pppoe") or device.get("name") or "").strip()
                         ip = (device.get("ip") or "").strip()
                         account_id = (device.get("account_id") or "").strip() or account_id_for_target(
@@ -1406,14 +1416,21 @@ class JobsManager:
                             "ip": ip,
                             "router_id": (device.get("router_id") or "").strip(),
                             "router_name": (device.get("router_name") or "").strip(),
+                            "profile": (device.get("profile") or "").strip(),
                             "source_mode": normalize_accounts_ping_source_mode(device.get("source_mode") or source_mode),
                             "source_missing": bool(device.get("source_missing")),
                             "source_missing_since": (device.get("source_missing_since") or "").strip(),
+                            "last_source_seen_at": (device.get("last_source_seen_at") or "").strip(),
+                            "profile_disabled": bool(device.get("profile_disabled")),
+                            "profile_disabled_since": (device.get("profile_disabled_since") or "").strip(),
+                            "last_profile_seen_at": (device.get("last_profile_seen_at") or "").strip(),
                         }
 
                 surv_changed = False
                 if has_surveillance_targets:
                     for pppoe, entry in surv_map.items():
+                        if pppoe.strip().lower() in disabled_profile_pppoe:
+                            continue
                         ip = (entry.get("ip") or "").strip() or pppoe_ip_map.get(pppoe, "")
                         if ip and ip != (entry.get("ip") or "").strip():
                             entry["ip"] = ip
@@ -1780,6 +1797,11 @@ class JobsManager:
                         entry["last_probe_error_at"] = ""
                         entry["router_id"] = (target.get("router_id") or "").strip()
                         entry["router_name"] = (target.get("router_name") or "").strip()
+                        entry["profile"] = (target.get("profile") or "").strip()
+                        entry["last_source_seen_at"] = (target.get("last_source_seen_at") or "").strip()
+                        entry["profile_disabled"] = bool(target.get("profile_disabled"))
+                        entry["profile_disabled_since"] = (target.get("profile_disabled_since") or "").strip()
+                        entry["last_profile_seen_at"] = (target.get("last_profile_seen_at") or "").strip()
                         entry["source_missing"] = source_missing
                         if source_missing:
                             entry["source_missing_since"] = (
@@ -3070,6 +3092,21 @@ class JobsManager:
                         if isinstance(state.get("ppp_active_stats_supported"), dict)
                         else {}
                     )
+                    accounts_ping_cfg = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
+                    accounts_ping_state = get_state("accounts_ping_state", {})
+                    accounts_ping_profile_map = accounts_ping_profile_enabled_map(accounts_ping_cfg)
+                    accounts_ping_disabled_lookup = build_accounts_ping_disabled_account_lookup(
+                        accounts_ping_state.get("devices") if isinstance(accounts_ping_state.get("devices"), list) else []
+                    )
+
+                    def _usage_account_disabled_by_profile(router_id_value, pppoe_value, profile_value=""):
+                        return is_accounts_ping_disabled_account(
+                            router_id_value,
+                            pppoe_value,
+                            profile=profile_value,
+                            profile_enabled=accounts_ping_profile_map,
+                            disabled_lookup=accounts_ping_disabled_lookup,
+                        )
 
                     _safe_update_job_status("usage", last_run_at=utc_now_iso())
                     for router in routers:
@@ -3195,6 +3232,12 @@ class JobsManager:
                         )
                         active_counter_by_id = {r.get(".id"): r for r in active_counter_rows if isinstance(r, dict) and r.get(".id")}
                         active_counter_by_name = {r.get("name"): r for r in active_counter_rows if isinstance(r, dict) and r.get("name")}
+                        secrets = secrets_cache.get(router_id) if isinstance(secrets_cache.get(router_id), list) else []
+                        secrets_by_name = {
+                            (s.get("name") or "").strip().lower(): s
+                            for s in secrets
+                            if isinstance(s, dict) and (s.get("name") or "").strip()
+                        }
 
                         def match_queue_for_row(pppoe, address):
                             pppoe = (pppoe or "").strip()
@@ -3270,6 +3313,10 @@ class JobsManager:
                         for row in router_active:
                             pppoe = (row.get("name") or "").strip()
                             if not pppoe:
+                                continue
+                            secret = secrets_by_name.get(pppoe.lower()) or {}
+                            secret_profile = (secret.get("profile") or "").strip()
+                            if _usage_account_disabled_by_profile(router_id, pppoe, secret_profile):
                                 continue
                             counter_row = active_counter_by_id.get(row.get(".id")) or active_counter_by_name.get(pppoe)
                             addr = (row.get("address") or "").strip()
@@ -3372,6 +3419,10 @@ class JobsManager:
                                 computed_tx_bps=computed_tx_bps,
                             )
                             if norm:
+                                if secret_profile:
+                                    norm["profile"] = secret_profile
+                                if secret.get("last-logged-out"):
+                                    norm["last_logged_out"] = (secret.get("last-logged-out") or "").strip()
                                 if now_in is not None:
                                     norm["bytes_in"] = now_in
                                 if now_out is not None:
@@ -3379,10 +3430,12 @@ class JobsManager:
                                 computed.append(norm)
 
                         # Offline rows from cached secrets
-                        secrets = secrets_cache.get(router_id) if isinstance(secrets_cache.get(router_id), list) else []
                         for secret in secrets:
                             name = (secret.get("name") or "").strip()
                             if not name or name in active_set:
+                                continue
+                            profile = (secret.get("profile") or "").strip()
+                            if _usage_account_disabled_by_profile(router_id, name, profile):
                                 continue
                             offline_rows.append(
                                 {
@@ -3390,7 +3443,7 @@ class JobsManager:
                                     "router_name": router_name,
                                     "pppoe": name,
                                     "disabled": str(secret.get("disabled") or "").strip().lower() in ("yes", "true", "1"),
-                                    "profile": (secret.get("profile") or "").strip(),
+                                    "profile": profile,
                                     "last_logged_out": (secret.get("last-logged-out") or "").strip(),
                                 }
                             )
@@ -3412,7 +3465,13 @@ class JobsManager:
                                     [
                                         1
                                         for s in (secrets or [])
-                                        if (s.get("name") or "").strip() and (s.get("name") or "").strip() not in active_set
+                                        if (s.get("name") or "").strip()
+                                        and (s.get("name") or "").strip() not in active_set
+                                        and not _usage_account_disabled_by_profile(
+                                            router_id,
+                                            (s.get("name") or "").strip(),
+                                            (s.get("profile") or "").strip(),
+                                        )
                                     ]
                                 ),
                                 "error": router_error,
@@ -3708,6 +3767,21 @@ class JobsManager:
             router_errors = []
             active_users_all = set()
             active_users_by_router = {}
+            accounts_ping_cfg = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
+            accounts_ping_state = get_state("accounts_ping_state", {})
+            accounts_ping_profile_map = accounts_ping_profile_enabled_map(accounts_ping_cfg)
+            accounts_ping_disabled_lookup = build_accounts_ping_disabled_account_lookup(
+                accounts_ping_state.get("devices") if isinstance(accounts_ping_state.get("devices"), list) else []
+            )
+
+            def _offline_account_disabled_by_profile(router_id_value, pppoe_value, profile_value=""):
+                return is_accounts_ping_disabled_account(
+                    router_id_value,
+                    pppoe_value,
+                    profile=profile_value,
+                    profile_enabled=accounts_ping_profile_map,
+                    disabled_lookup=accounts_ping_disabled_lookup,
+                )
 
             # Prefer Usage collector cache when available (avoids extra RouterOS logins).
             usage_state = get_state("usage_state", {})
@@ -3797,13 +3871,16 @@ class JobsManager:
                         user = (row.get("pppoe") or row.get("name") or "").strip()
                         if not user:
                             continue
+                        profile = (row.get("profile") or "").strip()
+                        if _offline_account_disabled_by_profile(rid, user, profile):
+                            continue
                         _register_source_account(
                             {
                                 "pppoe": user,
                                 "router_id": rid,
                                 "router_name": (row.get("router_name") or rid or "").strip(),
                                 "mode": "secrets",
-                                "profile": (row.get("profile") or "").strip(),
+                                "profile": profile,
                                 "last_logged_out": (row.get("last_logged_out") or "").strip(),
                                 "radius_status": (row.get("status") or "").strip(),
                                 "ip": (row.get("ip") or row.get("address") or "").strip(),
@@ -3824,6 +3901,11 @@ class JobsManager:
                             row
                             for row in (usage_state.get("offline_rows") if isinstance(usage_state.get("offline_rows"), list) else [])
                             if isinstance(row, dict) and (row.get("router_id") or "").strip() in enabled_router_ids
+                            and not _offline_account_disabled_by_profile(
+                                (row.get("router_id") or "").strip(),
+                                (row.get("pppoe") or row.get("name") or "").strip(),
+                                (row.get("profile") or "").strip(),
+                            )
                         ]
                         for row in offline_rows:
                             _register_source_account({**row, "mode": "secrets"}, source_status="inactive", fallback_mode="secrets")
@@ -3899,9 +3981,18 @@ class JobsManager:
                                 connected = False
 
                         active_set = set()
+                        secrets_by_name = {
+                            (secret.get("name") or "").strip().lower(): secret
+                            for secret in (router_secrets or [])
+                            if isinstance(secret, dict) and (secret.get("name") or "").strip()
+                        }
                         for row in router_active:
                             user = (row.get("name") or "").strip()
                             if not user:
+                                continue
+                            secret = secrets_by_name.get(user.lower()) or {}
+                            profile = (secret.get("profile") or "").strip()
+                            if _offline_account_disabled_by_profile(router_id, user, profile):
                                 continue
                             _register_source_account(
                                 {
@@ -3909,6 +4000,8 @@ class JobsManager:
                                     "router_id": router_id,
                                     "router_name": router_name,
                                     "mode": "secrets",
+                                    "profile": profile,
+                                    "last_logged_out": (secret.get("last-logged-out") or "").strip(),
                                     "ip": (row.get("address") or "").strip(),
                                 },
                                 source_status="active",
@@ -3921,6 +4014,9 @@ class JobsManager:
                         if mode == "secrets":
                             for secret in router_secrets:
                                 name = (secret.get("name") or "").strip()
+                                profile = (secret.get("profile") or "").strip()
+                                if _offline_account_disabled_by_profile(router_id, name, profile):
+                                    continue
                                 _register_source_account(
                                     {
                                         "pppoe": name,
@@ -3928,7 +4024,7 @@ class JobsManager:
                                         "router_name": router_name,
                                         "mode": "secrets",
                                         "disabled": str(secret.get("disabled") or "").strip().lower() in ("yes", "true", "1"),
-                                        "profile": (secret.get("profile") or "").strip(),
+                                        "profile": profile,
                                         "last_logged_out": (secret.get("last-logged-out") or "").strip(),
                                     },
                                     source_status="active" if name in active_set else "inactive",
@@ -3942,7 +4038,7 @@ class JobsManager:
                                         "router_name": router_name,
                                         "pppoe": name,
                                         "disabled": str(secret.get("disabled") or "").strip().lower() in ("yes", "true", "1"),
-                                        "profile": (secret.get("profile") or "").strip(),
+                                        "profile": profile,
                                         "last_logged_out": (secret.get("last-logged-out") or "").strip(),
                                     }
                                 )
@@ -3985,6 +4081,8 @@ class JobsManager:
                                 radius_accounts = {}
 
                         for user, status in (radius_accounts or {}).items():
+                            if _offline_account_disabled_by_profile("", user, ""):
+                                continue
                             _register_source_account(
                                 {
                                     "pppoe": user,

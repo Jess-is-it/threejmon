@@ -547,6 +547,20 @@
                     </div>
                     <a class="btn btn-outline-primary" href="/settings/system?tab=routers&routers_tab=mikrotik-routers#sys-routers-mikrotik">Manage Routers</a>
                   </div>
+                  <div class="alert alert-info mb-3">
+                    <div class="d-flex align-items-start justify-content-between gap-3 flex-wrap">
+                      <div class="d-flex align-items-start gap-2">
+                        <i class="ti ti-info-circle mt-1"></i>
+                        <div>
+                          <div class="fw-semibold">PPP profile tracking is controlled in Accounts Ping.</div>
+                          <div class="small">
+                            Disabled profiles are shown here for reference only. Offline will not track PPP accounts that belong to a disabled Accounts Ping profile.
+                          </div>
+                        </div>
+                      </div>
+                      <a class="btn btn-outline-primary btn-sm ms-auto" href="/settings/accounts-ping?tab=settings&settings_tab=source#accounts-ping-source">Edit Profiles</a>
+                    </div>
+                  </div>
                   {% set routers = (wan_settings.pppoe_routers or []) %}
                   <input type="hidden" name="router_count" value="{{ routers|length }}" />
                   {% if routers and routers|length %}
@@ -560,6 +574,7 @@
                             <th>User</th>
                             <th>TLS</th>
                             <th title="When enabled, this router is included in Offline polling.">Offline Enabled</th>
+                            <th title="Read-only Accounts Ping PPP profile selection used to exclude accounts from Offline tracking.">PPP Profiles</th>
                             <th>Status</th>
                           </tr>
                         </thead>
@@ -569,6 +584,8 @@
                             {% set enabled_map = settings.mikrotik.router_enabled if settings.mikrotik.router_enabled is defined else {} %}
                             {% set offline_enabled = enabled_map.get(rid, True) %}
                             {% set st = offline_router_state.get(rid, {}) if offline_router_state is defined else {} %}
+                            {% set profile_ctx = accounts_ping_router_profiles.get(rid, {}) if accounts_ping_router_profiles is defined else {} %}
+                            {% set profile_rows = profile_ctx.profiles or [] %}
                             <tr>
                               <td class="fw-semibold">
                                 {{ r.name or r.id }}
@@ -590,6 +607,12 @@
                                 </label>
                               </td>
                               <td>
+                                <div class="d-flex flex-wrap gap-1">
+                                  <span class="badge bg-green-lt text-green">Enabled: {{ profile_ctx.enabled_count or 0 }}</span>
+                                  <span class="badge bg-orange-lt text-orange">Disabled: {{ profile_ctx.disabled_count or 0 }}</span>
+                                </div>
+                              </td>
+                              <td>
                                 {% if not offline_enabled %}
                                   <span class="badge bg-secondary-lt">Disabled</span>
                                 {% elif not st %}
@@ -605,6 +628,39 @@
                                 {% endif %}
                               </td>
                             </tr>
+                            {% if profile_rows %}
+                              <tr>
+                                <td colspan="8" class="bg-light">
+                                  <div class="border rounded bg-white p-3">
+                                    <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+                                      <div>
+                                        <div class="fw-semibold">PPP Profiles · {{ r.name or r.id }}</div>
+                                        <div class="text-muted small">Read-only view inherited from Accounts Ping. Disabled profiles are excluded from Offline tracking.</div>
+                                      </div>
+                                    </div>
+                                    <div class="row g-2">
+                                      {% for profile in profile_rows %}
+                                        <div class="col-md-6 col-xl-4">
+                                          <div class="border rounded p-2 h-100">
+                                            <div class="d-flex align-items-start justify-content-between gap-2">
+                                              <div class="text-truncate">
+                                                <div class="fw-semibold text-truncate" title="{{ profile.name }}">{{ profile.name }}</div>
+                                                <div class="text-muted small">Active: {{ profile.active_count or 0 }} · Secrets: {{ profile.secret_count or 0 }}</div>
+                                              </div>
+                                              {% if profile.enabled %}
+                                                <span class="badge bg-green-lt text-green" title="Enabled in Accounts Ping"><i class="ti ti-check"></i></span>
+                                              {% else %}
+                                                <span class="badge bg-red-lt text-red" title="Disabled in Accounts Ping"><i class="ti ti-x"></i></span>
+                                              {% endif %}
+                                            </div>
+                                          </div>
+                                        </div>
+                                      {% endfor %}
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
+                            {% endif %}
                           {% endfor %}
                         </tbody>
                       </table>

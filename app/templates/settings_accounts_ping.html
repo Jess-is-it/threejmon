@@ -134,6 +134,48 @@
     height: 30px;
   }
 
+  .accounts-ping-router-source-row {
+    cursor: pointer;
+  }
+
+  .accounts-ping-router-source-row:hover > td {
+    background: color-mix(in srgb, var(--tblr-primary-lt) 38%, transparent);
+  }
+
+  .accounts-ping-profile-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+
+  .accounts-ping-profile-toggle[aria-expanded="true"] {
+    color: var(--tblr-blue) !important;
+    background-color: var(--tblr-blue-lt) !important;
+  }
+
+  .accounts-ping-source-expand-col {
+    width: 3rem;
+    min-width: 3rem;
+    text-align: right;
+  }
+
+  .accounts-ping-source-expand-col .accounts-ping-profile-toggle {
+    margin-left: auto;
+  }
+
+  .accounts-ping-router-enable-switch {
+    display: inline-flex;
+    width: auto;
+    min-height: 0;
+    padding-left: 0;
+  }
+
+  .accounts-ping-router-enable-switch .form-check-input {
+    margin-left: 0;
+    cursor: pointer;
+  }
+
   @media (max-width: 1600px) {
     .accounts-ping-status-table .ap-priority-11,
     .accounts-ping-status-table .ap-priority-10 {
@@ -234,6 +276,7 @@
 	            <span class="badge bg-blue-lt">Total: {{ accounts_ping_status.total }}</span>
 	            <span class="badge bg-red-lt">Issues: {{ accounts_ping_status.issue_total }}</span>
 	            <span class="badge bg-green-lt">Stable: {{ accounts_ping_status.stable_total }}</span>
+              <span class="badge bg-orange-lt text-orange">Disabled Accounts: {{ accounts_ping_status.disabled_profile_total }}</span>
               <span class="badge bg-secondary-lt">Pending: {{ accounts_ping_status.pending_total }}</span>
               {% set accounts_ping_limit_param = 'all' if accounts_ping_status.pagination.limit == 0 else accounts_ping_status.pagination.limit %}
               <div class="dropdown">
@@ -268,6 +311,7 @@
               {% if settings.source.mode == 'mikrotik_routers' %}
                 Accounts Ping uses the selected MikroTik routers to read `/ppp/active` and ping each Active Connections Address.
                 If a tracked session disappears from the active list, it stays visible and is treated as down until it returns.
+                PPP accounts using disabled profiles are kept in history but excluded from new ping checks.
               {% else %}
                 Accounts Ping uses SSH to pull the ShapedDevices CSV and pings each IPv4 entry.
               {% endif %}
@@ -285,6 +329,9 @@
           </li>
           <li class="nav-item">
             <a href="#accounts-ping-stable" class="nav-link {% if accounts_ping_preferred_tab == 'stable' %}active{% endif %}{% if accounts_ping_has_query and accounts_ping_status.stable_total %} threej-search-hit-tab{% endif %}" data-bs-toggle="tab">Stable Connections <span class="badge bg-secondary-lt text-secondary ms-2">{{ accounts_ping_status.stable_total }}</span></a>
+          </li>
+          <li class="nav-item">
+            <a href="#accounts-ping-disabled-profiles" class="nav-link {% if accounts_ping_preferred_tab == 'disabled-profiles' %}active{% endif %}{% if accounts_ping_has_query and accounts_ping_status.disabled_profile_total %} threej-search-hit-tab{% endif %}" data-bs-toggle="tab">Disabled Accounts <span class="badge bg-orange-lt text-orange ms-2">{{ accounts_ping_status.disabled_profile_total }}</span></a>
           </li>
           <li class="nav-item ms-auto">
             <div class="px-2 py-2">
@@ -350,7 +397,7 @@
 	                                data-bs-toggle="modal"
 	                                data-bs-target="#accounts-ping-spark-modal">
 	                          <svg class="accounts-ping-sparkline" width="96" height="30" viewBox="0 0 140 28" preserveAspectRatio="none" aria-hidden="true">
-	                            <polyline fill="none" stroke="#206bc4" stroke-width="2" points="{{ row.spark_points_24h }}" />
+	                            <polyline fill="none" stroke="#206bc4" stroke-width="2" points="{{ row.spark_points_24h or '' }}" data-sparkline-polyline data-account-id="{{ row.id }}" />
 	                          </svg>
 	                        </button>
 	                      </td>
@@ -416,10 +463,10 @@
                     <span class="text-muted small">Page {{ meta.page }} of {{ meta.pages }}</span>
                     <ul class="pagination pagination-sm mb-0">
                       <li class="page-item {% if not meta.has_prev %}disabled{% endif %}">
-	                        <a class="page-link" href="/settings/accounts-ping?window={{ accounts_ping_status.window_hours }}&limit={{ accounts_ping_limit_param }}&issues_page={{ prev_page }}&stable_page={{ accounts_ping_status.pagination.stable.page }}&issues_sort={{ accounts_ping_status.sort.issues.key }}&issues_dir={{ accounts_ping_status.sort.issues.dir }}&stable_sort={{ accounts_ping_status.sort.stable.key }}&stable_dir={{ accounts_ping_status.sort.stable.dir }}&q={{ accounts_ping_status.query|urlencode }}#accounts-ping-issues">Prev</a>
+	                        <a class="page-link" href="/settings/accounts-ping?window={{ accounts_ping_status.window_hours }}&limit={{ accounts_ping_limit_param }}&issues_page={{ prev_page }}&stable_page={{ accounts_ping_status.pagination.stable.page }}&disabled_page={{ accounts_ping_status.pagination.disabled_profiles.page }}&issues_sort={{ accounts_ping_status.sort.issues.key }}&issues_dir={{ accounts_ping_status.sort.issues.dir }}&stable_sort={{ accounts_ping_status.sort.stable.key }}&stable_dir={{ accounts_ping_status.sort.stable.dir }}&q={{ accounts_ping_status.query|urlencode }}#accounts-ping-issues">Prev</a>
 	                      </li>
 	                      <li class="page-item {% if not meta.has_next %}disabled{% endif %}">
-	                        <a class="page-link" href="/settings/accounts-ping?window={{ accounts_ping_status.window_hours }}&limit={{ accounts_ping_limit_param }}&issues_page={{ next_page }}&stable_page={{ accounts_ping_status.pagination.stable.page }}&issues_sort={{ accounts_ping_status.sort.issues.key }}&issues_dir={{ accounts_ping_status.sort.issues.dir }}&stable_sort={{ accounts_ping_status.sort.stable.key }}&stable_dir={{ accounts_ping_status.sort.stable.dir }}&q={{ accounts_ping_status.query|urlencode }}#accounts-ping-issues">Next</a>
+	                        <a class="page-link" href="/settings/accounts-ping?window={{ accounts_ping_status.window_hours }}&limit={{ accounts_ping_limit_param }}&issues_page={{ next_page }}&stable_page={{ accounts_ping_status.pagination.stable.page }}&disabled_page={{ accounts_ping_status.pagination.disabled_profiles.page }}&issues_sort={{ accounts_ping_status.sort.issues.key }}&issues_dir={{ accounts_ping_status.sort.issues.dir }}&stable_sort={{ accounts_ping_status.sort.stable.key }}&stable_dir={{ accounts_ping_status.sort.stable.dir }}&q={{ accounts_ping_status.query|urlencode }}#accounts-ping-issues">Next</a>
 	                      </li>
                     </ul>
                   </div>
@@ -476,7 +523,7 @@
 		                                  data-bs-toggle="modal"
 		                                  data-bs-target="#accounts-ping-spark-modal">
 		                            <svg class="accounts-ping-sparkline" width="96" height="30" viewBox="0 0 140 28" preserveAspectRatio="none" aria-hidden="true">
-		                              <polyline fill="none" stroke="#2fb344" stroke-width="2" points="{{ row.spark_points_24h }}" />
+		                              <polyline fill="none" stroke="#2fb344" stroke-width="2" points="{{ row.spark_points_24h or '' }}" data-sparkline-polyline data-account-id="{{ row.id }}" />
 		                            </svg>
 			                          </button>
                               {% endif %}
@@ -539,10 +586,90 @@
                     <span class="text-muted small">Page {{ meta.page }} of {{ meta.pages }}</span>
                     <ul class="pagination pagination-sm mb-0">
                       <li class="page-item {% if not meta.has_prev %}disabled{% endif %}">
-	                        <a class="page-link" href="/settings/accounts-ping?window={{ accounts_ping_status.window_hours }}&limit={{ accounts_ping_limit_param }}&issues_page={{ accounts_ping_status.pagination.issues.page }}&stable_page={{ prev_page }}&issues_sort={{ accounts_ping_status.sort.issues.key }}&issues_dir={{ accounts_ping_status.sort.issues.dir }}&stable_sort={{ accounts_ping_status.sort.stable.key }}&stable_dir={{ accounts_ping_status.sort.stable.dir }}&q={{ accounts_ping_status.query|urlencode }}#accounts-ping-stable">Prev</a>
+	                        <a class="page-link" href="/settings/accounts-ping?window={{ accounts_ping_status.window_hours }}&limit={{ accounts_ping_limit_param }}&issues_page={{ accounts_ping_status.pagination.issues.page }}&stable_page={{ prev_page }}&disabled_page={{ accounts_ping_status.pagination.disabled_profiles.page }}&issues_sort={{ accounts_ping_status.sort.issues.key }}&issues_dir={{ accounts_ping_status.sort.issues.dir }}&stable_sort={{ accounts_ping_status.sort.stable.key }}&stable_dir={{ accounts_ping_status.sort.stable.dir }}&q={{ accounts_ping_status.query|urlencode }}#accounts-ping-stable">Prev</a>
 	                      </li>
 	                      <li class="page-item {% if not meta.has_next %}disabled{% endif %}">
-	                        <a class="page-link" href="/settings/accounts-ping?window={{ accounts_ping_status.window_hours }}&limit={{ accounts_ping_limit_param }}&issues_page={{ accounts_ping_status.pagination.issues.page }}&stable_page={{ next_page }}&issues_sort={{ accounts_ping_status.sort.issues.key }}&issues_dir={{ accounts_ping_status.sort.issues.dir }}&stable_sort={{ accounts_ping_status.sort.stable.key }}&stable_dir={{ accounts_ping_status.sort.stable.dir }}&q={{ accounts_ping_status.query|urlencode }}#accounts-ping-stable">Next</a>
+	                        <a class="page-link" href="/settings/accounts-ping?window={{ accounts_ping_status.window_hours }}&limit={{ accounts_ping_limit_param }}&issues_page={{ accounts_ping_status.pagination.issues.page }}&stable_page={{ next_page }}&disabled_page={{ accounts_ping_status.pagination.disabled_profiles.page }}&issues_sort={{ accounts_ping_status.sort.issues.key }}&issues_dir={{ accounts_ping_status.sort.issues.dir }}&stable_sort={{ accounts_ping_status.sort.stable.key }}&stable_dir={{ accounts_ping_status.sort.stable.dir }}&q={{ accounts_ping_status.query|urlencode }}#accounts-ping-stable">Next</a>
+	                      </li>
+                    </ul>
+                  </div>
+                {% endif %}
+              </div>
+	          </div>
+
+	          <div class="tab-pane {% if accounts_ping_preferred_tab == 'disabled-profiles' %}active{% endif %}" id="accounts-ping-disabled-profiles">
+	            <div class="alert alert-warning">
+	              <div class="d-flex align-items-start">
+	                <span class="me-2"><i class="ti ti-info-circle"></i></span>
+	                <div>
+	                  These accounts still have historical Accounts Ping data, but their current PPP profile is disabled in the Source settings. They are excluded from new ping checks until the profile is enabled again or the account moves to an enabled PPP profile.
+	                </div>
+	              </div>
+	            </div>
+	            <div class="table-responsive accounts-ping-status-table-wrap">
+	              <table class="table table-vcenter rto-table accounts-ping-status-table">
+	                <thead>
+		                  <tr>
+		                    <th>Customer</th>
+		                    <th>Router</th>
+		                    <th>PPP Profile</th>
+		                    <th>IPv4</th>
+		                    <th>Last Check</th>
+		                    <th>Last Source Seen</th>
+		                    <th>Disabled Since</th>
+		                    <th>Reason</th>
+		                    <th class="text-end">Actions</th>
+		                  </tr>
+	                </thead>
+	                <tbody>
+		                  {% for row in accounts_ping_status.disabled_profile_rows %}
+		                    <tr class="accounts-ping-row" data-search="{{ (row.name ~ ' ' ~ (row.router_name or '') ~ ' ' ~ row.ip ~ ' ' ~ (row.profile or ''))|lower }}">
+		                      <td>{{ accounts_ping_label(row.name, row.router_name) }}</td>
+		                      <td class="text-muted">{{ row.router_name or row.router_id or "n/a" }}</td>
+		                      <td><span class="badge bg-orange-lt text-orange">{{ row.profile or "unknown" }}</span></td>
+		                      <td>{{ row.ip or "n/a" }}</td>
+		                      <td><span class="accounts-ping-cell-truncate" title="{{ row.last_check }}">{{ row.last_check }}</span></td>
+		                      <td class="text-muted">{{ row.last_source_seen_label or "n/a" }}</td>
+		                      <td class="text-muted">{{ row.profile_disabled_since_label or "n/a" }}</td>
+		                      <td>
+		                        {% set reason_text = row.reasons|join('; ') %}
+		                        <div class="text-muted small accounts-ping-cell-truncate" title="{{ reason_text }}">{{ reason_text }}</div>
+		                      </td>
+		                      <td class="text-end">
+		                        {% if can_profile_review %}
+		                          <a class="badge bg-azure-lt text-azure header-icon-badge"
+		                             href="/profile-review?pppoe={{ row.name|urlencode }}{% if row.ip %}&ip={{ row.ip|urlencode }}{% endif %}"
+		                             target="_blank"
+		                             rel="noopener"
+		                             title="Profile Review"
+		                             aria-label="Profile Review">
+		                            <i class="ti ti-user"></i>
+		                          </a>
+		                        {% endif %}
+		                      </td>
+		                    </tr>
+	                  {% else %}
+                      <tr>
+                        <td colspan="9" class="text-muted">No accounts are currently excluded by disabled PPP profiles.</td>
+                      </tr>
+	                  {% endfor %}
+	                </tbody>
+	              </table>
+	            </div>
+              {% set meta = accounts_ping_status.pagination.disabled_profiles %}
+              <div class="d-flex flex-wrap align-items-center justify-content-between mt-2 gap-2">
+                <div class="text-muted small">Showing {{ meta.start }}–{{ meta.end }} of {{ meta.total }}</div>
+                {% if meta.pages > 1 %}
+                  {% set prev_page = meta.page - 1 if meta.page > 1 else 1 %}
+                  {% set next_page = meta.page + 1 if meta.page < meta.pages else meta.pages %}
+                  <div class="d-flex align-items-center gap-2">
+                    <span class="text-muted small">Page {{ meta.page }} of {{ meta.pages }}</span>
+                    <ul class="pagination pagination-sm mb-0">
+                      <li class="page-item {% if not meta.has_prev %}disabled{% endif %}">
+	                        <a class="page-link" href="/settings/accounts-ping?window={{ accounts_ping_status.window_hours }}&limit={{ accounts_ping_limit_param }}&issues_page={{ accounts_ping_status.pagination.issues.page }}&stable_page={{ accounts_ping_status.pagination.stable.page }}&disabled_page={{ prev_page }}&issues_sort={{ accounts_ping_status.sort.issues.key }}&issues_dir={{ accounts_ping_status.sort.issues.dir }}&stable_sort={{ accounts_ping_status.sort.stable.key }}&stable_dir={{ accounts_ping_status.sort.stable.dir }}&q={{ accounts_ping_status.query|urlencode }}#accounts-ping-disabled-profiles">Prev</a>
+	                      </li>
+	                      <li class="page-item {% if not meta.has_next %}disabled{% endif %}">
+	                        <a class="page-link" href="/settings/accounts-ping?window={{ accounts_ping_status.window_hours }}&limit={{ accounts_ping_limit_param }}&issues_page={{ accounts_ping_status.pagination.issues.page }}&stable_page={{ accounts_ping_status.pagination.stable.page }}&disabled_page={{ next_page }}&issues_sort={{ accounts_ping_status.sort.issues.key }}&issues_dir={{ accounts_ping_status.sort.issues.dir }}&stable_sort={{ accounts_ping_status.sort.stable.key }}&stable_dir={{ accounts_ping_status.sort.stable.dir }}&q={{ accounts_ping_status.query|urlencode }}#accounts-ping-disabled-profiles">Next</a>
 	                      </li>
                     </ul>
                   </div>
@@ -583,6 +710,7 @@
           <input type="hidden" name="limit" value="{{ accounts_ping_status.pagination.limit }}" />
           <input type="hidden" name="issues_page" value="{{ accounts_ping_status.pagination.issues.page }}" />
           <input type="hidden" name="stable_page" value="{{ accounts_ping_status.pagination.stable.page }}" />
+          <input type="hidden" name="disabled_page" value="{{ accounts_ping_status.pagination.disabled_profiles.page }}" />
           <input type="hidden" name="issues_sort" value="{{ accounts_ping_status.sort.issues.key }}" />
           <input type="hidden" name="issues_dir" value="{{ accounts_ping_status.sort.issues.dir }}" />
           <input type="hidden" name="stable_sort" value="{{ accounts_ping_status.sort.stable.key }}" />
@@ -702,6 +830,7 @@
                       <div>
                         Accounts Ping uses the selected MikroTik routers to read `/ppp/active` and ping each Active Connections Address.
                         When a tracked session disappears from the active list, it stays on the page and is treated as down until it returns.
+                        Expand a router below to enable or disable specific PPP profiles. Disabled profiles stop future tracking without deleting existing data.
                       </div>
                     </div>
                   </div>
@@ -784,19 +913,29 @@
                           <th>User</th>
                           <th>TLS</th>
                           <th title="When enabled, this router is included when Accounts Ping loads `/ppp/active`.">Accounts Ping Enabled</th>
+                          <th title="PPP profiles loaded from this MikroTik router. Disabled profiles keep old data but stop new tracking.">PPP Profiles</th>
                           <th>Status</th>
+                          <th class="accounts-ping-source-expand-col"></th>
                         </tr>
                       </thead>
                       <tbody>
                         {% for r in (wan_settings.pppoe_routers or []) %}
+                          {% set router_loop_index = loop.index0 %}
                           {% set rid = (r.id or '') %}
                           {% set enabled_map = settings.source.mikrotik.router_enabled if settings.source.mikrotik is defined and settings.source.mikrotik.router_enabled is defined else {} %}
                           {% set router_enabled = enabled_map.get(rid, True) %}
                           {% set st = accounts_ping_router_state.get(rid, {}) if accounts_ping_router_state is defined else {} %}
-                          <tr>
+                          {% set profile_ctx = accounts_ping_router_profiles.get(rid, {}) if accounts_ping_router_profiles is defined else {} %}
+                          {% set profile_rows = profile_ctx.profiles or [] %}
+                          <tr class="accounts-ping-router-source-row"
+                              data-accounts-ping-profile-toggle="#accounts-ping-router-profiles-{{ loop.index0 }}"
+                              role="button"
+                              tabindex="0"
+                              aria-controls="accounts-ping-router-profiles-{{ loop.index0 }}">
                             <td class="fw-semibold">
                               {{ r.name or r.id }}
                               <input type="hidden" name="router_{{ loop.index0 }}_id" value="{{ r.id }}" />
+                              <input type="hidden" name="router_{{ loop.index0 }}_profile_count" value="{{ profile_rows|length }}" />
                             </td>
                             <td class="text-muted">{{ r.host }}</td>
                             <td class="text-muted">{{ r.port or 8728 }}</td>
@@ -809,9 +948,15 @@
                               {% endif %}
                             </td>
                             <td>
-                              <label class="form-check form-switch m-0">
-                                <input class="form-check-input" type="checkbox" name="router_{{ loop.index0 }}_enabled" {% if router_enabled %}checked{% endif %} />
-                              </label>
+                              <div class="form-check form-switch m-0 accounts-ping-router-enable-switch">
+                                <input class="form-check-input" type="checkbox" name="router_{{ loop.index0 }}_enabled" {% if router_enabled %}checked{% endif %} aria-label="Enable Accounts Ping for {{ r.name or r.id }}" />
+                              </div>
+                            </td>
+                            <td>
+                              <div class="d-flex flex-wrap gap-1">
+                                <span class="badge bg-green-lt text-green" title="PPP profiles currently enabled for Accounts Ping tracking.">Enabled: {{ profile_ctx.enabled_count or 0 }}</span>
+                                <span class="badge bg-orange-lt text-orange" title="PPP profiles excluded from new Accounts Ping tracking.">Disabled: {{ profile_ctx.disabled_count or 0 }}</span>
+                              </div>
                             </td>
                             <td>
                               {% if not st %}
@@ -822,12 +967,79 @@
                                   <span class="text-muted small">{{ st.error }}</span>
                                 {% elif st.connected %}
                                   <span class="badge bg-green-lt">OK</span>
-                                  <span class="text-muted small">Active: {{ st.active_count or 0 }}</span>
+                                  <span class="text-muted small">Trackable: {{ st.tracked_count if st.tracked_count is defined else (st.active_count or 0) }} / Active: {{ st.active_count or 0 }}</span>
+                                  {% if st.disabled_profile_count %}
+                                    <span class="badge bg-orange-lt text-orange ms-1" title="Active or preserved accounts excluded by disabled PPP profiles.">{{ st.disabled_profile_count }} disabled account{% if st.disabled_profile_count != 1 %}s{% endif %}</span>
+                                  {% endif %}
                                 {% else %}
                                   <span class="badge bg-yellow-lt">Pending</span>
                                 {% endif %}
+                                {% if st.profile_error %}
+                                  <div class="text-warning small">Profiles: {{ st.profile_error }}</div>
+                                {% endif %}
+                                {% if st.secrets_error %}
+                                  <div class="text-warning small">Secrets: {{ st.secrets_error }}</div>
+                                {% endif %}
                               {% endif %}
                             </td>
+                            <td class="accounts-ping-source-expand-col">
+                              <button class="badge bg-azure-lt text-azure header-icon-badge border-0 accounts-ping-profile-toggle"
+                                      type="button"
+                                      data-bs-target="#accounts-ping-router-profiles-{{ loop.index0 }}"
+                                      aria-expanded="false"
+                                      aria-controls="accounts-ping-router-profiles-{{ loop.index0 }}"
+                                      title="Show PPP profiles"
+                                      aria-label="Show PPP profiles">
+                                <i class="ti ti-list-details" data-accounts-ping-profile-toggle-icon></i>
+                              </button>
+                            </td>
+                          </tr>
+                          <tr>
+                            <td colspan="8" class="bg-light">
+                              <div class="collapse" id="accounts-ping-router-profiles-{{ loop.index0 }}">
+                              <div class="border rounded bg-white p-3">
+                                <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+                                  <div>
+                                    <div class="fw-semibold">PPP Profiles · {{ r.name or r.id }}</div>
+                                    <div class="text-muted small">
+                                      Enabled profiles are tracked by Accounts Ping. Disabled profiles remain in history but are excluded from new ping checks.
+                                    </div>
+                                  </div>
+                                  <div class="d-flex flex-wrap gap-2">
+                                    <span class="badge bg-green-lt text-green">Enabled: {{ profile_ctx.enabled_count or 0 }}</span>
+                                    <span class="badge bg-orange-lt text-orange">Disabled: {{ profile_ctx.disabled_count or 0 }}</span>
+                                  </div>
+                                </div>
+                                {% if profile_rows %}
+                                  <div class="row g-2">
+                                    {% for profile in profile_rows %}
+                                      <div class="col-md-6 col-xl-4">
+                                        <div class="border rounded p-2 h-100">
+                                          <div class="d-flex align-items-start justify-content-between gap-2">
+                                            <div class="text-truncate">
+                                              <div class="fw-semibold text-truncate" title="{{ profile.name }}">{{ profile.name }}</div>
+                                              <div class="text-muted small">
+                                                Active: {{ profile.active_count or 0 }} · Secrets: {{ profile.secret_count or 0 }}
+                                              </div>
+                                            </div>
+                                            <label class="form-check form-switch m-0" title="When enabled, PPP accounts using this profile are tracked by Accounts Ping.">
+                                              <input type="hidden" name="router_{{ router_loop_index }}_profile_{{ loop.index0 }}_name" value="{{ profile.name }}" />
+                                              <input class="form-check-input" type="checkbox" name="router_{{ router_loop_index }}_profile_{{ loop.index0 }}_enabled" {% if profile.enabled %}checked{% endif %} />
+                                            </label>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    {% endfor %}
+                                  </div>
+                                {% else %}
+                                  <div class="text-muted">
+                                    No PPP profiles have been loaded for this router yet. Click <span class="fw-semibold">Test MikroTik Routers</span> or wait for the next Accounts Ping source refresh.
+                                  </div>
+                                {% endif %}
+                              </div>
+                              </div>
+                            </td>
+                            <td class="accounts-ping-source-expand-col bg-light"></td>
                           </tr>
                         {% endfor %}
                       </tbody>
@@ -1118,6 +1330,7 @@
           <input type="hidden" name="limit" value="{{ accounts_ping_status.pagination.limit }}" />
           <input type="hidden" name="issues_page" value="{{ accounts_ping_status.pagination.issues.page }}" />
           <input type="hidden" name="stable_page" value="{{ accounts_ping_status.pagination.stable.page }}" />
+          <input type="hidden" name="disabled_page" value="{{ accounts_ping_status.pagination.disabled_profiles.page }}" />
           <input type="hidden" name="issues_sort" value="{{ accounts_ping_status.sort.issues.key }}" />
           <input type="hidden" name="issues_dir" value="{{ accounts_ping_status.sort.issues.dir }}" />
           <input type="hidden" name="stable_sort" value="{{ accounts_ping_status.sort.stable.key }}" />
@@ -1241,8 +1454,66 @@
             localStorage.setItem(tabKey, href);
             history.replaceState(null, "", href);
           }
+          const pane = href ? document.querySelector(href) : null;
+          loadAccountsPingSparklines(pane || document);
         });
       });
+
+      const loadedSparklineIds = new Set();
+      const loadAccountsPingSparklines = async (container) => {
+        const root = container || document;
+        const polylines = Array.from(root.querySelectorAll("[data-sparkline-polyline][data-account-id]"))
+          .filter((el) => !el.dataset.sparkLoaded && !el.dataset.sparkLoading);
+        const ids = [];
+        polylines.forEach((el) => {
+          const id = (el.dataset.accountId || "").trim();
+          if (id && !loadedSparklineIds.has(id) && !ids.includes(id)) {
+            ids.push(id);
+          }
+        });
+        if (!ids.length) return;
+        polylines.forEach((el) => {
+          if (ids.includes((el.dataset.accountId || "").trim())) {
+            el.dataset.sparkLoading = "1";
+          }
+        });
+        const chunks = [];
+        for (let start = 0; start < ids.length; start += 75) {
+          chunks.push(ids.slice(start, start + 75));
+        }
+        for (const chunk of chunks) {
+          const params = new URLSearchParams({ window: "24" });
+          chunk.forEach((id) => params.append("id", id));
+          try {
+            const res = await fetch(`/accounts-ping/sparklines?${params.toString()}`, {
+              headers: { "Accept": "application/json" },
+              cache: "no-store",
+            });
+            if (!res.ok) throw new Error("sparkline fetch failed");
+            const payload = await res.json();
+            const items = payload.items || {};
+            document.querySelectorAll("[data-sparkline-polyline][data-account-id]").forEach((el) => {
+              const id = (el.dataset.accountId || "").trim();
+              if (!id || !chunk.includes(id)) return;
+              const points = items[id] && items[id].points ? items[id].points : "";
+              if (points) el.setAttribute("points", points);
+              el.dataset.sparkLoaded = "1";
+              delete el.dataset.sparkLoading;
+              loadedSparklineIds.add(id);
+            });
+          } catch (err) {
+            polylines.forEach((el) => {
+              const id = (el.dataset.accountId || "").trim();
+              if (chunk.includes(id)) delete el.dataset.sparkLoading;
+            });
+          }
+        }
+      };
+
+      window.setTimeout(() => {
+        const activePane = document.querySelector("#accounts-ping-status .tab-pane.active");
+        loadAccountsPingSparklines(activePane || document);
+      }, 80);
 
       const loadingBanner = document.getElementById("accounts-ping-status-loading");
       const loadingLabel = loadingBanner ? loadingBanner.querySelector("[data-loading-label]") : null;
@@ -1300,6 +1571,43 @@
       setupServerSort(issuesTable, "issues", "#accounts-ping-issues");
       setupServerSort(stableTable, "stable", "#accounts-ping-stable");
 
+      const isAccountsPingInteractiveTarget = (target) => {
+        return Boolean(target.closest("a, button:not(.accounts-ping-profile-toggle), input, select, textarea, label, .dropdown, [data-bs-toggle='modal']"));
+      };
+
+      document.querySelectorAll(".accounts-ping-router-source-row[data-accounts-ping-profile-toggle]").forEach((row) => {
+        const targetSelector = row.getAttribute("data-accounts-ping-profile-toggle") || "";
+        const panel = targetSelector ? document.querySelector(targetSelector) : null;
+        const button = row.querySelector(".accounts-ping-profile-toggle");
+        const icon = row.querySelector("[data-accounts-ping-profile-toggle-icon]");
+        if (!panel || !button) return;
+        const syncToggle = (forceOpen) => {
+          const open = typeof forceOpen === "boolean" ? forceOpen : panel.classList.contains("show");
+          panel.classList.toggle("show", open);
+          row.setAttribute("aria-expanded", open ? "true" : "false");
+          button.setAttribute("aria-expanded", open ? "true" : "false");
+          button.setAttribute("title", open ? "Hide PPP profiles" : "Show PPP profiles");
+          button.setAttribute("aria-label", open ? "Hide PPP profiles" : "Show PPP profiles");
+          if (icon) {
+            icon.classList.toggle("ti-list-check", open);
+            icon.classList.toggle("ti-list-details", !open);
+          }
+        };
+        const togglePanel = () => syncToggle(!panel.classList.contains("show"));
+        row.addEventListener("click", (event) => {
+          if (isAccountsPingInteractiveTarget(event.target) && !event.target.closest(".accounts-ping-profile-toggle")) return;
+          event.preventDefault();
+          togglePanel();
+        });
+        row.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          if (isAccountsPingInteractiveTarget(event.target) && !event.target.closest(".accounts-ping-profile-toggle")) return;
+          event.preventDefault();
+          togglePanel();
+        });
+        syncToggle();
+      });
+
 	      const searchEl = document.getElementById("accounts-ping-search");
 	      if (searchEl) {
 	        let lastValue = (searchEl.value || "").trim();
@@ -1314,6 +1622,7 @@
 	          else url.searchParams.delete("q");
 	          url.searchParams.set("issues_page", "1");
 	          url.searchParams.set("stable_page", "1");
+	          url.searchParams.set("disabled_page", "1");
 	          if (q) {
 	            url.hash = "";
 	          } else {
@@ -1381,6 +1690,7 @@
           url.searchParams.set("window", hours);
           url.searchParams.set("issues_page", "1");
           url.searchParams.set("stable_page", "1");
+          url.searchParams.set("disabled_page", "1");
           const tabHash = localStorage.getItem(tabKey) || window.location.hash;
           if (tabHash) url.hash = tabHash;
           navigateWithLoading(url, `Loading ${label} Accounts Ping results...`);
@@ -1404,6 +1714,7 @@
           url.searchParams.set("limit", limit);
           url.searchParams.set("issues_page", "1");
           url.searchParams.set("stable_page", "1");
+          url.searchParams.set("disabled_page", "1");
           const tabHash = localStorage.getItem(tabKey) || window.location.hash;
           if (tabHash) url.hash = tabHash;
           navigateWithLoading(url, "Loading Accounts Ping results...");
