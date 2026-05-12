@@ -669,9 +669,28 @@ def _surveillance_entries_map_from_settings(raw_settings):
     return entry_map
 
 
+def _account_exemptions_from_settings(raw_settings):
+    settings = raw_settings if isinstance(raw_settings, dict) else {}
+    cfg = settings.get("account_exemption") if isinstance(settings.get("account_exemption"), dict) else {}
+    accounts = cfg.get("accounts") if isinstance(cfg.get("accounts"), list) else []
+    out = set()
+    for raw_item in accounts:
+        if not isinstance(raw_item, dict):
+            raw_item = {"pppoe": raw_item}
+        pppoe = (raw_item.get("pppoe") or raw_item.get("name") or "").strip().lower()
+        if pppoe:
+            out.add(pppoe)
+    return out
+
+
+def _surveillance_exemptions_from_settings(raw_settings):
+    return _account_exemptions_from_settings(raw_settings)
+
+
 def _merge_surveillance_job_updates(ip_updates=None, added_entries=None):
     latest_cfg = get_settings("surveillance", SURVEILLANCE_DEFAULTS)
     latest_map = _surveillance_entries_map_from_settings(latest_cfg)
+    latest_exemptions = _surveillance_exemptions_from_settings(latest_cfg)
     changed = False
 
     for raw_pppoe, raw_update in (ip_updates or {}).items():
@@ -698,6 +717,8 @@ def _merge_surveillance_job_updates(ip_updates=None, added_entries=None):
     for raw_pppoe, raw_entry in (added_entries or {}).items():
         pppoe = str(raw_pppoe or "").strip()
         if not pppoe or pppoe in latest_map or not isinstance(raw_entry, dict):
+            continue
+        if pppoe.lower() in latest_exemptions:
             continue
         entry = dict(raw_entry)
         entry["pppoe"] = pppoe
@@ -1293,6 +1314,7 @@ class JobsManager:
                 and auto_add_sources.get("accounts_ping", True)
             )
             raw_entries = surv_cfg.get("entries") if isinstance(surv_cfg.get("entries"), list) else []
+            surv_exemptions = _surveillance_exemptions_from_settings(surv_cfg)
             surv_entries = []
             for entry in raw_entries:
                 if not isinstance(entry, dict):
@@ -1339,6 +1361,7 @@ class JobsManager:
                 )
                 mikrotik_timeout_seconds = max(int(mikrotik_source_cfg.get("timeout_seconds", 5) or 5), 1)
                 source_mode = source_cfg.get("mode")
+                accounts_ping_exemptions = _account_exemptions_from_settings(cfg)
 
                 def account_id_for_target(pppoe, router_id=""):
                     return build_accounts_ping_account_id(
@@ -1347,8 +1370,45 @@ class JobsManager:
                         router_id=router_id,
                     )
 
+                def _accounts_ping_device_exempted(device):
+                    if not accounts_ping_exemptions or not isinstance(device, dict):
+                        return False
+                    pppoe = (device.get("pppoe") or device.get("name") or "").strip().lower()
+                    return bool(pppoe and pppoe in accounts_ping_exemptions)
+
+                def _filter_accounts_ping_devices_for_exemptions(raw_devices):
+                    filtered = []
+                    removed_account_ids = set()
+                    for device in raw_devices if isinstance(raw_devices, list) else []:
+                        if not isinstance(device, dict):
+                            continue
+                        if _accounts_ping_device_exempted(device):
+                            account_id = (device.get("account_id") or "").strip()
+                            if account_id:
+                                removed_account_ids.add(account_id)
+                            continue
+                        filtered.append(device)
+                    return filtered, removed_account_ids
+
+                if accounts_ping_exemptions and devices:
+                    devices, removed_account_ids = _filter_accounts_ping_devices_for_exemptions(devices)
+                    if removed_account_ids or len(devices) != len(state.get("devices") if isinstance(state.get("devices"), list) else []):
+                        if removed_account_ids:
+                            accounts_state = {
+                                account_id: value
+                                for account_id, value in accounts_state.items()
+                                if str(account_id or "").strip() not in removed_account_ids
+                            }
+                            state["accounts"] = accounts_state
+                        state["devices"] = devices
+                        save_state("accounts_ping_state", state)
+
                 # Refresh tracked devices from the configured source.
-                should_refresh = (not refreshed_dt) or (refreshed_dt + timedelta(minutes=refresh_minutes) < now) or not devices
+                should_refresh = (
+                    (not refreshed_dt)
+                    or (refreshed_dt + timedelta(minutes=refresh_minutes) < now)
+                    or (not devices and not accounts_ping_exemptions)
+                )
                 if should_refresh:
                     try:
                         source_mode, devices, router_status = build_accounts_ping_source_devices(
@@ -1357,6 +1417,14 @@ class JobsManager:
                             previous_devices=devices,
                             now=now,
                         )
+                        devices, removed_account_ids = _filter_accounts_ping_devices_for_exemptions(devices)
+                        if removed_account_ids:
+                            accounts_state = {
+                                account_id: value
+                                for account_id, value in accounts_state.items()
+                                if str(account_id or "").strip() not in removed_account_ids
+                            }
+                            state["accounts"] = accounts_state
                         state["devices"] = devices
                         state["router_status"] = router_status
                         state["devices_refreshed_at"] = now.replace(microsecond=0).isoformat() + "Z"
@@ -1890,6 +1958,8 @@ class JobsManager:
                                     pppoe = (target.get("pppoe") or "").strip()
                                     if not pppoe or pppoe in surv_map:
                                         continue
+                                    if pppoe.lower() in surv_exemptions:
+                                        continue
                                     candidates.append(target)
 
                                 since_iso2 = (now - timedelta(days=window_days)).replace(microsecond=0).isoformat() + "Z"
@@ -1904,6 +1974,8 @@ class JobsManager:
                                         break
                                     pppoe = (target.get("pppoe") or "").strip()
                                     if not pppoe or pppoe in surv_map:
+                                        continue
+                                    if pppoe.lower() in surv_exemptions:
                                         continue
 
                                     down_events = int(down_events_map.get(target["id"]) or 0)
@@ -3098,6 +3170,7 @@ class JobsManager:
                     accounts_ping_disabled_lookup = build_accounts_ping_disabled_account_lookup(
                         accounts_ping_state.get("devices") if isinstance(accounts_ping_state.get("devices"), list) else []
                     )
+                    usage_exemptions = _account_exemptions_from_settings(cfg)
 
                     def _usage_account_disabled_by_profile(router_id_value, pppoe_value, profile_value=""):
                         return is_accounts_ping_disabled_account(
@@ -3107,6 +3180,9 @@ class JobsManager:
                             profile_enabled=accounts_ping_profile_map,
                             disabled_lookup=accounts_ping_disabled_lookup,
                         )
+
+                    def _usage_account_exempted(pppoe_value):
+                        return bool((pppoe_value or "").strip().lower() in usage_exemptions)
 
                     _safe_update_job_status("usage", last_run_at=utc_now_iso())
                     for router in routers:
@@ -3314,6 +3390,8 @@ class JobsManager:
                             pppoe = (row.get("name") or "").strip()
                             if not pppoe:
                                 continue
+                            if _usage_account_exempted(pppoe):
+                                continue
                             secret = secrets_by_name.get(pppoe.lower()) or {}
                             secret_profile = (secret.get("profile") or "").strip()
                             if _usage_account_disabled_by_profile(router_id, pppoe, secret_profile):
@@ -3434,6 +3512,8 @@ class JobsManager:
                             name = (secret.get("name") or "").strip()
                             if not name or name in active_set:
                                 continue
+                            if _usage_account_exempted(name):
+                                continue
                             profile = (secret.get("profile") or "").strip()
                             if _usage_account_disabled_by_profile(router_id, name, profile):
                                 continue
@@ -3467,6 +3547,7 @@ class JobsManager:
                                         for s in (secrets or [])
                                         if (s.get("name") or "").strip()
                                         and (s.get("name") or "").strip() not in active_set
+                                        and not _usage_account_exempted((s.get("name") or "").strip())
                                         and not _usage_account_disabled_by_profile(
                                             router_id,
                                             (s.get("name") or "").strip(),
@@ -3773,6 +3854,7 @@ class JobsManager:
             accounts_ping_disabled_lookup = build_accounts_ping_disabled_account_lookup(
                 accounts_ping_state.get("devices") if isinstance(accounts_ping_state.get("devices"), list) else []
             )
+            offline_exemptions = _account_exemptions_from_settings(cfg)
 
             def _offline_account_disabled_by_profile(router_id_value, pppoe_value, profile_value=""):
                 return is_accounts_ping_disabled_account(
@@ -3782,6 +3864,9 @@ class JobsManager:
                     profile_enabled=accounts_ping_profile_map,
                     disabled_lookup=accounts_ping_disabled_lookup,
                 )
+
+            def _offline_account_exempted(pppoe_value):
+                return bool((pppoe_value or "").strip().lower() in offline_exemptions)
 
             # Prefer Usage collector cache when available (avoids extra RouterOS logins).
             usage_state = get_state("usage_state", {})
@@ -3871,6 +3956,8 @@ class JobsManager:
                         user = (row.get("pppoe") or row.get("name") or "").strip()
                         if not user:
                             continue
+                        if _offline_account_exempted(user):
+                            continue
                         profile = (row.get("profile") or "").strip()
                         if _offline_account_disabled_by_profile(rid, user, profile):
                             continue
@@ -3901,6 +3988,7 @@ class JobsManager:
                             row
                             for row in (usage_state.get("offline_rows") if isinstance(usage_state.get("offline_rows"), list) else [])
                             if isinstance(row, dict) and (row.get("router_id") or "").strip() in enabled_router_ids
+                            and not _offline_account_exempted((row.get("pppoe") or row.get("name") or "").strip())
                             and not _offline_account_disabled_by_profile(
                                 (row.get("router_id") or "").strip(),
                                 (row.get("pppoe") or row.get("name") or "").strip(),
@@ -3990,6 +4078,8 @@ class JobsManager:
                             user = (row.get("name") or "").strip()
                             if not user:
                                 continue
+                            if _offline_account_exempted(user):
+                                continue
                             secret = secrets_by_name.get(user.lower()) or {}
                             profile = (secret.get("profile") or "").strip()
                             if _offline_account_disabled_by_profile(router_id, user, profile):
@@ -4015,6 +4105,8 @@ class JobsManager:
                             for secret in router_secrets:
                                 name = (secret.get("name") or "").strip()
                                 profile = (secret.get("profile") or "").strip()
+                                if _offline_account_exempted(name):
+                                    continue
                                 if _offline_account_disabled_by_profile(router_id, name, profile):
                                     continue
                                 _register_source_account(
@@ -4081,6 +4173,8 @@ class JobsManager:
                                 radius_accounts = {}
 
                         for user, status in (radius_accounts or {}).items():
+                            if _offline_account_exempted(user):
+                                continue
                             if _offline_account_disabled_by_profile("", user, ""):
                                 continue
                             _register_source_account(

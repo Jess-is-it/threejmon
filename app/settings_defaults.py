@@ -130,6 +130,9 @@ SURVEILLANCE_DEFAULTS = {
             "accounts_ping": True,
         },
     },
+    "account_exemption": {
+        "accounts": [],
+    },
     "ping": {
         "interval_seconds": 1,
         "count": 1,
@@ -379,6 +382,9 @@ ACCOUNTS_PING_DEFAULTS = {
         "rollup_retention_days": 365,
         "bucket_seconds": 60,
     },
+    "account_exemption": {
+        "accounts": [],
+    },
 }
 
 ACCOUNTS_MISSING_DEFAULTS = {
@@ -482,6 +488,9 @@ USAGE_DEFAULTS = {
         "unrebootable_check_interval_days": 14,
         "history_retention_days": 180,
     },
+    "account_exemption": {
+        "accounts": [],
+    },
 }
 
 OFFLINE_DEFAULTS = {
@@ -520,6 +529,9 @@ OFFLINE_DEFAULTS = {
         # - username|status
         # - username status
         "list_command": "",
+    },
+    "account_exemption": {
+        "accounts": [],
     },
 }
 

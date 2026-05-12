@@ -2415,6 +2415,9 @@
 		            <li class="nav-item">
 		              <a href="#surv-settings-autoadd" class="nav-link" data-bs-toggle="tab">Auto Add</a>
 		            </li>
+		            <li class="nav-item">
+		              <a href="#surv-settings-exemptions" class="nav-link" data-bs-toggle="tab">Account Exemption</a>
+		            </li>
 		          </ul>
 
 	          <div class="tab-content pt-3">
@@ -2710,12 +2713,145 @@
 			                </div>
 			              </div>
 			            </div>
+
+			            <div class="tab-pane" id="surv-settings-exemptions">
+			              <div class="card">
+			                <div class="card-body">
+			                  <div class="d-flex align-items-start justify-content-between flex-wrap gap-3 mb-3">
+			                    <div>
+			                      <h4 class="mb-1">Account Exemption</h4>
+			                      <div class="text-muted small">
+			                        Select PPPoE accounts that must be excluded from automatic Under Surveillance auto-add.
+			                      </div>
+			                    </div>
+			                    <div class="d-flex flex-wrap gap-2">
+			                      <span class="badge bg-indigo-lt text-indigo">Accounts: {{ surveillance_exemption_kpis.total_accounts or 0 }}</span>
+			                      <span class="badge bg-orange-lt text-orange">Exempted: {{ surveillance_exemption_kpis.exempted or 0 }}</span>
+			                      <span class="badge bg-azure-lt text-azure">Routers: {{ surveillance_exemption_kpis.routers or 0 }}</span>
+			                      <span class="badge bg-green-lt text-green">Manual Active: {{ surveillance_exemption_kpis.manual_active or 0 }}</span>
+			                    </div>
+			                  </div>
+			                  <div class="alert alert-info">
+			                    <div class="d-flex align-items-start">
+			                      <span class="me-2"><i class="ti ti-info-circle"></i></span>
+			                      <div>
+			                        Account Exemption prevents the system from automatically adding selected PPPoE accounts into Under Surveillance from Accounts Ping auto-add rules.
+			                        It does not delete existing account data. If an exempted account is manually added by a user, it is still allowed to appear in Under Surveillance because manual review overrides the exemption.
+			                        If an account was already auto-added and you mark it as exempt here, the auto-added active entry is removed, but manually added entries are kept.
+			                      </div>
+			                    </div>
+			                  </div>
+			                  <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
+			                    <div class="d-flex align-items-center gap-2 flex-wrap">
+				                      <div class="border rounded px-2 py-1">
+				                        <label class="form-check form-switch m-0">
+				                          <input class="form-check-input" type="checkbox" data-surv-exemption-select-toggle />
+				                          <span class="form-check-label">Select multiple</span>
+				                        </label>
+				                      </div>
+				                      <div class="dropdown d-none" data-surv-exemption-selected-wrap>
+				                        <button type="button" class="btn btn-outline-primary btn-sm dropdown-toggle" data-bs-toggle="dropdown" data-surv-exemption-selected-button>
+				                          Selected: <span data-surv-exemption-selected-count>0</span>
+				                        </button>
+				                        <div class="dropdown-menu p-2" style="min-width: 18rem; max-height: 20rem; overflow: auto;">
+				                          <div class="small text-muted mb-2">Selected accounts</div>
+				                          <div class="d-grid gap-1" data-surv-exemption-selected-list></div>
+				                        </div>
+				                      </div>
+				                      <button type="submit" form="surv-exemption-form" class="btn btn-outline-warning btn-sm d-none" name="exemption_action" value="add" data-surv-exemption-bulk>
+				                        <i class="ti ti-shield-check me-1"></i>Tag Selected as Exempt
+				                      </button>
+			                      <button type="submit" form="surv-exemption-form" class="btn btn-outline-secondary btn-sm d-none" name="exemption_action" value="remove" data-surv-exemption-bulk>
+			                        <i class="ti ti-shield-x me-1"></i>Remove Exemption
+			                      </button>
+			                    </div>
+			                    <div class="input-icon" data-search-clearable>
+			                      <input class="form-control form-control-sm" type="text" placeholder="Search PPPoE / router / profile" data-surv-exemption-search autocomplete="off" />
+			                      <button type="button" class="input-icon-addon search-addon-btn" data-search-clear-btn aria-label="Search"><i class="ti ti-search"></i></button>
+			                    </div>
+			                  </div>
+			                  <div class="table-responsive" style="max-height: 60vh; overflow: auto;" data-surv-exemption-table-wrap>
+			                    <table class="table table-vcenter table-hover" data-surv-exemption-table>
+			                      <thead>
+			                        <tr>
+			                          <th class="w-1 d-none bg-white position-sticky top-0 z-1" data-surv-exemption-select-col>
+			                            <label class="form-check m-0">
+			                              <input class="form-check-input" type="checkbox" data-surv-exemption-select-all aria-label="Select all exemptions" />
+			                            </label>
+			                          </th>
+			                          <th class="bg-white position-sticky top-0 z-1" role="button" data-surv-exemption-sort="pppoe">PPPoE <span class="surv-sort-indicator"></span></th>
+			                          <th class="bg-white position-sticky top-0 z-1" role="button" data-surv-exemption-sort="router">Router <span class="surv-sort-indicator"></span></th>
+			                          <th class="bg-white position-sticky top-0 z-1" role="button" data-surv-exemption-sort="profile">Profile <span class="surv-sort-indicator"></span></th>
+			                          <th class="bg-white position-sticky top-0 z-1" role="button" data-surv-exemption-sort="status">Status <span class="surv-sort-indicator"></span></th>
+			                          <th class="bg-white position-sticky top-0 z-1" role="button" data-surv-exemption-sort="source">Source <span class="surv-sort-indicator"></span></th>
+			                          <th class="bg-white position-sticky top-0 z-1" role="button" data-surv-exemption-sort="exempted">Exempted At <span class="surv-sort-indicator"></span></th>
+			                        </tr>
+			                      </thead>
+			                      <tbody>
+			                        {% for row in surveillance_exemption_rows %}
+			                          <tr data-surv-exemption-row
+                                      data-search="{{ (row.pppoe ~ ' ' ~ row.router_name ~ ' ' ~ row.router_id ~ ' ' ~ row.profile ~ ' ' ~ row.source)|lower }}"
+                                      data-sort-pppoe="{{ row.pppoe|lower }}"
+                                      data-sort-router="{{ (row.router_name or row.router_id or '')|lower }}"
+                                      data-sort-profile="{{ (row.profile or '')|lower }}"
+                                      data-sort-status="{% if row.is_exempt %}0{% else %}1{% endif %}-{{ row.surveillance_added_mode or 'none' }}"
+                                      data-sort-source="{{ (row.source or '')|lower }}"
+                                      data-sort-exempted="{{ row.exempt_added_at or '' }}">
+			                            <td class="d-none" data-surv-exemption-select-col>
+			                              <label class="form-check m-0">
+			                                <input class="form-check-input" type="checkbox" value="{{ row.pppoe }}" data-surv-exemption-checkbox aria-label="Select {{ row.pppoe }}" />
+			                              </label>
+			                            </td>
+			                            <td class="fw-semibold" title="{{ row.pppoe }}">{{ row.pppoe }}</td>
+			                            <td>
+			                              <div class="fw-semibold">{{ row.router_name or row.router_id or 'n/a' }}</div>
+			                              {% if row.ip %}<div class="text-muted small">{{ row.ip }}</div>{% endif %}
+			                            </td>
+			                            <td class="text-muted" title="{{ row.profile or 'n/a' }}">{{ row.profile or 'n/a' }}</td>
+			                            <td>
+			                              {% if row.is_exempt %}
+			                                <span class="badge bg-orange-lt text-orange">Exempted</span>
+			                              {% else %}
+			                                <span class="badge bg-secondary-lt text-secondary">Allowed</span>
+			                              {% endif %}
+			                              {% if row.surveillance_status %}
+			                                {% if row.surveillance_added_mode == 'auto' %}
+			                                  <span class="badge bg-azure-lt text-azure ms-1" title="Currently active in Under Surveillance because the system auto-added it. If tagged as exempt, this auto-added active entry is removed.">Auto-added Active</span>
+			                                {% else %}
+			                                  <span class="badge bg-green-lt text-green ms-1" title="Currently active in Under Surveillance because a user manually added it. Exemption does not block manual adds.">Manually-added Active</span>
+			                                {% endif %}
+			                              {% endif %}
+			                            </td>
+			                            <td class="text-muted small">{{ row.source or 'State' }}</td>
+			                            <td class="text-muted small">
+			                              {% if row.is_exempt %}
+			                                {{ row.exempt_added_at_ph or row.exempt_added_at or 'n/a' }}
+			                                {% if row.exempt_added_by %}<div>by {{ row.exempt_added_by }}</div>{% endif %}
+			                              {% else %}
+			                                —
+			                              {% endif %}
+			                            </td>
+			                          </tr>
+			                        {% else %}
+			                          <tr>
+			                            <td colspan="7" class="text-muted">
+			                              No PPPoE accounts are available from the current collector cache. Wait for Accounts Ping, Usage, or Offline collectors to refresh router secrets.
+			                            </td>
+			                          </tr>
+			                        {% endfor %}
+			                      </tbody>
+			                    </table>
+			                  </div>
+			                </div>
+			              </div>
+			            </div>
 	          </div>
 
 		          <div class="mt-4 d-flex justify-content-end {% if active_tab != 'settings' %}d-none{% endif %}" data-surv-settings-save-bar>
 		            <button type="submit" class="btn btn-primary">Save Surveillance Settings</button>
 		          </div>
 		        </form>
+		        <form id="surv-exemption-form" method="post" action="/surveillance/settings/exemptions" class="d-none" data-surv-exemption-form></form>
 		      </div>
     </div>
   </div>
@@ -2792,9 +2928,11 @@
 
 			    const settingsSaveBar = document.querySelector('[data-surv-settings-save-bar]');
 			    const isSettingsDangerTabActive = () => false;
+			    const activeSettingsTabHref = () => document.querySelector('#surv-settings a[data-bs-toggle="tab"].active')?.getAttribute("href") || "";
+			    const isSettingsExemptionTabActive = () => activeSettingsTabHref() === "#surv-settings-exemptions";
 			    const setSettingsSaveBar = (tab) => {
 			      if (!settingsSaveBar) return;
-			      if (tab === "settings" && !isSettingsDangerTabActive()) settingsSaveBar.classList.remove("d-none");
+			      if (tab === "settings" && !isSettingsDangerTabActive() && !isSettingsExemptionTabActive()) settingsSaveBar.classList.remove("d-none");
 			      else settingsSaveBar.classList.add("d-none");
 			    };
 			    const collapseObservePreFixTimeline = () => {};
@@ -2819,7 +2957,7 @@
             const href = link.getAttribute("href") || "";
             return Boolean(surveillanceTabMap[href]);
           });
-          const serverBackedTabs = new Set(["history", "logs"]);
+          const serverBackedTabs = new Set(["history", "logs", "settings"]);
           const stageTabOrder = ["under", "level2", "observe"];
           const stageTabLinks = {
             under: document.querySelector('a[href="#surv-under"]'),
@@ -2982,6 +3120,211 @@
 			        setSettingsSaveBar("settings");
 			      });
 			    });
+          if (topTabPanes.settings?.classList.contains("active")) {
+            setSettingsSaveBar("settings");
+          }
+
+          const exemptionSelectToggle = document.querySelector("[data-surv-exemption-select-toggle]");
+          const exemptionSelectCols = Array.from(document.querySelectorAll("[data-surv-exemption-select-col]"));
+          const exemptionBulkBtns = Array.from(document.querySelectorAll("[data-surv-exemption-bulk]"));
+          const exemptionCheckboxes = Array.from(document.querySelectorAll("[data-surv-exemption-checkbox]"));
+          const exemptionSelectAll = document.querySelector("[data-surv-exemption-select-all]");
+          const exemptionRows = Array.from(document.querySelectorAll("[data-surv-exemption-row]"));
+          const exemptionSearch = document.querySelector("[data-surv-exemption-search]");
+	          const exemptionTable = document.querySelector("[data-surv-exemption-table]");
+	          const exemptionForm = document.querySelector("[data-surv-exemption-form]");
+	          const exemptionSortHeaders = Array.from(document.querySelectorAll("[data-surv-exemption-sort]"));
+	          const exemptionSelectedWrap = document.querySelector("[data-surv-exemption-selected-wrap]");
+	          const exemptionSelectedCount = document.querySelector("[data-surv-exemption-selected-count]");
+	          const exemptionSelectedList = document.querySelector("[data-surv-exemption-selected-list]");
+	          const exemptionSortState = { key: "pppoe", dir: "asc" };
+	          const selectedExemptionBoxes = () => exemptionCheckboxes.filter((box) => box.checked);
+	          const renderExemptionSelectedList = () => {
+	            if (!exemptionSelectedList) return;
+	            const seen = new Set();
+	            const selected = selectedExemptionBoxes()
+	              .map((box) => String(box.value || "").trim())
+	              .filter((value) => {
+	                const key = value.toLowerCase();
+	                if (!value || seen.has(key)) return false;
+	                seen.add(key);
+	                return true;
+	              });
+	            exemptionSelectedList.innerHTML = "";
+	            if (!selected.length) {
+	              const empty = document.createElement("div");
+	              empty.className = "text-muted small px-2 py-1";
+	              empty.textContent = "No selected accounts.";
+	              exemptionSelectedList.appendChild(empty);
+	              return;
+	            }
+	            selected.forEach((pppoe) => {
+	              const item = document.createElement("button");
+	              item.type = "button";
+	              item.className = "dropdown-item d-flex align-items-center justify-content-between gap-2 rounded";
+	              item.setAttribute("data-surv-exemption-selected-remove", pppoe);
+	              const label = document.createElement("span");
+	              label.className = "text-truncate";
+	              label.textContent = pppoe;
+	              const icon = document.createElement("i");
+	              icon.className = "ti ti-x text-muted";
+	              item.appendChild(label);
+	              item.appendChild(icon);
+	              exemptionSelectedList.appendChild(item);
+	            });
+	          };
+	          const updateExemptionBulkState = () => {
+	            const selectMode = Boolean(exemptionSelectToggle?.checked);
+	            const selectedCount = selectedExemptionBoxes().length;
+	            exemptionSelectCols.forEach((el) => el.classList.toggle("d-none", !selectMode));
+	            if (exemptionSelectedWrap) exemptionSelectedWrap.classList.toggle("d-none", !selectMode);
+	            if (exemptionSelectedCount) exemptionSelectedCount.textContent = String(selectedCount);
+	            renderExemptionSelectedList();
+	            exemptionBulkBtns.forEach((btn) => {
+	              btn.classList.toggle("d-none", !selectMode);
+	              btn.disabled = !selectMode || selectedCount <= 0;
+            });
+            if (exemptionSelectAll) {
+              const visibleBoxes = exemptionCheckboxes.filter((box) => !box.closest("tr")?.classList.contains("d-none"));
+              const checkedVisible = visibleBoxes.filter((box) => box.checked);
+              exemptionSelectAll.checked = visibleBoxes.length > 0 && checkedVisible.length === visibleBoxes.length;
+              exemptionSelectAll.indeterminate = checkedVisible.length > 0 && checkedVisible.length < visibleBoxes.length;
+            }
+          };
+          const applyExemptionSearch = () => {
+            const query = String(exemptionSearch?.value || "").trim().toLowerCase();
+            exemptionRows.forEach((row) => {
+	              const hay = String(row.getAttribute("data-search") || row.textContent || "").toLowerCase();
+	              const show = !query || hay.includes(query);
+	              row.classList.toggle("d-none", !show);
+	            });
+	            updateExemptionBulkState();
+	          };
+          const applyExemptionSort = () => {
+            const tbody = exemptionTable?.querySelector("tbody");
+            if (!tbody) return;
+            const key = exemptionSortState.key;
+            const dir = exemptionSortState.dir === "desc" ? "desc" : "asc";
+            const sortedRows = exemptionRows.slice().sort((a, b) => {
+              const av = String(a.getAttribute(`data-sort-${key}`) || "").toLowerCase();
+              const bv = String(b.getAttribute(`data-sort-${key}`) || "").toLowerCase();
+              if (av < bv) return dir === "asc" ? -1 : 1;
+              if (av > bv) return dir === "asc" ? 1 : -1;
+              const ap = String(a.getAttribute("data-sort-pppoe") || "").toLowerCase();
+              const bp = String(b.getAttribute("data-sort-pppoe") || "").toLowerCase();
+              return ap.localeCompare(bp);
+            });
+            sortedRows.forEach((row) => tbody.appendChild(row));
+            exemptionSortHeaders.forEach((header) => {
+              const active = header.getAttribute("data-surv-exemption-sort") === key;
+              header.setAttribute("aria-sort", active ? (dir === "asc" ? "ascending" : "descending") : "none");
+              const indicator = header.querySelector(".surv-sort-indicator");
+              if (indicator) indicator.textContent = active ? (dir === "asc" ? "▲" : "▼") : "";
+            });
+          };
+          if (exemptionSelectToggle) {
+            exemptionSelectToggle.addEventListener("change", () => {
+              if (!exemptionSelectToggle.checked) {
+                exemptionCheckboxes.forEach((box) => { box.checked = false; });
+              }
+              updateExemptionBulkState();
+            });
+          }
+          if (exemptionSelectAll) {
+            exemptionSelectAll.addEventListener("change", () => {
+              const checked = exemptionSelectAll.checked;
+              exemptionCheckboxes.forEach((box) => {
+                if (!box.closest("tr")?.classList.contains("d-none")) box.checked = checked;
+              });
+              updateExemptionBulkState();
+            });
+          }
+	          exemptionCheckboxes.forEach((box) => {
+	            box.addEventListener("change", updateExemptionBulkState);
+	            box.addEventListener("click", (event) => event.stopPropagation());
+	          });
+	          if (exemptionSelectedList) {
+	            exemptionSelectedList.addEventListener("click", (event) => {
+	              const btn = event.target?.closest?.("[data-surv-exemption-selected-remove]");
+	              if (!btn) return;
+	              event.preventDefault();
+	              event.stopPropagation();
+	              const key = String(btn.getAttribute("data-surv-exemption-selected-remove") || "").trim().toLowerCase();
+	              exemptionCheckboxes.forEach((box) => {
+	                if (String(box.value || "").trim().toLowerCase() === key) box.checked = false;
+	              });
+	              updateExemptionBulkState();
+	            });
+	          }
+	          exemptionBulkBtns.forEach((btn) => {
+	            btn.addEventListener("click", () => {
+	              if (exemptionForm) exemptionForm.dataset.action = btn.value || "";
+            });
+          });
+          if (exemptionForm) {
+            exemptionForm.addEventListener("submit", (event) => {
+              exemptionForm.querySelectorAll('input[name="selected_pppoe"], input[name="exemption_action"]').forEach((input) => input.remove());
+	              const selectedValues = Array.from(new Set(
+	                exemptionCheckboxes
+	                  .filter((box) => box.checked)
+	                  .map((box) => String(box.value || "").trim())
+	                  .filter(Boolean)
+	              ));
+              if (!selectedValues.length) {
+                event.preventDefault();
+                updateExemptionBulkState();
+                window.alert("Select one or more accounts before applying exemption.");
+                return;
+              }
+              const actionInput = document.createElement("input");
+              actionInput.type = "hidden";
+              actionInput.name = "exemption_action";
+              actionInput.value = exemptionForm.dataset.action || "add";
+              exemptionForm.appendChild(actionInput);
+              selectedValues.forEach((pppoe) => {
+                const input = document.createElement("input");
+                input.type = "hidden";
+                input.name = "selected_pppoe";
+                input.value = pppoe;
+                exemptionForm.appendChild(input);
+              });
+            });
+          }
+          exemptionRows.forEach((row) => {
+            row.addEventListener("click", (event) => {
+              if (!exemptionSelectToggle?.checked) return;
+              if (event.target?.closest?.("a, button, input, select, textarea, label")) return;
+              const box = row.querySelector("[data-surv-exemption-checkbox]");
+              if (!box || row.classList.contains("d-none")) return;
+              box.checked = !box.checked;
+              updateExemptionBulkState();
+            });
+          });
+          exemptionSortHeaders.forEach((header) => {
+            header.addEventListener("click", () => {
+              const key = header.getAttribute("data-surv-exemption-sort") || "pppoe";
+              if (exemptionSortState.key === key) {
+                exemptionSortState.dir = exemptionSortState.dir === "asc" ? "desc" : "asc";
+              } else {
+                exemptionSortState.key = key;
+                exemptionSortState.dir = key === "exempted" ? "desc" : "asc";
+              }
+              applyExemptionSort();
+            });
+          });
+          if (exemptionSearch) {
+            exemptionSearch.addEventListener("input", applyExemptionSearch);
+            const clearBtn = exemptionSearch.closest("[data-search-clearable]")?.querySelector("[data-search-clear-btn]");
+            if (clearBtn) {
+              clearBtn.addEventListener("click", () => {
+                exemptionSearch.value = "";
+                applyExemptionSearch();
+                exemptionSearch.focus();
+              });
+            }
+          }
+          applyExemptionSort();
+          updateExemptionBulkState();
 
 			    const bindCollapseToggle = (btn) => {
 			      if (!btn || btn.getAttribute("data-surv-collapse-bound") === "1") return;
@@ -3322,7 +3665,7 @@
           const checkerSinceSource = (metrics.checkerSinceSource || "added").toLowerCase();
           const checkerSinceTs = metrics.checkerSinceIso ? Date.parse(metrics.checkerSinceIso) : Number.NaN;
           const checkerElapsed = Number.isFinite(checkerSinceTs) ? Math.max(0, (Date.now() - checkerSinceTs) / 1000) : Number.NaN;
-          const anchorLabel = checkerSinceSource === "fixed" ? "Since last fix" : "Since added";
+          const anchorLabel = checkerSinceSource === "fixed" ? "Since last fix" : (checkerSinceSource === "window" ? "Window start" : "Since added");
           const lossTimeEnforced = Number.isFinite(lossMaxMinutes);
           const lossEventsEnforced = Number.isFinite(lossMaxEvents);
 
@@ -5950,12 +6293,15 @@
 		        setText(panel, "mode", mode || "—");
 		        setText(panel, "optical_rx", opticalRxRaw ? `${opticalRxRaw} dBm` : "—");
 		        setOpticalTime(panel, opticalLastIso, opticalLast);
-            const checkerAnchorLabel = checkerSinceSource === "fixed" ? "Since last fix" : "Since added";
+            const checkerAnchorLabel = checkerSinceSource === "fixed" ? "Since last fix" : (checkerSinceSource === "window" ? "Window start" : "Since added");
             setText(panel, "checker_anchor_label", `${checkerAnchorLabel}: ${checkerSincePh || "—"}`);
             const checkerAnchorNoteEl = panel.querySelector('[data-surv-field="checker_anchor_note"]');
             if (checkerAnchorNoteEl) {
               if (checkerSinceSource === "fixed") {
                 checkerAnchorNoteEl.textContent = "Showing new monitoring data from the latest fix time.";
+                checkerAnchorNoteEl.classList.remove("d-none");
+              } else if (checkerSinceSource === "window") {
+                checkerAnchorNoteEl.textContent = "Showing the configured stability window instead of scanning all older history.";
                 checkerAnchorNoteEl.classList.remove("d-none");
               } else {
                 checkerAnchorNoteEl.textContent = "";

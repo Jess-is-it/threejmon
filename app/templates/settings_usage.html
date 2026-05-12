@@ -440,6 +440,9 @@
             <a href="#usage-routers" class="nav-link {% if settings_tab == 'routers' %}active{% endif %}" data-bs-toggle="tab">Routers</a>
           </li>
           <li class="nav-item">
+            <a href="#usage-exemptions" class="nav-link {% if settings_tab == 'exemptions' %}active{% endif %}" data-bs-toggle="tab">Account Exemption</a>
+          </li>
+          <li class="nav-item">
             <a href="#usage-data" class="nav-link {% if settings_tab == 'data' %}active{% endif %}" data-bs-toggle="tab">Data Source</a>
           </li>
           <li class="nav-item">
@@ -638,6 +641,134 @@
                 </div>
               </div>
             </form>
+          </div>
+
+          <div class="tab-pane {% if settings_tab == 'exemptions' %}active{% endif %}" id="usage-exemptions">
+            <div class="card">
+              <div class="card-body">
+                <div class="d-flex align-items-start justify-content-between flex-wrap gap-3 mb-3">
+                  <div>
+                    <h4 class="mb-1">Account Exemption</h4>
+                    <div class="text-muted small">
+                      Select PPPoE accounts that must be excluded from automatic Usage tracking and modem auto reboot.
+                    </div>
+                  </div>
+                  <div class="d-flex flex-wrap gap-2">
+                    <span class="badge bg-indigo-lt text-indigo">Accounts: {{ usage_exemption_kpis.total_accounts or 0 }}</span>
+                    <span class="badge bg-orange-lt text-orange">Exempted: {{ usage_exemption_kpis.exempted or 0 }}</span>
+                    <span class="badge bg-green-lt text-green">Allowed: {{ usage_exemption_kpis.allowed or 0 }}</span>
+                    <span class="badge bg-azure-lt text-azure">Routers: {{ usage_exemption_kpis.routers or 0 }}</span>
+                  </div>
+                </div>
+                <div class="alert alert-info">
+                  <div class="d-flex align-items-start">
+                    <span class="me-2"><i class="ti ti-info-circle"></i></span>
+                    <div>
+                      Exempted accounts keep their historical Usage samples and reboot history, but the Usage collector will stop adding new live samples, stop classifying them as Usage Issues, and stop modem auto reboot attempts.
+                      Removing the exemption allows the account to be tracked again on the next collector refresh if it still exists in MikroTik.
+                    </div>
+                  </div>
+                </div>
+                <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
+                  <div class="d-flex align-items-center gap-2 flex-wrap">
+	                    <div class="border rounded px-2 py-1">
+	                      <label class="form-check form-switch m-0">
+	                        <input class="form-check-input" type="checkbox" data-account-exemption-select-toggle="usage" />
+	                        <span class="form-check-label">Select multiple</span>
+	                      </label>
+	                    </div>
+	                    <div class="dropdown d-none" data-account-exemption-selected-wrap="usage">
+	                      <button type="button" class="btn btn-outline-primary btn-sm dropdown-toggle" data-bs-toggle="dropdown">
+	                        Selected: <span data-account-exemption-selected-count="usage">0</span>
+	                      </button>
+	                      <div class="dropdown-menu p-2" style="min-width: 18rem; max-height: 20rem; overflow: auto;">
+	                        <div class="small text-muted mb-2">Selected accounts</div>
+	                        <div class="d-grid gap-1" data-account-exemption-selected-list="usage"></div>
+	                      </div>
+	                    </div>
+	                    <button type="submit" form="usage-exemption-form" class="btn btn-outline-warning btn-sm d-none" name="exemption_action" value="add" data-account-exemption-bulk="usage">
+	                      <i class="ti ti-shield-check me-1"></i>Tag Selected as Exempt
+	                    </button>
+                    <button type="submit" form="usage-exemption-form" class="btn btn-outline-secondary btn-sm d-none" name="exemption_action" value="remove" data-account-exemption-bulk="usage">
+                      <i class="ti ti-shield-x me-1"></i>Remove Exemption
+                    </button>
+                  </div>
+                  <div class="input-icon" data-search-clearable>
+                    <input class="form-control form-control-sm" type="text" placeholder="Search PPPoE / router / profile" data-account-exemption-search="usage" autocomplete="off" />
+                    <button type="button" class="input-icon-addon search-addon-btn" data-search-clear-btn aria-label="Search"><i class="ti ti-search"></i></button>
+                  </div>
+                </div>
+                <div class="table-responsive" style="max-height: 60vh; overflow: auto;">
+                  <table class="table table-vcenter table-hover" data-account-exemption-table="usage">
+                    <thead>
+                      <tr>
+                        <th class="w-1 d-none bg-white position-sticky top-0 z-1" data-account-exemption-select-col="usage">
+                          <label class="form-check m-0">
+                            <input class="form-check-input" type="checkbox" data-account-exemption-select-all="usage" aria-label="Select all Usage exemptions" />
+                          </label>
+                        </th>
+                        <th class="bg-white position-sticky top-0 z-1" role="button" data-account-exemption-sort="usage:pppoe">PPPoE <span class="surv-sort-indicator"></span></th>
+                        <th class="bg-white position-sticky top-0 z-1" role="button" data-account-exemption-sort="usage:router">Router <span class="surv-sort-indicator"></span></th>
+                        <th class="bg-white position-sticky top-0 z-1" role="button" data-account-exemption-sort="usage:profile">Profile <span class="surv-sort-indicator"></span></th>
+                        <th class="bg-white position-sticky top-0 z-1" role="button" data-account-exemption-sort="usage:status">Status <span class="surv-sort-indicator"></span></th>
+                        <th class="bg-white position-sticky top-0 z-1" role="button" data-account-exemption-sort="usage:source">Source <span class="surv-sort-indicator"></span></th>
+                        <th class="bg-white position-sticky top-0 z-1" role="button" data-account-exemption-sort="usage:exempted">Exempted At <span class="surv-sort-indicator"></span></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {% for row in usage_exemption_rows %}
+                        <tr data-account-exemption-row="usage"
+                            data-search="{{ (row.pppoe ~ ' ' ~ row.router_name ~ ' ' ~ row.router_id ~ ' ' ~ row.profile ~ ' ' ~ row.source ~ ' ' ~ row.module_status)|lower }}"
+                            data-sort-pppoe="{{ row.pppoe|lower }}"
+                            data-sort-router="{{ (row.router_name or row.router_id or '')|lower }}"
+                            data-sort-profile="{{ (row.profile or '')|lower }}"
+                            data-sort-status="{% if row.is_exempt %}0{% else %}1{% endif %}-{{ row.module_status or '' }}"
+                            data-sort-source="{{ (row.source or '')|lower }}"
+                            data-sort-exempted="{{ row.exempt_added_at or '' }}">
+                          <td class="d-none" data-account-exemption-select-col="usage">
+                            <label class="form-check m-0">
+                              <input class="form-check-input" type="checkbox" value="{{ row.pppoe }}" data-account-exemption-checkbox="usage" aria-label="Select {{ row.pppoe }}" />
+                            </label>
+                          </td>
+                          <td class="fw-semibold" title="{{ row.pppoe }}">{{ row.pppoe }}</td>
+                          <td>
+                            <div class="fw-semibold">{{ row.router_name or row.router_id or 'n/a' }}</div>
+                            {% if row.ip %}<div class="text-muted small">{{ row.ip }}</div>{% endif %}
+                          </td>
+                          <td class="text-muted" title="{{ row.profile or 'n/a' }}">{{ row.profile or 'n/a' }}</td>
+                          <td>
+                            {% if row.is_exempt %}
+                              <span class="badge bg-orange-lt text-orange">Exempted</span>
+                            {% else %}
+                              <span class="badge bg-secondary-lt text-secondary">Allowed</span>
+                            {% endif %}
+                            {% if row.module_status %}
+                              <span class="badge bg-azure-lt text-azure ms-1">{{ row.module_status }}</span>
+                            {% endif %}
+                          </td>
+                          <td class="text-muted small">{{ row.source or 'State' }}</td>
+                          <td class="text-muted small">
+                            {% if row.is_exempt %}
+                              {{ row.exempt_added_at_ph or row.exempt_added_at or 'n/a' }}
+                              {% if row.exempt_added_by %}<div>by {{ row.exempt_added_by }}</div>{% endif %}
+                            {% else %}
+                              —
+                            {% endif %}
+                          </td>
+                        </tr>
+                      {% else %}
+                        <tr>
+                          <td colspan="7" class="text-muted">
+                            No PPPoE accounts are available from the current collector cache. Wait for Usage, Offline, or Accounts Ping collectors to refresh router secrets.
+                          </td>
+                        </tr>
+                      {% endfor %}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+            <form id="usage-exemption-form" method="post" action="/settings/usage/exemptions" class="d-none" data-account-exemption-form="usage"></form>
           </div>
 
           <div class="tab-pane {% if settings_tab == 'data' %}active{% endif %}" id="usage-data">
@@ -2758,6 +2889,206 @@
         renderRouterFilterMenu();
       });
     }
+
+    const bindAccountExemptionTable = (scope) => {
+      const selectToggle = document.querySelector(`[data-account-exemption-select-toggle="${scope}"]`);
+      const selectCols = Array.from(document.querySelectorAll(`[data-account-exemption-select-col="${scope}"]`));
+      const bulkBtns = Array.from(document.querySelectorAll(`[data-account-exemption-bulk="${scope}"]`));
+      const checkboxes = Array.from(document.querySelectorAll(`[data-account-exemption-checkbox="${scope}"]`));
+      const selectAll = document.querySelector(`[data-account-exemption-select-all="${scope}"]`);
+      const rows = Array.from(document.querySelectorAll(`[data-account-exemption-row="${scope}"]`));
+      const search = document.querySelector(`[data-account-exemption-search="${scope}"]`);
+	      const table = document.querySelector(`[data-account-exemption-table="${scope}"]`);
+	      const form = document.querySelector(`[data-account-exemption-form="${scope}"]`);
+	      const sortHeaders = Array.from(document.querySelectorAll(`[data-account-exemption-sort^="${scope}:"]`));
+	      const selectedWrap = document.querySelector(`[data-account-exemption-selected-wrap="${scope}"]`);
+	      const selectedCountEl = document.querySelector(`[data-account-exemption-selected-count="${scope}"]`);
+	      const selectedList = document.querySelector(`[data-account-exemption-selected-list="${scope}"]`);
+	      const sortState = { key: "pppoe", dir: "asc" };
+	      const selectedBoxes = () => checkboxes.filter((box) => box.checked);
+	      const renderSelectedList = () => {
+	        if (!selectedList) return;
+	        const seen = new Set();
+	        const selected = selectedBoxes()
+	          .map((box) => String(box.value || "").trim())
+	          .filter((value) => {
+	            const key = value.toLowerCase();
+	            if (!value || seen.has(key)) return false;
+	            seen.add(key);
+	            return true;
+	          });
+	        selectedList.innerHTML = "";
+	        if (!selected.length) {
+	          const empty = document.createElement("div");
+	          empty.className = "text-muted small px-2 py-1";
+	          empty.textContent = "No selected accounts.";
+	          selectedList.appendChild(empty);
+	          return;
+	        }
+	        selected.forEach((pppoe) => {
+	          const item = document.createElement("button");
+	          item.type = "button";
+	          item.className = "dropdown-item d-flex align-items-center justify-content-between gap-2 rounded";
+	          item.setAttribute("data-account-exemption-selected-remove", pppoe);
+	          const label = document.createElement("span");
+	          label.className = "text-truncate";
+	          label.textContent = pppoe;
+	          const icon = document.createElement("i");
+	          icon.className = "ti ti-x text-muted";
+	          item.appendChild(label);
+	          item.appendChild(icon);
+	          selectedList.appendChild(item);
+	        });
+	      };
+	      const updateBulkState = () => {
+	        const selectMode = Boolean(selectToggle?.checked);
+	        const selectedCount = selectedBoxes().length;
+	        selectCols.forEach((el) => el.classList.toggle("d-none", !selectMode));
+	        if (selectedWrap) selectedWrap.classList.toggle("d-none", !selectMode);
+	        if (selectedCountEl) selectedCountEl.textContent = String(selectedCount);
+	        renderSelectedList();
+	        bulkBtns.forEach((btn) => {
+	          btn.classList.toggle("d-none", !selectMode);
+	          btn.disabled = !selectMode || selectedCount <= 0;
+        });
+        if (selectAll) {
+          const visibleBoxes = checkboxes.filter((box) => !box.closest("tr")?.classList.contains("d-none"));
+          const checkedVisible = visibleBoxes.filter((box) => box.checked);
+          selectAll.checked = visibleBoxes.length > 0 && checkedVisible.length === visibleBoxes.length;
+          selectAll.indeterminate = checkedVisible.length > 0 && checkedVisible.length < visibleBoxes.length;
+        }
+      };
+      const applySearch = () => {
+        const query = String(search?.value || "").trim().toLowerCase();
+        rows.forEach((row) => {
+	          const hay = String(row.getAttribute("data-search") || row.textContent || "").toLowerCase();
+	          const show = !query || hay.includes(query);
+	          row.classList.toggle("d-none", !show);
+	        });
+	        updateBulkState();
+	      };
+      const applySort = () => {
+        const tbody = table?.querySelector("tbody");
+        if (!tbody) return;
+        const key = sortState.key;
+        const dir = sortState.dir === "desc" ? "desc" : "asc";
+        rows.slice().sort((a, b) => {
+          const av = String(a.getAttribute(`data-sort-${key}`) || "").toLowerCase();
+          const bv = String(b.getAttribute(`data-sort-${key}`) || "").toLowerCase();
+          if (av < bv) return dir === "asc" ? -1 : 1;
+          if (av > bv) return dir === "asc" ? 1 : -1;
+          return String(a.getAttribute("data-sort-pppoe") || "").localeCompare(String(b.getAttribute("data-sort-pppoe") || ""));
+        }).forEach((row) => tbody.appendChild(row));
+        sortHeaders.forEach((header) => {
+          const keyValue = String(header.getAttribute("data-account-exemption-sort") || "").split(":")[1] || "pppoe";
+          const active = keyValue === key;
+          const indicator = header.querySelector(".surv-sort-indicator");
+          if (indicator) indicator.textContent = active ? (dir === "asc" ? "▲" : "▼") : "";
+        });
+      };
+      if (selectToggle) {
+        selectToggle.addEventListener("change", () => {
+          if (!selectToggle.checked) checkboxes.forEach((box) => { box.checked = false; });
+          updateBulkState();
+        });
+      }
+      if (selectAll) {
+        selectAll.addEventListener("change", () => {
+          const checked = selectAll.checked;
+          checkboxes.forEach((box) => {
+            if (!box.closest("tr")?.classList.contains("d-none")) box.checked = checked;
+          });
+          updateBulkState();
+        });
+      }
+	      checkboxes.forEach((box) => {
+	        box.addEventListener("change", updateBulkState);
+	        box.addEventListener("click", (event) => event.stopPropagation());
+	      });
+	      if (selectedList) {
+	        selectedList.addEventListener("click", (event) => {
+	          const btn = event.target?.closest?.("[data-account-exemption-selected-remove]");
+	          if (!btn) return;
+	          event.preventDefault();
+	          event.stopPropagation();
+	          const key = String(btn.getAttribute("data-account-exemption-selected-remove") || "").trim().toLowerCase();
+	          checkboxes.forEach((box) => {
+	            if (String(box.value || "").trim().toLowerCase() === key) box.checked = false;
+	          });
+	          updateBulkState();
+	        });
+	      }
+	      bulkBtns.forEach((btn) => {
+	        btn.addEventListener("click", () => {
+	          if (form) form.dataset.action = btn.value || "";
+        });
+      });
+      if (form) {
+        form.addEventListener("submit", (event) => {
+          form.querySelectorAll('input[name="selected_pppoe"], input[name="exemption_action"]').forEach((input) => input.remove());
+	          const selectedValues = Array.from(new Set(
+	            checkboxes
+	              .filter((box) => box.checked)
+	              .map((box) => String(box.value || "").trim())
+	              .filter(Boolean)
+	          ));
+          if (!selectedValues.length) {
+            event.preventDefault();
+            updateBulkState();
+            window.alert("Select one or more accounts before applying exemption.");
+            return;
+          }
+          const actionInput = document.createElement("input");
+          actionInput.type = "hidden";
+          actionInput.name = "exemption_action";
+          actionInput.value = form.dataset.action || "add";
+          form.appendChild(actionInput);
+          selectedValues.forEach((pppoe) => {
+            const input = document.createElement("input");
+            input.type = "hidden";
+            input.name = "selected_pppoe";
+            input.value = pppoe;
+            form.appendChild(input);
+          });
+        });
+      }
+      rows.forEach((row) => {
+        row.addEventListener("click", (event) => {
+          if (!selectToggle?.checked) return;
+          if (event.target?.closest?.("a, button, input, select, textarea, label")) return;
+          const box = row.querySelector(`[data-account-exemption-checkbox="${scope}"]`);
+          if (!box || row.classList.contains("d-none")) return;
+          box.checked = !box.checked;
+          updateBulkState();
+        });
+      });
+      sortHeaders.forEach((header) => {
+        header.addEventListener("click", () => {
+          const key = String(header.getAttribute("data-account-exemption-sort") || "").split(":")[1] || "pppoe";
+          if (sortState.key === key) {
+            sortState.dir = sortState.dir === "asc" ? "desc" : "asc";
+          } else {
+            sortState.key = key;
+            sortState.dir = key === "exempted" ? "desc" : "asc";
+          }
+          applySort();
+        });
+      });
+      if (search) {
+        search.addEventListener("input", applySearch);
+        const clearBtn = search.closest("[data-search-clearable]")?.querySelector("[data-search-clear-btn]");
+        if (clearBtn) {
+          clearBtn.addEventListener("click", () => {
+            search.value = "";
+            applySearch();
+            search.focus();
+          });
+        }
+      }
+      applySort();
+      updateBulkState();
+    };
+    bindAccountExemptionTable("usage");
 
     // Resize tables like Optical page.
     document.querySelectorAll(".rto-table-wrap").forEach((wrap) => {

@@ -4459,6 +4459,11 @@ def get_accounts_ping_checker_stats_map(account_since_map, until_iso=None):
 
     conn = get_conn()
     try:
+        if _use_postgres():
+            try:
+                conn.execute("SET jit = off")
+            except Exception:
+                pass
         values_clause = ",".join("(?, ?)" for _ in pairs)
         params = []
         for account_id, since_iso in pairs:
@@ -4615,6 +4620,11 @@ def get_optical_latest_results_since(since_iso, apply_tx_fallback=True):
     rows = []
     conn = get_conn()
     try:
+        if _use_postgres():
+            try:
+                conn.execute("SET jit = off")
+            except Exception:
+                pass
         if _use_postgres():
             rows = conn.execute(
                 """
@@ -6369,24 +6379,34 @@ def get_latest_optical_device_for_ip(ip):
         conn.close()
 
 
-def get_latest_optical_by_pppoe(pppoe_list):
+def get_latest_optical_by_pppoe(pppoe_list, apply_tx_fallback=True):
     pppoe_list = [str(item).strip() for item in (pppoe_list or []) if str(item).strip()]
+    if pppoe_list:
+        pppoe_list = list(dict.fromkeys(pppoe_list))
     if not pppoe_list:
         return {}
     rows = []
     conn = get_conn()
     try:
         if _use_postgres():
-            placeholders = ",".join("?" for _ in pppoe_list)
+            try:
+                conn.execute("SET jit = off")
+            except Exception:
+                pass
+        if _use_postgres():
             rows = conn.execute(
-                f"""
-                SELECT DISTINCT ON (pppoe)
-                    timestamp, device_id, pppoe, ip, rx, tx, priority
-                FROM optical_results
-                WHERE pppoe IN ({placeholders})
-                ORDER BY pppoe, timestamp DESC
+                """
+                SELECT o.timestamp, o.device_id, o.pppoe, o.ip, o.rx, o.tx, o.priority
+                FROM unnest(?::text[]) AS wanted(pppoe)
+                JOIN LATERAL (
+                    SELECT timestamp, device_id, pppoe, ip, rx, tx, priority
+                    FROM optical_results
+                    WHERE pppoe = wanted.pppoe
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                ) o ON true
                 """,
-                list(pppoe_list),
+                (list(pppoe_list),),
             ).fetchall()
             rows = [dict(row) for row in rows]
         else:
@@ -6406,7 +6426,8 @@ def get_latest_optical_by_pppoe(pppoe_list):
                 list(pppoe_list),
             ).fetchall()
             rows = [dict(row) for row in rows]
-        rows = _apply_optical_tx_fallback(rows)
+        if apply_tx_fallback:
+            rows = _apply_optical_tx_fallback(rows)
         return {row["pppoe"]: row for row in rows if row.get("pppoe")}
     finally:
         conn.close()

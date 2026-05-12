@@ -265,7 +265,7 @@ _surveillance_checker_cache = {"at": 0.0, "key": None, "data": {}, "refreshing":
 _surveillance_checker_compute_lock = threading.Lock()
 _SURVEILLANCE_CHECKER_CACHE_SECONDS = 300
 _surveillance_optical_cache_lock = threading.Lock()
-_surveillance_optical_cache = {"at": 0.0, "key": None, "data": {}}
+_surveillance_optical_cache = {"at": 0.0, "key": None, "data": {}, "refreshing": False}
 _SURVEILLANCE_OPTICAL_CACHE_SECONDS = 120
 _optical_status_cache_lock = threading.Lock()
 _optical_status_cache = {}
@@ -1963,6 +1963,8 @@ def _audit_human_message(username: str, action: str, resource: str, details: str
         return f"User {user} removed multiple accounts from surveillance."
     if action_l == "surveillance.settings_saved":
         return f"User {user} updated Under Surveillance settings."
+    if action_l == "surveillance.exemptions_updated":
+        return f"User {user} updated Under Surveillance account exemptions."
     if action_l == "surveillance.formatted":
         return f"User {user} formatted Under Surveillance data."
     if action_l == "optical.formatted":
@@ -4748,6 +4750,7 @@ def normalize_offline_settings(settings):
     mikrotik = settings.setdefault("mikrotik", {})
     router_enabled = mikrotik.get("router_enabled")
     mikrotik["router_enabled"] = router_enabled if isinstance(router_enabled, dict) else {}
+    settings["account_exemption"] = _normalize_account_exemption_config(settings.get("account_exemption"))
     return settings
 
 
@@ -9066,6 +9069,69 @@ def _accounts_ping_tracking_profile_context():
     )
 
 
+def _normalize_account_exemption_config(raw):
+    raw = raw if isinstance(raw, dict) else {}
+    raw_accounts = raw.get("accounts") if isinstance(raw.get("accounts"), list) else []
+    account_map = {}
+    for raw_item in raw_accounts:
+        if not isinstance(raw_item, dict):
+            raw_item = {"pppoe": raw_item}
+        pppoe = (raw_item.get("pppoe") or raw_item.get("name") or raw_item.get("username") or "").strip()
+        if not pppoe:
+            continue
+        key = pppoe.lower()
+        existing = account_map.get(key) or {}
+        account_map[key] = {
+            "pppoe": pppoe,
+            "added_at": (raw_item.get("added_at") or existing.get("added_at") or "").strip(),
+            "added_by": (raw_item.get("added_by") or existing.get("added_by") or "").strip(),
+            "note": (raw_item.get("note") or existing.get("note") or "").strip(),
+        }
+    return {
+        "accounts": sorted(account_map.values(), key=lambda item: (item.get("pppoe") or "").lower())
+    }
+
+
+def _account_exemption_map(settings):
+    settings = settings if isinstance(settings, dict) else {}
+    cfg = _normalize_account_exemption_config(settings.get("account_exemption"))
+    out = {}
+    for raw_item in cfg.get("accounts") or []:
+        if not isinstance(raw_item, dict):
+            continue
+        pppoe = (raw_item.get("pppoe") or "").strip()
+        if pppoe:
+            out[pppoe.lower()] = dict(raw_item)
+    return out
+
+
+def _row_pppoe_key(row):
+    if not isinstance(row, dict):
+        return ""
+    return (
+        row.get("pppoe")
+        or row.get("name")
+        or row.get("username")
+        or row.get("account")
+        or ""
+    ).strip().lower()
+
+
+def _row_exempted_by_account_exemption(row, exemptions):
+    pppoe_key = _row_pppoe_key(row)
+    return bool(pppoe_key and pppoe_key in (exemptions or {}))
+
+
+def _filter_rows_excluding_account_exemptions(rows, exemptions):
+    if not isinstance(rows, list):
+        return []
+    return [
+        row
+        for row in rows
+        if isinstance(row, dict) and not _row_exempted_by_account_exemption(row, exemptions)
+    ]
+
+
 def _row_disabled_by_accounts_ping_profile(row, profile_enabled, disabled_lookup):
     if not isinstance(row, dict):
         return False
@@ -9099,16 +9165,22 @@ def _filter_rows_excluding_accounts_ping_disabled(rows, profile_enabled, disable
 
 def _filter_offline_state_excluding_accounts_ping_disabled(state):
     profile_enabled, disabled_lookup = _accounts_ping_tracking_profile_context()
+    offline_exemptions = _account_exemption_map(normalize_offline_settings(get_settings("offline", OFFLINE_DEFAULTS)))
     filtered = copy.deepcopy(state if isinstance(state, dict) else {})
     filtered["rows"] = _filter_rows_excluding_accounts_ping_disabled(
         filtered.get("rows"),
         profile_enabled,
         disabled_lookup,
     )
+    filtered["rows"] = _filter_rows_excluding_account_exemptions(filtered.get("rows"), offline_exemptions)
     filtered["source_accounts"] = _filter_rows_excluding_accounts_ping_disabled(
         filtered.get("source_accounts"),
         profile_enabled,
         disabled_lookup,
+    )
+    filtered["source_accounts"] = _filter_rows_excluding_account_exemptions(
+        filtered.get("source_accounts"),
+        offline_exemptions,
     )
     tracker = filtered.get("tracker") if isinstance(filtered.get("tracker"), dict) else {}
     filtered_tracker = {}
@@ -9117,6 +9189,8 @@ def _filter_offline_state_excluding_accounts_ping_disabled(state):
             continue
         meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
         if _row_disabled_by_accounts_ping_profile(meta, profile_enabled, disabled_lookup):
+            continue
+        if _row_exempted_by_account_exemption(meta, offline_exemptions):
             continue
         filtered_tracker[key] = item
     filtered["tracker"] = filtered_tracker
@@ -9151,23 +9225,48 @@ def _accounts_ping_router_profile_context_for_wan(wan_settings):
 
 def _build_usage_summary_data(settings, state):
     profile_enabled, disabled_lookup = _accounts_ping_tracking_profile_context()
+    usage_exemptions = _account_exemption_map(settings)
     filtered_state = copy.deepcopy(state if isinstance(state, dict) else {})
     filtered_state["active_rows"] = _filter_rows_excluding_accounts_ping_disabled(
         filtered_state.get("active_rows"),
         profile_enabled,
         disabled_lookup,
     )
+    filtered_state["active_rows"] = _filter_rows_excluding_account_exemptions(
+        filtered_state.get("active_rows"),
+        usage_exemptions,
+    )
     filtered_state["offline_rows"] = _filter_rows_excluding_accounts_ping_disabled(
         filtered_state.get("offline_rows"),
         profile_enabled,
         disabled_lookup,
     )
+    filtered_state["offline_rows"] = _filter_rows_excluding_account_exemptions(
+        filtered_state.get("offline_rows"),
+        usage_exemptions,
+    )
+    for issue_key in ("peak_issues", "anytime_issues"):
+        issue_map = filtered_state.get(issue_key) if isinstance(filtered_state.get(issue_key), dict) else {}
+        filtered_state[issue_key] = {
+            key: value
+            for key, value in issue_map.items()
+            if str(key or "").split("|", 1)[-1].strip().lower() not in usage_exemptions
+        }
     return build_usage_summary_data_shared(settings, filtered_state)
 
 
 def _usage_reboot_account_stats_excluding_disabled(rows):
     profile_enabled, disabled_lookup = _accounts_ping_tracking_profile_context()
-    return _filter_rows_excluding_accounts_ping_disabled(rows, profile_enabled, disabled_lookup)
+    usage_exemptions = _account_exemption_map(get_settings("usage", USAGE_DEFAULTS))
+    filtered = _filter_rows_excluding_accounts_ping_disabled(rows, profile_enabled, disabled_lookup)
+    return _filter_rows_excluding_account_exemptions(filtered, usage_exemptions)
+
+
+def _filter_accounts_ping_devices_excluding_exemptions(devices, settings):
+    exemptions = _account_exemption_map(settings)
+    if not exemptions:
+        return devices if isinstance(devices, list) else []
+    return _filter_rows_excluding_account_exemptions(devices, exemptions)
 
 
 def _usage_account_key(router_id, pppoe):
@@ -10399,7 +10498,6 @@ def _build_optical_status_uncached(
             return ""
 
     since_iso = (datetime.utcnow() - timedelta(hours=window_hours)).replace(microsecond=0).isoformat() + "Z"
-    latest_rows = get_optical_latest_results_since(since_iso)
     optical_state = _optical_state_snapshot()
     current_devices = optical_state.get("current_devices") if isinstance(optical_state.get("current_devices"), list) else []
     current_device_ids = _optical_current_device_ids(optical_state)
@@ -10420,6 +10518,32 @@ def _build_optical_status_uncached(
             current_by_pppoe[pppoe] = item
         if ip and ip not in current_by_ip:
             current_by_ip[ip] = item
+
+    latest_rows = []
+    if known_account_map:
+        latest_pppoes = []
+        seen_latest_pppoes = set()
+        for entries in known_account_map.values():
+            for item in entries or []:
+                if not isinstance(item, dict):
+                    continue
+                pppoe_value = (item.get("pppoe") or "").strip()
+                if not pppoe_value or pppoe_value in seen_latest_pppoes:
+                    continue
+                seen_latest_pppoes.add(pppoe_value)
+                latest_pppoes.append(pppoe_value)
+        for item in current_devices:
+            if not isinstance(item, dict):
+                continue
+            pppoe_value = (item.get("pppoe") or "").strip()
+            if not pppoe_value or pppoe_value in seen_latest_pppoes:
+                continue
+            seen_latest_pppoes.add(pppoe_value)
+            latest_pppoes.append(pppoe_value)
+        latest_by_pppoe = get_latest_optical_by_pppoe(latest_pppoes, apply_tx_fallback=False)
+        latest_rows = list(latest_by_pppoe.values())
+    else:
+        latest_rows = get_optical_latest_results_since(since_iso, apply_tx_fallback=False)
 
     def _row_to_candidate(row):
         if not isinstance(row, dict):
@@ -10474,29 +10598,6 @@ def _build_optical_status_uncached(
             continue
         if _candidate_score(candidate) >= _candidate_score(existing):
             collapsed_rows[account_key] = candidate
-
-    if known_account_map:
-        missing_pppoes = []
-        for pppoe_key, entries in known_account_map.items():
-            if pppoe_key in collapsed_rows:
-                continue
-            pppoe_value = ""
-            if entries and isinstance(entries[0], dict):
-                pppoe_value = (entries[0].get("pppoe") or "").strip()
-            if pppoe_value:
-                missing_pppoes.append(pppoe_value)
-        if missing_pppoes:
-            latest_by_pppoe = get_latest_optical_by_pppoe(sorted(set(missing_pppoes)))
-            for row in latest_by_pppoe.values():
-                account_key, candidate = _row_to_candidate(row)
-                if (
-                    not account_key
-                    or not candidate
-                    or account_key in collapsed_rows
-                    or candidate.get("_current_available")
-                ):
-                    continue
-                collapsed_rows[account_key] = candidate
 
     issue_candidates = []
     stable_candidates = []
@@ -10729,12 +10830,12 @@ def _build_optical_status_uncached(
             if row.get("device_id")
         }
     )
+    series_map = get_optical_series_for_devices_since(page_device_ids, since_iso) if page_device_ids else {}
     samples_map = (
         {dev: int(samples_map_all.get(dev, 0) or 0) for dev in page_device_ids}
         if samples_map_all
-        else (get_optical_samples_for_devices_since(page_device_ids, since_iso) if page_device_ids else {})
+        else {dev: len(series_map.get(dev, []) or []) for dev in page_device_ids}
     )
-    series_map = get_optical_series_for_devices_since(page_device_ids, since_iso) if page_device_ids else {}
     gap_threshold_seconds = _optical_chart_gap_threshold_seconds(window_hours * 3600 if window_hours else 3600)
 
     def with_spark(entry):
@@ -11421,6 +11522,7 @@ async def optical_series(device_id: str, window: int = 24):
 @app.get("/settings/usage", response_class=HTMLResponse)
 async def usage_settings(request: Request):
     settings = get_settings("usage", USAGE_DEFAULTS)
+    settings["account_exemption"] = _normalize_account_exemption_config(settings.get("account_exemption"))
     active_tab = (request.query_params.get("tab") or "status").strip().lower()
     if active_tab not in ("status", "settings"):
         active_tab = "status"
@@ -11434,7 +11536,7 @@ async def usage_settings(request: Request):
         not bool(getattr(request.state, "auth_enabled", True))
         or _auth_request_has_permission(request, "usage.settings.modem_reboot.edit")
     )
-    if settings_tab not in ("general", "routers", "data", "detection", "modem_reboot", "storage"):
+    if settings_tab not in ("general", "routers", "data", "detection", "modem_reboot", "storage", "exemptions"):
         settings_tab = "general"
     if settings_tab == "modem_reboot" and not can_edit_modem_reboot:
         settings_tab = "general"
@@ -11461,13 +11563,14 @@ async def usage_settings(request: Request):
         (row.get("router_id") or "").strip(): row for row in router_state_rows if isinstance(row, dict)
     }
     accounts_ping_router_profiles = _accounts_ping_router_profile_context_for_wan(wan_settings)
+    usage_exemption_ctx = _module_account_exemption_rows("usage", settings)
     return templates.TemplateResponse(
         "settings_usage.html",
         make_context(
             request,
             {
                 "settings": settings,
-                "message": "",
+                "message": (request.query_params.get("msg") or "").strip(),
                 "active_tab": active_tab,
                 "settings_tab": settings_tab,
                 "can_run_danger_actions": can_run_danger_actions,
@@ -11475,6 +11578,8 @@ async def usage_settings(request: Request):
                 "wan_settings": wan_settings,
                 "usage_router_state": router_state_map,
                 "accounts_ping_router_profiles": accounts_ping_router_profiles,
+                "usage_exemption_rows": usage_exemption_ctx.get("rows") or [],
+                "usage_exemption_kpis": usage_exemption_ctx.get("kpis") or {},
                 "usage_state": {
                     "last_check": format_ts_ph(state.get("last_check_at")),
                     "genieacs_last_refresh": format_ts_ph(state.get("last_genieacs_refresh_at")),
@@ -11509,9 +11614,10 @@ async def usage_settings_save(request: Request):
         not bool(getattr(request.state, "auth_enabled", True))
         or _auth_request_has_permission(request, "usage.settings.modem_reboot.edit")
     )
-    if settings_tab not in ("general", "routers", "data", "detection", "modem_reboot", "storage"):
+    if settings_tab not in ("general", "routers", "data", "detection", "modem_reboot", "storage", "exemptions"):
         settings_tab = "general"
     settings = get_settings("usage", USAGE_DEFAULTS)
+    settings["account_exemption"] = _normalize_account_exemption_config(settings.get("account_exemption"))
 
     settings["mikrotik"] = settings.get("mikrotik") if isinstance(settings.get("mikrotik"), dict) else {}
     settings["genieacs"] = settings.get("genieacs") if isinstance(settings.get("genieacs"), dict) else {}
@@ -11735,6 +11841,7 @@ async def usage_settings_save(request: Request):
         else:
             message = "Settings saved."
 
+        settings["account_exemption"] = _normalize_account_exemption_config(settings.get("account_exemption"))
         save_settings("usage", settings)
     except Exception as exc:
         message = f"Save failed: {exc}"
@@ -11762,6 +11869,7 @@ async def usage_settings_save(request: Request):
         (row.get("router_id") or "").strip(): row for row in router_state_rows if isinstance(row, dict)
     }
     accounts_ping_router_profiles = _accounts_ping_router_profile_context_for_wan(wan_settings)
+    usage_exemption_ctx = _module_account_exemption_rows("usage", settings)
     return templates.TemplateResponse(
         "settings_usage.html",
         make_context(
@@ -11775,6 +11883,8 @@ async def usage_settings_save(request: Request):
                 "wan_settings": wan_settings,
                 "usage_router_state": router_state_map,
                 "accounts_ping_router_profiles": accounts_ping_router_profiles,
+                "usage_exemption_rows": usage_exemption_ctx.get("rows") or [],
+                "usage_exemption_kpis": usage_exemption_ctx.get("kpis") or {},
                 "usage_state": {
                     "last_check": format_ts_ph(state.get("last_check_at")),
                     "genieacs_last_refresh": format_ts_ph(state.get("last_genieacs_refresh_at")),
@@ -11796,9 +11906,188 @@ async def usage_settings_save(request: Request):
     )
 
 
+def _scrub_module_tracking_state_for_exemptions(module, pppoes):
+    module = (module or "").strip().lower()
+    blocked = {str(item or "").strip().lower() for item in pppoes or [] if str(item or "").strip()}
+    if not blocked:
+        return
+
+    def _keep_row(row):
+        return not _row_exempted_by_account_exemption(row, blocked)
+
+    if module == "usage":
+        state = get_state("usage_state", {})
+        state = copy.deepcopy(state if isinstance(state, dict) else {})
+        for key in ("active_rows", "offline_rows"):
+            rows = state.get(key) if isinstance(state.get(key), list) else []
+            state[key] = [row for row in rows if isinstance(row, dict) and _keep_row(row)]
+        for key in ("peak_issues", "anytime_issues"):
+            issue_map = state.get(key) if isinstance(state.get(key), dict) else {}
+            state[key] = {
+                raw_key: value
+                for raw_key, value in issue_map.items()
+                if str(raw_key or "").split("|", 1)[-1].strip().lower() not in blocked
+            }
+        prev_bytes = state.get("prev_bytes") if isinstance(state.get("prev_bytes"), dict) else {}
+        state["prev_bytes"] = {
+            raw_key: value
+            for raw_key, value in prev_bytes.items()
+            if str(raw_key or "").split("|", 1)[-1].strip().lower() not in blocked
+        }
+        reboot_state = state.get("modem_reboot") if isinstance(state.get("modem_reboot"), dict) else {}
+        if reboot_state:
+            for key in ("current", "issue_suppression"):
+                value_map = reboot_state.get(key) if isinstance(reboot_state.get(key), dict) else {}
+                reboot_state[key] = {
+                    raw_key: value
+                    for raw_key, value in value_map.items()
+                    if str(raw_key or "").split("|", 1)[-1].strip().lower() not in blocked
+                }
+            state["modem_reboot"] = reboot_state
+        save_state("usage_state", state)
+        return
+
+    if module == "offline":
+        state = get_state("offline_state", {})
+        state = copy.deepcopy(state if isinstance(state, dict) else {})
+        for key in ("rows", "source_accounts"):
+            rows = state.get(key) if isinstance(state.get(key), list) else []
+            state[key] = [row for row in rows if isinstance(row, dict) and _keep_row(row)]
+        tracker = state.get("tracker") if isinstance(state.get("tracker"), dict) else {}
+        filtered_tracker = {}
+        for raw_key, item in tracker.items():
+            meta = item.get("meta") if isinstance(item, dict) and isinstance(item.get("meta"), dict) else {}
+            key_pppoe = str(raw_key or "").split("|", 1)[-1].strip().lower()
+            if key_pppoe in blocked or _row_exempted_by_account_exemption(meta, blocked):
+                continue
+            filtered_tracker[raw_key] = item
+        state["tracker"] = filtered_tracker
+        state["active_accounts"] = sum(
+            1
+            for row in state.get("source_accounts") or []
+            if isinstance(row, dict) and str(row.get("source_status") or "").strip().lower() == "active"
+        )
+        save_state("offline_state", state)
+        return
+
+    if module == "accounts_ping":
+        state = get_state("accounts_ping_state", {})
+        state = copy.deepcopy(state if isinstance(state, dict) else {})
+        devices = state.get("devices") if isinstance(state.get("devices"), list) else []
+        remove_account_ids = {
+            (device.get("account_id") or "").strip()
+            for device in devices
+            if isinstance(device, dict) and _row_exempted_by_account_exemption(device, blocked)
+        }
+        state["devices"] = [row for row in devices if isinstance(row, dict) and _keep_row(row)]
+        accounts = state.get("accounts") if isinstance(state.get("accounts"), dict) else {}
+        if remove_account_ids:
+            state["accounts"] = {
+                account_id: value
+                for account_id, value in accounts.items()
+                if str(account_id or "").strip() not in remove_account_ids
+            }
+        state["devices_refreshed_at"] = ""
+        save_state("accounts_ping_state", state)
+
+
+async def _module_account_exemptions_save(
+    request,
+    module,
+    defaults,
+    normalizer,
+    redirect_base,
+    url_scope="",
+    module_label="",
+):
+    url_scope = (url_scope or module or "").strip()
+    module_label = (module_label or str(module or "").replace("_", " ").title()).strip()
+    form = await request.form()
+    action = (form.get("exemption_action") or "").strip().lower()
+    selected = []
+    seen = set()
+    for raw_value in form.getlist("selected_pppoe"):
+        pppoe = str(raw_value or "").strip()
+        key = pppoe.lower()
+        if pppoe and key not in seen:
+            selected.append(pppoe)
+            seen.add(key)
+    if action not in ("add", "remove") or not selected:
+        msg = urllib.parse.quote("Select accounts before applying exemption.")
+        return RedirectResponse(url=f"{redirect_base}?tab=settings&settings_tab=exemptions&msg={msg}#{url_scope}-exemptions", status_code=303)
+
+    settings = get_settings(module, defaults)
+    if callable(normalizer):
+        settings = normalizer(settings)
+    settings["account_exemption"] = _normalize_account_exemption_config(settings.get("account_exemption"))
+    exemptions = _account_exemption_map(settings)
+    now_iso = utc_now_iso()
+    actor = _auth_actor_name(request, default="admin")
+    changed = False
+
+    if action == "add":
+        for pppoe in selected:
+            key = pppoe.lower()
+            if key in exemptions:
+                continue
+            exemptions[key] = {
+                "pppoe": pppoe,
+                "added_at": now_iso,
+                "added_by": actor,
+                "note": f"Excluded from automatic {module_label} tracking.",
+            }
+            changed = True
+    else:
+        for pppoe in selected:
+            key = pppoe.lower()
+            if key in exemptions:
+                exemptions.pop(key, None)
+                changed = True
+
+    if changed:
+        settings["account_exemption"] = {
+            "accounts": sorted(exemptions.values(), key=lambda item: (item.get("pppoe") or "").lower())
+        }
+        save_settings(module, settings)
+        if action == "add":
+            _scrub_module_tracking_state_for_exemptions(module, selected)
+        _auth_log_event(
+            request,
+            action=f"{module}.exemptions_updated",
+            resource=f"/settings/{module}/exemptions",
+            details=f"action={action};count={len(selected)};accounts={', '.join(selected[:20])}",
+        )
+
+    if action == "add":
+        msg_text = f"Tagged {len(selected)} account(s) as exempt from {module_label} tracking."
+    else:
+        msg_text = f"Removed exemption from {len(selected)} account(s)."
+    msg = urllib.parse.quote(msg_text)
+    return RedirectResponse(url=f"{redirect_base}?tab=settings&settings_tab=exemptions&msg={msg}#{url_scope}-exemptions", status_code=303)
+
+
+@app.post("/settings/usage/exemptions", response_class=HTMLResponse)
+async def usage_account_exemptions_save(request: Request):
+    return await _module_account_exemptions_save(request, "usage", USAGE_DEFAULTS, None, "/settings/usage")
+
+
+@app.post("/settings/accounts-ping/exemptions", response_class=HTMLResponse)
+async def accounts_ping_account_exemptions_save(request: Request):
+    return await _module_account_exemptions_save(
+        request,
+        "accounts_ping",
+        ACCOUNTS_PING_DEFAULTS,
+        lambda settings: _accounts_ping_tuning_context(settings)[0],
+        "/settings/accounts-ping",
+        url_scope="accounts-ping",
+        module_label="Accounts Ping",
+    )
+
+
 @app.post("/settings/usage/test_genieacs", response_class=HTMLResponse)
 async def usage_test_genieacs(request: Request):
     settings = get_settings("usage", USAGE_DEFAULTS)
+    settings["account_exemption"] = _normalize_account_exemption_config(settings.get("account_exemption"))
     message = ""
     started = time.monotonic()
     try:
@@ -11855,6 +12144,7 @@ async def usage_test_genieacs(request: Request):
         (row.get("router_id") or "").strip(): row for row in router_state_rows if isinstance(row, dict)
     }
     accounts_ping_router_profiles = _accounts_ping_router_profile_context_for_wan(wan_settings)
+    usage_exemption_ctx = _module_account_exemption_rows("usage", settings)
     return templates.TemplateResponse(
         "settings_usage.html",
         make_context(
@@ -11868,6 +12158,8 @@ async def usage_test_genieacs(request: Request):
                 "wan_settings": wan_settings,
                 "usage_router_state": router_state_map,
                 "accounts_ping_router_profiles": accounts_ping_router_profiles,
+                "usage_exemption_rows": usage_exemption_ctx.get("rows") or [],
+                "usage_exemption_kpis": usage_exemption_ctx.get("kpis") or {},
                 "usage_state": {
                     "last_check": format_ts_ph(state.get("last_check_at")),
                     "genieacs_last_refresh": format_ts_ph(state.get("last_genieacs_refresh_at")),
@@ -11995,7 +12287,7 @@ async def offline_settings(request: Request):
     if active_tab not in ("status", "settings", "telegram"):
         active_tab = "status"
     settings_tab = (request.query_params.get("settings_tab") or "general").strip().lower()
-    if settings_tab not in ("general", "routers", "radius"):
+    if settings_tab not in ("general", "routers", "radius", "exemptions"):
         settings_tab = "general"
     radius_tab = (request.query_params.get("radius_tab") or "settings").strip().lower()
     if radius_tab not in ("settings", "accounts"):
@@ -12024,13 +12316,14 @@ async def offline_settings(request: Request):
     wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
     accounts_ping_router_profiles = _accounts_ping_router_profile_context_for_wan(wan_settings)
     offline_rule_views = _build_offline_rule_views(state, settings)
+    offline_exemption_ctx = _module_account_exemption_rows("offline", settings)
     return templates.TemplateResponse(
         "settings_offline.html",
         make_context(
             request,
             {
                 "settings": settings,
-                "message": "",
+                "message": (request.query_params.get("msg") or "").strip(),
                 "active_tab": active_tab,
                 "settings_tab": settings_tab,
                 "radius_tab": radius_tab,
@@ -12041,6 +12334,8 @@ async def offline_settings(request: Request):
                 "offline_new_view_seconds": _OFFLINE_NEW_VIEW_SECONDS,
                 "wan_settings": wan_settings,
                 "accounts_ping_router_profiles": accounts_ping_router_profiles,
+                "offline_exemption_rows": offline_exemption_ctx.get("rows") or [],
+                "offline_exemption_kpis": offline_exemption_ctx.get("kpis") or {},
             },
         ),
     )
@@ -12050,7 +12345,7 @@ async def offline_settings(request: Request):
 async def offline_settings_save(request: Request):
     form = await request.form()
     settings_tab = (form.get("settings_tab") or "general").strip().lower() or "general"
-    if settings_tab not in ("general", "routers", "radius"):
+    if settings_tab not in ("general", "routers", "radius", "exemptions"):
         settings_tab = "general"
     radius_tab = (form.get("radius_tab") or "settings").strip().lower()
     if radius_tab not in ("settings", "accounts"):
@@ -12108,9 +12403,11 @@ async def offline_settings_save(request: Request):
             settings["radius"]["list_command"] = (form.get("radius_list_command") or "").strip()
         else:
             pass
+        settings["account_exemption"] = _normalize_account_exemption_config(settings.get("account_exemption"))
         save_settings("offline", settings)
     except Exception:
         # avoid leaking secrets in messages; just fall through to redirect.
+        settings["account_exemption"] = _normalize_account_exemption_config(settings.get("account_exemption"))
         save_settings("offline", settings)
 
     return RedirectResponse(
@@ -12145,6 +12442,7 @@ async def offline_test_radius(request: Request):
     }
     accounts_ping_router_profiles = _accounts_ping_router_profile_context_for_wan(wan_settings)
     offline_rule_views = _build_offline_rule_views(state, settings)
+    offline_exemption_ctx = _module_account_exemption_rows("offline", settings)
     return templates.TemplateResponse(
         "settings_offline.html",
         make_context(
@@ -12162,9 +12460,16 @@ async def offline_test_radius(request: Request):
                 "offline_new_view_seconds": _OFFLINE_NEW_VIEW_SECONDS,
                 "wan_settings": wan_settings,
                 "accounts_ping_router_profiles": accounts_ping_router_profiles,
+                "offline_exemption_rows": offline_exemption_ctx.get("rows") or [],
+                "offline_exemption_kpis": offline_exemption_ctx.get("kpis") or {},
             },
         ),
     )
+
+
+@app.post("/settings/offline/exemptions", response_class=HTMLResponse)
+async def offline_account_exemptions_save(request: Request):
+    return await _module_account_exemptions_save(request, "offline", OFFLINE_DEFAULTS, normalize_offline_settings, "/settings/offline")
 
 
 @app.post("/settings/offline/format", response_class=HTMLResponse)
@@ -15265,6 +15570,7 @@ def _accounts_ping_tuning_context(settings):
     normalized["ping"] = ping_cfg
     normalized["source"] = source_cfg
     normalized["storage"] = storage_cfg
+    normalized["account_exemption"] = _normalize_account_exemption_config(normalized.get("account_exemption"))
 
     if cpu_cores <= 2 or ram_gb < 4:
         recommendation = {
@@ -15577,6 +15883,7 @@ def build_accounts_ping_status(
     disabled_page = _parse_table_page(disabled_page, default=1)
     state = state if isinstance(state, dict) else get_state("accounts_ping_state", {"accounts": {}, "devices": []})
     devices = _accounts_ping_state_devices(state)
+    devices = _filter_accounts_ping_devices_excluding_exemptions(devices, settings)
     account_map = {}
     for device in devices:
         ip = (device.get("ip") or "").strip()
@@ -15935,6 +16242,7 @@ def _accounts_ping_status_cache_key(settings, state, window_hours, limit, issues
     accounts = state.get("accounts") if isinstance(state.get("accounts"), dict) else {}
     payload = {
         "classification": classification,
+        "account_exemption": _normalize_account_exemption_config((settings or {}).get("account_exemption")),
         "devices_refreshed_at": (state.get("devices_refreshed_at") or "").strip(),
         "device_count": len(devices),
         "account_count": len(accounts),
@@ -16247,7 +16555,7 @@ def render_accounts_ping_response(
 ):
     can_run_danger_actions = _auth_request_has_permission(request, "accounts_ping.settings.danger.run")
     settings_tab = (settings_tab or "general").strip().lower()
-    if settings_tab not in ("general", "source", "classification", "storage"):
+    if settings_tab not in ("general", "source", "classification", "storage", "exemptions"):
         settings_tab = "general"
     settings, tuning = _accounts_ping_tuning_context(settings)
     ping_state = get_state("accounts_ping_state", {})
@@ -16300,6 +16608,7 @@ def render_accounts_ping_response(
     }
     wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
     router_profile_context = _build_accounts_ping_router_profile_context(settings, router_state_map, wan_settings)
+    accounts_ping_exemption_ctx = _module_account_exemption_rows("accounts_ping", settings)
     return templates.TemplateResponse(
         "settings_accounts_ping.html",
         make_context(
@@ -16318,6 +16627,8 @@ def render_accounts_ping_response(
                 "accounts_ping_router_state": router_state_map,
                 "accounts_ping_router_profiles": router_profile_context,
                 "accounts_ping_classification_patch": classification_patch,
+                "accounts_ping_exemption_rows": accounts_ping_exemption_ctx.get("rows") or [],
+                "accounts_ping_exemption_kpis": accounts_ping_exemption_ctx.get("kpis") or {},
             },
         ),
     )
@@ -16709,6 +17020,7 @@ def _accounts_ping_settings_from_form(form):
             "rollup_retention_days": parse_int(form, "rollup_retention_days", 365),
             "bucket_seconds": parse_int(form, "bucket_seconds", 60),
         },
+        "account_exemption": _normalize_account_exemption_config(existing.get("account_exemption")),
     }
 
 
@@ -16731,7 +17043,7 @@ async def accounts_ping_settings_save(request: Request):
         save_state("accounts_ping_state", state)
     render_params = _accounts_ping_render_params_from_form(request, form)
     active_tab = form.get("active_tab", "settings")
-    if settings_tab not in ("general", "source", "classification", "storage"):
+    if settings_tab not in ("general", "source", "classification", "storage", "exemptions"):
         settings_tab = "general"
     applied_classification = _accounts_ping_applied_classification(settings, state)
     if settings_tab == "classification" and _normalize_accounts_ping_classification(settings.get("classification")) != applied_classification:
@@ -16758,6 +17070,7 @@ async def accounts_ping_settings_test(request: Request):
             previous_devices=state.get("devices") if isinstance(state.get("devices"), list) else [],
             now=datetime.utcnow(),
         )
+        devices = _filter_accounts_ping_devices_excluding_exemptions(devices, cfg)
         state["devices"] = devices
         state["router_status"] = router_status
         state["devices_refreshed_at"] = utc_now_iso()
@@ -17760,7 +18073,7 @@ def normalize_surveillance_settings(raw):
     cfg = copy.deepcopy(SURVEILLANCE_DEFAULTS)
     if isinstance(raw, dict):
         cfg["enabled"] = bool(raw.get("enabled", cfg["enabled"]))
-        for key in ("ping", "burst", "backoff", "stability", "auto_add"):
+        for key in ("ping", "burst", "backoff", "stability", "auto_add", "account_exemption"):
             if isinstance(raw.get(key), dict) and isinstance(cfg.get(key), dict):
                 cfg[key].update(raw[key])
         if isinstance(raw.get("entries"), list):
@@ -17898,6 +18211,26 @@ def normalize_surveillance_settings(raw):
     if mae < 0:
         mae = 0
     cfg["auto_add"]["max_add_per_eval"] = mae
+    exemption_cfg = cfg.get("account_exemption") if isinstance(cfg.get("account_exemption"), dict) else {}
+    raw_exemptions = exemption_cfg.get("accounts") if isinstance(exemption_cfg.get("accounts"), list) else []
+    exemption_map = {}
+    for raw_item in raw_exemptions:
+        if not isinstance(raw_item, dict):
+            raw_item = {"pppoe": raw_item}
+        pppoe = (raw_item.get("pppoe") or raw_item.get("name") or "").strip()
+        if not pppoe:
+            continue
+        key = pppoe.lower()
+        existing = exemption_map.get(key) or {}
+        exemption_map[key] = {
+            "pppoe": pppoe,
+            "added_at": (raw_item.get("added_at") or existing.get("added_at") or "").strip(),
+            "added_by": (raw_item.get("added_by") or existing.get("added_by") or "").strip(),
+            "note": (raw_item.get("note") or existing.get("note") or "").strip(),
+        }
+    cfg["account_exemption"] = {
+        "accounts": sorted(exemption_map.values(), key=lambda item: (item.get("pppoe") or "").lower())
+    }
     for entry in cfg.get("entries") or []:
         if not isinstance(entry, dict):
             continue
@@ -17938,6 +18271,261 @@ def normalize_surveillance_settings(raw):
         )
     cfg["entries"] = normalized
     return cfg
+
+
+def _surveillance_exemption_map(settings):
+    cfg = normalize_surveillance_settings(settings)
+    raw_accounts = ((cfg.get("account_exemption") or {}).get("accounts") or [])
+    out = {}
+    for raw_item in raw_accounts:
+        if not isinstance(raw_item, dict):
+            continue
+        pppoe = (raw_item.get("pppoe") or "").strip()
+        if not pppoe:
+            continue
+        out[pppoe.lower()] = dict(raw_item)
+    return out
+
+
+def _surveillance_account_exemption_rows(settings, entry_map=None):
+    settings = normalize_surveillance_settings(settings)
+    exemptions = _surveillance_exemption_map(settings)
+    entry_map = entry_map if isinstance(entry_map, dict) else _surveillance_entry_map(settings)
+    wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    routers = wan_settings.get("pppoe_routers") if isinstance(wan_settings.get("pppoe_routers"), list) else []
+    router_labels = {}
+    for router in routers:
+        if not isinstance(router, dict):
+            continue
+        router_id = (router.get("id") or "").strip()
+        if not router_id:
+            continue
+        router_labels[router_id] = (router.get("name") or router_id).strip()
+
+    rows_by_key = {}
+
+    def _add_row(raw, source_label):
+        if not isinstance(raw, dict):
+            return
+        pppoe = (raw.get("pppoe") or raw.get("name") or raw.get("username") or "").strip()
+        if not pppoe:
+            return
+        router_id = (raw.get("router_id") or "").strip()
+        router_name = (raw.get("router_name") or router_labels.get(router_id) or router_id or "").strip()
+        key = f"{router_id.lower()}|{pppoe.lower()}"
+        existing = rows_by_key.get(key) or {}
+        profile = (raw.get("profile") or raw.get("service_profile") or raw.get("groups") or existing.get("profile") or "").strip()
+        ip = (raw.get("ip") or raw.get("address") or existing.get("ip") or "").strip()
+        exempt = exemptions.get(pppoe.lower()) or {}
+        active_entry = entry_map.get(pppoe) if isinstance(entry_map.get(pppoe), dict) else None
+        rows_by_key[key] = {
+            "pppoe": pppoe,
+            "router_id": router_id,
+            "router_name": router_name,
+            "profile": profile,
+            "ip": ip,
+            "source": source_label or existing.get("source") or "State",
+            "is_exempt": bool(exempt),
+            "exempt_added_at": exempt.get("added_at") or "",
+            "exempt_added_at_ph": format_ts_ph(exempt.get("added_at")) if exempt.get("added_at") else "",
+            "exempt_added_by": exempt.get("added_by") or "",
+            "surveillance_status": (active_entry.get("status") or "under") if active_entry else "",
+            "surveillance_added_mode": (active_entry.get("added_mode") or "") if active_entry else "",
+        }
+
+    usage_state = get_state("usage_state", {})
+    secrets_cache = usage_state.get("secrets_cache") if isinstance(usage_state.get("secrets_cache"), dict) else {}
+    for router_id, secrets in secrets_cache.items():
+        router_id = str(router_id or "").strip()
+        if router_id and router_id not in router_labels:
+            continue
+        for secret in secrets if isinstance(secrets, list) else []:
+            if not isinstance(secret, dict):
+                continue
+            _add_row(
+                {
+                    "pppoe": (secret.get("name") or "").strip(),
+                    "router_id": router_id,
+                    "router_name": router_labels.get(router_id, router_id),
+                    "profile": (secret.get("profile") or "").strip(),
+                },
+                "MikroTik secrets cache",
+            )
+
+    for row in usage_state.get("active_rows") if isinstance(usage_state.get("active_rows"), list) else []:
+        _add_row(row, "Usage active session")
+    for row in usage_state.get("offline_rows") if isinstance(usage_state.get("offline_rows"), list) else []:
+        _add_row(row, "Usage secrets cache")
+
+    offline_state = get_state("offline_state", {})
+    for row in offline_state.get("source_accounts") if isinstance(offline_state.get("source_accounts"), list) else []:
+        _add_row(row, "Offline source")
+
+    accounts_ping_state = get_state("accounts_ping_state", {})
+    for device in accounts_ping_state.get("devices") if isinstance(accounts_ping_state.get("devices"), list) else []:
+        _add_row(device, "Accounts Ping source")
+
+    for exempt in exemptions.values():
+        pppoe = (exempt.get("pppoe") or "").strip()
+        if not pppoe:
+            continue
+        if not any((row.get("pppoe") or "").strip().lower() == pppoe.lower() for row in rows_by_key.values()):
+            _add_row({"pppoe": pppoe}, "Exemption only")
+
+    rows = sorted(
+        rows_by_key.values(),
+        key=lambda row: (
+            not bool(row.get("is_exempt")),
+            (row.get("pppoe") or "").lower(),
+            (row.get("router_name") or row.get("router_id") or "").lower(),
+        ),
+    )
+    unique_pppoe = {(row.get("pppoe") or "").strip().lower() for row in rows if (row.get("pppoe") or "").strip()}
+    exempt_pppoe = set(exemptions.keys())
+    manual_active = {
+        key
+        for key, entry in (entry_map or {}).items()
+        if isinstance(entry, dict)
+        and (entry.get("added_mode") or "manual").strip().lower() != "auto"
+        and key.lower() in exempt_pppoe
+    }
+    auto_active = {
+        key
+        for key, entry in (entry_map or {}).items()
+        if isinstance(entry, dict)
+        and (entry.get("added_mode") or "manual").strip().lower() == "auto"
+        and key.lower() in exempt_pppoe
+    }
+    return {
+        "rows": rows,
+        "kpis": {
+            "total_accounts": len(unique_pppoe),
+            "router_rows": len(rows),
+            "exempted": len(exempt_pppoe),
+            "manual_active": len(manual_active),
+            "auto_active": len(auto_active),
+            "routers": len(router_labels),
+        },
+    }
+
+
+def _module_account_exemption_rows(module, settings):
+    module = (module or "").strip().lower()
+    settings = settings if isinstance(settings, dict) else {}
+    exemptions = _account_exemption_map(settings)
+    wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    routers = wan_settings.get("pppoe_routers") if isinstance(wan_settings.get("pppoe_routers"), list) else []
+    router_labels = {}
+    for router in routers:
+        if not isinstance(router, dict):
+            continue
+        router_id = (router.get("id") or "").strip()
+        if not router_id:
+            continue
+        router_labels[router_id] = (router.get("name") or router_id).strip()
+
+    rows_by_key = {}
+
+    def _add_row(raw, source_label, status_label=""):
+        if not isinstance(raw, dict):
+            return
+        pppoe = (raw.get("pppoe") or raw.get("name") or raw.get("username") or "").strip()
+        if not pppoe:
+            return
+        router_id = (raw.get("router_id") or "").strip()
+        router_name = (raw.get("router_name") or router_labels.get(router_id) or router_id or "").strip()
+        key = f"{router_id.lower()}|{pppoe.lower()}"
+        existing = rows_by_key.get(key) or {}
+        profile = (raw.get("profile") or raw.get("service_profile") or raw.get("groups") or existing.get("profile") or "").strip()
+        ip = (raw.get("ip") or raw.get("address") or existing.get("ip") or "").strip()
+        exempt = exemptions.get(pppoe.lower()) or {}
+        source_status = (
+            status_label
+            or raw.get("source_status")
+            or raw.get("current_status_label")
+            or raw.get("status")
+            or existing.get("module_status")
+            or ""
+        )
+        rows_by_key[key] = {
+            "pppoe": pppoe,
+            "router_id": router_id,
+            "router_name": router_name,
+            "profile": profile,
+            "ip": ip,
+            "source": source_label or existing.get("source") or "State",
+            "module_status": str(source_status or "").strip(),
+            "is_exempt": bool(exempt),
+            "exempt_added_at": exempt.get("added_at") or "",
+            "exempt_added_at_ph": format_ts_ph(exempt.get("added_at")) if exempt.get("added_at") else "",
+            "exempt_added_by": exempt.get("added_by") or "",
+        }
+
+    usage_state = get_state("usage_state", {})
+    secrets_cache = usage_state.get("secrets_cache") if isinstance(usage_state.get("secrets_cache"), dict) else {}
+    for router_id, secrets in secrets_cache.items():
+        router_id = str(router_id or "").strip()
+        if router_id and router_id not in router_labels:
+            continue
+        for secret in secrets if isinstance(secrets, list) else []:
+            if not isinstance(secret, dict):
+                continue
+            _add_row(
+                {
+                    "pppoe": (secret.get("name") or "").strip(),
+                    "router_id": router_id,
+                    "router_name": router_labels.get(router_id, router_id),
+                    "profile": (secret.get("profile") or "").strip(),
+                    "disabled": secret.get("disabled"),
+                },
+                "MikroTik secrets cache",
+                "Secret",
+            )
+
+    for row in usage_state.get("active_rows") if isinstance(usage_state.get("active_rows"), list) else []:
+        _add_row(row, "Usage active session", "Active")
+    for row in usage_state.get("offline_rows") if isinstance(usage_state.get("offline_rows"), list) else []:
+        _add_row(row, "Usage secrets cache", "Inactive")
+
+    offline_state = get_state("offline_state", {})
+    for row in offline_state.get("source_accounts") if isinstance(offline_state.get("source_accounts"), list) else []:
+        status = (row.get("source_status") or "").strip().lower()
+        _add_row(row, "Offline source", "Online" if status == "active" else "Offline" if status == "inactive" else status)
+    for row in offline_state.get("rows") if isinstance(offline_state.get("rows"), list) else []:
+        _add_row(row, "Offline current list", "Offline")
+
+    accounts_ping_state = get_state("accounts_ping_state", {})
+    for device in accounts_ping_state.get("devices") if isinstance(accounts_ping_state.get("devices"), list) else []:
+        _add_row(device, "Accounts Ping source", "Source")
+
+    for exempt in exemptions.values():
+        pppoe = (exempt.get("pppoe") or "").strip()
+        if not pppoe:
+            continue
+        if not any((row.get("pppoe") or "").strip().lower() == pppoe.lower() for row in rows_by_key.values()):
+            _add_row({"pppoe": pppoe}, "Exemption only", "Exempted")
+
+    rows = sorted(
+        rows_by_key.values(),
+        key=lambda row: (
+            not bool(row.get("is_exempt")),
+            (row.get("pppoe") or "").lower(),
+            (row.get("router_name") or row.get("router_id") or "").lower(),
+        ),
+    )
+    unique_pppoe = {(row.get("pppoe") or "").strip().lower() for row in rows if (row.get("pppoe") or "").strip()}
+    exempt_pppoe = set(exemptions.keys())
+    return {
+        "rows": rows,
+        "kpis": {
+            "total_accounts": len(unique_pppoe),
+            "router_rows": len(rows),
+            "exempted": len(exempt_pppoe),
+            "allowed": max(len(unique_pppoe - exempt_pppoe), 0),
+            "routers": len(router_labels),
+            "module": module,
+        },
+    }
 
 
 def _surveillance_entry_map(settings):
@@ -18306,15 +18894,49 @@ def _surveillance_checker_maps(entry_map, now_utc=None):
     return checker_anchor_by_pppoe, checker_since_by_account
 
 
+def _cap_surveillance_checker_windows(checker_anchor_by_pppoe, checker_since_by_account, now_utc=None, window_minutes=0):
+    try:
+        minutes = int(window_minutes or 0)
+    except Exception:
+        minutes = 0
+    if minutes <= 0:
+        return checker_anchor_by_pppoe, checker_since_by_account
+    now = now_utc if isinstance(now_utc, datetime) else datetime.utcnow().replace(microsecond=0)
+    window_start_dt = now - timedelta(minutes=minutes)
+    window_start_iso = window_start_dt.replace(microsecond=0).isoformat() + "Z"
+
+    capped_anchor = {}
+    for pppoe, raw_meta in (checker_anchor_by_pppoe or {}).items():
+        meta = dict(raw_meta or {})
+        since_iso = (meta.get("since_iso") or "").strip()
+        since_dt = meta.get("since_dt")
+        if not isinstance(since_dt, datetime):
+            since_dt = _parse_iso_z(since_iso)
+        if since_dt and since_dt < window_start_dt:
+            meta["since_iso"] = window_start_iso
+            meta["since_dt"] = window_start_dt
+            meta["source"] = "window"
+        capped_anchor[pppoe] = meta
+
+    capped_since = {}
+    for account_id, since_iso in (checker_since_by_account or {}).items():
+        since = (since_iso or "").strip()
+        since_dt = _parse_iso_z(since)
+        capped_since[account_id] = window_start_iso if since_dt and since_dt < window_start_dt else since
+    return capped_anchor, capped_since
+
+
 def _surveillance_checker_refresh_async(target_key, payload, target_until_iso):
     try:
         fresh_rows = get_accounts_ping_checker_stats_map(payload, target_until_iso)
         if not isinstance(fresh_rows, dict):
             fresh_rows = {}
+        full_rows = {account_id: _surveillance_checker_stats_zero() for account_id in (payload or {})}
+        full_rows.update(fresh_rows)
         with _surveillance_checker_cache_lock:
             if _surveillance_checker_cache.get("key") == target_key:
                 _surveillance_checker_cache["at"] = time.monotonic()
-                _surveillance_checker_cache["data"] = copy.deepcopy(fresh_rows)
+                _surveillance_checker_cache["data"] = copy.deepcopy(full_rows)
     finally:
         with _surveillance_checker_cache_lock:
             if _surveillance_checker_cache.get("key") == target_key:
@@ -18386,6 +19008,25 @@ def _prime_surveillance_checker_cache(entry_map, reset_pppoes=None, now_utc=None
     return checker_anchor_by_pppoe, checker_since_by_account
 
 
+def _surveillance_checker_partial_cached_data(cached_key, cached_data, normalized):
+    old_pairs = cached_key if isinstance(cached_key, tuple) else tuple(cached_key or [])
+    old_map = {}
+    for item in old_pairs:
+        if isinstance(item, tuple) and len(item) == 2:
+            aid = (item[0] or "").strip()
+            since_iso = (item[1] or "").strip()
+            if aid and since_iso:
+                old_map[aid] = since_iso
+    out = {}
+    for account_id, since_iso in normalized.items():
+        row = cached_data.get(account_id) if isinstance(cached_data, dict) else None
+        if old_map.get(account_id) == since_iso and isinstance(row, dict):
+            out[account_id] = copy.deepcopy(row)
+        else:
+            out[account_id] = _surveillance_checker_stats_zero()
+    return out
+
+
 def _get_surveillance_checker_stats_cached(account_since_map, until_iso):
     if not isinstance(account_since_map, dict) or not account_since_map:
         return {}
@@ -18421,6 +19062,21 @@ def _get_surveillance_checker_stats_cached(account_since_map, until_iso):
                 ).start()
             return copy.deepcopy(cached_data)
 
+        if cached_key != cache_key or not refreshing:
+            partial = _surveillance_checker_partial_cached_data(cached_key, cached_data, normalized)
+            _surveillance_checker_cache["key"] = cache_key
+            _surveillance_checker_cache["at"] = 0.0
+            _surveillance_checker_cache["data"] = copy.deepcopy(partial)
+            _surveillance_checker_cache["refreshing"] = True
+            threading.Thread(
+                target=_surveillance_checker_refresh_async,
+                args=(cache_key, dict(normalized), until_iso),
+                daemon=True,
+            ).start()
+            return partial
+        if cached_key == cache_key:
+            return copy.deepcopy(cached_data)
+
     with _surveillance_checker_compute_lock:
         with _surveillance_checker_cache_lock:
             cached_key = _surveillance_checker_cache.get("key")
@@ -18431,12 +19087,29 @@ def _get_surveillance_checker_stats_cached(account_since_map, until_iso):
         fresh = get_accounts_ping_checker_stats_map(normalized, until_iso)
         if not isinstance(fresh, dict):
             fresh = {}
+        full = {account_id: _surveillance_checker_stats_zero() for account_id in normalized}
+        full.update(fresh)
         with _surveillance_checker_cache_lock:
             _surveillance_checker_cache["key"] = cache_key
             _surveillance_checker_cache["at"] = time.monotonic()
-            _surveillance_checker_cache["data"] = copy.deepcopy(fresh)
+            _surveillance_checker_cache["data"] = copy.deepcopy(full)
             _surveillance_checker_cache["refreshing"] = False
-    return fresh
+    return full
+
+
+def _surveillance_optical_refresh_async(target_key, pppoes):
+    try:
+        fresh = get_latest_optical_by_pppoe(pppoes, apply_tx_fallback=False)
+        if not isinstance(fresh, dict):
+            fresh = {}
+        with _surveillance_optical_cache_lock:
+            if _surveillance_optical_cache.get("key") == target_key:
+                _surveillance_optical_cache["at"] = time.monotonic()
+                _surveillance_optical_cache["data"] = copy.deepcopy(fresh)
+    finally:
+        with _surveillance_optical_cache_lock:
+            if _surveillance_optical_cache.get("key") == target_key:
+                _surveillance_optical_cache["refreshing"] = False
 
 
 def _get_surveillance_optical_latest_cached(pppoes):
@@ -18451,15 +19124,42 @@ def _get_surveillance_optical_latest_cached(pppoes):
         cached_key = _surveillance_optical_cache.get("key")
         cached_at = float(_surveillance_optical_cache.get("at") or 0.0)
         cached_data = _surveillance_optical_cache.get("data") if isinstance(_surveillance_optical_cache.get("data"), dict) else {}
-        if cached_key == cache_key and (now_mono - cached_at) < float(_SURVEILLANCE_OPTICAL_CACHE_SECONDS):
+        refreshing = bool(_surveillance_optical_cache.get("refreshing"))
+        if cached_key == cache_key and cached_data and (now_mono - cached_at) < float(_SURVEILLANCE_OPTICAL_CACHE_SECONDS):
             return copy.deepcopy(cached_data)
-    fresh = get_latest_optical_by_pppoe(normalized)
+        if cached_key == cache_key:
+            if not refreshing:
+                _surveillance_optical_cache["refreshing"] = True
+                threading.Thread(
+                    target=_surveillance_optical_refresh_async,
+                    args=(cache_key, list(normalized)),
+                    daemon=True,
+                ).start()
+            return copy.deepcopy(cached_data)
+        partial = {
+            pppoe: copy.deepcopy(cached_data.get(pppoe))
+            for pppoe in normalized
+            if isinstance(cached_data.get(pppoe), dict)
+        }
+        if cached_key != cache_key or not refreshing:
+            _surveillance_optical_cache["key"] = cache_key
+            _surveillance_optical_cache["at"] = 0.0
+            _surveillance_optical_cache["data"] = copy.deepcopy(partial)
+            _surveillance_optical_cache["refreshing"] = True
+            threading.Thread(
+                target=_surveillance_optical_refresh_async,
+                args=(cache_key, list(normalized)),
+                daemon=True,
+            ).start()
+        return partial
+    fresh = get_latest_optical_by_pppoe(normalized, apply_tx_fallback=False)
     if not isinstance(fresh, dict):
         fresh = {}
     with _surveillance_optical_cache_lock:
         _surveillance_optical_cache["key"] = cache_key
         _surveillance_optical_cache["at"] = now_mono
         _surveillance_optical_cache["data"] = copy.deepcopy(fresh)
+        _surveillance_optical_cache["refreshing"] = False
     return fresh
 
 
@@ -18473,6 +19173,17 @@ def _prewarm_surveillance_checker_cache():
     now = datetime.utcnow().replace(microsecond=0)
     now_iso = now.isoformat() + "Z"
     _, checker_since_by_account = _surveillance_checker_maps(entry_map, now_utc=now)
+    stable_cfg = settings.get("stability") if isinstance(settings.get("stability"), dict) else {}
+    try:
+        stable_window_minutes = max(int(stable_cfg.get("stable_window_minutes", 10) or 10), 1)
+    except Exception:
+        stable_window_minutes = 10
+    _, checker_since_by_account = _cap_surveillance_checker_windows(
+        {},
+        checker_since_by_account,
+        now_utc=now,
+        window_minutes=stable_window_minutes,
+    )
 
     if checker_since_by_account:
         _get_surveillance_checker_stats_cached(checker_since_by_account, now_iso)
@@ -18593,6 +19304,12 @@ async def surveillance_page(request: Request):
     now_iso = now.isoformat() + "Z"
 
     checker_anchor_by_pppoe, checker_since_by_account = _surveillance_checker_maps(entry_map, now_utc=now)
+    checker_anchor_by_pppoe, checker_since_by_account = _cap_surveillance_checker_windows(
+        checker_anchor_by_pppoe,
+        checker_since_by_account,
+        now_utc=now,
+        window_minutes=stable_window_minutes,
+    )
 
     latest_map = get_latest_accounts_ping_map(account_ids)
     checker_stats_map = _get_surveillance_checker_stats_cached(checker_since_by_account, now_iso)
@@ -19084,6 +19801,10 @@ async def surveillance_page(request: Request):
         surveillance_logs_pagination["options"] = TABLE_PAGE_SIZE_OPTIONS
         surveillance_logs_pagination["limit_label"] = str(surveillance_logs_pagination.get("limit") or surveillance_logs_limit or "ALL")
 
+    surveillance_exemptions = {"rows": [], "kpis": {}}
+    if active_tab == "settings":
+        surveillance_exemptions = _surveillance_account_exemption_rows(settings, entry_map=entry_map)
+
     return templates.TemplateResponse(
         "surveillance.html",
         make_context(
@@ -19115,6 +19836,8 @@ async def surveillance_page(request: Request):
                 "surveillance_logs_rows": surveillance_logs_rows,
                 "surveillance_logs_query": surveillance_logs_query,
                 "surveillance_logs_pagination": surveillance_logs_pagination,
+                "surveillance_exemption_rows": surveillance_exemptions.get("rows") or [],
+                "surveillance_exemption_kpis": surveillance_exemptions.get("kpis") or {},
                 "under_new_view_seconds": _SURVEILLANCE_NEW_VIEW_SECONDS,
             },
         ),
@@ -20278,6 +21001,100 @@ async def surveillance_settings_save(request: Request):
         ),
     )
     return RedirectResponse(url="/surveillance?tab=settings", status_code=303)
+
+
+@app.post("/surveillance/settings/exemptions", response_class=HTMLResponse)
+async def surveillance_exemptions_save(request: Request):
+    form = await request.form()
+    action = (form.get("exemption_action") or "").strip().lower()
+    selected = []
+    for raw_value in form.getlist("selected_pppoe"):
+        pppoe = str(raw_value or "").strip()
+        if pppoe and pppoe.lower() not in {item.lower() for item in selected}:
+            selected.append(pppoe)
+    if action not in ("add", "remove") or not selected:
+        return RedirectResponse(url="/surveillance?tab=settings&msg=Select accounts before applying exemption#surv-settings", status_code=303)
+
+    current = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
+    entry_map = _surveillance_entry_map(current)
+    exemptions = _surveillance_exemption_map(current)
+    now_iso = utc_now_iso()
+    current_user = getattr(request.state, "current_user", None)
+    actor = ""
+    if isinstance(current_user, dict):
+        actor = (current_user.get("username") or current_user.get("email") or "").strip()
+    actor = actor or "admin"
+    changed = False
+    removed_auto_entries = []
+
+    if action == "add":
+        for pppoe in selected:
+            key = pppoe.lower()
+            if key not in exemptions:
+                exemptions[key] = {
+                    "pppoe": pppoe,
+                    "added_at": now_iso,
+                    "added_by": actor,
+                    "note": "Excluded from automatic Under Surveillance auto-add.",
+                }
+                changed = True
+            entry = entry_map.get(pppoe)
+            if not isinstance(entry, dict):
+                continue
+            if (entry.get("added_mode") or "manual").strip().lower() != "auto":
+                continue
+            note = "Auto-added surveillance entry removed because the account was tagged as exempt."
+            try:
+                under_seconds, level2_seconds, observe_seconds = _surveillance_stage_seconds(entry)
+                end_surveillance_session(
+                    pppoe,
+                    "removed",
+                    started_at=(entry.get("added_at") or "").strip(),
+                    source=(entry.get("source") or "").strip(),
+                    ip=(entry.get("ip") or "").strip(),
+                    state=(entry.get("status") or "under"),
+                    note=note,
+                    under_seconds=under_seconds,
+                    level2_seconds=level2_seconds,
+                    observe_seconds=observe_seconds,
+                    create_if_missing=False,
+                )
+            except Exception:
+                pass
+            entry_map.pop(pppoe, None)
+            removed_auto_entries.append(pppoe)
+            changed = True
+    elif action == "remove":
+        for pppoe in selected:
+            key = pppoe.lower()
+            if key in exemptions:
+                exemptions.pop(key, None)
+                changed = True
+
+    if changed:
+        current["account_exemption"] = {
+            "accounts": sorted(exemptions.values(), key=lambda item: (item.get("pppoe") or "").lower())
+        }
+        current["entries"] = list(entry_map.values())
+        save_settings("surveillance", normalize_surveillance_settings(current))
+        _auth_log_event(
+            request,
+            action="surveillance.exemptions_updated",
+            resource="/surveillance/settings/exemptions",
+            details=(
+                f"action={action};count={len(selected)};"
+                f"removed_auto={len(removed_auto_entries)};"
+                f"accounts={', '.join(selected[:20])}"
+            ),
+        )
+
+    if action == "add":
+        msg = f"Tagged {len(selected)} account(s) as exempt."
+        if removed_auto_entries:
+            msg += f" Removed {len(removed_auto_entries)} auto-added active entry(s)."
+    else:
+        msg = f"Removed exemption from {len(selected)} account(s)."
+    return RedirectResponse(url=f"/surveillance?tab=settings&msg={urllib.parse.quote(msg)}#surv-settings", status_code=303)
 
 
 @app.post("/surveillance/format", response_class=HTMLResponse)
