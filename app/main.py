@@ -148,6 +148,7 @@ from .accounts_ping_sources import (
 from .accounts_missing_support import (
     auto_delete_accounts_missing_entries,
     build_accounts_missing_secret_snapshot,
+    mark_accounts_missing_deleted,
     normalize_accounts_missing_settings,
     purge_pppoe_account_data,
     reconcile_accounts_missing_state,
@@ -277,6 +278,10 @@ _SURVEILLANCE_NEW_VIEW_SECONDS = 10
 _accounts_missing_new_seen_lock = threading.Lock()
 _ACCOUNTS_MISSING_NEW_SEEN_STATE_KEY = "accounts_missing_new_seen_by_user_v1"
 _ACCOUNTS_MISSING_NEW_VIEW_SECONDS = 10
+_accounts_missing_purge_lock = threading.Lock()
+_accounts_missing_purge_running = set()
+_accounts_missing_purge_progress = {}
+_ACCOUNTS_MISSING_PURGE_VISIBLE_SECONDS = 30
 _offline_new_seen_lock = threading.Lock()
 _OFFLINE_NEW_SEEN_STATE_KEY = "offline_new_seen_by_user_v1"
 _OFFLINE_NEW_VIEW_SECONDS = 10
@@ -7295,6 +7300,13 @@ def _build_dashboard_kpis(job_status):
         wan_cfg = get_settings("wan_ping", WAN_PING_DEFAULTS)
         wan_state = get_state("wan_ping_state", {})
         wans_cfg = wan_cfg.get("wans") if isinstance(wan_cfg.get("wans"), list) else []
+        enabled_wans_cfg = [
+            item
+            for item in wans_cfg
+            if isinstance(item, dict)
+            and bool(item.get("enabled", True))
+            and (item.get("local_ip") or "").strip()
+        ]
         wan_rows = wan_state.get("wans") if isinstance(wan_state.get("wans"), dict) else {}
         up = down = unknown = 0
         latency_ready = 0
@@ -7325,7 +7337,8 @@ def _build_dashboard_kpis(job_status):
             "latency_ready": latency_ready,
             "interval_seconds": int(((wan_cfg.get("general") or {}).get("interval_seconds") or 30)),
             "target_interval_seconds": int(((wan_cfg.get("general") or {}).get("target_latency_interval_seconds") or 30)),
-            "enabled": bool(wan_cfg.get("enabled")),
+            "enabled": bool(wan_cfg.get("enabled")) or bool(enabled_wans_cfg),
+            "enabled_wans": len(enabled_wans_cfg),
             "last_poll_at_ph": format_ts_ph(wan_state.get("last_status_poll_at")),
         }
     except Exception:
@@ -7449,15 +7462,18 @@ def _build_dashboard_kpis(job_status):
         issue_tx = float(classification.get("issue_tx_dbm", -2.0) or -2.0)
         tx_real_min = float(classification.get("tx_realistic_min_dbm", -10.0) or -10.0)
         tx_real_max = float(classification.get("tx_realistic_max_dbm", 10.0) or 10.0)
-        since_iso = (now - timedelta(hours=48)).replace(microsecond=0).isoformat() + "Z"
-        latest = get_optical_latest_results_since(since_iso, apply_tx_fallback=False)
-        current_device_ids = _optical_current_device_ids()
-        if current_device_ids:
-            latest = [
-                row
-                for row in latest
-                if isinstance(row, dict) and (row.get("device_id") or "").strip() in current_device_ids
-            ]
+        optical_state = _optical_state_snapshot()
+        current_devices = optical_state.get("current_devices") if isinstance(optical_state.get("current_devices"), list) else []
+        current_pppoes = [
+            (item.get("pppoe") or "").strip()
+            for item in current_devices
+            if isinstance(item, dict) and (item.get("pppoe") or "").strip()
+        ]
+        if current_pppoes:
+            latest = list(get_latest_optical_by_pppoe(current_pppoes, apply_tx_fallback=False).values())
+        else:
+            since_iso = (now - timedelta(hours=48)).replace(microsecond=0).isoformat() + "Z"
+            latest = get_optical_latest_results_since(since_iso, apply_tx_fallback=False)
         issue_rx_count = 0
         issue_tx_count = 0
         priority_count = 0
@@ -13811,6 +13827,7 @@ async def profile_review(request: Request):
     ip = (request.query_params.get("ip") or "").strip()
     device_id = (request.query_params.get("device_id") or "").strip()
     router_id = (request.query_params.get("router_id") or "").strip()
+    requested_pppoe_key = pppoe.strip().lower()
     search_query = (request.query_params.get("q") or "").strip()
     window_hours = _normalize_wan_window(request.query_params.get("window"))
     window_label = next((label for label, hours in WAN_STATUS_WINDOW_OPTIONS if hours == window_hours), "1D")
@@ -13889,6 +13906,15 @@ async def profile_review(request: Request):
             None,
         )
 
+    def _optical_row_matches_requested_pppoe(row):
+        if not requested_pppoe_key:
+            return True
+        if not isinstance(row, dict):
+            return False
+        row_pppoe = (row.get("pppoe") or "").strip().lower()
+        return bool(row_pppoe and row_pppoe == requested_pppoe_key)
+
+    target_optical_ident = None
     if pppoe and not device_id:
         try:
             opt_map = get_latest_optical_by_pppoe([pppoe])
@@ -13900,6 +13926,10 @@ async def profile_review(request: Request):
                 ),
                 {},
             )
+            if hit and not _optical_row_matches_requested_pppoe(hit):
+                hit = {}
+            if hit:
+                target_optical_ident = dict(hit)
             if hit and not device_id:
                 device_id = (hit.get("device_id") or "").strip()
             if hit and not ip:
@@ -13912,9 +13942,11 @@ async def profile_review(request: Request):
         st = _accounts_ping_best_state_entry(account_ids, state_accounts)
         ip = (st.get("last_ip") or "").strip() or ip
 
-    if ip and not device_id:
+    if ip and not device_id and not requested_pppoe_key:
         device_id = get_latest_optical_device_for_ip(ip) or ""
     optical_ident = get_latest_optical_identity(device_id) if device_id else None
+    if optical_ident and not _optical_row_matches_requested_pppoe(optical_ident):
+        optical_ident = target_optical_ident
     if optical_ident and not ip:
         ip = (optical_ident.get("ip") or "").strip()
     if optical_ident:
@@ -13949,9 +13981,11 @@ async def profile_review(request: Request):
     if usage_row and not ip:
         ip = (usage_row.get("address") or "").strip() or ip
 
-    if ip and not device_id:
+    if ip and not device_id and not requested_pppoe_key:
         device_id = get_latest_optical_device_for_ip(ip) or ""
     optical_ident = get_latest_optical_identity(device_id) if device_id else None
+    if optical_ident and not _optical_row_matches_requested_pppoe(optical_ident):
+        optical_ident = target_optical_ident
     if optical_ident and not ip:
         ip = (optical_ident.get("ip") or "").strip()
     if optical_ident:
@@ -13977,10 +14011,12 @@ async def profile_review(request: Request):
     if surveillance_session and not ip:
         ip = (surveillance_session.get("last_ip") or "").strip() or ip
 
-    if ip and not device_id:
+    if ip and not device_id and not requested_pppoe_key:
         device_id = get_latest_optical_device_for_ip(ip) or ""
     if device_id:
         refreshed_optical_ident = get_latest_optical_identity(device_id)
+        if refreshed_optical_ident and not _optical_row_matches_requested_pppoe(refreshed_optical_ident):
+            refreshed_optical_ident = target_optical_ident
         if refreshed_optical_ident:
             optical_ident = refreshed_optical_ident
             if not ip:
@@ -14130,9 +14166,18 @@ async def profile_review(request: Request):
         issue_fail_pct = float(cls.get("issue_rto_pct", ACCOUNTS_PING_DEFAULTS["classification"]["issue_rto_pct"]) or 5.0)
 
         account_ids = _accounts_ping_account_ids_for_pppoe_router(profile["pppoe"], router_id=router_id, state=ping_state)
-        disabled_account = _accounts_ping_disabled_account_info(profile["pppoe"], router_id=router_id, state=ping_state)
+        disabled_account = _accounts_ping_disabled_account_info(
+            profile["pppoe"],
+            router_id=router_id,
+            state=ping_state,
+            settings=accounts_ping_settings,
+        )
         if not disabled_account and not router_id:
-            disabled_account = _accounts_ping_disabled_account_info(profile["pppoe"], state=ping_state)
+            disabled_account = _accounts_ping_disabled_account_info(
+                profile["pppoe"],
+                state=ping_state,
+                settings=accounts_ping_settings,
+            )
         if disabled_account:
             profile["disabled_account"] = disabled_account
         account_id = (
@@ -14718,6 +14763,213 @@ def _accounts_missing_parse_bulk_pppoes(raw_value):
         seen.add(value_key)
         out.append(value)
     return out
+
+
+def _accounts_missing_insert_system_audit(action, resource="", details=""):
+    try:
+        insert_auth_audit_log(
+            timestamp=utc_now_iso(),
+            user_id=None,
+            username="system",
+            action=(action or "").strip()[:120],
+            resource=(resource or "").strip()[:255],
+            details=(details or "").strip()[:2000],
+            ip_address="",
+        )
+    except Exception:
+        pass
+
+
+def _set_accounts_missing_purge_progress(pppoe, status="running", percent=None, stage="", error=""):
+    pppoe_value = str(pppoe or "").strip()
+    pppoe_key = pppoe_value.lower()
+    if not pppoe_key:
+        return
+    now = time.time()
+    with _accounts_missing_purge_lock:
+        item = dict(_accounts_missing_purge_progress.get(pppoe_key) or {})
+        item.setdefault("pppoe", pppoe_value)
+        item.setdefault("started_at", now)
+        item["status"] = str(status or "running").strip().lower()
+        item["stage"] = str(stage or item.get("stage") or "").strip()
+        item["updated_at"] = now
+        if percent is not None:
+            try:
+                item["percent"] = max(0, min(100, int(round(float(percent)))))
+            except Exception:
+                item["percent"] = 0
+        else:
+            item["percent"] = max(0, min(100, int(item.get("percent") or 0)))
+        if error:
+            item["error"] = str(error).strip()[:500]
+        if item["status"] in {"completed", "failed"}:
+            item["completed_at"] = now
+        _accounts_missing_purge_progress[pppoe_key] = item
+
+
+def _accounts_missing_purge_progress_from_step(stage="", step=0, total=1):
+    try:
+        step_value = max(0, int(step or 0))
+        total_value = max(1, int(total or 1))
+    except Exception:
+        step_value = 0
+        total_value = 1
+    return max(0, min(100, round((step_value / total_value) * 100)))
+
+
+def _accounts_missing_purge_status_payload():
+    now = time.time()
+    with _accounts_missing_purge_lock:
+        for pppoe_key, item in list(_accounts_missing_purge_progress.items()):
+            status = str((item or {}).get("status") or "").lower()
+            completed_at = float((item or {}).get("completed_at") or 0)
+            if status in {"completed", "failed"} and completed_at and (now - completed_at) > _ACCOUNTS_MISSING_PURGE_VISIBLE_SECONDS:
+                _accounts_missing_purge_progress.pop(pppoe_key, None)
+        entries = [dict(item) for item in _accounts_missing_purge_progress.values()]
+
+    if not entries:
+        return {
+            "visible": False,
+            "status": "idle",
+            "percent": 0,
+            "active_count": 0,
+            "completed_count": 0,
+            "failed_count": 0,
+            "total_count": 0,
+            "label": "",
+            "title": "",
+            "accounts": [],
+        }
+
+    active_entries = [item for item in entries if str(item.get("status") or "").lower() in {"queued", "running"}]
+    completed_entries = [item for item in entries if str(item.get("status") or "").lower() == "completed"]
+    failed_entries = [item for item in entries if str(item.get("status") or "").lower() == "failed"]
+    total_count = len(entries)
+    percent = round(sum(max(0, min(100, float(item.get("percent") or 0))) for item in entries) / max(total_count, 1))
+    if active_entries:
+        status = "running"
+        noun = "account" if total_count == 1 else "accounts"
+        label = f"Deleting {total_count} {noun} · {percent}%"
+    elif failed_entries and not completed_entries:
+        status = "failed"
+        label = f"Delete failed · {percent}%"
+    elif failed_entries:
+        status = "failed"
+        label = f"Deleted {len(completed_entries)}/{total_count} · check errors"
+    else:
+        status = "completed"
+        noun = "account" if total_count == 1 else "accounts"
+        label = f"Deleted {total_count} {noun} · 100%"
+        percent = 100
+
+    latest = max(entries, key=lambda item: float(item.get("updated_at") or item.get("started_at") or 0))
+    stage = str(latest.get("stage") or "").strip()
+    def _entry_percent(item):
+        try:
+            return max(0, min(100, int(round(float(item.get("percent") or 0)))))
+        except Exception:
+            return 0
+
+    accounts = [
+        {
+            "pppoe": str(item.get("pppoe") or "").strip(),
+            "status": str(item.get("status") or "").strip(),
+            "percent": _entry_percent(item),
+            "stage": str(item.get("stage") or "").strip(),
+            "error": str(item.get("error") or "").strip(),
+        }
+        for item in sorted(entries, key=lambda row: str(row.get("pppoe") or "").lower())
+    ]
+    title_parts = [label]
+    if stage:
+        title_parts.append(f"Current step: {stage}")
+    for item in accounts[:8]:
+        detail = f"{item['pppoe']}: {item['status']} {item['percent']}%"
+        if item.get("stage"):
+            detail += f" · {item['stage']}"
+        if item.get("error"):
+            detail += f" · {item['error']}"
+        title_parts.append(detail)
+    if len(accounts) > 8:
+        title_parts.append(f"+{len(accounts) - 8} more")
+    return {
+        "visible": True,
+        "status": status,
+        "percent": int(percent),
+        "active_count": len(active_entries),
+        "completed_count": len(completed_entries),
+        "failed_count": len(failed_entries),
+        "total_count": total_count,
+        "label": label,
+        "stage": stage,
+        "title": "\n".join(title_parts),
+        "accounts": accounts,
+    }
+
+
+def _accounts_missing_purge_worker(pppoes):
+    for pppoe in pppoes or []:
+        pppoe_value = str(pppoe or "").strip()
+        pppoe_key = pppoe_value.lower()
+        if not pppoe_value:
+            continue
+        try:
+            _set_accounts_missing_purge_progress(pppoe_value, status="running", percent=0, stage="Starting cleanup")
+
+            def _progress(stage="", step=0, total=1):
+                _set_accounts_missing_purge_progress(
+                    pppoe_value,
+                    status="running",
+                    percent=_accounts_missing_purge_progress_from_step(stage=stage, step=step, total=total),
+                    stage=stage,
+                )
+
+            purge_pppoe_account_data(pppoe_value, progress_callback=_progress)
+            _set_accounts_missing_purge_progress(pppoe_value, status="completed", percent=100, stage="Cleanup completed")
+            _accounts_missing_insert_system_audit(
+                "accounts_missing.purge_completed",
+                resource=pppoe_value,
+                details="Background purge completed.",
+            )
+        except Exception as exc:
+            _set_accounts_missing_purge_progress(
+                pppoe_value,
+                status="failed",
+                percent=None,
+                stage="Cleanup failed",
+                error=str(exc),
+            )
+            _accounts_missing_insert_system_audit(
+                "accounts_missing.purge_failed",
+                resource=pppoe_value,
+                details=str(exc),
+            )
+        finally:
+            with _accounts_missing_purge_lock:
+                _accounts_missing_purge_running.discard(pppoe_key)
+
+
+def _queue_accounts_missing_purge(pppoes):
+    queued = []
+    with _accounts_missing_purge_lock:
+        for pppoe in pppoes or []:
+            pppoe_value = str(pppoe or "").strip()
+            pppoe_key = pppoe_value.lower()
+            if not pppoe_value or pppoe_key in _accounts_missing_purge_running:
+                continue
+            _accounts_missing_purge_running.add(pppoe_key)
+            queued.append(pppoe_value)
+            _accounts_missing_purge_progress[pppoe_key] = {
+                "pppoe": pppoe_value,
+                "status": "queued",
+                "percent": 0,
+                "stage": "Queued",
+                "started_at": time.time(),
+                "updated_at": time.time(),
+            }
+    if queued:
+        threading.Thread(target=_accounts_missing_purge_worker, args=(queued,), daemon=True).start()
+    return queued
 
 
 def build_accounts_missing_status(settings, limit=50, page=1, sort="", direction="", query="", new_entry_ids=None):
@@ -15426,12 +15678,21 @@ async def accounts_missing_delete(request: Request):
             message_tone="danger",
         )
     try:
-        purge_pppoe_account_data(pppoe)
-        _auth_log_event(request, "accounts_missing.deleted", resource=pppoe, details="purged across all modules")
-        message = f"Deleted all stored data for {pppoe}."
+        marked = mark_accounts_missing_deleted([pppoe])
+        queued = _queue_accounts_missing_purge(marked)
+        _auth_log_event(
+            request,
+            "accounts_missing.deleted",
+            resource=pppoe,
+            details="hidden immediately; purge queued in background",
+        )
+        if queued:
+            message = f"{pppoe} was removed from Missing Secrets. Permanent cleanup is running in the background."
+        else:
+            message = f"{pppoe} was already queued for permanent cleanup."
         tone = "success"
     except Exception as exc:
-        message = f"Failed to delete {pppoe}: {exc}"
+        message = f"Failed to queue deletion for {pppoe}: {exc}"
         tone = "danger"
     return render_accounts_missing_response(request, settings, message, "status", "general", message_tone=tone)
 
@@ -15451,29 +15712,28 @@ async def accounts_missing_delete_many(request: Request):
             message_tone="danger",
         )
 
-    deleted = []
     errors = []
-    for pppoe in pppoes:
-        try:
-            purge_pppoe_account_data(pppoe)
-            deleted.append(pppoe)
-        except Exception as exc:
-            errors.append(f"{pppoe}: {exc}")
+    try:
+        deleted = mark_accounts_missing_deleted(pppoes)
+        _queue_accounts_missing_purge(deleted)
+    except Exception as exc:
+        deleted = []
+        errors.append(str(exc))
     if deleted:
         _auth_log_event(
             request,
             "accounts_missing.deleted_many",
             resource=f"count={len(deleted)}",
-            details=", ".join(deleted[:10]),
+            details="hidden immediately; purge queued in background; " + ", ".join(deleted[:10]),
         )
     if errors and deleted:
-        message = f"Deleted {len(deleted)} account(s). Failed: {'; '.join(errors[:3])}"
+        message = f"Queued {len(deleted)} account(s) for deletion. Failed: {'; '.join(errors[:3])}"
         tone = "warning"
     elif errors:
-        message = f"Bulk delete failed: {'; '.join(errors[:3])}"
+        message = f"Bulk delete queue failed: {'; '.join(errors[:3])}"
         tone = "danger"
     else:
-        message = f"Deleted all stored data for {len(deleted)} account(s)."
+        message = f"Removed {len(deleted)} account(s) from Missing Secrets. Permanent cleanup is running in the background."
         tone = "success"
     return render_accounts_missing_response(request, settings, message, "status", "general", message_tone=tone)
 
@@ -15884,6 +16144,7 @@ def build_accounts_ping_status(
     state = state if isinstance(state, dict) else get_state("accounts_ping_state", {"accounts": {}, "devices": []})
     devices = _accounts_ping_state_devices(state)
     devices = _filter_accounts_ping_devices_excluding_exemptions(devices, settings)
+    devices = _accounts_ping_devices_with_current_profile_flags(devices, settings)
     account_map = {}
     for device in devices:
         ip = (device.get("ip") or "").strip()
@@ -16670,13 +16931,78 @@ def _accounts_ping_state_devices(state=None):
     return devices
 
 
-def _accounts_ping_disabled_account_info(pppoe, router_id="", state=None):
+def _accounts_ping_device_profile_disabled_now(device, settings=None, profile_enabled=None):
+    if not isinstance(device, dict):
+        return False
+    profile_map = profile_enabled
+    if profile_map is None:
+        source_settings = settings if isinstance(settings, dict) else get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
+        profile_map = accounts_ping_profile_enabled_map(source_settings)
+    return is_accounts_ping_disabled_account(
+        (device.get("router_id") or "").strip(),
+        (device.get("pppoe") or device.get("name") or "").strip(),
+        (device.get("profile") or "").strip(),
+        profile_enabled=profile_map,
+    )
+
+
+def _accounts_ping_devices_with_current_profile_flags(devices, settings=None, now_iso=""):
+    source_settings = settings if isinstance(settings, dict) else get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
+    profile_map = accounts_ping_profile_enabled_map(source_settings)
+    synced = []
+    for raw_device in devices if isinstance(devices, list) else []:
+        device = normalize_accounts_ping_device(raw_device)
+        if not device:
+            continue
+        disabled_now = _accounts_ping_device_profile_disabled_now(device, profile_enabled=profile_map)
+        next_device = dict(device)
+        next_device["profile_disabled"] = disabled_now
+        if disabled_now:
+            next_device["profile_disabled_since"] = (
+                (next_device.get("profile_disabled_since") or "").strip()
+                or (now_iso or "")
+            )
+        else:
+            next_device["profile_disabled_since"] = ""
+        synced.append(next_device)
+    return synced
+
+
+def _sync_accounts_ping_profile_disabled_state(state, settings):
+    state = copy.deepcopy(state if isinstance(state, dict) else {})
+    raw_devices = state.get("devices") if isinstance(state.get("devices"), list) else []
+    if not raw_devices:
+        return state, False
+    now_iso = utc_now_iso()
+    synced = _accounts_ping_devices_with_current_profile_flags(raw_devices, settings, now_iso=now_iso)
+    changed = False
+    if len(synced) != len(raw_devices):
+        changed = True
+    else:
+        for old, new in zip(raw_devices, synced):
+            if bool((old or {}).get("profile_disabled")) != bool((new or {}).get("profile_disabled")):
+                changed = True
+                break
+            if (old or {}).get("profile_disabled_since") != (new or {}).get("profile_disabled_since"):
+                changed = True
+                break
+    if changed:
+        state["devices"] = synced
+    return state, changed
+
+
+def _accounts_ping_disabled_account_info(pppoe, router_id="", state=None, settings=None):
     pppoe_key = (pppoe or "").strip().lower()
     router_value = (router_id or "").strip()
     if not pppoe_key:
         return {}
     matches = []
-    for device in _accounts_ping_state_devices(state):
+    source_settings = settings if isinstance(settings, dict) else get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
+    devices = _accounts_ping_devices_with_current_profile_flags(
+        _accounts_ping_state_devices(state),
+        source_settings,
+    )
+    for device in devices:
         if not bool(device.get("profile_disabled")):
             continue
         if (device.get("pppoe") or device.get("name") or "").strip().lower() != pppoe_key:
@@ -16734,9 +17060,14 @@ def _accounts_ping_disabled_account_info(pppoe, router_id="", state=None):
     }
 
 
-def _accounts_ping_disabled_account_map(state=None):
+def _accounts_ping_disabled_account_map(state=None, settings=None):
     out = {}
-    for device in _accounts_ping_state_devices(state):
+    source_settings = settings if isinstance(settings, dict) else get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
+    devices = _accounts_ping_devices_with_current_profile_flags(
+        _accounts_ping_state_devices(state),
+        source_settings,
+    )
+    for device in devices:
         if not bool(device.get("profile_disabled")):
             continue
         pppoe = (device.get("pppoe") or device.get("name") or "").strip()
@@ -16744,7 +17075,7 @@ def _accounts_ping_disabled_account_map(state=None):
             continue
         key = pppoe.lower()
         if key not in out:
-            out[key] = _accounts_ping_disabled_account_info(pppoe, state=state)
+            out[key] = _accounts_ping_disabled_account_info(pppoe, state=state, settings=source_settings)
     return {key: value for key, value in out.items() if isinstance(value, dict) and value.get("active")}
 
 
@@ -17039,6 +17370,7 @@ async def accounts_ping_settings_save(request: Request):
     settings, tuning = _accounts_ping_tuning_context(settings)
     save_settings("accounts_ping", settings)
     if settings_tab == "source":
+        state, _profile_flags_changed = _sync_accounts_ping_profile_disabled_state(state, settings)
         state["devices_refreshed_at"] = ""
         save_state("accounts_ping_state", state)
     render_params = _accounts_ping_render_params_from_form(request, form)
@@ -19197,7 +19529,8 @@ async def surveillance_page(request: Request):
     entry_map = _surveillance_entry_map(settings)
     entry_map, reconciled_entries = _reconcile_surveillance_active_entries(settings, entry_map=entry_map, persist=False)
     ping_state = get_state("accounts_ping_state", {"accounts": {}, "devices": []})
-    disabled_account_map = _accounts_ping_disabled_account_map(ping_state)
+    accounts_ping_settings = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
+    disabled_account_map = _accounts_ping_disabled_account_map(ping_state, settings=accounts_ping_settings)
     disabled_removed_entries = _auto_remove_disabled_surveillance_accounts(
         settings,
         entry_map,
@@ -23001,6 +23334,7 @@ async def system_resources(details: int = 0):
         "ram_buffers_kb": mem_buffers_kb,
         "disk_pct": round(_disk_percent(), 1),
         "uptime_seconds": _uptime_seconds(),
+        "accounts_missing_purge": _accounts_missing_purge_status_payload(),
     }
     include_details = False
     try:
@@ -23033,6 +23367,17 @@ async def system_resources(details: int = 0):
         payload["cpu_scope"] = "Host processes" if proc_root == "/host_proc" else "Container processes"
         payload["captured_at"] = utc_now_iso()
     return JSONResponse(payload)
+
+
+@app.get("/system/background-tasks")
+async def system_background_tasks():
+    return JSONResponse(
+        {
+            "accounts_missing_purge": _accounts_missing_purge_status_payload(),
+            "captured_at": utc_now_iso(),
+        },
+        headers=NO_STORE_HEADERS,
+    )
 
 
 @app.post("/settings/system/mikrotik/test", response_class=HTMLResponse)

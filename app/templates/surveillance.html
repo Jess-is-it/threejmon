@@ -6760,6 +6760,7 @@
 
 		      if (search) {
 		        search.addEventListener("input", () => {
+              if (typeof initAllSurveillanceStagePanes === "function") initAllSurveillanceStagePanes();
               surveillanceSearchState.query = search.value || "";
               surveillanceSearchState.pendingFocus = true;
               syncSurveillanceStageSearch();
@@ -7078,14 +7079,52 @@
       }
     });
 
-    initPane("under");
-    initPane("level2");
-    initPane("observe");
+    const initializedSurveillanceStagePanes = new Set();
+    const sortedSurveillanceStageTables = new Set();
+    const initSurveillanceStagePaneOnce = (key) => {
+      const normalized = String(key || "").trim().toLowerCase();
+      if (!stageTabOrder.includes(normalized) || initializedSurveillanceStagePanes.has(normalized)) return;
+      initPane(normalized);
+      initializedSurveillanceStagePanes.add(normalized);
+      if (!sortedSurveillanceStageTables.has(normalized)) {
+        initTableSort(normalized);
+        sortedSurveillanceStageTables.add(normalized);
+      }
+      applySurveillanceTableHoverTitles();
+    };
+    const initAllSurveillanceStagePanes = () => {
+      stageTabOrder.forEach(initSurveillanceStagePaneOnce);
+    };
+    window.initAllSurveillanceStagePanes = initAllSurveillanceStagePanes;
+
+    const initialStageTab = currentStageTab();
+    if (stageTabOrder.includes(initialStageTab)) {
+      initSurveillanceStagePaneOnce(initialStageTab);
+    }
     syncSurveillanceStageSearch();
-    initTableSort("under");
-    initTableSort("level2");
-    initTableSort("observe");
-    applySurveillanceTableHoverTitles();
+
+    links.forEach((link) => {
+      link.addEventListener("shown.bs.tab", (event) => {
+        const tab = tabNameFromHref(event.target?.getAttribute("href") || "");
+        if (stageTabOrder.includes(tab)) {
+          initSurveillanceStagePaneOnce(tab);
+          syncSurveillanceStageSearch();
+        }
+      });
+    });
+
+    const scheduleDeferredStagePaneInit = () => {
+      const run = () => {
+        initAllSurveillanceStagePanes();
+        syncSurveillanceStageSearch();
+      };
+      if ("requestIdleCallback" in window) {
+        window.requestIdleCallback(run, { timeout: 1500 });
+        return;
+      }
+      window.setTimeout(run, 350);
+    };
+    scheduleDeferredStagePaneInit();
     scheduleUnderNewSeenAck();
 
   });

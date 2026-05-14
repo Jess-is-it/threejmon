@@ -93,6 +93,18 @@
     background: var(--tblr-bg-surface);
   }
 
+  .accounts-missing-delete-list {
+    max-height: 20rem;
+    overflow: auto;
+  }
+
+  .accounts-missing-delete-item {
+    border: 1px solid rgba(214, 57, 57, 0.16);
+    border-radius: var(--tblr-border-radius);
+    background: rgba(214, 57, 57, 0.04);
+    padding: 0.75rem;
+  }
+
   @media (max-width: 1200px) {
     .accounts-missing-table .am-priority-6,
     .accounts-missing-table .am-priority-5 {
@@ -290,6 +302,13 @@
                 {% for row in accounts_missing_status.rows %}
                   <tr class="{% if row.surveillance_status == 'under' %}table-warning{% elif row.surveillance_status == 'level2' %}table-danger{% endif %}{% if row.is_new %} accounts-missing-new-entry{% endif %}"
                       data-accounts-missing-entry-id="{{ row.entry_id }}"
+                      data-accounts-missing-pppoe="{{ row.pppoe }}"
+                      data-accounts-missing-ip="{{ row.last_ip or 'n/a' }}"
+                      data-accounts-missing-router="{{ row.router_label }}"
+                      data-accounts-missing-missing-for="{{ row.missing_for }}"
+                      data-accounts-missing-missing-since="{{ row.first_missing or 'n/a' }}"
+                      data-accounts-missing-last-secret="{{ row.last_secret_seen or 'n/a' }}"
+                      data-accounts-missing-source="{{ row.source_label }}"
                       data-accounts-missing-new-entry="{% if row.is_new %}1{% else %}0{% endif %}">
                     {% if can_bulk_delete %}
                       <td class="am-col-select d-none" data-accounts-missing-select-col>
@@ -547,6 +566,12 @@
 </div>
 
 {% if can_delete or can_bulk_delete %}
+  <button type="button"
+          class="d-none"
+          id="accounts-missing-delete-modal-trigger"
+          data-bs-toggle="modal"
+          data-bs-target="#accounts-missing-delete-modal"
+          aria-hidden="true"></button>
   <div class="modal modal-blur fade" id="accounts-missing-delete-modal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
       <div class="modal-content">
@@ -562,6 +587,7 @@
               This permanently deletes all stored data for the selected PPPoE account(s) across every module.
             </div>
             <div class="fw-semibold" id="accounts-missing-delete-label">No account selected.</div>
+            <div class="accounts-missing-delete-list d-flex flex-column gap-2 mt-3 d-none" id="accounts-missing-delete-list"></div>
             <div class="text-muted small mt-2">This cannot be undone from the UI.</div>
           </div>
           <div class="modal-footer">
@@ -587,13 +613,23 @@
     const selectAll = document.getElementById("accounts-missing-select-all");
     const bulkDeleteBtn = document.getElementById("accounts-missing-bulk-delete-btn");
     const deleteModalEl = document.getElementById("accounts-missing-delete-modal");
+    const deleteModalTrigger = document.getElementById("accounts-missing-delete-modal-trigger");
     const deleteModal = deleteModalEl && window.bootstrap ? new window.bootstrap.Modal(deleteModalEl) : null;
     const deleteForm = document.getElementById("accounts-missing-delete-form");
     const deletePppoeInput = document.getElementById("accounts-missing-delete-pppoe");
     const deleteSelectedInput = document.getElementById("accounts-missing-delete-selected");
     const deleteLabel = document.getElementById("accounts-missing-delete-label");
+    const deleteList = document.getElementById("accounts-missing-delete-list");
     let missingNewSeenTimer = null;
     let missingNewSeenInFlight = false;
+
+    const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#039;",
+    }[char]));
 
     const showStoredTab = () => {
       if (!window.bootstrap?.Tab) return;
@@ -777,7 +813,74 @@
 
     const selectedRows = new Set();
     const rowChecks = () => Array.from(document.querySelectorAll("[data-accounts-missing-select-item]"));
+    const currentSelectedPppoes = () => {
+      const values = [];
+      const seen = new Set();
+      rowChecks().forEach((cb) => {
+        const value = (cb.value || "").trim();
+        if (!value) return;
+        if (cb.checked) selectedRows.add(value);
+        else selectedRows.delete(value);
+      });
+      selectedRows.forEach((value) => {
+        const pppoe = String(value || "").trim();
+        const key = pppoe.toLowerCase();
+        if (!pppoe || seen.has(key)) return;
+        seen.add(key);
+        values.push(pppoe);
+      });
+      return values;
+    };
+    const accountDetailsFor = (pppoe) => {
+      const key = String(pppoe || "").trim().toLowerCase();
+      const row = Array.from(document.querySelectorAll("[data-accounts-missing-pppoe]")).find((item) => {
+        return String(item.getAttribute("data-accounts-missing-pppoe") || "").trim().toLowerCase() === key;
+      });
+      return {
+        pppoe: String(pppoe || "").trim(),
+        ip: row?.getAttribute("data-accounts-missing-ip") || "n/a",
+        router: row?.getAttribute("data-accounts-missing-router") || "n/a",
+        missingFor: row?.getAttribute("data-accounts-missing-missing-for") || "n/a",
+        missingSince: row?.getAttribute("data-accounts-missing-missing-since") || "n/a",
+        lastSecret: row?.getAttribute("data-accounts-missing-last-secret") || "n/a",
+        source: row?.getAttribute("data-accounts-missing-source") || "n/a",
+      };
+    };
+    const renderDeleteAccountList = (pppoes) => {
+      if (!deleteList) return;
+      const values = Array.isArray(pppoes) ? pppoes : [];
+      if (!values.length) {
+        deleteList.innerHTML = "";
+        deleteList.classList.add("d-none");
+        return;
+      }
+      deleteList.innerHTML = values.map((pppoe) => {
+        const detail = accountDetailsFor(pppoe);
+        return `
+          <div class="accounts-missing-delete-item">
+            <div class="d-flex align-items-center justify-content-between gap-2 mb-1">
+              <div class="fw-semibold text-danger">${escapeHtml(detail.pppoe)}</div>
+              <span class="badge bg-red-lt text-red">Delete</span>
+            </div>
+            <div class="small text-muted">
+              IP: <span class="text-body">${escapeHtml(detail.ip)}</span>
+              · Router: <span class="text-body">${escapeHtml(detail.router)}</span>
+            </div>
+            <div class="small text-muted">
+              Missing for: <span class="text-body">${escapeHtml(detail.missingFor)}</span>
+              · Missing since: <span class="text-body">${escapeHtml(detail.missingSince)}</span>
+            </div>
+            <div class="small text-muted">
+              Last secret seen: <span class="text-body">${escapeHtml(detail.lastSecret)}</span>
+              · Source: <span class="text-body">${escapeHtml(detail.source)}</span>
+            </div>
+          </div>
+        `;
+      }).join("");
+      deleteList.classList.remove("d-none");
+    };
     const updateSelectionUi = () => {
+      currentSelectedPppoes();
       if (bulkDeleteBtn) {
         bulkDeleteBtn.disabled = selectedRows.size === 0;
         bulkDeleteBtn.innerHTML = `<i class="ti ti-trash me-1"></i>Delete Selected${selectedRows.size ? ` (${selectedRows.size})` : ""}`;
@@ -838,22 +941,43 @@
       });
     });
 
-    const configureDeleteModal = (pppoes) => {
+    const configureDeleteModal = (pppoes, options = {}) => {
       if (!deleteForm || !deletePppoeInput || !deleteSelectedInput || !deleteLabel) return false;
-      const values = Array.isArray(pppoes) ? pppoes.filter(Boolean) : [];
+      const values = [];
+      const seen = new Set();
+      (Array.isArray(pppoes) ? pppoes : []).forEach((item) => {
+        const value = String(item || "").trim();
+        const key = value.toLowerCase();
+        if (!value || seen.has(key)) return;
+        seen.add(key);
+        values.push(value);
+      });
       if (!values.length) return false;
-      if (values.length === 1) {
+      if (values.length === 1 && !options.bulk) {
         deleteForm.setAttribute("action", "/settings/accounts-missing/delete");
         deletePppoeInput.value = values[0];
         deleteSelectedInput.value = "";
-        deleteLabel.textContent = values[0];
+        deleteLabel.textContent = "Confirm permanent deletion for this account.";
       } else {
         deleteForm.setAttribute("action", "/settings/accounts-missing/delete-many");
         deletePppoeInput.value = "";
         deleteSelectedInput.value = JSON.stringify(values);
-        deleteLabel.textContent = `${values.length} account(s) selected`;
+        deleteLabel.textContent = `Confirm permanent deletion for ${values.length} selected account(s).`;
       }
+      renderDeleteAccountList(values);
       return true;
+    };
+    const showDeleteModal = () => {
+      if (deleteModalTrigger) {
+        deleteModalTrigger.click();
+        return true;
+      }
+      if (deleteModalEl && window.bootstrap?.Modal) {
+        const modal = deleteModal || window.bootstrap.Modal.getOrCreateInstance(deleteModalEl);
+        modal.show();
+        return true;
+      }
+      return false;
     };
     if (deleteModalEl) {
       deleteModalEl.addEventListener("show.bs.modal", (event) => {
@@ -866,9 +990,18 @@
       });
     }
     if (bulkDeleteBtn) {
-      bulkDeleteBtn.addEventListener("click", () => {
-        if (!deleteModal || !configureDeleteModal(Array.from(selectedRows.values()))) return;
-        deleteModal.show();
+      bulkDeleteBtn.addEventListener("click", (event) => {
+        event.preventDefault();
+        const selected = currentSelectedPppoes();
+        updateSelectionUi();
+        if (!selected.length) {
+          window.alert("Select accounts before deleting.");
+          return;
+        }
+        if (!configureDeleteModal(selected, { bulk: true })) return;
+        if (!showDeleteModal()) {
+          window.alert("Unable to open the delete confirmation. Please refresh the page and try again.");
+        }
       });
     }
     scheduleMissingNewSeenAck();

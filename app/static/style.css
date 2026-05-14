@@ -420,6 +420,38 @@ aside.navbar .sidebar-subnav .nav-link.active {
   white-space: nowrap;
 }
 
+.sys-delete-progress {
+  max-width: 280px;
+  padding: 0.25rem 0.5rem;
+  border-radius: 999px;
+  background: rgba(245, 159, 0, 0.1);
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.sys-delete-progress.text-success {
+  background: rgba(47, 179, 68, 0.12);
+}
+
+.sys-delete-progress.text-danger {
+  background: rgba(214, 57, 57, 0.12);
+}
+
+.sys-delete-progress #sys-delete-label {
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sys-delete-bar {
+  width: 72px;
+  height: 4px;
+  background: rgba(148, 163, 184, 0.22);
+}
+
+.sys-delete-bar .progress-bar {
+  transition: width 0.45s ease, background-color 0.2s ease;
+}
+
 .wan-stability-item {
   display: flex;
   flex-direction: column;

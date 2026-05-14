@@ -2532,17 +2532,40 @@ def get_surveillance_fixed_cycles_map(pppoes, limit_per_pppoe=0):
     conn = get_conn()
     try:
         placeholders = ",".join(["?"] * len(values))
-        rows = conn.execute(
-            f"""
-            SELECT pppoe, started_at, ended_at, end_note
-            FROM surveillance_sessions
-            WHERE ended_at IS NOT NULL
-              AND end_reason = 'fixed'
-              AND pppoe IN ({placeholders})
-            ORDER BY pppoe ASC, ended_at DESC, id DESC
-            """,
-            tuple(values),
-        ).fetchall()
+        if limit_per_pppoe > 0:
+            rows = conn.execute(
+                f"""
+                WITH ranked AS (
+                    SELECT
+                        pppoe,
+                        started_at,
+                        ended_at,
+                        end_note,
+                        ROW_NUMBER() OVER (PARTITION BY pppoe ORDER BY ended_at DESC, id DESC) AS rn
+                    FROM surveillance_sessions
+                    WHERE ended_at IS NOT NULL
+                      AND end_reason = 'fixed'
+                      AND pppoe IN ({placeholders})
+                )
+                SELECT pppoe, started_at, ended_at, end_note
+                FROM ranked
+                WHERE rn <= ?
+                ORDER BY pppoe ASC, ended_at DESC
+                """,
+                tuple(values) + (limit_per_pppoe,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                f"""
+                SELECT pppoe, started_at, ended_at, end_note
+                FROM surveillance_sessions
+                WHERE ended_at IS NOT NULL
+                  AND end_reason = 'fixed'
+                  AND pppoe IN ({placeholders})
+                ORDER BY pppoe ASC, ended_at DESC, id DESC
+                """,
+                tuple(values),
+            ).fetchall()
         out = {}
         for row in rows or []:
             item = dict(row)
@@ -5735,22 +5758,7 @@ def delete_optical_results_for_pppoe(pppoe):
     conn = get_conn()
     try:
         with conn:
-            device_rows = conn.execute(
-                "SELECT DISTINCT device_id FROM optical_results WHERE pppoe = ?",
-                (pppoe,),
-            ).fetchall()
-            device_ids = [str(_row_get(row, "device_id", "") or "").strip() for row in (device_rows or [])]
-            device_ids = [item for item in device_ids if item]
             conn.execute("DELETE FROM optical_results WHERE pppoe = ?", (pppoe,))
-            if device_ids:
-                if _use_postgres():
-                    conn.execute(
-                        "DELETE FROM optical_results WHERE device_id = ANY(?)",
-                        (list(device_ids),),
-                    )
-                else:
-                    placeholders = ",".join("?" for _ in device_ids)
-                    conn.execute(f"DELETE FROM optical_results WHERE device_id IN ({placeholders})", device_ids)
     finally:
         conn.close()
 

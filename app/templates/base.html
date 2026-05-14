@@ -234,6 +234,13 @@
 	              <div class="h3 m-0">{% block header_title %}ThreeJ Notifier Suite{% endblock %}</div>
 	            </div>
 	            <div class="sys-metrics d-none d-lg-flex ms-auto gap-4">
+	              <div id="sys-delete-progress" class="sys-metric sys-delete-progress text-warning d-none" title="">
+	                <i id="sys-delete-icon" class="ti ti-trash"></i>
+	                <span id="sys-delete-label">Deleting 0%</span>
+	                <div class="progress sys-delete-bar" aria-hidden="true">
+	                  <div id="sys-delete-bar-fill" class="progress-bar bg-warning" style="width: 0%"></div>
+	                </div>
+	              </div>
 	              <div class="sys-metric text-muted">
 	                <i class="ti ti-cpu"></i><span id="sys-cpu">CPU 0%</span>
 	              </div>
@@ -462,6 +469,50 @@
       };
     })();
 
+    const renderDeleteProgress = (purge = {}) => {
+      const deleteProgressEl = document.getElementById("sys-delete-progress");
+      if (!deleteProgressEl) return;
+      const deleteIconEl = document.getElementById("sys-delete-icon");
+      const deleteLabelEl = document.getElementById("sys-delete-label");
+      const deleteBarFillEl = document.getElementById("sys-delete-bar-fill");
+      const visible = Boolean(purge.visible);
+      if (!visible) {
+        deleteProgressEl.classList.add("d-none");
+        return;
+      }
+      const percent = Math.max(0, Math.min(100, Number(purge.percent ?? 0) || 0));
+      const status = String(purge.status || "running").toLowerCase();
+      const label = String(purge.label || `Deleting · ${Math.round(percent)}%`);
+      deleteProgressEl.classList.remove("d-none", "text-warning", "text-success", "text-danger");
+      deleteProgressEl.classList.add(status === "completed" ? "text-success" : status === "failed" ? "text-danger" : "text-warning");
+      deleteProgressEl.title = String(purge.title || label);
+      if (deleteLabelEl) deleteLabelEl.textContent = label;
+      if (deleteIconEl) {
+        deleteIconEl.className = status === "completed"
+          ? "ti ti-circle-check"
+          : status === "failed"
+            ? "ti ti-alert-triangle"
+            : "ti ti-trash";
+      }
+      if (deleteBarFillEl) {
+        deleteBarFillEl.style.width = `${percent}%`;
+        deleteBarFillEl.className = `progress-bar ${status === "completed" ? "bg-success" : status === "failed" ? "bg-danger" : "bg-warning"}`;
+      }
+    };
+
+    const updateBackgroundTasks = async () => {
+      try {
+        const res = await fetch("/system/background-tasks", { headers: { "Accept": "application/json" }, cache: "no-store" });
+        if (!res.ok) return null;
+        const data = await res.json();
+        const purge = data.accounts_missing_purge || {};
+        renderDeleteProgress(purge);
+        return purge;
+      } catch (err) {
+        return null;
+      }
+    };
+
     const updateResources = async () => {
       try {
         const res = await fetch("/system/resources", { headers: { "Accept": "application/json" }, cache: "no-store" });
@@ -494,6 +545,7 @@
         }
         if (diskEl) diskEl.textContent = `DISK ${data.disk_pct ?? 0}%`;
         if (uptimeEl) uptimeEl.textContent = `UPTIME ${formatUptime(data.uptime_seconds ?? 0)}`;
+        renderDeleteProgress(data.accounts_missing_purge || {});
       } catch (err) {
         // ignore
       }
@@ -505,6 +557,45 @@
 	      updateResources();
 	      setInterval(updateResources, 15000);
 	    }
+
+    (() => {
+      const idleDelayMs = 30000;
+      const activeDelayMs = 1000;
+      const doneDelayMs = 2500;
+      let timer = null;
+      let running = false;
+
+      const schedule = (delayMs) => {
+        if (timer) window.clearTimeout(timer);
+        timer = window.setTimeout(run, Math.max(500, Number(delayMs) || idleDelayMs));
+      };
+
+      const run = async () => {
+        if (running) {
+          schedule(activeDelayMs);
+          return;
+        }
+        if (document.hidden) {
+          schedule(idleDelayMs);
+          return;
+        }
+        running = true;
+        const purge = await updateBackgroundTasks();
+        running = false;
+        const status = String(purge?.status || "").toLowerCase();
+        const active = Boolean(purge?.visible) && (status === "running" || status === "queued");
+        const justDone = Boolean(purge?.visible) && (status === "completed" || status === "failed");
+        schedule(active ? activeDelayMs : justDone ? doneDelayMs : idleDelayMs);
+      };
+
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) {
+          schedule(250);
+        }
+      });
+      window.addEventListener("focus", () => schedule(250), { passive: true });
+      schedule(250);
+    })();
 	  </script>
   <script>
     (() => {

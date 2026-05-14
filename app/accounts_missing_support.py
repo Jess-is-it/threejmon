@@ -21,6 +21,8 @@ from .notifiers import usage as usage_notifier
 from .settings_defaults import ACCOUNTS_MISSING_DEFAULTS, SURVEILLANCE_DEFAULTS, WAN_PING_DEFAULTS
 from .settings_store import get_settings, get_state, save_settings, save_state
 
+ACCOUNTS_MISSING_DELETED_STATE_KEY = "accounts_missing_deleted_state"
+
 
 def _iso_now(now=None):
     now = now or datetime.utcnow()
@@ -468,6 +470,102 @@ def _missing_entry_from_known(item, now=None):
     }
 
 
+def _normalize_deleted_accounts_map(raw_deleted):
+    out = {}
+    for key, value in raw_deleted.items():
+        pppoe_key = _pppoe_key(key)
+        if not pppoe_key:
+            continue
+        if isinstance(value, dict):
+            item = dict(value)
+        else:
+            item = {"pppoe": str(value or key).strip()}
+        item["pppoe"] = str(item.get("pppoe") or key).strip()
+        item["deleted_at"] = str(item.get("deleted_at") or "").strip()
+        out[pppoe_key] = item
+    return out
+
+
+def _deleted_accounts_map(state):
+    state = state if isinstance(state, dict) else {}
+    registry = get_state(ACCOUNTS_MISSING_DELETED_STATE_KEY, {})
+    raw_deleted = {}
+    if isinstance(registry, dict) and isinstance(registry.get("deleted_accounts"), dict):
+        raw_deleted.update(registry.get("deleted_accounts") or {})
+    if isinstance(state.get("deleted_accounts"), dict):
+        raw_deleted.update(state.get("deleted_accounts") or {})
+    return _normalize_deleted_accounts_map(raw_deleted)
+
+
+def _save_deleted_accounts_registry(deleted_accounts):
+    save_state(
+        ACCOUNTS_MISSING_DELETED_STATE_KEY,
+        {
+            "deleted_accounts": _normalize_deleted_accounts_map(deleted_accounts if isinstance(deleted_accounts, dict) else {}),
+            "updated_at": _iso_now(),
+        },
+    )
+
+
+def accounts_missing_deleted_pppoe_keys(state=None):
+    state = state if isinstance(state, dict) else get_state("accounts_missing_state", {})
+    return set(_deleted_accounts_map(state).keys())
+
+
+def _mark_deleted_accounts_in_state(state, pppoes, deleted_at=None, purge_status="queued"):
+    next_state = copy.deepcopy(state if isinstance(state, dict) else {})
+    deleted = _deleted_accounts_map(next_state)
+    deleted_at = str(deleted_at or _iso_now()).strip()
+    for pppoe in pppoes or []:
+        pppoe_value = str(pppoe or "").strip()
+        pppoe_key = _pppoe_key(pppoe_value)
+        if not pppoe_key:
+            continue
+        deleted[pppoe_key] = {
+            "pppoe": pppoe_value,
+            "deleted_at": deleted_at,
+            "reason": "manual_delete",
+            "purge_status": str(purge_status or "queued").strip() or "queued",
+        }
+    next_state["deleted_accounts"] = deleted
+    _save_deleted_accounts_registry(deleted)
+    return next_state
+
+
+def mark_accounts_missing_deleted(pppoes, deleted_at=None):
+    normalized = []
+    seen = set()
+    for pppoe in pppoes or []:
+        pppoe_value = str(pppoe or "").strip()
+        pppoe_key = _pppoe_key(pppoe_value)
+        if not pppoe_key or pppoe_key in seen:
+            continue
+        seen.add(pppoe_key)
+        normalized.append(pppoe_value)
+    if not normalized:
+        return []
+
+    deleted_keys = {_pppoe_key(item) for item in normalized}
+    state = get_state("accounts_missing_state", {})
+    next_state = _mark_deleted_accounts_in_state(state, normalized, deleted_at=deleted_at, purge_status="queued")
+    next_state["known_accounts"] = [
+        item
+        for item in (next_state.get("known_accounts") or [])
+        if not isinstance(item, dict) or _pppoe_key(item.get("pppoe")) not in deleted_keys
+    ]
+    next_state["missing_entries"] = [
+        item
+        for item in (next_state.get("missing_entries") or [])
+        if not isinstance(item, dict) or _pppoe_key(item.get("pppoe")) not in deleted_keys
+    ]
+    stats = next_state.get("source_stats") if isinstance(next_state.get("source_stats"), dict) else {}
+    stats["known_total"] = len(next_state.get("known_accounts") or [])
+    stats["missing_total"] = len(next_state.get("missing_entries") or [])
+    next_state["source_stats"] = stats
+    save_state("accounts_missing_state", next_state)
+    return normalized
+
+
 def reconcile_accounts_missing_state(settings, previous_state=None, wan_settings=None, now=None):
     now = now or datetime.utcnow()
     now_iso = _iso_now(now)
@@ -478,8 +576,20 @@ def reconcile_accounts_missing_state(settings, previous_state=None, wan_settings
     secret_snapshot = build_accounts_missing_secret_snapshot(settings, routers=routers, now=now)
     secret_map = secret_snapshot.get("secret_map") if isinstance(secret_snapshot.get("secret_map"), dict) else {}
     validation_active = bool(secret_snapshot.get("validation_active"))
+    deleted_accounts = _deleted_accounts_map(previous_state)
+    deleted_keys = set(deleted_accounts.keys())
 
     known_map = collect_accounts_missing_known_map(previous_state=previous_state, now=now)
+    if deleted_keys:
+        reactivated_keys = {key for key in deleted_keys if validation_active and key in secret_map}
+        suppressed_keys = deleted_keys - reactivated_keys
+        for key in suppressed_keys:
+            known_map.pop(key, None)
+        deleted_accounts = {
+            key: value
+            for key, value in deleted_accounts.items()
+            if key not in reactivated_keys
+        }
     if validation_active:
         for key, secret in secret_map.items():
             _merge_known_account(
@@ -538,6 +648,9 @@ def reconcile_accounts_missing_state(settings, previous_state=None, wan_settings
         if str(item.get("first_missing_at") or "").strip():
             missing_entries.append(_missing_entry_from_known(item, now=now))
 
+    if deleted_keys:
+        _save_deleted_accounts_registry(deleted_accounts)
+
     return {
         "last_check_at": now_iso,
         "last_success_at": now_iso if validation_active else str(previous_state.get("last_success_at") or "").strip(),
@@ -550,6 +663,7 @@ def reconcile_accounts_missing_state(settings, previous_state=None, wan_settings
         "validation_paused_reason": str(secret_snapshot.get("paused_reason") or "").strip(),
         "known_accounts": known_accounts,
         "missing_entries": missing_entries,
+        "deleted_accounts": deleted_accounts,
         "source_stats": {
             "known_total": len(known_accounts),
             "present_total": present_total,
@@ -580,6 +694,7 @@ def auto_delete_accounts_missing_entries(state, settings, now=None):
         return state, []
     deleted_keys = {_pppoe_key(item) for item in deleted}
     next_state = copy.deepcopy(state if isinstance(state, dict) else {})
+    next_state = _mark_deleted_accounts_in_state(next_state, deleted, deleted_at=_iso_now(now))
     next_state["known_accounts"] = [
         item
         for item in (next_state.get("known_accounts") or [])
@@ -597,10 +712,39 @@ def auto_delete_accounts_missing_entries(state, settings, now=None):
     return next_state, deleted
 
 
-def purge_pppoe_account_data(pppoe):
+def purge_pppoe_account_data(pppoe, progress_callback=None):
     pppoe = str(pppoe or "").strip()
     if not pppoe:
         return {"ok": False, "pppoe": "", "account_ids": []}
+
+    def _progress(stage, step, total):
+        if not callable(progress_callback):
+            return
+        try:
+            progress_callback(stage=stage, step=step, total=total)
+        except Exception:
+            pass
+
+    purge_steps = [
+        ("Preparing account references", None),
+        ("Accounts Ping samples", lambda: delete_accounts_ping_results_for_pppoe(pppoe, sorted(account_ids))),
+        ("Accounts Ping rollups", lambda: delete_accounts_ping_rollups_for_account_ids(sorted(account_ids))),
+        ("Optical readings", lambda: delete_optical_results_for_pppoe(pppoe)),
+        ("Usage samples", lambda: delete_pppoe_usage_samples_for_pppoe(pppoe)),
+        ("Modem reboot history", lambda: delete_usage_modem_reboot_history_for_pppoe(pppoe)),
+        ("Offline history", lambda: delete_offline_history_for_pppoe(pppoe)),
+        ("Surveillance history", lambda: delete_surveillance_sessions_for_pppoe(pppoe)),
+        ("System audit logs", lambda: delete_auth_audit_logs_for_pppoe(pppoe)),
+        ("Surveillance settings", None),
+        ("Accounts Ping state", None),
+        ("Usage state", None),
+        ("Offline state", None),
+        ("Optical state", None),
+        ("Missing Secrets state", None),
+    ]
+    total_steps = len(purge_steps)
+    completed_steps = 0
+    _progress("Preparing account references", completed_steps, total_steps)
 
     pppoe_key = _pppoe_key(pppoe)
     accounts_ping_state = get_state("accounts_ping_state", {})
@@ -630,16 +774,16 @@ def purge_pppoe_account_data(pppoe):
             )
         )
     account_ids = {item for item in account_ids if item}
+    completed_steps += 1
+    _progress("Prepared account references", completed_steps, total_steps)
 
-    delete_accounts_ping_results_for_pppoe(pppoe, sorted(account_ids))
-    delete_accounts_ping_rollups_for_account_ids(sorted(account_ids))
-    delete_optical_results_for_pppoe(pppoe)
-    delete_pppoe_usage_samples_for_pppoe(pppoe)
-    delete_usage_modem_reboot_history_for_pppoe(pppoe)
-    delete_offline_history_for_pppoe(pppoe)
-    delete_surveillance_sessions_for_pppoe(pppoe)
-    delete_auth_audit_logs_for_pppoe(pppoe)
+    for stage, action in purge_steps[1:9]:
+        _progress(stage, completed_steps, total_steps)
+        action()
+        completed_steps += 1
+        _progress(stage, completed_steps, total_steps)
 
+    _progress("Surveillance settings", completed_steps, total_steps)
     surveillance_settings = get_settings("surveillance", SURVEILLANCE_DEFAULTS)
     entries = surveillance_settings.get("entries") if isinstance(surveillance_settings.get("entries"), list) else []
     filtered_entries = [
@@ -650,7 +794,10 @@ def purge_pppoe_account_data(pppoe):
     if len(filtered_entries) != len(entries):
         surveillance_settings["entries"] = filtered_entries
         save_settings("surveillance", surveillance_settings)
+    completed_steps += 1
+    _progress("Surveillance settings", completed_steps, total_steps)
 
+    _progress("Accounts Ping state", completed_steps, total_steps)
     if isinstance(accounts_ping_state, dict):
         devices = accounts_ping_state.get("devices") if isinstance(accounts_ping_state.get("devices"), list) else []
         accounts = accounts_ping_state.get("accounts") if isinstance(accounts_ping_state.get("accounts"), dict) else {}
@@ -669,7 +816,10 @@ def purge_pppoe_account_data(pppoe):
             ]
         accounts_ping_state["accounts"] = accounts
         save_state("accounts_ping_state", accounts_ping_state)
+    completed_steps += 1
+    _progress("Accounts Ping state", completed_steps, total_steps)
 
+    _progress("Usage state", completed_steps, total_steps)
     usage_state = get_state("usage_state", {})
     if isinstance(usage_state, dict):
         usage_state["active_rows"] = [
@@ -713,7 +863,10 @@ def purge_pppoe_account_data(pppoe):
             ]
         usage_state["secrets_cache"] = next_secrets_cache
         save_state("usage_state", usage_state)
+    completed_steps += 1
+    _progress("Usage state", completed_steps, total_steps)
 
+    _progress("Offline state", completed_steps, total_steps)
     offline_state = get_state("offline_state", {})
     if isinstance(offline_state, dict):
         offline_state["rows"] = [
@@ -728,7 +881,10 @@ def purge_pppoe_account_data(pppoe):
             if _pppoe_key((value.get("meta") or {}).get("pppoe") if isinstance(value, dict) else "") != pppoe_key
         }
         save_state("offline_state", offline_state)
+    completed_steps += 1
+    _progress("Offline state", completed_steps, total_steps)
 
+    _progress("Optical state", completed_steps, total_steps)
     optical_state = get_state("optical_state", {})
     if isinstance(optical_state, dict):
         current_devices = [
@@ -759,9 +915,17 @@ def purge_pppoe_account_data(pppoe):
             if isinstance(item, dict) and str(item.get("ip") or "").strip()
         )
         save_state("optical_state", optical_state)
+    completed_steps += 1
+    _progress("Optical state", completed_steps, total_steps)
 
+    _progress("Missing Secrets state", completed_steps, total_steps)
     accounts_missing_state = get_state("accounts_missing_state", {})
     if isinstance(accounts_missing_state, dict):
+        accounts_missing_state = _mark_deleted_accounts_in_state(
+            accounts_missing_state,
+            [pppoe],
+            deleted_at=_iso_now(),
+        )
         accounts_missing_state["known_accounts"] = [
             item
             for item in (accounts_missing_state.get("known_accounts") or [])
@@ -777,5 +941,7 @@ def purge_pppoe_account_data(pppoe):
         stats["missing_total"] = len(accounts_missing_state.get("missing_entries") or [])
         accounts_missing_state["source_stats"] = stats
         save_state("accounts_missing_state", accounts_missing_state)
+    completed_steps += 1
+    _progress("Missing Secrets state", completed_steps, total_steps)
 
     return {"ok": True, "pppoe": pppoe, "account_ids": sorted(account_ids)}

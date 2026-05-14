@@ -51,6 +51,7 @@ from .accounts_ping_sources import (
     normalize_accounts_ping_source_mode,
 )
 from .accounts_missing_support import (
+    accounts_missing_deleted_pppoe_keys,
     auto_delete_accounts_missing_entries,
     normalize_accounts_missing_settings,
     reconcile_accounts_missing_state,
@@ -1362,6 +1363,9 @@ class JobsManager:
                 mikrotik_timeout_seconds = max(int(mikrotik_source_cfg.get("timeout_seconds", 5) or 5), 1)
                 source_mode = source_cfg.get("mode")
                 accounts_ping_exemptions = _account_exemptions_from_settings(cfg)
+                accounts_missing_deleted = accounts_missing_deleted_pppoe_keys()
+                accounts_ping_profile_map = accounts_ping_profile_enabled_map(cfg)
+                now_iso = now.replace(microsecond=0).isoformat() + "Z"
 
                 def account_id_for_target(pppoe, router_id=""):
                     return build_accounts_ping_account_id(
@@ -1370,11 +1374,50 @@ class JobsManager:
                         router_id=router_id,
                     )
 
+                def _accounts_ping_device_profile_disabled(device):
+                    if not isinstance(device, dict):
+                        return False
+                    return is_accounts_ping_disabled_account(
+                        (device.get("router_id") or "").strip(),
+                        (device.get("pppoe") or device.get("name") or "").strip(),
+                        (device.get("profile") or "").strip(),
+                        profile_enabled=accounts_ping_profile_map,
+                    )
+
+                def _sync_accounts_ping_device_profile_flags(raw_devices):
+                    synced = []
+                    changed = False
+                    for device in raw_devices if isinstance(raw_devices, list) else []:
+                        if not isinstance(device, dict):
+                            continue
+                        current_disabled = _accounts_ping_device_profile_disabled(device)
+                        stored_disabled = bool(device.get("profile_disabled"))
+                        next_device = dict(device)
+                        if current_disabled != stored_disabled:
+                            next_device["profile_disabled"] = current_disabled
+                            next_device["profile_disabled_since"] = (
+                                now_iso if current_disabled else ""
+                            )
+                            if (next_device.get("profile") or "").strip():
+                                next_device["last_profile_seen_at"] = (
+                                    (next_device.get("last_profile_seen_at") or "").strip()
+                                    or now_iso
+                                )
+                            changed = True
+                        synced.append(next_device)
+                    return synced, changed
+
                 def _accounts_ping_device_exempted(device):
-                    if not accounts_ping_exemptions or not isinstance(device, dict):
+                    if not isinstance(device, dict):
                         return False
                     pppoe = (device.get("pppoe") or device.get("name") or "").strip().lower()
-                    return bool(pppoe and pppoe in accounts_ping_exemptions)
+                    return bool(
+                        pppoe
+                        and (
+                            pppoe in accounts_ping_exemptions
+                            or pppoe in accounts_missing_deleted
+                        )
+                    )
 
                 def _filter_accounts_ping_devices_for_exemptions(raw_devices):
                     filtered = []
@@ -1390,7 +1433,12 @@ class JobsManager:
                         filtered.append(device)
                     return filtered, removed_account_ids
 
-                if accounts_ping_exemptions and devices:
+                devices, profile_flags_changed = _sync_accounts_ping_device_profile_flags(devices)
+                if profile_flags_changed:
+                    state["devices"] = devices
+                    save_state("accounts_ping_state", state)
+
+                if (accounts_ping_exemptions or accounts_missing_deleted) and devices:
                     devices, removed_account_ids = _filter_accounts_ping_devices_for_exemptions(devices)
                     if removed_account_ids or len(devices) != len(state.get("devices") if isinstance(state.get("devices"), list) else []):
                         if removed_account_ids:
@@ -1417,6 +1465,7 @@ class JobsManager:
                             previous_devices=devices,
                             now=now,
                         )
+                        devices, profile_flags_changed = _sync_accounts_ping_device_profile_flags(devices)
                         devices, removed_account_ids = _filter_accounts_ping_devices_for_exemptions(devices)
                         if removed_account_ids:
                             accounts_state = {
@@ -1456,18 +1505,20 @@ class JobsManager:
                 for device in devices:
                     pppoe = (device.get("pppoe") or device.get("name") or "").strip()
                     ip = (device.get("ip") or "").strip()
-                    if pppoe and bool(device.get("profile_disabled")):
+                    profile_disabled = _accounts_ping_device_profile_disabled(device)
+                    if pppoe and profile_disabled:
                         disabled_profile_pppoe.add(pppoe.lower())
                     if not pppoe or not ip:
                         continue
-                    if bool(device.get("profile_disabled")):
+                    if profile_disabled:
                         continue
                     pppoe_ip_map[pppoe] = ip
 
                 target_map = {}
                 if cfg.get("enabled"):
                     for device in devices:
-                        if bool(device.get("profile_disabled")):
+                        profile_disabled = _accounts_ping_device_profile_disabled(device)
+                        if profile_disabled:
                             continue
                         pppoe = (device.get("pppoe") or device.get("name") or "").strip()
                         ip = (device.get("ip") or "").strip()
@@ -1489,7 +1540,7 @@ class JobsManager:
                             "source_missing": bool(device.get("source_missing")),
                             "source_missing_since": (device.get("source_missing_since") or "").strip(),
                             "last_source_seen_at": (device.get("last_source_seen_at") or "").strip(),
-                            "profile_disabled": bool(device.get("profile_disabled")),
+                            "profile_disabled": profile_disabled,
                             "profile_disabled_since": (device.get("profile_disabled_since") or "").strip(),
                             "last_profile_seen_at": (device.get("last_profile_seen_at") or "").strip(),
                         }
