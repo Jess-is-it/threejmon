@@ -13641,181 +13641,138 @@ async def profile_review_suggest(q: str = "", limit: int = 12):
     query = (q or "").strip()
     limit = max(min(int(limit or 12), 25), 1)
     if len(query) < 2:
-        since_iso = (datetime.utcnow() - timedelta(hours=24)).replace(microsecond=0).isoformat() + "Z"
-        optical_settings = get_settings("optical", OPTICAL_DEFAULTS)
-        accounts_ping_settings = get_settings("accounts_ping", ACCOUNTS_PING_DEFAULTS)
-        ping_state = get_state("accounts_ping_state", {"accounts": {}, "devices": []})
-        devices = _accounts_ping_state_devices(ping_state)
-        state_accounts = ping_state.get("accounts") if isinstance(ping_state.get("accounts"), dict) else {}
+        quick_items = []
 
-        cls = _accounts_ping_applied_classification(accounts_ping_settings)
-        issue_loss_pct = float(cls.get("issue_loss_pct", ACCOUNTS_PING_DEFAULTS["classification"]["issue_loss_pct"]) or 20.0)
-        issue_latency_ms = float(cls.get("issue_latency_ms", ACCOUNTS_PING_DEFAULTS["classification"]["issue_latency_ms"]) or 200.0)
-        stable_fail_pct = float(cls.get("stable_rto_pct", ACCOUNTS_PING_DEFAULTS["classification"]["stable_rto_pct"]) or 2.0)
-        issue_fail_pct = float(cls.get("issue_rto_pct", ACCOUNTS_PING_DEFAULTS["classification"]["issue_rto_pct"]) or 5.0)
-
-        rows = []
-        account_ids = []
-        for dev in devices:
-            ip = (dev.get("ip") or "").strip()
-            if not ip:
-                continue
-            pppoe = (dev.get("pppoe") or dev.get("name") or "").strip() or ip
-            aid = (dev.get("account_id") or "").strip() or _accounts_ping_account_id_for_device(dev)
-            if not aid:
-                continue
-            rows.append(
-                {
-                    "pppoe": pppoe,
-                    "ip": ip,
-                    "account_id": aid,
-                    "router_name": (dev.get("router_name") or "").strip(),
-                }
-            )
-            account_ids.append(aid)
-
-        stats_by_ip_map = get_accounts_ping_window_stats_by_ip(account_ids, since_iso) if account_ids else {}
-
-        acc_items = []
-        for row in rows:
-            aid = row["account_id"]
-            st = state_accounts.get(aid) if isinstance(state_accounts.get(aid), dict) else {}
-            chosen_ip = (st.get("last_ip") or row.get("ip") or "").strip()
-            stats = (stats_by_ip_map.get(aid) or {}).get(chosen_ip) or {}
-            total = int(stats.get("total") or 0)
-            failures = int(stats.get("failures") or 0)
-            fail_pct = (failures / total) * 100.0 if total else 0.0
-            has_recent = bool((st.get("last_check_at") or "").strip())
-            last_ok = bool(st.get("last_ok")) if has_recent else True
-            last_loss = st.get("last_loss")
-            last_avg_ms = st.get("last_avg_ms")
-
-            status = ""
-            if not has_recent:
-                status = "pending"
-            elif not last_ok:
-                status = "down"
-            else:
-                issue_hit = False
-                if last_loss is not None and float(last_loss) >= issue_loss_pct:
-                    issue_hit = True
-                if last_avg_ms is not None and float(last_avg_ms) >= issue_latency_ms:
-                    issue_hit = True
-                if total and fail_pct >= issue_fail_pct:
-                    issue_hit = True
-                if total and fail_pct > stable_fail_pct:
-                    issue_hit = True
-                status = "monitor" if issue_hit else "stable"
-
-            if status in ("down", "monitor"):
-                acc_items.append(
+        try:
+            surveillance_settings = normalize_surveillance_settings(get_settings("surveillance", SURVEILLANCE_DEFAULTS))
+            surveillance_entries = _surveillance_entry_map(surveillance_settings)
+            active_entries = []
+            for pppoe, entry in surveillance_entries.items():
+                if not isinstance(entry, dict):
+                    continue
+                if (entry.get("status") or "under").strip().lower() != "under":
+                    continue
+                if (entry.get("last_fixed_at") or "").strip():
+                    continue
+                active_entries.append(((entry.get("added_at") or entry.get("updated_at") or "").strip(), pppoe, entry))
+            active_entries.sort(key=lambda item: item[0], reverse=True)
+            for _, pppoe, entry in active_entries[:5]:
+                quick_items.append(
                     {
-                        "group": "ACC-Ping",
-                        "name": (
-                            f"{row.get('pppoe')} ({row.get('router_name')})"
-                            if row.get("router_name")
-                            else (row.get("pppoe") or chosen_ip)
-                        ),
-                        "pppoe": row.get("pppoe") or "",
-                        "ip": chosen_ip,
+                        "group": "Latest Under Surveillance - Active Monitoring",
+                        "name": (entry.get("name") or pppoe or "Customer").strip(),
+                        "pppoe": pppoe,
+                        "ip": (entry.get("ip") or "").strip(),
                         "device_id": "",
-                        "sources": ["accounts_ping"],
-                        "last_seen": st.get("last_check_at") or "",
-                        "meta": {"status": status, "loss": last_loss, "avg_ms": last_avg_ms, "fail_pct": fail_pct},
+                        "router_name": "",
+                        "sources": ["surveillance"],
+                        "last_seen": (entry.get("added_at") or entry.get("updated_at") or "").strip(),
+                        "meta": {
+                            "status": "tracking",
+                            "stage": "Active Monitoring",
+                            "since": format_ts_ph(entry.get("added_at")),
+                        },
                     }
                 )
+        except Exception:
+            pass
 
-        acc_items.sort(
-            key=lambda x: (
-                x.get("meta", {}).get("status") != "down",
-                -(float(x.get("meta", {}).get("loss") or 0.0)),
-                -(float(x.get("meta", {}).get("avg_ms") or 0.0)),
-                -(float(x.get("meta", {}).get("fail_pct") or 0.0)),
-                str(x.get("name") or "").lower(),
+        try:
+            optical_status = build_optical_status(
+                get_settings("optical", OPTICAL_DEFAULTS),
+                window_hours=24,
+                limit=5,
+                issues_page=1,
+                issues_sort="last_ts",
+                issues_dir="desc",
             )
-        )
-        acc_items = acc_items[:10]
+            for row in (optical_status.get("issue_rows") or [])[:5]:
+                if not isinstance(row, dict):
+                    continue
+                name = (row.get("name") or "").strip()
+                device_id = (row.get("device_id") or "").strip()
+                quick_items.append(
+                    {
+                        "group": "Latest Optical Connection Issues",
+                        "name": name or device_id or "Optical account",
+                        "pppoe": name,
+                        "ip": (row.get("ip") or "").strip(),
+                        "device_id": device_id,
+                        "router_name": (row.get("router_label") or "").strip(),
+                        "sources": ["optical"],
+                        "last_seen": (row.get("last_ts") or "").strip(),
+                        "meta": {
+                            "status": "issue",
+                            "rx": row.get("rx"),
+                            "tx": row.get("tx"),
+                            "reason": ", ".join(row.get("reasons") or []),
+                        },
+                    }
+                )
+        except Exception:
+            pass
 
-        classification = optical_settings.get("classification", {})
-        issue_rx = float(classification.get("issue_rx_dbm", OPTICAL_DEFAULTS["classification"]["issue_rx_dbm"]))
-        issue_tx = float(classification.get("issue_tx_dbm", OPTICAL_DEFAULTS["classification"]["issue_tx_dbm"]))
-        stable_rx = float(classification.get("stable_rx_dbm", OPTICAL_DEFAULTS["classification"]["stable_rx_dbm"]))
-        stable_tx = float(classification.get("stable_tx_dbm", OPTICAL_DEFAULTS["classification"]["stable_tx_dbm"]))
-        rx_realistic_min = float(classification.get("rx_realistic_min_dbm", OPTICAL_DEFAULTS["classification"]["rx_realistic_min_dbm"]))
-        rx_realistic_max = float(classification.get("rx_realistic_max_dbm", OPTICAL_DEFAULTS["classification"]["rx_realistic_max_dbm"]))
-        tx_realistic_min = float(classification.get("tx_realistic_min_dbm", OPTICAL_DEFAULTS["classification"]["tx_realistic_min_dbm"]))
-        tx_realistic_max = float(classification.get("tx_realistic_max_dbm", OPTICAL_DEFAULTS["classification"]["tx_realistic_max_dbm"]))
-
-        candidates = get_optical_worst_candidates(since_iso, limit=300)
-        current_optical_device_ids = _optical_current_device_ids()
-        if current_optical_device_ids:
-            candidates = [
-                row
-                for row in candidates
-                if isinstance(row, dict) and (row.get("device_id") or "").strip() in current_optical_device_ids
-            ]
-
-        def optical_score(row):
-            rx = row.get("rx")
-            tx = row.get("tx")
-            p = 0
-            if rx is None or rx < rx_realistic_min or rx > rx_realistic_max:
-                p += 1000
-            elif rx <= issue_rx:
-                p += 600 + int(abs(issue_rx - rx) * 10)
-            elif rx < stable_rx:
-                p += 300 + int(abs(stable_rx - rx) * 5)
-            else:
-                p += 50
-            if tx is None:
-                p += 220
-            else:
-                if tx < tx_realistic_min or tx > tx_realistic_max:
-                    p += 200
-                if tx <= issue_tx:
-                    p += 180 + int(abs(issue_tx - tx) * 10)
-                elif tx < stable_tx:
-                    p += 90
-            if bool(row.get("priority")):
-                p += 80
-            return p
-
-        candidates = sorted(candidates, key=optical_score, reverse=True)[:10]
-        optical_items = []
-        for row in candidates:
-            ip = (row.get("ip") or "").strip()
-            device_id = (row.get("device_id") or "").strip()
-            rx = row.get("rx")
-            tx = row.get("tx")
-            rx_invalid = rx is None or rx < rx_realistic_min or rx > rx_realistic_max
-            tx_missing = tx is None
-            tx_unrealistic = (tx is not None) and (tx < tx_realistic_min or tx > tx_realistic_max)
-            status = "stable"
-            if rx_invalid:
-                status = "issue"
-            elif tx_missing or tx_unrealistic:
-                status = "monitor"
-            elif (rx is not None and rx <= issue_rx) or (tx is not None and tx <= issue_tx):
-                status = "issue"
-            elif not (rx is not None and rx >= stable_rx and tx is not None and tx >= stable_tx):
-                status = "monitor"
-            optical_items.append(
-                {
-                    "group": "Optical",
-                    "name": (row.get("pppoe") or "").strip() or device_id,
-                    "ip": ip,
-                    "device_id": device_id,
-                    "sources": ["optical"],
-                    "last_seen": row.get("timestamp") or "",
-                    "meta": {"status": status, "rx": rx, "tx": tx, "tx_missing": tx_missing, "tx_unrealistic": tx_unrealistic},
-                }
+        try:
+            offline_settings = normalize_offline_settings(get_settings("offline", OFFLINE_DEFAULTS))
+            offline_state = _filter_offline_state_excluding_accounts_ping_disabled(get_state("offline_state", {}))
+            rule_views = _build_offline_rule_views(offline_state, offline_settings)
+            offline_rules = rule_views.get("rules") if isinstance(rule_views.get("rules"), list) else []
+            rows_by_rule = rule_views.get("rows_by_rule") if isinstance(rule_views.get("rows_by_rule"), dict) else {}
+            target_rule = next(
+                (
+                    rule
+                    for rule in offline_rules
+                    if int(rule.get("minutes") or 0) == 4320
+                    or str(rule.get("label") or "").strip().lower() == "3d"
+                    or str(rule.get("tab_label") or "").strip().lower() == "offline 3d"
+                ),
+                None,
             )
+            offline_rows = []
+            if target_rule:
+                offline_rows = rows_by_rule.get(str(target_rule.get("id") or ""), []) or []
+            else:
+                offline_rows = [
+                    row
+                    for row in (offline_state.get("rows") if isinstance(offline_state.get("rows"), list) else [])
+                    if isinstance(row, dict)
+                    and (_parse_iso_z(row.get("offline_since") or row.get("offline_since_ts") or "") is not None)
+                    and int(max(0, (datetime.utcnow() - _parse_iso_z(row.get("offline_since") or row.get("offline_since_ts") or "")).total_seconds())) >= 259200
+                ]
+            offline_rows = sorted(
+                offline_rows,
+                key=lambda row: (row.get("offline_since_ts") or row.get("offline_since") or ""),
+                reverse=True,
+            )
+            for row in offline_rows[:5]:
+                pppoe = (row.get("pppoe") or row.get("name") or "").strip()
+                if not pppoe:
+                    continue
+                quick_items.append(
+                    {
+                        "group": "Latest Offline 3D",
+                        "name": pppoe,
+                        "pppoe": pppoe,
+                        "ip": (row.get("ip") or row.get("address") or "").strip(),
+                        "device_id": "",
+                        "router_name": (row.get("router_name") or row.get("router_id") or "").strip(),
+                        "sources": ["offline"],
+                        "last_seen": (row.get("offline_since_ts") or row.get("offline_since") or "").strip(),
+                        "meta": {
+                            "status": "down",
+                            "duration": row.get("offline_duration") or "",
+                            "since": row.get("offline_since") or format_ts_ph(row.get("offline_since_ts")),
+                        },
+                    }
+                )
+        except Exception:
+            pass
 
         return JSONResponse(
             {
                 "mode": "top10",
-                "header": "TOP10 - Critical Connections (Last 24h)",
-                "items": acc_items + optical_items,
+                "header": "Latest Monitoring Shortcuts",
+                "items": quick_items,
             }
         )
     return JSONResponse({"mode": "search", "header": "Results", "items": _profile_search_items(query, limit=limit)})
@@ -20411,7 +20368,7 @@ async def surveillance_series(pppoe: str, window: str = "24", stage: str = "unde
 
 
 @app.get("/surveillance/inspect_activity", response_class=JSONResponse)
-async def surveillance_inspect_activity(pppoe: str, stage: str = "under"):
+async def surveillance_inspect_activity(pppoe: str, stage: str = "under", include_optical: bool = True):
     pppoe = (pppoe or "").strip()
     if not pppoe:
         return _json_no_store({"ok": False, "error": "Missing PPPoE account."}, status_code=400)
@@ -20432,82 +20389,41 @@ async def surveillance_inspect_activity(pppoe: str, stage: str = "under"):
     since_iso = since_dt.isoformat() + "Z"
     until_iso = until_dt.isoformat() + "Z"
     account_ids = _accounts_ping_account_ids_for_pppoe(pppoe)
-    rows = _accounts_ping_series_rows_for_account_ids(account_ids, since_iso, until_iso)
-
-    def _merge_rows(rows_in):
-        merged = []
-        cur = None
-        cur_ts = None
-        for row in rows_in or []:
-            ts = (row.get("timestamp") or "").strip()
-            if not ts:
-                continue
-            ok = bool(row.get("ok"))
-            loss = row.get("loss")
-            avg_ms = row.get("avg_ms")
-            mode = row.get("mode")
-            if cur is None or ts != cur_ts:
-                if cur is not None:
-                    merged.append(cur)
-                cur_ts = ts
-                cur = {"ts": ts, "ok": ok, "loss": loss, "avg_ms": avg_ms, "mode": mode}
-                continue
-            cur["ok"] = bool(cur.get("ok")) or ok
-            for k, v in (("loss", loss), ("avg_ms", avg_ms)):
-                a = cur.get(k)
-                b = v
-                try:
-                    av = float(a) if a is not None else None
-                except Exception:
-                    av = None
-                try:
-                    bv = float(b) if b is not None else None
-                except Exception:
-                    bv = None
-                if av is None:
-                    cur[k] = b
-                elif bv is None:
-                    pass
-                else:
-                    cur[k] = b if bv > av else a
-        if cur is not None:
-            merged.append(cur)
-        return merged
-
-    merged_series = _merge_rows(rows)
-    stats_payload = _surv_raw_points_and_stats(
-        [
-            {
-                "timestamp": item.get("ts"),
-                "ok": item.get("ok"),
-                "loss": item.get("loss"),
-                "avg_ms": item.get("avg_ms"),
-            }
-            for item in merged_series
-        ]
-    )
-    stats = dict((stats_payload or {}).get("stats") or {})
-
-    def _to_float(value):
-        try:
-            return float(value)
-        except Exception:
-            return None
+    rollups = _accounts_ping_rollup_rows_for_account_ids(account_ids, since_iso, until_iso)
+    rollup_payload = _surv_rollup_points_and_stats(rollups, bucket_seconds=60)
+    stats = dict((rollup_payload or {}).get("stats") or {})
+    points = list((rollup_payload or {}).get("points") or [])
+    series_points = _surv_downsample_points(points, max_points=720)
+    merged_series = [
+        {
+            "ts": item.get("ts"),
+            "ok": not (item.get("loss") is not None and float(item.get("loss") or 0.0) >= 99.999),
+            "loss": item.get("loss"),
+            "avg_ms": item.get("avg_ms"),
+            "mode": "rollup",
+        }
+        for item in series_points
+    ]
 
     down_samples = 0
     parsed_points = []
-    for item in merged_series:
-        ts_raw = (item.get("ts") or "").strip()
+    for row in rollups:
+        ts_raw = (row.get("bucket_ts") or "").strip()
         if not ts_raw:
             continue
         dt = _parse_iso_z(ts_raw)
         if not isinstance(dt, datetime):
             continue
-        loss_v = _to_float(item.get("loss"))
-        is_down = bool(loss_v is not None and loss_v >= 99.999) or (not bool(item.get("ok")))
-        if is_down:
-            down_samples += 1
-        parsed_points.append({"dt": dt, "is_down": is_down})
+        sample_count = int(row.get("sample_count") or 0)
+        ok_count = int(row.get("ok_count") or 0)
+        down_samples += max(sample_count - ok_count, 0)
+        loss_count = int(row.get("loss_count") or 0)
+        loss_sum = row.get("loss_sum")
+        try:
+            loss_pct = (float(loss_sum) / loss_count) if loss_sum is not None and loss_count else None
+        except Exception:
+            loss_pct = None
+        parsed_points.append({"dt": dt, "is_down": bool(loss_pct is not None and loss_pct >= 99.999)})
 
     parsed_points.sort(key=lambda row: row["dt"])
     bucket_seconds = int(stats.get("bucket_seconds") or 60)
@@ -20532,14 +20448,16 @@ async def surveillance_inspect_activity(pppoe: str, stage: str = "under"):
 
     stats["down_samples"] = int(down_samples)
     stats["longest_down_streak_seconds"] = int(round(longest_down_streak))
-    stats["last_sample_ts"] = merged_series[-1].get("ts") if merged_series else ""
+    stats["last_sample_ts"] = points[-1].get("ts") if points else ""
 
-    optical_threshold_dbm = _surv_optical_threshold_dbm(settings)
-    optical_latest_map = get_latest_optical_by_pppoe([pppoe]) if pppoe else {}
-    optical_latest = optical_latest_map.get(pppoe) if isinstance(optical_latest_map, dict) else {}
-    optical_device_id = (optical_latest.get("device_id") or "").strip() if isinstance(optical_latest, dict) else ""
-    optical_rows = get_optical_results_for_device_since(optical_device_id, since_iso) if optical_device_id else []
-    optical_payload = _surv_optical_payload_from_rows(optical_device_id, optical_rows, since_dt, until_dt, optical_threshold_dbm)
+    optical_payload = _surv_empty_optical_payload(threshold_dbm=_surv_optical_threshold_dbm(settings))
+    if include_optical:
+        optical_threshold_dbm = _surv_optical_threshold_dbm(settings)
+        optical_latest_map = get_latest_optical_by_pppoe([pppoe]) if pppoe else {}
+        optical_latest = optical_latest_map.get(pppoe) if isinstance(optical_latest_map, dict) else {}
+        optical_device_id = (optical_latest.get("device_id") or "").strip() if isinstance(optical_latest, dict) else ""
+        optical_rows = get_optical_results_for_device_since(optical_device_id, since_iso) if optical_device_id else []
+        optical_payload = _surv_optical_payload_from_rows(optical_device_id, optical_rows, since_dt, until_dt, optical_threshold_dbm)
 
     return _json_no_store(
         {

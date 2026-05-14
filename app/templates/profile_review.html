@@ -966,7 +966,7 @@
     <div class="col-12 col-lg-8 col-xl-7">
       <div class="card">
         <div class="card-header">
-          <h3 class="card-title mb-0" id="profile-top10-title">TOP10 - Critical Connections (Last 24h)</h3>
+          <h3 class="card-title mb-0" id="profile-top10-title">Latest Monitoring Shortcuts</h3>
         </div>
         <div class="list-group list-group-flush" id="profile-top10-list">
           <div class="p-3 text-muted">Loading…</div>
@@ -1001,6 +1001,21 @@
     const loadingOverlayCopy = document.getElementById("profile-loading-overlay-copy");
     let pendingTimer = null;
     let lastItems = [];
+    let profileNavigatingAway = false;
+    let diagnosticIdleTimer = null;
+    const activeDiagnosticControllers = new Set();
+
+    const cancelProfileDiagnostics = () => {
+      profileNavigatingAway = true;
+      if (diagnosticIdleTimer) {
+        window.clearTimeout(diagnosticIdleTimer);
+        diagnosticIdleTimer = null;
+      }
+      activeDiagnosticControllers.forEach((controller) => {
+        try { controller.abort(); } catch (_err) {}
+      });
+      activeDiagnosticControllers.clear();
+    };
 
     const showProfileLoadingOverlay = (title = "Loading customer profile...", copy = "Fetching 7D Activity, Usage, ACC-Ping, and Optical data.") => {
       if (!loadingOverlay) return;
@@ -1027,6 +1042,13 @@
       });
     };
 
+    document.addEventListener("click", (event) => {
+      const link = event.target?.closest?.('a[href^="/surveillance"]');
+      if (!link) return;
+      cancelProfileDiagnostics();
+    }, true);
+    window.addEventListener("pagehide", cancelProfileDiagnostics);
+
     const buildProfileHref = (item) => {
       const params = new URLSearchParams();
       if (item?.pppoe) params.set("pppoe", item.pppoe);
@@ -1044,15 +1066,19 @@
       window.setTimeout(resolve, 32);
     });
 
-    const refreshCurrentDiagnostics = async () => {
+    const refreshCurrentDiagnostics = async (signal = null) => {
+      if (profileNavigatingAway || signal?.aborted) return;
       inspectResetPanel({ keepLoading: !!profileInspectChartEl });
-      await renderInspectActivity();
+      await renderInspectActivity(signal);
       await yieldToUi();
-      await renderUsageChart();
+      if (profileNavigatingAway || signal?.aborted) return;
+      await renderUsageChart(signal);
       await yieldToUi();
-      await renderAccPingChart();
+      if (profileNavigatingAway || signal?.aborted) return;
+      await renderAccPingChart(signal);
       await yieldToUi();
-      await renderOpticalChart();
+      if (profileNavigatingAway || signal?.aborted) return;
+      await renderOpticalChart(signal);
     };
 
     const showTop10 = () => {
@@ -1119,11 +1145,11 @@
     const renderTop10 = (payload) => {
       if (!top10List) return;
       top10List.innerHTML = "";
-      if (top10Title) top10Title.textContent = payload?.header || "TOP10 - Critical Connections (Last 24h)";
+      if (top10Title) top10Title.textContent = payload?.header || "Latest Monitoring Shortcuts";
 
       const items = payload?.items || [];
       if (!items.length) {
-        top10List.innerHTML = "<div class='p-3 text-muted'>No results</div>";
+        top10List.innerHTML = "<div class='p-3 text-muted'>No monitoring shortcuts available yet.</div>";
         showTop10();
         return;
       }
@@ -1472,8 +1498,8 @@
       await profileInspectState.chart.render();
     };
 
-    const renderInspectActivity = async () => {
-      if (!profileInspectChartEl || !profile?.pppoe) return;
+    const renderInspectActivity = async (signal = null) => {
+      if (profileNavigatingAway || signal?.aborted || !profileInspectChartEl || !profile?.pppoe) return;
       const rawStage = String(profile?.surveillance?.status || "under").toLowerCase();
       const stage = rawStage === "level2" || rawStage === "observe" ? rawStage : "under";
       const token = ++profileInspectState.token;
@@ -1484,8 +1510,8 @@
         profileInspectErrorEl.textContent = "";
       }
       try {
-        const params = new URLSearchParams({ pppoe: String(profile.pppoe), stage });
-        const res = await fetchNoStore(`/surveillance/inspect_activity?${params.toString()}`);
+        const params = new URLSearchParams({ pppoe: String(profile.pppoe), stage, include_optical: "0" });
+        const res = await fetchNoStore(`/surveillance/inspect_activity?${params.toString()}`, { signal });
         if (!res.ok) throw new Error("Failed to load 7D activity.");
         const payload = await res.json();
         if (token !== profileInspectState.token) return;
@@ -1524,6 +1550,7 @@
         if (profileInspectLoadingEl) profileInspectLoadingEl.classList.add("d-none");
         if (profileInspectBodyEl) profileInspectBodyEl.classList.remove("d-none");
       } catch (err) {
+        if (err?.name === "AbortError" || profileNavigatingAway || signal?.aborted) return;
         if (token !== profileInspectState.token) return;
         if (profileInspectLoadingEl) profileInspectLoadingEl.classList.add("d-none");
         if (profileInspectBodyEl) profileInspectBodyEl.classList.add("d-none");
@@ -1534,13 +1561,13 @@
       }
     };
 
-    const renderAccPingChart = async () => {
+    const renderAccPingChart = async (signal = null) => {
       const el = document.getElementById("profile-accping-chart");
-      if (!el || !profile?.accounts_ping?.account_id) return;
+      if (profileNavigatingAway || signal?.aborted || !el || !profile?.accounts_ping?.account_id) return;
       resetChartState(profileAccPingState, el, "Loading ACC-Ping history...");
       try {
         const params = new URLSearchParams({ account_id: profile.accounts_ping.account_id, window: String(profile.window_hours || 24) });
-        const res = await fetchNoStore(`/accounts-ping/series?${params.toString()}`);
+        const res = await fetchNoStore(`/accounts-ping/series?${params.toString()}`, { signal });
         if (!res.ok) {
           setChartPlaceholder(el, "ACC-Ping history could not be loaded.");
           return;
@@ -1618,17 +1645,18 @@
         profileAccPingState.chart = chart;
         await chart.render();
       } catch (err) {
+        if (err?.name === "AbortError" || profileNavigatingAway || signal?.aborted) return;
         setChartPlaceholder(el, "ACC-Ping history could not be loaded.");
       }
     };
 
-	    const renderOpticalChart = async () => {
+	    const renderOpticalChart = async (signal = null) => {
       const el = document.getElementById("profile-optical-chart");
-      if (!el || !profile?.optical?.device_id) return;
+      if (profileNavigatingAway || signal?.aborted || !el || !profile?.optical?.device_id) return;
       resetChartState(profileOpticalState, el, "Loading optical history...");
       try {
         const params = new URLSearchParams({ device_id: profile.optical.device_id, window: String(profile.window_hours || 24) });
-        const res = await fetchNoStore(`/optical/series?${params.toString()}`);
+        const res = await fetchNoStore(`/optical/series?${params.toString()}`, { signal });
         if (!res.ok) {
           setChartPlaceholder(el, "Optical history could not be loaded.");
           return;
@@ -1704,6 +1732,7 @@
         profileOpticalState.chart = chart;
         await chart.render();
       } catch (err) {
+        if (err?.name === "AbortError" || profileNavigatingAway || signal?.aborted) return;
         setChartPlaceholder(el, "Optical history could not be loaded.");
       }
 	    };
@@ -1770,7 +1799,7 @@
 
     const renderOfflineChart = async () => {
       const el = document.getElementById("profile-offline-chart");
-      if (!el || !profile?.offline) return;
+      if (profileNavigatingAway || !el || !profile?.offline) return;
       resetChartState(profileOfflineState, el, "Loading offline timeline...");
       const points = buildOfflineTimelineSeries();
       if (!points.length) {
@@ -1821,9 +1850,9 @@
       await chart.render();
     };
 
-	    const renderUsageChart = async () => {
+	    const renderUsageChart = async (signal = null) => {
 	      const el = document.getElementById("profile-usage-chart");
-	      if (!el || !profile?.pppoe || !profile?.usage?.enabled || !profile?.usage?.active) return;
+	      if (profileNavigatingAway || signal?.aborted || !el || !profile?.pppoe || !profile?.usage?.enabled || !profile?.usage?.active) return;
 	      const kpiTransfer = document.getElementById("profile-usage-stat-transfer");
 	      const kpiMax = document.getElementById("profile-usage-stat-max");
 	      const kpiAvg = document.getElementById("profile-usage-stat-avg");
@@ -1832,7 +1861,7 @@
 	      try {
 	        const hours = Number(profile.window_hours || 24) || 24;
 	        const params = new URLSearchParams({ pppoe: String(profile.pppoe), hours: String(hours) });
-	        const res = await fetchNoStore(`/usage/series?${params.toString()}`);
+	        const res = await fetchNoStore(`/usage/series?${params.toString()}`, { signal });
 	        if (!res.ok) {
 	          setChartPlaceholder(el, "Usage history could not be loaded.");
 	          return;
@@ -1943,12 +1972,81 @@
 	        profileUsageState.chart = chart;
 	        await chart.render();
 	      } catch (err) {
+	        if (err?.name === "AbortError" || profileNavigatingAway || signal?.aborted) return;
 	        setChartPlaceholder(el, "Usage history could not be loaded.");
 	      }
 	    };
 
+      const profileDiagnosticQueue = [];
+      const profileDiagnosticQueued = new Set();
+      const profileDiagnosticLoaded = new Set();
+      let profileDiagnosticRunning = false;
+
+      const runProfileDiagnosticQueue = async () => {
+        if (profileDiagnosticRunning || profileNavigatingAway) return;
+        profileDiagnosticRunning = true;
+        try {
+          while (profileDiagnosticQueue.length && !profileNavigatingAway) {
+            const item = profileDiagnosticQueue.shift();
+            if (item?.key) profileDiagnosticQueued.delete(item.key);
+            if (!item || profileDiagnosticLoaded.has(item.key)) continue;
+            const controller = new AbortController();
+            activeDiagnosticControllers.add(controller);
+            try {
+              profileDiagnosticLoaded.add(item.key);
+              await item.run(controller.signal);
+            } catch (err) {
+              if (err?.name !== "AbortError") profileDiagnosticLoaded.delete(item.key);
+            } finally {
+              activeDiagnosticControllers.delete(controller);
+            }
+            await yieldToUi();
+          }
+        } finally {
+          profileDiagnosticRunning = false;
+        }
+      };
+
+      const enqueueProfileDiagnostic = (item) => {
+        if (!item?.key || !item?.el || profileNavigatingAway || profileDiagnosticLoaded.has(item.key) || profileDiagnosticQueued.has(item.key)) return;
+        profileDiagnosticQueued.add(item.key);
+        profileDiagnosticQueue.push(item);
+        void runProfileDiagnosticQueue();
+      };
+
+      const initLazyProfileDiagnostics = () => {
+        const diagnostics = [
+          { key: "inspect", el: profileInspectChartEl, run: renderInspectActivity },
+          { key: "usage", el: document.getElementById("profile-usage-chart"), run: renderUsageChart },
+          { key: "accping", el: document.getElementById("profile-accping-chart"), run: renderAccPingChart },
+          { key: "optical", el: document.getElementById("profile-optical-chart"), run: renderOpticalChart },
+        ].filter((item) => item.el);
+
+        diagnostics.forEach((item) => {
+          setChartPlaceholder(item.el, "Chart will load when this panel is viewed.");
+        });
+
+        if ("IntersectionObserver" in window) {
+          const observer = new IntersectionObserver((entries) => {
+            entries.forEach((entry) => {
+              if (!entry.isIntersecting) return;
+              const item = diagnostics.find((candidate) => candidate.el === entry.target);
+              if (item) {
+                enqueueProfileDiagnostic(item);
+                observer.unobserve(entry.target);
+              }
+            });
+          }, { root: null, rootMargin: "250px 0px", threshold: 0.01 });
+          diagnostics.forEach((item) => observer.observe(item.el));
+        } else {
+          diagnosticIdleTimer = window.setTimeout(() => {
+            diagnostics.forEach(enqueueProfileDiagnostic);
+          }, 1800);
+        }
+      };
+
       void renderOfflineChart();
-	    void refreshCurrentDiagnostics();
+      initLazyProfileDiagnostics();
 
 	    if (top10Wrap && !profile?.ip && !profile?.device_id) {
 	      fetchSuggest();

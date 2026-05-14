@@ -151,8 +151,6 @@
                         data-checker-since-source="{{ row.checker_since_source or 'added' }}"
                         data-stage-start="{{ row.added_at_iso }}"
                         data-first-surveillance="{{ row.first_added_at_iso or row.added_at_iso }}"
-                        data-stage-history="{{ row.stage_history|tojson|forceescape }}"
-					                    data-prev-cycles="{{ row.prefixed_cycles|tojson|forceescape }}"
 	                        data-duration-start="{{ row.added_at_iso }}"
 						                    data-added-at="{{ row.added_at_iso }}">
                           <td class="d-none surv-col-select" data-surv-select-col="under">
@@ -764,8 +762,6 @@
                     data-checker-since-source="{{ row.checker_since_source or 'added' }}"
                     data-prev-cycle-start="{{ row.prefixed_cycle_start_iso or '' }}"
                     data-prev-cycle-end="{{ row.prefixed_cycle_end_iso or '' }}"
-                    data-prev-cycles="{{ row.prefixed_cycles|tojson|forceescape }}"
-	                    data-stage-history="{{ row.stage_history|tojson|forceescape }}"
 	                      data-stage-start="{{ row.last_fixed_at_iso or row.added_at_iso }}"
 	                      data-first-surveillance="{{ row.first_added_at_iso or row.added_at_iso }}"
 	                      data-duration-start="{{ row.last_fixed_at_iso or row.added_at_iso }}"
@@ -1362,8 +1358,6 @@
                         data-checker-since-source="{{ row.checker_since_source or 'added' }}"
                         data-stage-start="{{ row.added_at_iso }}"
                         data-first-surveillance="{{ row.first_added_at_iso or row.added_at_iso }}"
-                        data-stage-history="{{ row.stage_history|tojson|forceescape }}"
-                        data-prev-cycles="{{ row.prefixed_cycles|tojson|forceescape }}"
                         data-duration-start="{{ row.level2_at_iso or row.added_at_iso }}"
 				                    data-added-at="{{ row.added_at_iso }}">
 		                    <td class="d-none surv-col-select" data-surv-select-col="level2">
@@ -6124,7 +6118,7 @@
 					          <div class="collapse" id="${collapseId}">
 					            <div class="card-body pt-2">
 					              <div class="text-muted small mb-2">Reason: ${noteText}</div>
-					              <div class="d-flex gap-2 overflow-auto pt-1 pb-1" data-cycle-timeline="${idx}"><div class="text-muted small">Loading…</div></div>
+					              <div class="d-flex gap-2 overflow-auto pt-1 pb-1" data-cycle-timeline="${idx}"><div class="text-muted small">Expand to load this fixed-cycle timeline.</div></div>
 					              <div class="mt-2" data-cycle-total="${idx}"></div>
 					            </div>
 					          </div>
@@ -6134,30 +6128,40 @@
 					        if (cycleToggleBtn) bindCollapseToggle(cycleToggleBtn);
 					        const cycleTimelineEl = card.querySelector(`[data-cycle-timeline="${idx}"]`);
 					        const cycleTotalEl = card.querySelector(`[data-cycle-total="${idx}"]`);
-					        try {
-					          const params = new URLSearchParams({
-					            pppoe: pppoe,
-					            stage: "under",
-					            anchor: cycle.started_at,
-					            until: cycle.ended_at,
-					          });
-					          const res = await fetch(`/surveillance/timeline?${params.toString()}`, { headers: { "Accept": "application/json" }, cache: "no-store" });
-					          if (!res.ok) throw new Error("fetch failed");
-					          const payload = await res.json();
-					          renderTimelineCards(
-					            cycleTimelineEl,
-					            `${key}-prev-${idx}`,
-					            pppoe,
-					            payload,
-					            null,
-                      null,
-					            null,
-					            chartsState,
-					            { miniHeight: 64, chartsList: chartsState.prevMiniCharts, enableDaySelect: false, selectedDay: NaN, totalEl: cycleTotalEl, onClear: null }
-					          );
-					        } catch (e) {
-					          cycleTimelineEl.innerHTML = "<div class='text-muted small'>Unable to load this cycle timeline.</div>";
-					          if (cycleTotalEl) cycleTotalEl.innerHTML = "";
+					        const cyclePanel = card.querySelector(`#${CSS.escape(collapseId)}`);
+					        const loadCycleTimeline = async () => {
+					          if (!cycleTimelineEl || cycleTimelineEl.getAttribute("data-cycle-loaded") === "1") return;
+					          cycleTimelineEl.setAttribute("data-cycle-loaded", "1");
+					          cycleTimelineEl.innerHTML = "<div class='text-muted small'>Loading…</div>";
+					          try {
+					            const params = new URLSearchParams({
+					              pppoe: pppoe,
+					              stage: "under",
+					              anchor: cycle.started_at,
+					              until: cycle.ended_at,
+					            });
+					            const res = await fetch(`/surveillance/timeline?${params.toString()}`, { headers: { "Accept": "application/json" }, cache: "no-store" });
+					            if (!res.ok) throw new Error("fetch failed");
+					            const payload = await res.json();
+					            renderTimelineCards(
+					              cycleTimelineEl,
+					              `${key}-prev-${idx}`,
+					              pppoe,
+					              payload,
+					              null,
+					              null,
+					              null,
+					              chartsState,
+					              { miniHeight: 64, chartsList: chartsState.prevMiniCharts, enableDaySelect: false, selectedDay: NaN, totalEl: cycleTotalEl, onClear: null }
+					            );
+					          } catch (e) {
+					            cycleTimelineEl.setAttribute("data-cycle-loaded", "0");
+					            cycleTimelineEl.innerHTML = "<div class='text-muted small'>Unable to load this cycle timeline.</div>";
+					            if (cycleTotalEl) cycleTotalEl.innerHTML = "";
+					          }
+					        };
+					        if (cyclePanel) {
+					          cyclePanel.addEventListener("shown.bs.collapse", loadCycleTimeline, { once: true });
 					        }
 					      }
 					    };
@@ -7113,18 +7117,6 @@
       });
     });
 
-    const scheduleDeferredStagePaneInit = () => {
-      const run = () => {
-        initAllSurveillanceStagePanes();
-        syncSurveillanceStageSearch();
-      };
-      if ("requestIdleCallback" in window) {
-        window.requestIdleCallback(run, { timeout: 1500 });
-        return;
-      }
-      window.setTimeout(run, 350);
-    };
-    scheduleDeferredStagePaneInit();
     scheduleUnderNewSeenAck();
 
   });
