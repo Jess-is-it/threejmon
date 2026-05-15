@@ -4695,6 +4695,44 @@ def normalize_mikrotik_logs_settings(settings):
     return cfg
 
 
+_MIKROTIK_LOGS_SUMMARY_CACHE = {}
+_MIKROTIK_LOGS_SUMMARY_CACHE_LOCK = threading.Lock()
+_MIKROTIK_LOGS_SUMMARY_CACHE_SECONDS = 20.0
+
+
+def _mikrotik_logs_drop_topics_key(drop_topics):
+    return tuple(sorted(str(item or "").strip().lower() for item in (drop_topics or []) if str(item or "").strip()))
+
+
+def _clear_mikrotik_logs_summary_cache():
+    with _MIKROTIK_LOGS_SUMMARY_CACHE_LOCK:
+        _MIKROTIK_LOGS_SUMMARY_CACHE.clear()
+
+
+def _mikrotik_logs_summary_cached(drop_topics, *, refresh=True):
+    cache_key = _mikrotik_logs_drop_topics_key(drop_topics)
+    now_mono = time.monotonic()
+    with _MIKROTIK_LOGS_SUMMARY_CACHE_LOCK:
+        cached = _MIKROTIK_LOGS_SUMMARY_CACHE.get(cache_key)
+        if isinstance(cached, dict) and (now_mono - float(cached.get("at") or 0.0)) < _MIKROTIK_LOGS_SUMMARY_CACHE_SECONDS:
+            return copy.deepcopy(cached.get("facets") or {}), copy.deepcopy(cached.get("stats") or {})
+    if not refresh:
+        return (
+            {"routers": [], "severities": [], "topics": []},
+            {"total": 0, "today": 0, "warning": 0, "error": 0, "critical": 0, "sources": 0},
+        )
+
+    facets = get_mikrotik_log_facets(drop_topics=drop_topics)
+    stats = get_mikrotik_log_stats(drop_topics=drop_topics)
+    with _MIKROTIK_LOGS_SUMMARY_CACHE_LOCK:
+        _MIKROTIK_LOGS_SUMMARY_CACHE[cache_key] = {
+            "at": time.monotonic(),
+            "facets": copy.deepcopy(facets),
+            "stats": copy.deepcopy(stats),
+        }
+    return facets, stats
+
+
 def _apply_mikrotik_log_source_aliases_to_history(results):
     updated = 0
     for item in results or []:
@@ -6550,6 +6588,23 @@ def format_ts_ph(value):
         return str(value)
 
 
+def format_ts_ph_compact(value):
+    if not value:
+        return "n/a"
+    try:
+        raw = str(value).strip()
+        if raw.endswith("Z"):
+            raw = raw[:-1]
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt_ph = dt.astimezone(PH_TZ)
+        hour = dt_ph.strftime("%I").lstrip("0") or "0"
+        return f"{dt_ph.month}/{dt_ph.day}/{dt_ph.strftime('%y')} {hour}:{dt_ph.strftime('%M')}{dt_ph.strftime('%p')}"
+    except Exception:
+        return str(value)
+
+
 def format_bytes(value):
     try:
         value = int(value)
@@ -7864,289 +7919,311 @@ async def logs_page(request: Request):
     if window not in {"all", "24h", "7d", "30d"}:
         window = "all"
 
-    all_rows = _audit_log_rows(limit=20000, surveillance_only=False)
-    visible_rows = [row for row in all_rows if str(row.get("category") or "").strip() in allowed_category_set]
-    users = sorted(
-        {
-            (row.get("username") or "").strip()
-            for row in visible_rows
-            if (row.get("username") or "").strip()
-        },
-        key=lambda value: value.lower(),
-    )
-    actions = sorted(
-        {
-            (row.get("action") or "").strip()
-            for row in visible_rows
-            if (row.get("action") or "").strip()
-        },
-        key=lambda value: value.lower(),
-    )
+    rows_page = []
+    users = []
+    actions = []
+    total = 0
+    pages = 1
+    logs_base_query = ""
+    if active_tab == "system":
+        all_rows = _audit_log_rows(limit=20000, surveillance_only=False)
+        visible_rows = [row for row in all_rows if str(row.get("category") or "").strip() in allowed_category_set]
+        users = sorted(
+            {
+                (row.get("username") or "").strip()
+                for row in visible_rows
+                if (row.get("username") or "").strip()
+            },
+            key=lambda value: value.lower(),
+        )
+        actions = sorted(
+            {
+                (row.get("action") or "").strip()
+                for row in visible_rows
+                if (row.get("action") or "").strip()
+            },
+            key=lambda value: value.lower(),
+        )
 
-    now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
-    cutoff = None
-    if window == "24h":
-        cutoff = now_utc - timedelta(hours=24)
-    elif window == "7d":
-        cutoff = now_utc - timedelta(days=7)
-    elif window == "30d":
-        cutoff = now_utc - timedelta(days=30)
+        now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
+        cutoff = None
+        if window == "24h":
+            cutoff = now_utc - timedelta(hours=24)
+        elif window == "7d":
+            cutoff = now_utc - timedelta(days=7)
+        elif window == "30d":
+            cutoff = now_utc - timedelta(days=30)
 
-    filtered_rows = []
-    query_l = query.lower()
-    for row in visible_rows:
-        if category != "all" and (row.get("category") or "") != category:
-            continue
-        if action_filter and (row.get("action") or "") != action_filter:
-            continue
-        if user_filter and (row.get("username") or "") != user_filter:
-            continue
-        if cutoff is not None:
-            ts_raw = (row.get("timestamp") or "").strip()
-            ts_dt = None
-            try:
-                raw = ts_raw[:-1] + "+00:00" if ts_raw.endswith("Z") else ts_raw
-                ts_dt = datetime.fromisoformat(raw)
-                if ts_dt.tzinfo is None:
-                    ts_dt = ts_dt.replace(tzinfo=timezone.utc)
-                else:
-                    ts_dt = ts_dt.astimezone(timezone.utc)
-            except Exception:
+        filtered_rows = []
+        query_l = query.lower()
+        for row in visible_rows:
+            if category != "all" and (row.get("category") or "") != category:
+                continue
+            if action_filter and (row.get("action") or "") != action_filter:
+                continue
+            if user_filter and (row.get("username") or "") != user_filter:
+                continue
+            if cutoff is not None:
+                ts_raw = (row.get("timestamp") or "").strip()
                 ts_dt = None
-            if ts_dt is None or ts_dt < cutoff:
-                continue
-        if query_l:
-            blob = " ".join(
-                [
-                    str(row.get("username") or ""),
-                    str(row.get("action") or ""),
-                    str(row.get("category") or ""),
-                    str(row.get("resource") or ""),
-                    str(row.get("details") or ""),
-                    str(row.get("message") or ""),
-                    str(row.get("ip_address") or ""),
-                ]
-            ).lower()
-            if query_l not in blob:
-                continue
-        filtered_rows.append(row)
+                try:
+                    raw = ts_raw[:-1] + "+00:00" if ts_raw.endswith("Z") else ts_raw
+                    ts_dt = datetime.fromisoformat(raw)
+                    if ts_dt.tzinfo is None:
+                        ts_dt = ts_dt.replace(tzinfo=timezone.utc)
+                    else:
+                        ts_dt = ts_dt.astimezone(timezone.utc)
+                except Exception:
+                    ts_dt = None
+                if ts_dt is None or ts_dt < cutoff:
+                    continue
+            if query_l:
+                blob = " ".join(
+                    [
+                        str(row.get("username") or ""),
+                        str(row.get("action") or ""),
+                        str(row.get("category") or ""),
+                        str(row.get("resource") or ""),
+                        str(row.get("details") or ""),
+                        str(row.get("message") or ""),
+                        str(row.get("ip_address") or ""),
+                    ]
+                ).lower()
+                if query_l not in blob:
+                    continue
+            filtered_rows.append(row)
 
-    page_limit = 100
-    total = len(filtered_rows)
-    pages = max((total + page_limit - 1) // page_limit, 1)
-    page = max(1, min(page, pages))
-    start_idx = (page - 1) * page_limit
-    end_idx = start_idx + page_limit
-    rows_page = filtered_rows[start_idx:end_idx]
+        page_limit = 100
+        total = len(filtered_rows)
+        pages = max((total + page_limit - 1) // page_limit, 1)
+        page = max(1, min(page, pages))
+        start_idx = (page - 1) * page_limit
+        end_idx = start_idx + page_limit
+        rows_page = filtered_rows[start_idx:end_idx]
 
-    base_params = {
-        "q": query,
-        "category": category if category != "all" else "",
-        "action": action_filter,
-        "user": user_filter,
-        "window": window if window != "all" else "",
-    }
-    base_params = {key: value for key, value in base_params.items() if value}
-    logs_base_query = urllib.parse.urlencode(base_params)
+        base_params = {
+            "q": query,
+            "category": category if category != "all" else "",
+            "action": action_filter,
+            "user": user_filter,
+            "window": window if window != "all" else "",
+        }
+        base_params = {key: value for key, value in base_params.items() if value}
+        logs_base_query = urllib.parse.urlencode(base_params)
 
-    if mt_window not in {"all", "24h", "7d", "30d"}:
-        mt_window = "24h"
-    valid_severities = {"", "debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"}
-    if mt_severity not in valid_severities:
-        mt_severity = ""
-    mt_offset = (mt_page - 1) * mt_limit
     mt_total, mt_rows = (0, [])
     mt_facets = {"routers": [], "severities": [], "topics": []}
     mt_stats = {"total": 0, "today": 0, "warning": 0, "error": 0, "critical": 0, "sources": 0}
+    mt_pages = 1
+    mt_router_tabs = []
+    mt_base_query = ""
+    mt_router_tab_query = ""
+    mt_drop_topic_options = []
+    mt_custom_drop_topics = []
+    mt_router_drop_topics = []
+    mt_active_router_label = ""
+    mt_state = {}
+    mt_setup_state = {}
+    mt_setup_routers = []
+    mt_setup_host = ""
+    mt_job = {}
+    mt_commands = []
     mt_settings = normalize_mikrotik_logs_settings(get_settings("mikrotik_logs", MIKROTIK_LOGS_DEFAULTS))
     mt_drop_topics = [
         str(item or "").strip()
         for item in (((mt_settings.get("filters") or {}).get("drop_topics")) or [])
         if str(item or "").strip() and str(item or "").count("\t") >= 2
     ]
-    mt_state = get_state("mikrotik_logs_state", {})
-    if not isinstance(mt_state, dict):
-        mt_state = {}
-    if can_view_mikrotik_logs:
+    if active_tab == "mikrotik":
+        if mt_window not in {"all", "24h", "7d", "30d"}:
+            mt_window = "24h"
+        valid_severities = {"", "debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"}
+        if mt_severity not in valid_severities:
+            mt_severity = ""
+        mt_offset = (mt_page - 1) * mt_limit
+        mt_state = get_state("mikrotik_logs_state", {})
+        if not isinstance(mt_state, dict):
+            mt_state = {}
         mt_setup_state_for_repair = mt_state.get("setup") if isinstance(mt_state.get("setup"), dict) else {}
         _apply_mikrotik_log_source_aliases_to_history(
             mt_setup_state_for_repair.get("results") if isinstance(mt_setup_state_for_repair.get("results"), list) else []
         )
-    if can_view_mikrotik_logs:
-        mt_total, mt_rows = list_mikrotik_logs(
-            limit=mt_limit,
-            offset=mt_offset,
-            query=mt_query,
-            router=mt_router,
-            severity=mt_severity,
-            topic=mt_topic,
-            window=mt_window,
-            drop_topics=mt_drop_topics,
-        )
-        mt_facets = get_mikrotik_log_facets(drop_topics=mt_drop_topics)
-        mt_stats = get_mikrotik_log_stats(drop_topics=mt_drop_topics)
-    mt_pages = max((mt_total + mt_limit - 1) // mt_limit, 1)
-    if mt_page > mt_pages and can_view_mikrotik_logs:
-        mt_page = mt_pages
-        mt_offset = (mt_page - 1) * mt_limit
-        mt_total, mt_rows = list_mikrotik_logs(
-            limit=mt_limit,
-            offset=mt_offset,
-            query=mt_query,
-            router=mt_router,
-            severity=mt_severity,
-            topic=mt_topic,
-            window=mt_window,
-            drop_topics=mt_drop_topics,
-        )
-    mt_page = max(1, min(mt_page, mt_pages))
-    mt_router_tabs_map = {}
-    for item in mt_facets.get("routers") or []:
-        if not isinstance(item, dict):
-            continue
-        value = str(item.get("value") or "").strip()
-        if not value:
-            continue
-        mt_router_tabs_map[value] = {
-            "value": value,
-            "label": str(item.get("label") or value).strip(),
-            "count": int(item.get("count") or 0),
-        }
-    try:
-        pulse_settings_for_tabs = get_settings("isp_ping", ISP_PING_DEFAULTS)
-        for core in ((((pulse_settings_for_tabs.get("pulsewatch") or {}).get("mikrotik") or {}).get("cores")) or []):
-            if not isinstance(core, dict):
+        if can_view_mikrotik_logs:
+            mt_total, mt_rows = list_mikrotik_logs(
+                limit=mt_limit,
+                offset=mt_offset,
+                query=mt_query,
+                router=mt_router,
+                severity=mt_severity,
+                topic=mt_topic,
+                window=mt_window,
+                drop_topics=mt_drop_topics,
+            )
+            mt_facets, mt_stats = _mikrotik_logs_summary_cached(mt_drop_topics, refresh=False)
+            if not mt_router and not int((mt_stats or {}).get("total") or 0):
+                mt_stats["total"] = mt_total
+        mt_pages = max((mt_total + mt_limit - 1) // mt_limit, 1)
+        if mt_page > mt_pages and can_view_mikrotik_logs:
+            mt_page = mt_pages
+            mt_offset = (mt_page - 1) * mt_limit
+            mt_total, mt_rows = list_mikrotik_logs(
+                limit=mt_limit,
+                offset=mt_offset,
+                query=mt_query,
+                router=mt_router,
+                severity=mt_severity,
+                topic=mt_topic,
+                window=mt_window,
+                drop_topics=mt_drop_topics,
+            )
+        mt_page = max(1, min(mt_page, mt_pages))
+        mt_router_tabs_map = {}
+        for item in mt_facets.get("routers") or []:
+            if not isinstance(item, dict):
                 continue
-            value = (core.get("id") or core.get("host") or "").strip()
+            value = str(item.get("value") or "").strip()
             if not value:
                 continue
-            mt_router_tabs_map.setdefault(
-                value,
-                {
-                    "value": value,
-                    "label": (core.get("label") or core.get("id") or core.get("host") or value).strip(),
-                    "count": 0,
-                },
-            )
-    except Exception:
-        pass
-    try:
-        wan_settings_for_tabs = get_settings("wan_ping", WAN_PING_DEFAULTS)
-        for router in (wan_settings_for_tabs.get("pppoe_routers") or []):
-            if not isinstance(router, dict):
-                continue
-            value = (router.get("id") or router.get("host") or "").strip()
-            if not value:
-                continue
-            mt_router_tabs_map.setdefault(
-                value,
-                {
-                    "value": value,
-                    "label": (router.get("name") or router.get("id") or router.get("host") or value).strip(),
-                    "count": 0,
-                },
-            )
-    except Exception:
-        pass
-    mt_drop_counts_by_router = {}
-    for drop_rule in mt_drop_topics:
-        router_value = drop_rule.split("\t", 1)[0].strip()
-        if not router_value:
-            continue
-        router_key = router_value.lower()
-        mt_drop_counts_by_router[router_key] = mt_drop_counts_by_router.get(router_key, 0) + 1
-    for item in mt_router_tabs_map.values():
-        item["drop_count"] = mt_drop_counts_by_router.get(str(item.get("value") or "").strip().lower(), 0)
-    mt_router_tabs = sorted(mt_router_tabs_map.values(), key=lambda item: (item.get("label") or item.get("value") or "").lower())
-    mt_active_router_label = ""
-    if mt_router:
-        active_router_info = mt_router_tabs_map.get(mt_router) or {}
-        mt_active_router_label = (active_router_info.get("label") or mt_router).strip()
-    mt_base_params = {
-        "mt_tab": "logs",
-        "mt_q": mt_query,
-        "mt_router": mt_router,
-        "mt_severity": mt_severity,
-        "mt_topic": mt_topic,
-        "mt_window": mt_window if mt_window != "24h" else "",
-        "mt_limit": mt_limit if mt_limit != 100 else "",
-    }
-    mt_base_query = urllib.parse.urlencode({key: value for key, value in mt_base_params.items() if value})
-    mt_router_tab_params = {
-        "mt_tab": "logs",
-        "mt_q": mt_query,
-        "mt_severity": mt_severity,
-        "mt_topic": mt_topic,
-        "mt_window": mt_window if mt_window != "24h" else "",
-        "mt_limit": mt_limit if mt_limit != 100 else "",
-    }
-    mt_router_tab_query = urllib.parse.urlencode({key: value for key, value in mt_router_tab_params.items() if value})
-    configured_drop_topics = {item.lower() for item in mt_drop_topics}
-    noisy_topic_keywords = ("debug", "packet", "firewall", "dhcp", "dns", "route", "wireless")
-    mt_drop_topic_options = []
-    seen_topic_values = set()
-    for item in (mt_facets.get("topics") or []):
-        if not isinstance(item, dict):
-            continue
-        value = str(item.get("value") or "").strip()
-        if not value:
-            continue
-        normalized = value.lower()
-        if normalized in seen_topic_values:
-            continue
-        seen_topic_values.add(normalized)
-        count = int(item.get("count") or 0)
-        suggested = count >= 100 or any(keyword in normalized for keyword in noisy_topic_keywords)
-        mt_drop_topic_options.append(
-            {
+            mt_router_tabs_map[value] = {
                 "value": value,
-                "count": count,
-                "selected": normalized in configured_drop_topics,
-                "suggested": suggested,
+                "label": str(item.get("label") or value).strip(),
+                "count": int(item.get("count") or 0),
             }
-        )
-    mt_drop_topic_options = sorted(
-        mt_drop_topic_options,
-        key=lambda item: (not bool(item.get("selected")), not bool(item.get("suggested")), -int(item.get("count") or 0), item.get("value", "").lower()),
-    )
-    mt_custom_drop_topics = [
-        item
-        for item in mt_drop_topics
-        if str(item or "").strip().lower() not in seen_topic_values
-    ]
-    mt_router_drop_topics = [
-        item
-        for item in mt_drop_topics
-        if mt_router and item.split("\t", 1)[0].strip().lower() == mt_router.lower()
-    ]
-    server_host = (request.url.hostname or "SERVER_IP").strip()
-    auto_setup_cfg = mt_settings.get("auto_setup") if isinstance(mt_settings.get("auto_setup"), dict) else {}
-    mt_setup_host = (auto_setup_cfg.get("server_host") or server_host or "SERVER_IP").strip()
-    mt_port = int((mt_settings.get("receiver") or {}).get("port") or 5514)
-    mt_commands = build_mikrotik_log_setup_commands(mt_setup_host, mt_port)
-    mt_setup_routers = get_mikrotik_log_setup_routers()
-    mt_setup_state = mt_state.get("setup") if isinstance(mt_state.get("setup"), dict) else {}
-    mt_setup_results = mt_setup_state.get("results") if isinstance(mt_setup_state.get("results"), list) else []
-    mt_setup_result_map = {
-        f"{(item.get('router_kind') or '').strip()}::{(item.get('router_id') or '').strip()}": item
-        for item in mt_setup_results
-        if isinstance(item, dict)
-    }
-    mt_setup_routers = [
-        {
-            **router,
-            "setup_status": mt_setup_result_map.get(
-                f"{(router.get('kind') or '').strip()}::{(router.get('id') or '').strip()}",
-                {},
-            ),
+        try:
+            pulse_settings_for_tabs = get_settings("isp_ping", ISP_PING_DEFAULTS)
+            for core in ((((pulse_settings_for_tabs.get("pulsewatch") or {}).get("mikrotik") or {}).get("cores")) or []):
+                if not isinstance(core, dict):
+                    continue
+                value = (core.get("id") or core.get("host") or "").strip()
+                if not value:
+                    continue
+                mt_router_tabs_map.setdefault(
+                    value,
+                    {
+                        "value": value,
+                        "label": (core.get("label") or core.get("id") or core.get("host") or value).strip(),
+                        "count": 0,
+                    },
+                )
+        except Exception:
+            pass
+        try:
+            wan_settings_for_tabs = get_settings("wan_ping", WAN_PING_DEFAULTS)
+            for router in (wan_settings_for_tabs.get("pppoe_routers") or []):
+                if not isinstance(router, dict):
+                    continue
+                value = (router.get("id") or router.get("host") or "").strip()
+                if not value:
+                    continue
+                mt_router_tabs_map.setdefault(
+                    value,
+                    {
+                        "value": value,
+                        "label": (router.get("name") or router.get("id") or router.get("host") or value).strip(),
+                        "count": 0,
+                    },
+                )
+        except Exception:
+            pass
+        mt_drop_counts_by_router = {}
+        for drop_rule in mt_drop_topics:
+            router_value = drop_rule.split("\t", 1)[0].strip()
+            if not router_value:
+                continue
+            router_key = router_value.lower()
+            mt_drop_counts_by_router[router_key] = mt_drop_counts_by_router.get(router_key, 0) + 1
+        for item in mt_router_tabs_map.values():
+            item["drop_count"] = mt_drop_counts_by_router.get(str(item.get("value") or "").strip().lower(), 0)
+        if mt_router and mt_router in mt_router_tabs_map and not int(mt_router_tabs_map[mt_router].get("count") or 0):
+            mt_router_tabs_map[mt_router]["count"] = mt_total
+        mt_router_tabs = sorted(mt_router_tabs_map.values(), key=lambda item: (item.get("label") or item.get("value") or "").lower())
+        if mt_router:
+            active_router_info = mt_router_tabs_map.get(mt_router) or {}
+            mt_active_router_label = (active_router_info.get("label") or mt_router).strip()
+        mt_base_params = {
+            "mt_tab": "logs",
+            "mt_q": mt_query,
+            "mt_router": mt_router,
+            "mt_severity": mt_severity,
+            "mt_topic": mt_topic,
+            "mt_window": mt_window if mt_window != "24h" else "",
+            "mt_limit": mt_limit if mt_limit != 100 else "",
         }
-        for router in mt_setup_routers
-    ]
-    status_map = {item["job_name"]: dict(item) for item in get_job_status()}
-    mt_job = status_map.get("mikrotik_logs", {})
-    mt_job["last_run_at_ph"] = format_ts_ph(mt_job.get("last_run_at"))
-    mt_job["last_success_at_ph"] = format_ts_ph(mt_job.get("last_success_at"))
-    mt_job["last_error_at_ph"] = format_ts_ph(mt_job.get("last_error_at"))
+        mt_base_query = urllib.parse.urlencode({key: value for key, value in mt_base_params.items() if value})
+        mt_router_tab_params = {
+            "mt_tab": "logs",
+            "mt_q": mt_query,
+            "mt_severity": mt_severity,
+            "mt_topic": mt_topic,
+            "mt_window": mt_window if mt_window != "24h" else "",
+            "mt_limit": mt_limit if mt_limit != 100 else "",
+        }
+        mt_router_tab_query = urllib.parse.urlencode({key: value for key, value in mt_router_tab_params.items() if value})
+        configured_drop_topics = {item.lower() for item in mt_drop_topics}
+        noisy_topic_keywords = ("debug", "packet", "firewall", "dhcp", "dns", "route", "wireless")
+        seen_topic_values = set()
+        for item in (mt_facets.get("topics") or []):
+            if not isinstance(item, dict):
+                continue
+            value = str(item.get("value") or "").strip()
+            if not value:
+                continue
+            normalized = value.lower()
+            if normalized in seen_topic_values:
+                continue
+            seen_topic_values.add(normalized)
+            count = int(item.get("count") or 0)
+            suggested = count >= 100 or any(keyword in normalized for keyword in noisy_topic_keywords)
+            mt_drop_topic_options.append(
+                {
+                    "value": value,
+                    "count": count,
+                    "selected": normalized in configured_drop_topics,
+                    "suggested": suggested,
+                }
+            )
+        mt_drop_topic_options = sorted(
+            mt_drop_topic_options,
+            key=lambda item: (not bool(item.get("selected")), not bool(item.get("suggested")), -int(item.get("count") or 0), item.get("value", "").lower()),
+        )
+        mt_custom_drop_topics = [
+            item
+            for item in mt_drop_topics
+            if str(item or "").strip().lower() not in seen_topic_values
+        ]
+        mt_router_drop_topics = [
+            item
+            for item in mt_drop_topics
+            if mt_router and item.split("\t", 1)[0].strip().lower() == mt_router.lower()
+        ]
+        server_host = (request.url.hostname or "SERVER_IP").strip()
+        auto_setup_cfg = mt_settings.get("auto_setup") if isinstance(mt_settings.get("auto_setup"), dict) else {}
+        mt_setup_host = (auto_setup_cfg.get("server_host") or server_host or "SERVER_IP").strip()
+        mt_port = int((mt_settings.get("receiver") or {}).get("port") or 5514)
+        mt_commands = build_mikrotik_log_setup_commands(mt_setup_host, mt_port)
+        mt_setup_routers = get_mikrotik_log_setup_routers()
+        mt_setup_state = mt_state.get("setup") if isinstance(mt_state.get("setup"), dict) else {}
+        mt_setup_results = mt_setup_state.get("results") if isinstance(mt_setup_state.get("results"), list) else []
+        mt_setup_result_map = {
+            f"{(item.get('router_kind') or '').strip()}::{(item.get('router_id') or '').strip()}": item
+            for item in mt_setup_results
+            if isinstance(item, dict)
+        }
+        mt_setup_routers = [
+            {
+                **router,
+                "setup_status": mt_setup_result_map.get(
+                    f"{(router.get('kind') or '').strip()}::{(router.get('id') or '').strip()}",
+                    {},
+                ),
+            }
+            for router in mt_setup_routers
+        ]
+        status_map = {item["job_name"]: dict(item) for item in get_job_status()}
+        mt_job = status_map.get("mikrotik_logs", {})
+        mt_job["last_run_at_ph"] = format_ts_ph(mt_job.get("last_run_at"))
+        mt_job["last_success_at_ph"] = format_ts_ph(mt_job.get("last_success_at"))
+        mt_job["last_error_at_ph"] = format_ts_ph(mt_job.get("last_error_at"))
 
     return templates.TemplateResponse(
         "logs.html",
@@ -8264,8 +8341,7 @@ async def mikrotik_logs_live(request: Request):
     mt_facets = {"routers": [], "severities": [], "topics": []}
     mt_stats = None
     if include_summary:
-        mt_facets = get_mikrotik_log_facets(drop_topics=mt_drop_topics)
-        mt_stats = get_mikrotik_log_stats(drop_topics=mt_drop_topics)
+        mt_facets, mt_stats = _mikrotik_logs_summary_cached(mt_drop_topics)
     mt_state = get_state("mikrotik_logs_state", {})
     if not isinstance(mt_state, dict):
         mt_state = {}
@@ -8348,6 +8424,7 @@ async def mikrotik_logs_settings_save(request: Request):
     }
     settings = normalize_mikrotik_logs_settings(settings)
     save_settings("mikrotik_logs", settings)
+    _clear_mikrotik_logs_summary_cache()
     _auth_log_event(
         request,
         "mikrotik_logs.settings_saved",
@@ -8378,6 +8455,7 @@ async def mikrotik_logs_drop_topics(request: Request):
     merged = sorted({item.lower(): item for item in (existing + selected) if item}.values(), key=lambda value: value.lower())
     settings.setdefault("filters", {})["drop_topics"] = merged
     save_settings("mikrotik_logs", normalize_mikrotik_logs_settings(settings))
+    _clear_mikrotik_logs_summary_cache()
     added = [item for item in selected if item and item.lower() not in {value.lower() for value in existing}]
     _auth_log_event(
         request,
@@ -8402,6 +8480,7 @@ async def mikrotik_logs_drop_topics_remove(request: Request):
     ]
     settings.setdefault("filters", {})["drop_topics"] = [item for item in existing if item.lower() != remove_topic]
     save_settings("mikrotik_logs", normalize_mikrotik_logs_settings(settings))
+    _clear_mikrotik_logs_summary_cache()
     _auth_log_event(request, "mikrotik_logs.drop_topic_removed", resource=remove_topic, details="")
     return RedirectResponse(url="/logs/mikrotik?mt_tab=logs&drop_topics=1", status_code=303)
 
@@ -20018,6 +20097,7 @@ async def surveillance_page(request: Request):
             for row in history["rows"]:
                 started_iso = (row.get("started_at") or "").strip()
                 ended_iso = (row.get("ended_at") or "").strip()
+                updated_info = _surveillance_history_final_update(row)
                 history_rows.append(
                     {
                         "id": row.get("id"),
@@ -20038,6 +20118,10 @@ async def surveillance_page(request: Request):
                         "ended_at_iso": ended_iso,
                         "started_at_ph": format_ts_ph(started_iso),
                         "ended_at_ph": format_ts_ph(ended_iso),
+                        "updated_by": updated_info.get("actor") or "Unknown",
+                        "updated_at_iso": updated_info.get("at_iso") or (row.get("updated_at") or "").strip(),
+                        "updated_at_ph": updated_info.get("at_ph") or format_ts_ph_compact(row.get("updated_at")),
+                        "updated_display": updated_info.get("display") or "Unknown",
                         "active": not bool(ended_iso),
                     }
                 )
@@ -22002,6 +22086,57 @@ def _build_surveillance_stage_events(audit_rows: list[dict], cycle_rows: list[di
     return stage_events, final_event
 
 
+def _surveillance_history_final_update(row: dict) -> dict:
+    pppoe = (row.get("pppoe") or "").strip()
+    started_iso = (row.get("started_at") or "").strip()
+    ended_iso = (row.get("ended_at") or "").strip()
+    updated_iso = (row.get("updated_at") or ended_iso or started_iso or "").strip()
+    fallback = {
+        "actor": "Unknown",
+        "at_iso": updated_iso,
+        "at_ph": format_ts_ph_compact(updated_iso),
+        "display": f"Unknown {format_ts_ph_compact(updated_iso)}" if updated_iso else "Unknown",
+    }
+    if not pppoe:
+        return fallback
+    try:
+        audit_rows = list_surveillance_audit_logs_for_pppoe(pppoe, since_iso=started_iso, until_iso=ended_iso, limit=500)
+    except Exception:
+        audit_rows = []
+    if not audit_rows:
+        return fallback
+
+    _, final_event = _build_surveillance_stage_events(audit_rows, [row])
+    if not final_event:
+        end_reason = (row.get("end_reason") or "").strip().lower()
+        wanted_actions = {
+            "fixed": {"surveillance.mark_fixed", "surveillance.mark_fixed_bulk"},
+            "false": {"surveillance.mark_false", "surveillance.mark_false_bulk"},
+            "recovered": {"surveillance.mark_fully_recovered"},
+            "removed": {"surveillance.remove", "surveillance.remove_bulk"},
+        }.get(end_reason, set())
+        for audit_row in reversed(audit_rows):
+            action = (audit_row.get("action") or "").strip().lower()
+            if action in wanted_actions:
+                final_event = {
+                    "actor": (audit_row.get("username") or "").strip(),
+                    "at_iso": (audit_row.get("timestamp") or "").strip(),
+                }
+                break
+
+    if not final_event:
+        return fallback
+    actor = (final_event.get("actor") or "").strip() or "Unknown"
+    at_iso = (final_event.get("at_iso") or updated_iso or "").strip()
+    at_ph = format_ts_ph_compact(at_iso)
+    return {
+        "actor": actor,
+        "at_iso": at_iso,
+        "at_ph": at_ph,
+        "display": f"{actor} {at_ph}" if at_ph and at_ph != "n/a" else actor,
+    }
+
+
 @app.get("/surveillance/history_detail", response_class=JSONResponse)
 async def surveillance_history_detail(id: int):
     row = get_surveillance_session_by_id(id)
@@ -23613,6 +23748,7 @@ def _system_danger_format_isp_status():
 
 def _system_danger_format_mikrotik_logs():
     clear_mikrotik_logs()
+    _clear_mikrotik_logs_summary_cache()
     state = get_state("mikrotik_logs_state", {})
     if not isinstance(state, dict):
         state = {}

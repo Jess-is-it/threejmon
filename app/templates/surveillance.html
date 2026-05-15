@@ -1860,6 +1860,7 @@
 		                <th class="surv-history-col-window">Session Window</th>
 		                <th class="surv-history-col-duration">Duration</th>
 		                <th class="surv-history-col-action">Final Action</th>
+		                <th class="surv-history-col-updated">Updated By / Time</th>
 		                <th class="surv-history-col-note">Note</th>
 		                <th class="text-end surv-history-col-actions">Actions</th>
 		              </tr>
@@ -1913,6 +1914,11 @@
                       <span class="badge bg-secondary-lt text-secondary">Removed</span>
                     {% endif %}
 	                  </td>
+                    <td class="surv-history-col-updated">
+                      <div class="small fw-semibold text-truncate" style="max-width: 180px;" title="{{ row.updated_display }}">
+                        {{ row.updated_display or 'Unknown' }}
+                      </div>
+                    </td>
 	                  <td class="text-muted small surv-history-col-note" style="max-width: 280px;">
 	                    <div class="text-truncate" {% if row.end_note %}title="{{ row.end_note }}"{% endif %}>
 	                      {{ row.end_note or "—" }}
@@ -1935,7 +1941,7 @@
 	                </tr>
 		              {% else %}
 		                <tr>
-		                  <td colspan="7" class="text-muted p-3">No history yet.</td>
+		                  <td colspan="8" class="text-muted p-3">No history yet.</td>
 		                </tr>
 		              {% endfor %}
 	            </tbody>
@@ -3942,11 +3948,24 @@
               const label = escapeCell(stage.label || "Stage");
               const windowText = stage.present
                 ? `${escapeCell(stage.started_at_ph || "n/a")} → ${escapeCell(stage.ended_at_ph || "n/a")}`
-                : "This account did not enter this stage in the selected cycle.";
+                : "Did not reach";
               const noteText = escapeCell(stage.note || (stage.present ? "No saved note for this stage." : "No stage data to summarize."));
               const enteredBy = escapeCell(stage.entered_by || "n/a");
               const enteredAction = escapeCell(stage.entered_action_label || "Entered stage");
               const enteredAt = escapeCell(stage.entered_at_ph || "n/a");
+              if (!stage.present) {
+                return `
+                  <div class="border rounded p-3 mb-3 bg-light">
+                    <div class="d-flex align-items-center justify-content-between gap-3 flex-wrap">
+                      <div class="d-flex align-items-center gap-2 flex-wrap">
+                        <span class="badge bg-${badge}-lt text-${badge}">${label}</span>
+                        <span class="badge bg-secondary-lt text-secondary">Did not reach</span>
+                      </div>
+                      <div class="text-muted small">No summary is shown because the account never entered this stage in this cycle.</div>
+                    </div>
+                  </div>
+                `;
+              }
               const pingBadges = buildMetricBadges([
                 { label: "Samples", value: `${ping.samples || 0}` },
                 { label: "Down", value: `${ping.down_samples || 0}` },

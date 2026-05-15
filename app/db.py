@@ -5481,6 +5481,33 @@ def update_mikrotik_logs_router_for_sources(source_ips, router_id, router_name, 
         conn.close()
 
 
+def _append_mikrotik_drop_topic_filters(filters, params, drop_topics=None, router=""):
+    rules = []
+    router_l = str(router or "").strip().lower()
+    for raw_rule in drop_topics or []:
+        dropped = str(raw_rule or "").strip().lower()
+        if not dropped or dropped.count("\t") < 2:
+            continue
+        dropped_router, dropped_topic, dropped_message = dropped.split("\t", 2)
+        dropped_router = dropped_router.strip()
+        dropped_topic = dropped_topic.strip()
+        dropped_message = dropped_message.strip()
+        if not dropped_router or not dropped_topic or not dropped_message:
+            continue
+        if router_l and dropped_router != router_l:
+            continue
+        rules.append((dropped_router, dropped_topic, dropped_message))
+    if not rules:
+        return
+    placeholders = ", ".join(["(?, ?, ?)"] * len(rules))
+    filters.append(
+        "(LOWER(COALESCE(NULLIF(router_id, ''), source_ip, '')), LOWER(COALESCE(topics, '')), LOWER(COALESCE(message, ''))) "
+        f"NOT IN ({placeholders})"
+    )
+    for dropped_router, dropped_topic, dropped_message in rules:
+        params.extend([dropped_router, dropped_topic, dropped_message])
+
+
 def list_mikrotik_logs(
     *,
     limit=100,
@@ -5516,18 +5543,7 @@ def list_mikrotik_logs(
         like = f"%{str(topic).strip().lower()}%"
         filters.append("LOWER(topics) LIKE ?")
         params.append(like)
-    for raw_rule in drop_topics or []:
-        dropped = str(raw_rule or "").strip().lower()
-        if not dropped or dropped.count("\t") < 2:
-            continue
-        dropped_router, dropped_topic, dropped_message = dropped.split("\t", 2)
-        dropped_router = dropped_router.strip()
-        dropped_topic = dropped_topic.strip()
-        dropped_message = dropped_message.strip()
-        if not dropped_router or not dropped_topic or not dropped_message:
-            continue
-        filters.append("NOT (LOWER(COALESCE(NULLIF(router_id, ''), source_ip, '')) = ? AND LOWER(COALESCE(topics, '')) = ? AND LOWER(COALESCE(message, '')) = ?)")
-        params.extend([dropped_router, dropped_topic, dropped_message])
+    _append_mikrotik_drop_topic_filters(filters, params, drop_topics=drop_topics, router=router)
     now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
     if window == "24h":
         filters.append("timestamp >= ?")
@@ -5562,18 +5578,7 @@ def list_mikrotik_logs(
 def get_mikrotik_log_facets(drop_topics=None):
     filters = []
     params = []
-    for raw_rule in drop_topics or []:
-        dropped = str(raw_rule or "").strip().lower()
-        if not dropped or dropped.count("\t") < 2:
-            continue
-        dropped_router, dropped_topic, dropped_message = dropped.split("\t", 2)
-        dropped_router = dropped_router.strip()
-        dropped_topic = dropped_topic.strip()
-        dropped_message = dropped_message.strip()
-        if not dropped_router or not dropped_topic or not dropped_message:
-            continue
-        filters.append("NOT (LOWER(COALESCE(NULLIF(router_id, ''), source_ip, '')) = ? AND LOWER(COALESCE(topics, '')) = ? AND LOWER(COALESCE(message, '')) = ?)")
-        params.extend([dropped_router, dropped_topic, dropped_message])
+    _append_mikrotik_drop_topic_filters(filters, params, drop_topics=drop_topics)
     where_sql = ("WHERE " + " AND ".join(filters)) if filters else ""
     severity_where_sql = where_sql + (" AND " if where_sql else "WHERE ") + "severity IS NOT NULL AND severity <> ''"
     topics_where_sql = where_sql + (" AND " if where_sql else "WHERE ") + "topics IS NOT NULL AND topics <> ''"
@@ -5625,18 +5630,7 @@ def get_mikrotik_log_facets(drop_topics=None):
 def get_mikrotik_log_stats(drop_topics=None):
     filters = []
     params = []
-    for raw_rule in drop_topics or []:
-        dropped = str(raw_rule or "").strip().lower()
-        if not dropped or dropped.count("\t") < 2:
-            continue
-        dropped_router, dropped_topic, dropped_message = dropped.split("\t", 2)
-        dropped_router = dropped_router.strip()
-        dropped_topic = dropped_topic.strip()
-        dropped_message = dropped_message.strip()
-        if not dropped_router or not dropped_topic or not dropped_message:
-            continue
-        filters.append("NOT (LOWER(COALESCE(NULLIF(router_id, ''), source_ip, '')) = ? AND LOWER(COALESCE(topics, '')) = ? AND LOWER(COALESCE(message, '')) = ?)")
-        params.extend([dropped_router, dropped_topic, dropped_message])
+    _append_mikrotik_drop_topic_filters(filters, params, drop_topics=drop_topics)
     where_sql = ("WHERE " + " AND ".join(filters)) if filters else ""
     conn = get_conn()
     try:

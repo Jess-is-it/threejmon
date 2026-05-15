@@ -198,16 +198,15 @@
             data-mt-window="{{ mikrotik_logs_window or '24h' }}"
             data-mt-limit="{{ mikrotik_logs_limit }}"
             data-mt-page="{{ mikrotik_logs_page }}"
+            data-initial-router="{{ mikrotik_logs_router or '' }}"
           >
             <div class="card-header">
               <h3 class="card-title"><i class="ti ti-router me-2"></i>MikroTik Syslog Entries</h3>
               <div class="card-actions ms-auto d-flex flex-wrap align-items-center justify-content-end gap-2">
                 <span class="badge bg-green-lt text-green" id="mikrotik-live-status">Live</span>
                 <span class="badge bg-indigo-lt text-indigo" id="mikrotik-filtered-count">Filtered: {{ mikrotik_logs_total }}</span>
-                {% if mikrotik_logs_router %}
-                  {% set active_router = (mikrotik_logs_router_tabs or [])|selectattr('value', 'equalto', mikrotik_logs_router)|list %}
-                  <span class="badge bg-blue-lt text-blue">Router: {{ active_router[0].label if active_router else mikrotik_logs_router }}</span>
-                {% endif %}
+                {% set active_router = (mikrotik_logs_router_tabs or [])|selectattr('value', 'equalto', mikrotik_logs_router)|list %}
+                <span class="badge bg-blue-lt text-blue {% if not mikrotik_logs_router %}d-none{% endif %}" id="mikrotik-active-router-badge">Router: {{ active_router[0].label if active_router else mikrotik_logs_router }}</span>
                 <span class="badge bg-secondary-lt" id="mikrotik-last-received">Last received: {{ mikrotik_logs_state.last_received_at|default('n/a') }}</span>
                 <form method="get" action="/logs/mikrotik" class="d-flex align-items-center gap-2">
                   <input type="hidden" name="mt_tab" value="logs" />
@@ -227,7 +226,7 @@
                   <i class="ti ti-filter me-1"></i>Filter
                 </button>
                 {% if mikrotik_logs_router %}
-                <div class="dropdown ms-auto">
+                <div class="dropdown ms-auto" id="mikrotik-drop-topics-menu">
                   <button class="btn btn-outline-danger btn-sm" type="button" data-bs-toggle="dropdown" aria-expanded="false">
                     <i class="ti ti-ban me-1"></i>Drop Topics
                     <span class="badge bg-red-lt text-red ms-1">{{ (mikrotik_logs_router_drop_topics or [])|length }}</span>
@@ -341,12 +340,24 @@
             <div class="card-body border-bottom py-2">
               <div class="d-flex flex-wrap align-items-center gap-2 mikrotik-router-tabs" id="mikrotik-router-tabs">
                 <span class="text-muted small me-1">Routers:</span>
-                <a class="btn btn-sm {% if not mikrotik_logs_router %}btn-primary{% else %}btn-outline-secondary{% endif %}" href="/logs/mikrotik{% if mikrotik_logs_router_tab_query %}?{{ mikrotik_logs_router_tab_query }}{% else %}?mt_tab=logs{% endif %}">
+                <a
+                  class="btn btn-sm {% if not mikrotik_logs_router %}btn-primary active{% else %}btn-outline-secondary{% endif %}"
+                  href="/logs/mikrotik{% if mikrotik_logs_router_tab_query %}?{{ mikrotik_logs_router_tab_query }}{% else %}?mt_tab=logs{% endif %}"
+                  data-mikrotik-router-tab
+                  data-router-value=""
+                  data-router-label="All Routers"
+                >
                   All Routers
                   <span class="badge {% if not mikrotik_logs_router %}bg-white text-primary{% else %}bg-secondary-lt{% endif %} ms-1" data-mikrotik-router-count="__all__">{{ mikrotik_logs_stats.total }}</span>
                 </a>
                 {% for item in mikrotik_logs_router_tabs %}
-                  <a class="btn btn-sm {% if mikrotik_logs_router == item.value %}btn-primary{% else %}btn-outline-secondary{% endif %}" href="/logs/mikrotik?{% if mikrotik_logs_router_tab_query %}{{ mikrotik_logs_router_tab_query }}&{% else %}mt_tab=logs&{% endif %}mt_router={{ item.value|urlencode }}">
+                  <a
+                    class="btn btn-sm {% if mikrotik_logs_router == item.value %}btn-primary active{% else %}btn-outline-secondary{% endif %}"
+                    href="/logs/mikrotik?{% if mikrotik_logs_router_tab_query %}{{ mikrotik_logs_router_tab_query }}&{% else %}mt_tab=logs&{% endif %}mt_router={{ item.value|urlencode }}"
+                    data-mikrotik-router-tab
+                    data-router-value="{{ item.value }}"
+                    data-router-label="{{ item.label }}"
+                  >
                     {{ item.label }}
                     <span class="badge {% if mikrotik_logs_router == item.value %}bg-white text-primary{% else %}bg-secondary-lt{% endif %} ms-1" data-mikrotik-router-count="{{ item.value }}">{{ item.count }}</span>
                     {% if item.drop_count %}
@@ -657,7 +668,11 @@
       const pageLabelEl = document.getElementById("mikrotik-logs-page-label");
       const prevEl = document.getElementById("mikrotik-logs-prev");
       const nextEl = document.getElementById("mikrotik-logs-next");
+      const routerTabsEl = document.getElementById("mikrotik-router-tabs");
+      const activeRouterBadgeEl = document.getElementById("mikrotik-active-router-badge");
+      const dropTopicsMenuEl = document.getElementById("mikrotik-drop-topics-menu");
       let lastSummaryAt = 0;
+      let activeFetchController = null;
       const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
         "&": "&amp;",
         "<": "&lt;",
@@ -717,6 +732,31 @@
         if (!statusEl) return;
         statusEl.textContent = label;
         statusEl.className = `badge ${tone}`;
+      };
+      const setActiveRouterTab = (routerValue, routerLabel) => {
+        if (activeRouterBadgeEl) {
+          if (routerValue) {
+            activeRouterBadgeEl.textContent = `Router: ${routerLabel || routerValue}`;
+            activeRouterBadgeEl.classList.remove("d-none");
+          } else {
+            activeRouterBadgeEl.classList.add("d-none");
+          }
+        }
+        document.querySelectorAll("[data-mikrotik-router-tab]").forEach((link) => {
+          const isActive = String(link.dataset.routerValue || "") === String(routerValue || "");
+          link.classList.toggle("btn-primary", isActive);
+          link.classList.toggle("active", isActive);
+          link.classList.toggle("btn-outline-secondary", !isActive);
+          link.querySelectorAll("[data-mikrotik-router-count]").forEach((badge) => {
+            badge.classList.toggle("bg-white", isActive);
+            badge.classList.toggle("text-primary", isActive);
+            badge.classList.toggle("bg-secondary-lt", !isActive);
+          });
+        });
+        if (dropTopicsMenuEl) {
+          const canUseRenderedDropMenu = routerValue && routerValue === String(liveRoot.dataset.initialRouter || "");
+          dropTopicsMenuEl.classList.toggle("d-none", !canUseRenderedDropMenu);
+        }
       };
       const renderRows = (rows) => {
         const oldIds = new Set(Array.from(tbody.querySelectorAll("tr[data-log-id]")).map((row) => row.dataset.logId).filter(Boolean));
@@ -785,11 +825,18 @@
           nextEl.href = pageHref(Math.min(pages, page + 1));
         }
       };
-      const refresh = async () => {
+      const refresh = async (options = {}) => {
         if (isDropSelecting()) return;
+        let controller = null;
         try {
-          const includeSummary = Date.now() - lastSummaryAt > 15000;
-          const res = await fetch(params(includeSummary), { headers: { "Accept": "application/json" }, cache: "no-store" });
+          const includeSummary = options.includeSummary === false ? false : (options.includeSummary === true || Date.now() - lastSummaryAt > 15000);
+          if (options.showLoading) setStatus("Loading", "bg-blue-lt text-blue");
+          if (activeFetchController) {
+            try { activeFetchController.abort(); } catch (_err) {}
+          }
+          controller = new AbortController();
+          activeFetchController = controller;
+          const res = await fetch(params(includeSummary), { headers: { "Accept": "application/json" }, cache: "no-store", signal: controller.signal });
           if (!res.ok) throw new Error("request failed");
           const data = await res.json();
           if (!data?.ok) throw new Error(data?.error || "request failed");
@@ -798,9 +845,36 @@
           updateStats(data);
           setStatus("Live", "bg-green-lt text-green");
         } catch (_err) {
+          if (_err?.name === "AbortError") return;
           setStatus("Paused", "bg-yellow-lt text-yellow");
+        } finally {
+          if (activeFetchController === controller) activeFetchController = null;
         }
       };
+
+      if (routerTabsEl) {
+        routerTabsEl.addEventListener("click", (event) => {
+          const link = event.target.closest("[data-mikrotik-router-tab]");
+          if (!link || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || isDropSelecting()) return;
+          event.preventDefault();
+          const routerValue = String(link.dataset.routerValue || "");
+          const routerLabel = String(link.dataset.routerLabel || routerValue || "All Routers");
+          liveRoot.dataset.mtRouter = routerValue;
+          liveRoot.dataset.mtPage = "1";
+          setActiveRouterTab(routerValue, routerLabel);
+          const url = new URL(window.location.href);
+          url.pathname = "/logs/mikrotik";
+          url.searchParams.set("mt_tab", "logs");
+          if (routerValue) {
+            url.searchParams.set("mt_router", routerValue);
+          } else {
+            url.searchParams.delete("mt_router");
+          }
+          url.searchParams.delete("mt_page");
+          window.history.pushState({}, "", `${url.pathname}?${url.searchParams.toString()}`);
+          refresh({ includeSummary: false, showLoading: true });
+        });
+      }
 
       if (window.ThreeJPolling?.createTask) {
         window.ThreeJPolling.createTask(refresh, { intervalMs: 3000, resumeDelayMs: 250 });
