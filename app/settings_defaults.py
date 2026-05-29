@@ -620,6 +620,19 @@ MIKROTIK_LOGS_DEFAULTS = {
         "check_interval_hours": 24,
         "timeout_seconds": 8,
     },
+    "telegram": {
+        "enabled": False,
+        "bot_token": "",
+        "chat_id": "",
+        "report_severities": ["critical", "alert", "emergency"],
+        "keyword_enabled": False,
+        "keywords": [],
+        "cooldown_seconds": 300,
+    },
+    "drop_topics_cleanup": {
+        "auto_clear_enabled": False,
+        "interval_days": 30,
+    },
 }
 
 WAN_MESSAGE_DEFAULTS = {

@@ -1421,6 +1421,16 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mikrotik_logs_router_ts ON mikrotik_logs (router_id, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mikrotik_logs_source_ts ON mikrotik_logs (source_ip, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mikrotik_logs_severity_ts ON mikrotik_logs (severity, timestamp)")
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_mikrotik_logs_drop_signature
+            ON mikrotik_logs (
+                LOWER(COALESCE(NULLIF(router_id, ''), source_ip, '')),
+                LOWER(COALESCE(topics, '')),
+                LOWER(COALESCE(message, ''))
+            )
+            """
+        )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_rto_results_ip_ts ON rto_results (ip, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_optical_results_device_ts ON optical_results (device_id, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_optical_results_ip_ts ON optical_results (ip, timestamp)")
@@ -5481,8 +5491,9 @@ def update_mikrotik_logs_router_for_sources(source_ips, router_id, router_name, 
         conn.close()
 
 
-def _append_mikrotik_drop_topic_filters(filters, params, drop_topics=None, router=""):
+def _mikrotik_drop_topic_rules(drop_topics=None, router=""):
     rules = []
+    seen = set()
     router_l = str(router or "").strip().lower()
     for raw_rule in drop_topics or []:
         dropped = str(raw_rule or "").strip().lower()
@@ -5496,16 +5507,134 @@ def _append_mikrotik_drop_topic_filters(filters, params, drop_topics=None, route
             continue
         if router_l and dropped_router != router_l:
             continue
-        rules.append((dropped_router, dropped_topic, dropped_message))
+        key = (dropped_router, dropped_topic, dropped_message)
+        if key in seen:
+            continue
+        seen.add(key)
+        rules.append(key)
+    return rules
+
+
+def _mikrotik_drop_topic_tuple_clause(rules, negate=True):
+    placeholders = ", ".join(["(?, ?, ?)"] * len(rules))
+    op = "NOT IN" if negate else "IN"
+    return (
+        "(LOWER(COALESCE(NULLIF(router_id, ''), source_ip, '')), LOWER(COALESCE(topics, '')), LOWER(COALESCE(message, ''))) "
+        f"{op} ({placeholders})"
+    )
+
+
+def _append_mikrotik_drop_topic_filters(filters, params, drop_topics=None, router=""):
+    rules = _mikrotik_drop_topic_rules(drop_topics=drop_topics, router=router)
     if not rules:
         return
-    placeholders = ", ".join(["(?, ?, ?)"] * len(rules))
-    filters.append(
-        "(LOWER(COALESCE(NULLIF(router_id, ''), source_ip, '')), LOWER(COALESCE(topics, '')), LOWER(COALESCE(message, ''))) "
-        f"NOT IN ({placeholders})"
-    )
+    filters.append(_mikrotik_drop_topic_tuple_clause(rules, negate=True))
     for dropped_router, dropped_topic, dropped_message in rules:
         params.extend([dropped_router, dropped_topic, dropped_message])
+
+
+def count_mikrotik_logs_matching_drop_topics(drop_topics=None, router="", chunk_size=200):
+    rules = _mikrotik_drop_topic_rules(drop_topics=drop_topics, router=router)
+    if not rules:
+        return 0
+    try:
+        chunk_size = max(1, min(int(chunk_size or 200), 250))
+    except Exception:
+        chunk_size = 200
+    conn = get_conn()
+    total = 0
+    try:
+        for idx in range(0, len(rules), chunk_size):
+            chunk = rules[idx : idx + chunk_size]
+            params = []
+            for dropped_router, dropped_topic, dropped_message in chunk:
+                params.extend([dropped_router, dropped_topic, dropped_message])
+            row = conn.execute(
+                f"SELECT COUNT(1) AS n FROM mikrotik_logs WHERE {_mikrotik_drop_topic_tuple_clause(chunk, negate=False)}",
+                params,
+            ).fetchone()
+            total += int(_row_get(row, "n", 0) or 0)
+        return int(total)
+    finally:
+        conn.close()
+
+
+def delete_mikrotik_logs_matching_drop_topics(drop_topics=None, router="", batch_size=1000, progress_callback=None):
+    rules = _mikrotik_drop_topic_rules(drop_topics=drop_topics, router=router)
+    if not rules:
+        if progress_callback:
+            progress_callback(deleted=0, total=0, stage="No dropped topics configured")
+        return {"deleted": 0, "total": 0}
+    try:
+        max_batch_size = 50000 if _use_postgres() else 900
+        batch_size = max(1, min(int(batch_size or 1000), max_batch_size))
+    except Exception:
+        batch_size = 1000
+    total = count_mikrotik_logs_matching_drop_topics(drop_topics=drop_topics, router=router)
+    if progress_callback:
+        progress_callback(deleted=0, total=total, stage="Counting hidden logs")
+    if total <= 0:
+        if progress_callback:
+            progress_callback(deleted=0, total=0, stage="No hidden logs found")
+        return {"deleted": 0, "total": 0}
+
+    deleted = 0
+    conn = get_conn()
+    try:
+        for chunk_start in range(0, len(rules), 200):
+            chunk = rules[chunk_start : chunk_start + 200]
+            match_params = []
+            for dropped_router, dropped_topic, dropped_message in chunk:
+                match_params.extend([dropped_router, dropped_topic, dropped_message])
+            clause = _mikrotik_drop_topic_tuple_clause(chunk, negate=False)
+            while True:
+                if _use_postgres():
+                    with conn:
+                        row = conn.execute(
+                            f"""
+                            WITH doomed AS (
+                                SELECT id
+                                FROM mikrotik_logs
+                                WHERE {clause}
+                                ORDER BY id
+                                LIMIT ?
+                            ),
+                            deleted AS (
+                                DELETE FROM mikrotik_logs
+                                WHERE id IN (SELECT id FROM doomed)
+                                RETURNING 1
+                            )
+                            SELECT COUNT(1) AS n FROM deleted
+                            """,
+                            match_params + [batch_size],
+                        ).fetchone()
+                    batch_deleted = int(_row_get(row, "n", 0) or 0)
+                    if batch_deleted <= 0:
+                        break
+                    deleted += batch_deleted
+                    if progress_callback:
+                        progress_callback(deleted=deleted, total=total, stage="Deleting hidden logs")
+                    continue
+
+                rows = conn.execute(
+                    f"SELECT id FROM mikrotik_logs WHERE {clause} ORDER BY id LIMIT ?",
+                    match_params + [batch_size],
+                ).fetchall()
+                ids = [int(_row_get(row, "id", 0) or 0) for row in rows]
+                ids = [item for item in ids if item > 0]
+                if not ids:
+                    break
+                placeholders = ", ".join(["?"] * len(ids))
+                with conn:
+                    conn.execute(f"DELETE FROM mikrotik_logs WHERE id IN ({placeholders})", ids)
+                deleted += len(ids)
+                if progress_callback:
+                    progress_callback(deleted=deleted, total=total, stage="Deleting hidden logs")
+        if progress_callback:
+            progress_callback(deleted=deleted, total=total, stage="Hidden logs deleted")
+        return {"deleted": int(deleted), "total": int(total)}
+    finally:
+        conn.close()
 
 
 def list_mikrotik_logs(
@@ -5628,13 +5757,42 @@ def get_mikrotik_log_facets(drop_topics=None):
 
 
 def get_mikrotik_log_stats(drop_topics=None):
+    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0).isoformat() + "Z"
+    if not drop_topics:
+        conn = get_conn()
+        try:
+            total_row = conn.execute("SELECT COUNT(1) AS n FROM mikrotik_logs").fetchone()
+            today_row = conn.execute("SELECT COUNT(1) AS n FROM mikrotik_logs WHERE timestamp >= ?", (today_start,)).fetchone()
+            severity_rows = conn.execute(
+                """
+                SELECT LOWER(severity) AS severity, COUNT(1) AS count
+                FROM mikrotik_logs
+                WHERE severity IS NOT NULL AND severity <> ''
+                GROUP BY LOWER(severity)
+                """
+            ).fetchall()
+            sources_row = conn.execute("SELECT COUNT(DISTINCT source_ip) AS n FROM mikrotik_logs").fetchone()
+            severity_counts = {
+                str(_row_get(row, "severity", "") or "").lower(): int(_row_get(row, "count", 0) or 0)
+                for row in severity_rows
+            }
+            return {
+                "total": int(_row_get(total_row, "n", 0) or 0),
+                "today": int(_row_get(today_row, "n", 0) or 0),
+                "warning": int(severity_counts.get("warning", 0) or 0),
+                "error": int(severity_counts.get("error", 0) or 0),
+                "critical": int(severity_counts.get("critical", 0) or 0),
+                "sources": int(_row_get(sources_row, "n", 0) or 0),
+            }
+        finally:
+            conn.close()
+
     filters = []
     params = []
     _append_mikrotik_drop_topic_filters(filters, params, drop_topics=drop_topics)
     where_sql = ("WHERE " + " AND ".join(filters)) if filters else ""
     conn = get_conn()
     try:
-        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0).isoformat() + "Z"
         rows = conn.execute(
             f"""
             SELECT

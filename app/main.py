@@ -102,6 +102,8 @@ from .db import (
     get_wan_status_counts,
     get_mikrotik_log_facets,
     get_mikrotik_log_stats,
+    count_mikrotik_logs_matching_drop_topics,
+    delete_mikrotik_logs_matching_drop_topics,
     increment_surveillance_observed,
     get_offline_history_since,
     get_pppoe_usage_series_since,
@@ -282,6 +284,10 @@ _accounts_missing_purge_lock = threading.Lock()
 _accounts_missing_purge_running = set()
 _accounts_missing_purge_progress = {}
 _ACCOUNTS_MISSING_PURGE_VISIBLE_SECONDS = 30
+_mikrotik_drop_logs_delete_lock = threading.Lock()
+_mikrotik_drop_logs_delete_running = False
+_mikrotik_drop_logs_delete_progress = {}
+_MIKROTIK_DROP_LOGS_DELETE_VISIBLE_SECONDS = 30
 _offline_new_seen_lock = threading.Lock()
 _OFFLINE_NEW_SEEN_STATE_KEY = "offline_new_seen_by_user_v1"
 _OFFLINE_NEW_VIEW_SECONDS = 10
@@ -1525,6 +1531,8 @@ def _auth_permission_for_route(path: str, method: str):
         return "dashboard.logs.view"
     if path == "/":
         return "VIEW_Dashboard"
+    if path.startswith("/logs/mikrotik"):
+        return "logs.mikrotik.view" if method == "GET" else "logs.mikrotik.edit"
     if path.startswith("/logs"):
         return "logs.timeline.view"
     if path.startswith("/dashboard/"):
@@ -1838,6 +1846,21 @@ def _auth_log_event(request: Request, action: str, resource: str = "", details: 
             resource=(resource or "").strip(),
             details=(details or "").strip()[:500],
             ip_address=_auth_client_ip(request),
+        )
+    except Exception:
+        pass
+
+
+def _insert_system_audit(action, resource="", details=""):
+    try:
+        insert_auth_audit_log(
+            timestamp=utc_now_iso(),
+            user_id=None,
+            username="system",
+            action=(action or "").strip()[:120],
+            resource=(resource or "").strip()[:255],
+            details=(details or "").strip()[:2000],
+            ip_address="",
         )
     except Exception:
         pass
@@ -4641,7 +4664,7 @@ def normalize_mikrotik_logs_settings(settings):
     cfg = copy.deepcopy(MIKROTIK_LOGS_DEFAULTS)
     if isinstance(settings, dict):
         cfg["enabled"] = bool(settings.get("enabled", cfg["enabled"]))
-        for section in ("receiver", "storage", "filters", "auto_setup"):
+        for section in ("receiver", "storage", "filters", "auto_setup", "telegram", "drop_topics_cleanup"):
             if isinstance(settings.get(section), dict):
                 cfg[section].update(settings.get(section) or {})
 
@@ -4692,12 +4715,80 @@ def normalize_mikrotik_logs_settings(settings):
         auto_setup["timeout_seconds"] = max(1, min(int(auto_setup.get("timeout_seconds") or 8), 60))
     except Exception:
         auto_setup["timeout_seconds"] = 8
+
+    telegram = cfg.setdefault("telegram", {})
+    telegram["enabled"] = bool(telegram.get("enabled", False))
+    telegram["bot_token"] = (telegram.get("bot_token") or "").strip()
+    telegram["chat_id"] = (telegram.get("chat_id") or "").strip()
+    valid_severities = {"debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"}
+    if isinstance(telegram.get("report_severities"), list):
+        report_severities = [
+            str(item or "").strip().lower()
+            for item in telegram.get("report_severities")
+            if str(item or "").strip().lower() in valid_severities
+        ]
+    else:
+        report_severities = []
+    telegram["report_severities"] = sorted(set(report_severities), key=lambda item: ["debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"].index(item))
+    telegram["keyword_enabled"] = bool(telegram.get("keyword_enabled", False))
+    if isinstance(telegram.get("keywords"), list):
+        keywords = [str(item or "").strip() for item in telegram.get("keywords") if str(item or "").strip()]
+    else:
+        keywords = parse_lines(telegram.get("keywords"))
+    seen_keywords = set()
+    cleaned_keywords = []
+    for keyword in keywords:
+        key = keyword.lower()
+        if key in seen_keywords:
+            continue
+        seen_keywords.add(key)
+        cleaned_keywords.append(keyword[:120])
+    telegram["keywords"] = cleaned_keywords
+    try:
+        telegram["cooldown_seconds"] = max(5, min(int(telegram.get("cooldown_seconds") or 300), 86400))
+    except Exception:
+        telegram["cooldown_seconds"] = 300
+
+    drop_topics_cleanup = cfg.setdefault("drop_topics_cleanup", {})
+    drop_topics_cleanup["auto_clear_enabled"] = bool(drop_topics_cleanup.get("auto_clear_enabled", False))
+    try:
+        drop_topics_cleanup["interval_days"] = max(
+            1,
+            min(int(drop_topics_cleanup.get("interval_days") or 30), 3650),
+        )
+    except Exception:
+        drop_topics_cleanup["interval_days"] = 30
     return cfg
+
+
+def _mikrotik_logs_telegram_from_form(form, existing=None):
+    existing = existing if isinstance(existing, dict) else {}
+    previous = existing.get("telegram") if isinstance(existing.get("telegram"), dict) else {}
+    report_severities = []
+    try:
+        report_severities = [
+            str(item or "").strip().lower()
+            for item in form.getlist("telegram_report_severities")
+            if str(item or "").strip()
+        ]
+    except Exception:
+        raw = form.get("telegram_report_severities")
+        if raw:
+            report_severities = [str(raw).strip().lower()]
+    return {
+        "enabled": parse_bool(form, "telegram_enabled"),
+        "bot_token": (form.get("telegram_bot_token") if "telegram_bot_token" in form else previous.get("bot_token", "")) or "",
+        "chat_id": (form.get("telegram_chat_id") if "telegram_chat_id" in form else previous.get("chat_id", "")) or "",
+        "report_severities": report_severities,
+        "keyword_enabled": parse_bool(form, "telegram_keyword_enabled"),
+        "keywords": parse_lines(form.get("telegram_keywords")),
+        "cooldown_seconds": parse_int(form, "telegram_cooldown_seconds", 300),
+    }
 
 
 _MIKROTIK_LOGS_SUMMARY_CACHE = {}
 _MIKROTIK_LOGS_SUMMARY_CACHE_LOCK = threading.Lock()
-_MIKROTIK_LOGS_SUMMARY_CACHE_SECONDS = 20.0
+_MIKROTIK_LOGS_SUMMARY_CACHE_SECONDS = 120.0
 
 
 def _mikrotik_logs_drop_topics_key(drop_topics):
@@ -4710,7 +4801,10 @@ def _clear_mikrotik_logs_summary_cache():
 
 
 def _mikrotik_logs_summary_cached(drop_topics, *, refresh=True):
-    cache_key = _mikrotik_logs_drop_topics_key(drop_topics)
+    # Drop-topic rules can be many exact message signatures. Applying them to
+    # all summary GROUP BY queries is expensive on large log tables, while the
+    # table row query still applies them exactly where correctness matters.
+    cache_key = ("summary",)
     now_mono = time.monotonic()
     with _MIKROTIK_LOGS_SUMMARY_CACHE_LOCK:
         cached = _MIKROTIK_LOGS_SUMMARY_CACHE.get(cache_key)
@@ -4722,8 +4816,8 @@ def _mikrotik_logs_summary_cached(drop_topics, *, refresh=True):
             {"total": 0, "today": 0, "warning": 0, "error": 0, "critical": 0, "sources": 0},
         )
 
-    facets = get_mikrotik_log_facets(drop_topics=drop_topics)
-    stats = get_mikrotik_log_stats(drop_topics=drop_topics)
+    facets = get_mikrotik_log_facets(drop_topics=None)
+    stats = get_mikrotik_log_stats(drop_topics=None)
     with _MIKROTIK_LOGS_SUMMARY_CACHE_LOCK:
         _MIKROTIK_LOGS_SUMMARY_CACHE[cache_key] = {
             "at": time.monotonic(),
@@ -4731,6 +4825,178 @@ def _mikrotik_logs_summary_cached(drop_topics, *, refresh=True):
             "stats": copy.deepcopy(stats),
         }
     return facets, stats
+
+
+def _set_mikrotik_drop_logs_delete_progress(status="running", percent=None, stage="", total=None, deleted=None, error=""):
+    now = time.time()
+    with _mikrotik_drop_logs_delete_lock:
+        item = dict(_mikrotik_drop_logs_delete_progress or {})
+        item.setdefault("started_at", now)
+        item["status"] = str(status or "running").strip().lower()
+        item["stage"] = str(stage or item.get("stage") or "").strip()
+        item["updated_at"] = now
+        if total is not None:
+            try:
+                item["total"] = max(0, int(total or 0))
+            except Exception:
+                item["total"] = 0
+        else:
+            item["total"] = max(0, int(item.get("total") or 0))
+        if deleted is not None:
+            try:
+                item["deleted"] = max(0, int(deleted or 0))
+            except Exception:
+                item["deleted"] = 0
+        else:
+            item["deleted"] = max(0, int(item.get("deleted") or 0))
+        if percent is not None:
+            try:
+                item["percent"] = max(0, min(100, int(round(float(percent)))))
+            except Exception:
+                item["percent"] = 0
+        else:
+            total_value = max(1, int(item.get("total") or 1))
+            item["percent"] = max(0, min(100, int(round((int(item.get("deleted") or 0) / total_value) * 100))))
+        if error:
+            item["error"] = str(error).strip()[:500]
+        if item["status"] in {"completed", "failed"}:
+            item["completed_at"] = now
+        _mikrotik_drop_logs_delete_progress.clear()
+        _mikrotik_drop_logs_delete_progress.update(item)
+
+
+def _mikrotik_drop_logs_delete_status_payload():
+    now = time.time()
+    with _mikrotik_drop_logs_delete_lock:
+        item = dict(_mikrotik_drop_logs_delete_progress or {})
+        status = str(item.get("status") or "idle").lower()
+        completed_at = float(item.get("completed_at") or 0)
+        if status in {"completed", "failed"} and completed_at and (now - completed_at) > _MIKROTIK_DROP_LOGS_DELETE_VISIBLE_SECONDS:
+            _mikrotik_drop_logs_delete_progress.clear()
+            item = {}
+            status = "idle"
+
+    if not item:
+        return {
+            "visible": False,
+            "status": "idle",
+            "percent": 0,
+            "total": 0,
+            "deleted": 0,
+            "stage": "",
+            "label": "",
+            "error": "",
+        }
+    total = max(0, int(item.get("total") or 0))
+    deleted = max(0, int(item.get("deleted") or 0))
+    percent = max(0, min(100, int(item.get("percent") or 0)))
+    if status == "completed":
+        label = f"Deleted {deleted:,} hidden log row{'s' if deleted != 1 else ''} · 100%"
+        percent = 100
+    elif status == "failed":
+        label = "Hidden log deletion failed"
+    else:
+        label = f"Deleting hidden logs · {percent}%"
+    title_parts = [label]
+    stage = str(item.get("stage") or "").strip()
+    if stage:
+        title_parts.append(f"Current step: {stage}")
+    title_parts.append(f"Deleted: {deleted:,}/{total:,}")
+    if str(item.get("error") or "").strip():
+        title_parts.append(str(item.get("error") or "").strip())
+    return {
+        "visible": True,
+        "status": status,
+        "percent": percent,
+        "total": total,
+        "deleted": deleted,
+        "stage": stage,
+        "label": label,
+        "title": "\n".join(title_parts),
+        "error": str(item.get("error") or "").strip(),
+    }
+
+
+def _system_delete_progress_payload():
+    account_purge = _accounts_missing_purge_status_payload()
+    hidden_logs = _mikrotik_drop_logs_delete_status_payload()
+
+    def _rank(item):
+        if not bool((item or {}).get("visible")):
+            return 0
+        status = str((item or {}).get("status") or "").lower()
+        if status in {"queued", "running"}:
+            return 3
+        if status in {"failed", "completed"}:
+            return 2
+        return 1
+
+    if _rank(hidden_logs) > _rank(account_purge):
+        return hidden_logs
+    if _rank(account_purge) > 0:
+        return account_purge
+    return hidden_logs if _rank(hidden_logs) > 0 else account_purge
+
+
+def _mikrotik_drop_logs_delete_worker(drop_topics):
+    global _mikrotik_drop_logs_delete_running
+    try:
+        _set_mikrotik_drop_logs_delete_progress(status="running", percent=0, stage="Counting hidden logs", total=0, deleted=0)
+
+        def _progress(deleted=0, total=0, stage=""):
+            total_value = max(0, int(total or 0))
+            deleted_value = max(0, int(deleted or 0))
+            percent = 100 if total_value <= 0 else max(0, min(100, round((deleted_value / total_value) * 100)))
+            _set_mikrotik_drop_logs_delete_progress(
+                status="running",
+                percent=percent,
+                stage=stage,
+                total=total_value,
+                deleted=deleted_value,
+            )
+
+        result = delete_mikrotik_logs_matching_drop_topics(
+            drop_topics=drop_topics,
+            batch_size=25000,
+            progress_callback=_progress,
+        )
+        deleted = int((result or {}).get("deleted") or 0)
+        total = int((result or {}).get("total") or deleted)
+        state = get_state("mikrotik_logs_state", {})
+        if not isinstance(state, dict):
+            state = {}
+        state["drop_topics_hidden_logs_last_deleted_at"] = utc_now_iso()
+        state["drop_topics_hidden_logs_last_deleted_count"] = deleted
+        state["drop_topics_hidden_logs_last_deleted_reason"] = "manual"
+        save_state("mikrotik_logs_state", state)
+        _clear_mikrotik_logs_summary_cache()
+        _set_mikrotik_drop_logs_delete_progress(
+            status="completed",
+            percent=100,
+            stage="Hidden logs deleted",
+            total=total,
+            deleted=deleted,
+        )
+        _insert_system_audit(
+            "mikrotik_logs.drop_topics_hidden_logs_deleted",
+            resource=f"deleted={deleted}",
+            details="Manual deletion of log rows hidden by drop-topic rules.",
+        )
+    except Exception as exc:
+        _set_mikrotik_drop_logs_delete_progress(
+            status="failed",
+            percent=None,
+            stage="Delete failed",
+            error=str(exc),
+        )
+        _insert_system_audit(
+            "mikrotik_logs.drop_topics_hidden_logs_delete_failed",
+            resource="",
+            details=str(exc),
+        )
+    finally:
+        with _mikrotik_drop_logs_delete_lock:
+            _mikrotik_drop_logs_delete_running = False
 
 
 def _apply_mikrotik_log_source_aliases_to_history(results):
@@ -7880,15 +8146,21 @@ async def logs_page(request: Request):
     mt_severity = (request.query_params.get("mt_severity") or "").strip().lower()
     mt_topic = (request.query_params.get("mt_topic") or "").strip()
     mt_window = (request.query_params.get("mt_window") or "24h").strip().lower()
-    mt_limit = _parse_table_limit(request.query_params.get("mt_limit"), default=100)
+    mt_limit_raw = request.query_params.get("mt_limit")
+    mt_limit_explicit = mt_limit_raw not in (None, "")
+    mt_default_limit = 50 if not mt_router else 100
+    mt_limit = _parse_table_limit(mt_limit_raw, default=mt_default_limit)
     mt_page = _parse_table_page(request.query_params.get("mt_page"), default=1)
     mt_tab = (request.query_params.get("mt_tab") or "logs").strip().lower()
     mt_settings_panel_tab = (request.query_params.get("setup_tab") or "router").strip().lower()
+    mt_settings_tab = (request.query_params.get("settings_tab") or "general").strip().lower()
     mt_router_setup_tab = (request.query_params.get("router_setup_tab") or "manual").strip().lower()
     if mt_tab not in {"logs", "settings"}:
         mt_tab = "logs"
     if mt_settings_panel_tab not in {"router", "settings"}:
         mt_settings_panel_tab = "router"
+    if mt_settings_tab not in {"general", "drop_topics", "telegram"}:
+        mt_settings_tab = "general"
     if mt_router_setup_tab not in {"manual", "auto"}:
         mt_router_setup_tab = "manual"
 
@@ -8021,6 +8293,7 @@ async def logs_page(request: Request):
     mt_drop_topic_options = []
     mt_custom_drop_topics = []
     mt_router_drop_topics = []
+    mt_drop_topics_by_router = {}
     mt_active_router_label = ""
     mt_state = {}
     mt_setup_state = {}
@@ -8132,6 +8405,7 @@ async def logs_page(request: Request):
                 continue
             router_key = router_value.lower()
             mt_drop_counts_by_router[router_key] = mt_drop_counts_by_router.get(router_key, 0) + 1
+            mt_drop_topics_by_router.setdefault(router_value, []).append(drop_rule)
         for item in mt_router_tabs_map.values():
             item["drop_count"] = mt_drop_counts_by_router.get(str(item.get("value") or "").strip().lower(), 0)
         if mt_router and mt_router in mt_router_tabs_map and not int(mt_router_tabs_map[mt_router].get("count") or 0):
@@ -8147,7 +8421,7 @@ async def logs_page(request: Request):
             "mt_severity": mt_severity,
             "mt_topic": mt_topic,
             "mt_window": mt_window if mt_window != "24h" else "",
-            "mt_limit": mt_limit if mt_limit != 100 else "",
+            "mt_limit": mt_limit if mt_limit_explicit else "",
         }
         mt_base_query = urllib.parse.urlencode({key: value for key, value in mt_base_params.items() if value})
         mt_router_tab_params = {
@@ -8156,7 +8430,7 @@ async def logs_page(request: Request):
             "mt_severity": mt_severity,
             "mt_topic": mt_topic,
             "mt_window": mt_window if mt_window != "24h" else "",
-            "mt_limit": mt_limit if mt_limit != 100 else "",
+            "mt_limit": mt_limit if mt_limit_explicit else "",
         }
         mt_router_tab_query = urllib.parse.urlencode({key: value for key, value in mt_router_tab_params.items() if value})
         configured_drop_topics = {item.lower() for item in mt_drop_topics}
@@ -8259,6 +8533,8 @@ async def logs_page(request: Request):
                 "mikrotik_logs_page": mt_page,
                 "mikrotik_logs_pages": mt_pages,
                 "mikrotik_logs_limit": mt_limit,
+                "mikrotik_logs_limit_explicit": mt_limit_explicit,
+                "mikrotik_logs_default_limit": mt_default_limit,
                 "mikrotik_logs_query": mt_query,
                 "mikrotik_logs_router": mt_router,
                 "mikrotik_logs_severity": mt_severity,
@@ -8269,6 +8545,7 @@ async def logs_page(request: Request):
                 "mikrotik_logs_router_tabs": mt_router_tabs,
                 "mikrotik_logs_active_tab": mt_tab,
                 "mikrotik_logs_settings_panel_tab": mt_settings_panel_tab,
+                "mikrotik_logs_settings_tab": mt_settings_tab,
                 "mikrotik_logs_router_setup_tab": mt_router_setup_tab,
                 "mikrotik_logs_facets": mt_facets,
                 "mikrotik_logs_stats": mt_stats,
@@ -8277,6 +8554,7 @@ async def logs_page(request: Request):
                 "mikrotik_logs_custom_drop_topics": mt_custom_drop_topics,
                 "mikrotik_logs_drop_topics": mt_drop_topics,
                 "mikrotik_logs_router_drop_topics": mt_router_drop_topics,
+                "mikrotik_logs_drop_topics_by_router": mt_drop_topics_by_router,
                 "mikrotik_logs_active_router_label": mt_active_router_label,
                 "mikrotik_logs_state": mt_state,
                 "mikrotik_logs_setup_state": mt_setup_state,
@@ -8299,7 +8577,8 @@ async def mikrotik_logs_live(request: Request):
     mt_severity = (request.query_params.get("mt_severity") or "").strip().lower()
     mt_topic = (request.query_params.get("mt_topic") or "").strip()
     mt_window = (request.query_params.get("mt_window") or "24h").strip().lower()
-    mt_limit = _parse_table_limit(request.query_params.get("mt_limit"), default=100)
+    mt_limit_raw = request.query_params.get("mt_limit")
+    mt_limit = _parse_table_limit(mt_limit_raw, default=50 if not mt_router else 100)
     mt_page = _parse_table_page(request.query_params.get("mt_page"), default=1)
     if mt_window not in {"all", "24h", "7d", "30d"}:
         mt_window = "24h"
@@ -8421,6 +8700,11 @@ async def mikrotik_logs_settings_save(request: Request):
             "check_interval_hours": parse_int(form, "auto_setup_check_interval_hours", 24),
             "timeout_seconds": parse_int(form, "auto_setup_timeout_seconds", 8),
         },
+        "telegram": _mikrotik_logs_telegram_from_form(form, existing),
+        "drop_topics_cleanup": {
+            "auto_clear_enabled": parse_bool(form, "drop_topics_auto_clear_enabled"),
+            "interval_days": parse_int(form, "drop_topics_auto_clear_interval_days", 30),
+        },
     }
     settings = normalize_mikrotik_logs_settings(settings)
     save_settings("mikrotik_logs", settings)
@@ -8432,6 +8716,31 @@ async def mikrotik_logs_settings_save(request: Request):
         details=f"enabled={int(bool(settings.get('enabled')))};port={(settings.get('receiver') or {}).get('port')}",
     )
     return RedirectResponse(url="/logs/mikrotik?mt_tab=settings&setup_tab=settings&saved=1", status_code=303)
+
+
+@app.post("/logs/mikrotik/telegram/test", response_class=HTMLResponse)
+async def mikrotik_logs_telegram_test(request: Request):
+    if not _auth_request_has_permission(request, "logs.mikrotik.edit"):
+        return _auth_forbidden_response(request, "logs.mikrotik.edit")
+    form = await request.form()
+    existing = normalize_mikrotik_logs_settings(get_settings("mikrotik_logs", MIKROTIK_LOGS_DEFAULTS))
+    telegram = normalize_mikrotik_logs_settings({"telegram": _mikrotik_logs_telegram_from_form(form, existing)}).get("telegram", {})
+    try:
+        send_telegram(
+            telegram.get("bot_token", ""),
+            telegram.get("chat_id", ""),
+            "ThreeJ MikroTik Logs Telegram test message.",
+        )
+    except TelegramError as exc:
+        error = urllib.parse.quote(str(exc))
+        return RedirectResponse(
+            url=f"/logs/mikrotik?mt_tab=settings&setup_tab=settings&settings_tab=telegram&telegram_test_error={error}",
+            status_code=303,
+        )
+    return RedirectResponse(
+        url="/logs/mikrotik?mt_tab=settings&setup_tab=settings&settings_tab=telegram&telegram_test=sent",
+        status_code=303,
+    )
 
 
 @app.post("/logs/mikrotik/drop-topics", response_class=HTMLResponse)
@@ -8463,7 +8772,15 @@ async def mikrotik_logs_drop_topics(request: Request):
         resource=f"count={len(added)}",
         details=", ".join(added[:20]),
     )
-    return RedirectResponse(url="/logs/mikrotik?mt_tab=logs&drop_topics=1", status_code=303)
+    redirect_router = ""
+    for item in selected:
+        redirect_router = item.split("\t", 1)[0].strip()
+        if redirect_router:
+            break
+    redirect_url = "/logs/mikrotik?mt_tab=logs&drop_topics=1"
+    if redirect_router:
+        redirect_url += f"&mt_router={urllib.parse.quote(redirect_router)}"
+    return RedirectResponse(url=redirect_url, status_code=303)
 
 
 @app.post("/logs/mikrotik/drop-topics/remove", response_class=HTMLResponse)
@@ -8471,7 +8788,8 @@ async def mikrotik_logs_drop_topics_remove(request: Request):
     if not _auth_request_has_permission(request, "logs.mikrotik.edit"):
         return _auth_forbidden_response(request, "logs.mikrotik.edit")
     form = await request.form()
-    remove_topic = (form.get("topic") or "").strip().lower()
+    remove_topic_raw = (form.get("topic") or "").strip()
+    remove_topic = remove_topic_raw.lower()
     settings = normalize_mikrotik_logs_settings(get_settings("mikrotik_logs", MIKROTIK_LOGS_DEFAULTS))
     existing = [
         str(item or "").strip()
@@ -8482,7 +8800,92 @@ async def mikrotik_logs_drop_topics_remove(request: Request):
     save_settings("mikrotik_logs", normalize_mikrotik_logs_settings(settings))
     _clear_mikrotik_logs_summary_cache()
     _auth_log_event(request, "mikrotik_logs.drop_topic_removed", resource=remove_topic, details="")
-    return RedirectResponse(url="/logs/mikrotik?mt_tab=logs&drop_topics=1", status_code=303)
+    redirect_router = remove_topic_raw.split("\t", 1)[0].strip() if remove_topic_raw else ""
+    redirect_url = "/logs/mikrotik?mt_tab=logs&drop_topics=1"
+    if redirect_router:
+        redirect_url += f"&mt_router={urllib.parse.quote(redirect_router)}"
+    return RedirectResponse(url=redirect_url, status_code=303)
+
+
+@app.post("/logs/mikrotik/drop-topics/clear", response_class=HTMLResponse)
+async def mikrotik_logs_drop_topics_clear(request: Request):
+    if not _auth_request_has_permission(request, "logs.mikrotik.edit"):
+        return _auth_forbidden_response(request, "logs.mikrotik.edit")
+    settings = normalize_mikrotik_logs_settings(get_settings("mikrotik_logs", MIKROTIK_LOGS_DEFAULTS))
+    drop_topics = [
+        str(item or "").strip()
+        for item in (((settings.get("filters") or {}).get("drop_topics")) or [])
+        if str(item or "").strip() and str(item or "").count("\t") >= 2
+    ]
+    _queue_mikrotik_drop_logs_delete(drop_topics)
+    return RedirectResponse(url="/logs/mikrotik?mt_tab=settings&setup_tab=settings&hidden_logs_delete=1", status_code=303)
+
+
+def _queue_mikrotik_drop_logs_delete(drop_topics):
+    global _mikrotik_drop_logs_delete_running
+    with _mikrotik_drop_logs_delete_lock:
+        if _mikrotik_drop_logs_delete_running:
+            return False
+        _mikrotik_drop_logs_delete_running = True
+    _set_mikrotik_drop_logs_delete_progress(
+        status="queued",
+        percent=0,
+        stage="Queued",
+        total=0,
+        deleted=0,
+    )
+    threading.Thread(target=_mikrotik_drop_logs_delete_worker, args=(list(drop_topics or []),), daemon=True).start()
+    return True
+
+
+@app.get("/logs/mikrotik/drop-topics/hidden-count", response_class=JSONResponse)
+async def mikrotik_logs_drop_topics_hidden_count(request: Request):
+    if not _auth_request_has_permission(request, "logs.mikrotik.view"):
+        return _json_no_store({"ok": False, "error": "Permission denied.", "required_permission": "logs.mikrotik.view"}, status_code=403)
+    settings = normalize_mikrotik_logs_settings(get_settings("mikrotik_logs", MIKROTIK_LOGS_DEFAULTS))
+    drop_topics = [
+        str(item or "").strip()
+        for item in (((settings.get("filters") or {}).get("drop_topics")) or [])
+        if str(item or "").strip() and str(item or "").count("\t") >= 2
+    ]
+    count = count_mikrotik_logs_matching_drop_topics(drop_topics=drop_topics)
+    return _json_no_store(
+        {
+            "ok": True,
+            "hidden_count": count,
+            "drop_topic_count": len(drop_topics),
+            "delete_status": _mikrotik_drop_logs_delete_status_payload(),
+            "updated_at": utc_now_iso(),
+        }
+    )
+
+
+@app.post("/logs/mikrotik/drop-topics/delete-hidden", response_class=JSONResponse)
+async def mikrotik_logs_drop_topics_delete_hidden(request: Request):
+    if not _auth_request_has_permission(request, "logs.mikrotik.edit"):
+        return _json_no_store({"ok": False, "error": "Permission denied.", "required_permission": "logs.mikrotik.edit"}, status_code=403)
+    settings = normalize_mikrotik_logs_settings(get_settings("mikrotik_logs", MIKROTIK_LOGS_DEFAULTS))
+    drop_topics = [
+        str(item or "").strip()
+        for item in (((settings.get("filters") or {}).get("drop_topics")) or [])
+        if str(item or "").strip() and str(item or "").count("\t") >= 2
+    ]
+    queued = _queue_mikrotik_drop_logs_delete(drop_topics)
+    return _json_no_store(
+        {
+            "ok": True,
+            "queued": queued,
+            "status": _mikrotik_drop_logs_delete_status_payload(),
+            "updated_at": utc_now_iso(),
+        }
+    )
+
+
+@app.get("/logs/mikrotik/drop-topics/delete-status", response_class=JSONResponse)
+async def mikrotik_logs_drop_topics_delete_status(request: Request):
+    if not _auth_request_has_permission(request, "logs.mikrotik.view"):
+        return _json_no_store({"ok": False, "error": "Permission denied.", "required_permission": "logs.mikrotik.view"}, status_code=403)
+    return _json_no_store({"ok": True, "status": _mikrotik_drop_logs_delete_status_payload(), "updated_at": utc_now_iso()})
 
 
 @app.post("/logs/mikrotik/auto-setup", response_class=HTMLResponse)
@@ -14802,18 +15205,7 @@ def _accounts_missing_parse_bulk_pppoes(raw_value):
 
 
 def _accounts_missing_insert_system_audit(action, resource="", details=""):
-    try:
-        insert_auth_audit_log(
-            timestamp=utc_now_iso(),
-            user_id=None,
-            username="system",
-            action=(action or "").strip()[:120],
-            resource=(resource or "").strip()[:255],
-            details=(details or "").strip()[:2000],
-            ip_address="",
-        )
-    except Exception:
-        pass
+    _insert_system_audit(action, resource=resource, details=details)
 
 
 def _set_accounts_missing_purge_progress(pppoe, status="running", percent=None, stage="", error=""):
@@ -23388,6 +23780,8 @@ async def system_resources(details: int = 0):
         "disk_pct": round(_disk_percent(), 1),
         "uptime_seconds": _uptime_seconds(),
         "accounts_missing_purge": _accounts_missing_purge_status_payload(),
+        "mikrotik_drop_logs_delete": _mikrotik_drop_logs_delete_status_payload(),
+        "delete_progress": _system_delete_progress_payload(),
     }
     include_details = False
     try:
@@ -23427,6 +23821,8 @@ async def system_background_tasks():
     return JSONResponse(
         {
             "accounts_missing_purge": _accounts_missing_purge_status_payload(),
+            "mikrotik_drop_logs_delete": _mikrotik_drop_logs_delete_status_payload(),
+            "delete_progress": _system_delete_progress_payload(),
             "captured_at": utc_now_iso(),
         },
         headers=NO_STORE_HEADERS,

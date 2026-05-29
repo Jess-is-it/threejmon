@@ -505,7 +505,7 @@
         const res = await fetch("/system/background-tasks", { headers: { "Accept": "application/json" }, cache: "no-store" });
         if (!res.ok) return null;
         const data = await res.json();
-        const purge = data.accounts_missing_purge || {};
+        const purge = data.delete_progress || data.accounts_missing_purge || data.mikrotik_drop_logs_delete || {};
         renderDeleteProgress(purge);
         return purge;
       } catch (err) {
@@ -545,7 +545,7 @@
         }
         if (diskEl) diskEl.textContent = `DISK ${data.disk_pct ?? 0}%`;
         if (uptimeEl) uptimeEl.textContent = `UPTIME ${formatUptime(data.uptime_seconds ?? 0)}`;
-        renderDeleteProgress(data.accounts_missing_purge || {});
+        renderDeleteProgress(data.delete_progress || data.accounts_missing_purge || data.mikrotik_drop_logs_delete || {});
       } catch (err) {
         // ignore
       }

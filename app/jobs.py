@@ -20,6 +20,7 @@ from .db import (
     delete_pppoe_usage_samples_older_than,
     delete_usage_modem_reboot_history_older_than,
     delete_mikrotik_logs_older_than,
+    delete_mikrotik_logs_matching_drop_topics,
     get_pppoe_usage_window_stats_since,
     insert_mikrotik_logs,
     insert_pppoe_usage_sample,
@@ -144,10 +145,12 @@ def _normalize_mikrotik_logs_settings(settings):
         "storage": dict(MIKROTIK_LOGS_DEFAULTS.get("storage") or {}),
         "filters": dict(MIKROTIK_LOGS_DEFAULTS.get("filters") or {}),
         "auto_setup": dict(MIKROTIK_LOGS_DEFAULTS.get("auto_setup") or {}),
+        "telegram": dict(MIKROTIK_LOGS_DEFAULTS.get("telegram") or {}),
+        "drop_topics_cleanup": dict(MIKROTIK_LOGS_DEFAULTS.get("drop_topics_cleanup") or {}),
     }
     if isinstance(settings, dict):
         cfg["enabled"] = bool(settings.get("enabled", cfg["enabled"]))
-        for section in ("receiver", "storage", "filters", "auto_setup"):
+        for section in ("receiver", "storage", "filters", "auto_setup", "telegram", "drop_topics_cleanup"):
             if isinstance(settings.get(section), dict):
                 cfg[section].update(settings.get(section) or {})
     receiver = cfg["receiver"]
@@ -187,6 +190,46 @@ def _normalize_mikrotik_logs_settings(settings):
             auto_setup[key] = max(low, min(int(auto_setup.get(key) or default), high))
         except Exception:
             auto_setup[key] = default
+    telegram = cfg["telegram"]
+    telegram["enabled"] = bool(telegram.get("enabled", False))
+    telegram["bot_token"] = (telegram.get("bot_token") or "").strip()
+    telegram["chat_id"] = (telegram.get("chat_id") or "").strip()
+    if isinstance(telegram.get("report_severities"), list):
+        report_severities = [
+            str(item or "").strip().lower()
+            for item in telegram.get("report_severities")
+            if str(item or "").strip().lower() in _SYSLOG_SEVERITY_RANK
+        ]
+    else:
+        report_severities = []
+    telegram["report_severities"] = sorted(set(report_severities), key=lambda item: _SYSLOG_SEVERITY_RANK.get(item, 0))
+    telegram["keyword_enabled"] = bool(telegram.get("keyword_enabled", False))
+    if isinstance(telegram.get("keywords"), list):
+        keywords = [str(item or "").strip() for item in telegram.get("keywords") if str(item or "").strip()]
+    else:
+        keywords = [line.strip() for line in str(telegram.get("keywords") or "").splitlines() if line.strip()]
+    seen_keywords = set()
+    cleaned_keywords = []
+    for keyword in keywords:
+        key = keyword.lower()
+        if key in seen_keywords:
+            continue
+        seen_keywords.add(key)
+        cleaned_keywords.append(keyword[:120])
+    telegram["keywords"] = cleaned_keywords
+    try:
+        telegram["cooldown_seconds"] = max(5, min(int(telegram.get("cooldown_seconds") or 300), 86400))
+    except Exception:
+        telegram["cooldown_seconds"] = 300
+    drop_topics_cleanup = cfg["drop_topics_cleanup"]
+    drop_topics_cleanup["auto_clear_enabled"] = bool(drop_topics_cleanup.get("auto_clear_enabled", False))
+    try:
+        drop_topics_cleanup["interval_days"] = max(
+            1,
+            min(int(drop_topics_cleanup.get("interval_days") or 30), 3650),
+        )
+    except Exception:
+        drop_topics_cleanup["interval_days"] = 30
     return cfg
 
 
@@ -357,6 +400,73 @@ def _parse_iso_utc(value):
         return datetime.fromisoformat(raw)
     except Exception:
         return None
+
+
+def _mikrotik_log_telegram_match(row, telegram_cfg):
+    if not isinstance(row, dict) or not isinstance(telegram_cfg, dict):
+        return []
+    if not telegram_cfg.get("enabled"):
+        return []
+    if not (telegram_cfg.get("bot_token") or "").strip() or not (telegram_cfg.get("chat_id") or "").strip():
+        return []
+    matches = []
+    severity = (row.get("severity") or "info").strip().lower()
+    report_severities = {
+        str(item or "").strip().lower()
+        for item in (telegram_cfg.get("report_severities") or [])
+        if str(item or "").strip()
+    }
+    if severity in report_severities:
+        matches.append(f"severity:{severity}")
+
+    if bool(telegram_cfg.get("keyword_enabled")):
+        blob = " ".join(
+            [
+                str(row.get("router_name") or ""),
+                str(row.get("router_id") or ""),
+                str(row.get("source_ip") or ""),
+                str(row.get("severity") or ""),
+                str(row.get("topics") or ""),
+                str(row.get("message") or ""),
+                str(row.get("raw_message") or ""),
+            ]
+        ).lower()
+        for keyword in telegram_cfg.get("keywords") or []:
+            key = str(keyword or "").strip()
+            if key and key.lower() in blob:
+                matches.append(f"keyword:{key}")
+    return matches
+
+
+def _build_mikrotik_log_telegram_message(row, matches):
+    timestamp = format_ts_ph(row.get("timestamp")) or format_ts_ph(row.get("received_at")) or "n/a"
+    message = str(row.get("message") or row.get("raw_message") or "").strip()
+    if len(message) > 900:
+        message = message[:897] + "..."
+    return "\n".join(
+        [
+            "MikroTik Log Alert",
+            f"Time: {timestamp}",
+            f"Router: {row.get('router_name') or row.get('router_id') or row.get('source_ip') or 'n/a'}",
+            f"Severity: {(row.get('severity') or 'info').upper()}",
+            f"Topics: {row.get('topics') or 'n/a'}",
+            f"Matched: {', '.join(matches or [])}",
+            "",
+            message or "No message.",
+        ]
+    )
+
+
+def _mikrotik_log_telegram_cooldown_key(row, matches):
+    return "\t".join(
+        [
+            str(row.get("router_id") or row.get("source_ip") or ""),
+            str(row.get("severity") or ""),
+            str(row.get("topics") or ""),
+            str(row.get("message") or row.get("raw_message") or "")[:300],
+            ",".join(matches or []),
+        ]
+    ).lower()
 
 
 def _iso_utc(dt):
@@ -2850,8 +2960,12 @@ class JobsManager:
         last_settings_check = 0.0
         last_prune = 0.0
         last_setup_check = 0.0
+        last_drop_topics_cleanup_check = 0.0
         cfg = _normalize_mikrotik_logs_settings(get_settings("mikrotik_logs", MIKROTIK_LOGS_DEFAULTS))
         router_map = _mikrotik_logs_router_map()
+        telegram_cooldowns = {}
+        telegram_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="mikrotik-log-telegram")
+        telegram_state_lock = threading.Lock()
 
         def _close_socket():
             nonlocal sock, bound_addr
@@ -2883,6 +2997,118 @@ class JobsManager:
             pending = []
             last_flush = time_module.monotonic()
 
+        def _maybe_auto_delete_hidden_drop_logs():
+            nonlocal cfg, last_drop_topics_cleanup_check
+            if time_module.monotonic() - last_drop_topics_cleanup_check < 3600:
+                return
+            last_drop_topics_cleanup_check = time_module.monotonic()
+            cleanup_cfg = cfg.get("drop_topics_cleanup") if isinstance(cfg.get("drop_topics_cleanup"), dict) else {}
+            if not bool(cleanup_cfg.get("auto_clear_enabled")):
+                return
+            interval_days = max(int(cleanup_cfg.get("interval_days") or 30), 1)
+            state = get_state("mikrotik_logs_state", {})
+            if not isinstance(state, dict):
+                state = {}
+            last_deleted_raw = (
+                state.get("drop_topics_hidden_logs_last_deleted_at")
+                or state.get("drop_topics_hidden_logs_auto_delete_started_at")
+                or ""
+            )
+            try:
+                last_deleted_dt = datetime.fromisoformat(str(last_deleted_raw).replace("Z", ""))
+            except Exception:
+                last_deleted_dt = None
+            if not last_deleted_dt:
+                state["drop_topics_hidden_logs_auto_delete_started_at"] = utc_now_iso()
+                save_state("mikrotik_logs_state", state)
+                return
+            if datetime.utcnow() - last_deleted_dt < timedelta(days=interval_days):
+                return
+            filters = cfg.get("filters") if isinstance(cfg.get("filters"), dict) else {}
+            existing_drop_topics = [
+                str(item or "").strip()
+                for item in (filters.get("drop_topics") or [])
+                if str(item or "").strip()
+            ]
+            if not existing_drop_topics:
+                state["drop_topics_hidden_logs_last_deleted_at"] = utc_now_iso()
+                state["drop_topics_hidden_logs_last_deleted_count"] = 0
+                state["drop_topics_hidden_logs_last_deleted_reason"] = "automatic"
+                save_state("mikrotik_logs_state", state)
+                return
+            result = delete_mikrotik_logs_matching_drop_topics(
+                drop_topics=existing_drop_topics,
+                batch_size=25000,
+            )
+            deleted_count = int((result or {}).get("deleted") or 0)
+            state["drop_topics_hidden_logs_last_deleted_at"] = utc_now_iso()
+            state["drop_topics_hidden_logs_last_deleted_count"] = deleted_count
+            state["drop_topics_hidden_logs_last_deleted_reason"] = "automatic"
+            save_state("mikrotik_logs_state", state)
+            _safe_insert_system_audit(
+                "mikrotik_logs.drop_topics_hidden_logs_auto_deleted",
+                resource=f"deleted={deleted_count}",
+                details=f"Auto-deleted log rows hidden by drop-topic rules after {interval_days} day interval.",
+            )
+
+        def _send_telegram_alert(row, matches):
+            telegram_cfg = cfg.get("telegram") if isinstance(cfg.get("telegram"), dict) else {}
+            token = (telegram_cfg.get("bot_token") or "").strip()
+            chat_id = (telegram_cfg.get("chat_id") or "").strip()
+            if not token or not chat_id:
+                return
+            message = _build_mikrotik_log_telegram_message(row, matches)
+
+            def _worker():
+                try:
+                    send_telegram(token, chat_id, message, timeout=10)
+                    with telegram_state_lock:
+                        state = get_state("mikrotik_logs_state", {})
+                        if not isinstance(state, dict):
+                            state = {}
+                        state["telegram_last_alert_at"] = utc_now_iso()
+                        state["telegram_last_alert_router"] = row.get("router_name") or row.get("router_id") or row.get("source_ip") or ""
+                        state["telegram_last_alert_severity"] = row.get("severity") or ""
+                        state["telegram_last_error"] = ""
+                        save_state("mikrotik_logs_state", state)
+                except TelegramError as exc:
+                    with telegram_state_lock:
+                        state = get_state("mikrotik_logs_state", {})
+                        if not isinstance(state, dict):
+                            state = {}
+                        state["telegram_last_error"] = str(exc)
+                        state["telegram_last_error_at"] = utc_now_iso()
+                        save_state("mikrotik_logs_state", state)
+                except Exception as exc:
+                    with telegram_state_lock:
+                        state = get_state("mikrotik_logs_state", {})
+                        if not isinstance(state, dict):
+                            state = {}
+                        state["telegram_last_error"] = str(exc)
+                        state["telegram_last_error_at"] = utc_now_iso()
+                        save_state("mikrotik_logs_state", state)
+
+            telegram_executor.submit(_worker)
+
+        def _maybe_send_telegram_alert(row):
+            telegram_cfg = cfg.get("telegram") if isinstance(cfg.get("telegram"), dict) else {}
+            matches = _mikrotik_log_telegram_match(row, telegram_cfg)
+            if not matches:
+                return
+            cooldown_seconds = max(int(telegram_cfg.get("cooldown_seconds") or 300), 5)
+            now = time_module.monotonic()
+            key = _mikrotik_log_telegram_cooldown_key(row, matches)
+            last_sent = float(telegram_cooldowns.get(key) or 0.0)
+            if now - last_sent < cooldown_seconds:
+                return
+            telegram_cooldowns[key] = now
+            if len(telegram_cooldowns) > 5000:
+                cutoff = now - max(cooldown_seconds * 2, 600)
+                for old_key, old_value in list(telegram_cooldowns.items()):
+                    if float(old_value or 0.0) < cutoff:
+                        telegram_cooldowns.pop(old_key, None)
+            _send_telegram_alert(row, matches)
+
         while not self.stop_event.is_set():
             loop_cpu_start = time_module.thread_time()
             try:
@@ -2891,6 +3117,7 @@ class JobsManager:
                     cfg = _normalize_mikrotik_logs_settings(get_settings("mikrotik_logs", MIKROTIK_LOGS_DEFAULTS))
                     router_map = _mikrotik_logs_router_map()
                     last_settings_check = now_mono
+                _maybe_auto_delete_hidden_drop_logs()
 
                 if not cfg.get("enabled"):
                     _flush()
@@ -2958,6 +3185,7 @@ class JobsManager:
                             and not dropped_exact
                         ):
                             pending.append(row)
+                            _maybe_send_telegram_alert(row)
 
                 storage = cfg.get("storage") or {}
                 batch_size = int(storage.get("batch_size") or 100)
@@ -2986,6 +3214,10 @@ class JobsManager:
 
         try:
             _flush()
+        except Exception:
+            pass
+        try:
+            telegram_executor.shutdown(wait=False, cancel_futures=True)
         except Exception:
             pass
         _close_socket()
