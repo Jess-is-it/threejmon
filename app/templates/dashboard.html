@@ -22,6 +22,9 @@
 
 <style>
   .dashboard-kpi-card{position:relative;overflow:hidden;border:1px solid rgba(128,128,128,.18);border-radius:14px}
+  .dashboard-kpi-card[data-kpi-href]{cursor:pointer;transition:border-color .18s ease,box-shadow .18s ease,transform .18s ease}
+  .dashboard-kpi-card[data-kpi-href]:hover,
+  .dashboard-kpi-card[data-kpi-href]:focus-visible{border-color:var(--kpi-accent,rgba(32,107,196,.42));box-shadow:0 .55rem 1.35rem rgba(15,31,42,.1);outline:0;transform:translateY(-1px)}
   .dashboard-kpi-card .card-body{padding:14px}
   .dashboard-kpi-theme-azure{--kpi-accent:#4299e1;--kpi-accent-bg:rgba(66,153,225,.16)}
   .dashboard-kpi-theme-blue{--kpi-accent:#206bc4;--kpi-accent-bg:rgba(32,107,196,.16)}
@@ -107,8 +110,9 @@
     {% set state_label = item.get('state_label') %}
     {% set badge_label = item.get('badge_label') or ((wan.get('up', 0)|string ~ '/' ~ wan.get('configured', 0)|string) if label == 'WAN Ping' else state_label) %}
     {% set state_theme = item.get('tone') or ('green' if (state_label|string|lower) == 'ok' else theme) %}
+    {% set kpi_href = '/settings/system?tab=routers&routers_tab=mikrotik-routers' if label == 'MikroTik Routers' else '' %}
     <div class="col-md-6 col-xl-4">
-      <div class="card dashboard-kpi-card dashboard-kpi-theme-{{ theme }}" data-dashboard-kpi-card data-kpi-label="{{ label }}">
+      <div class="card dashboard-kpi-card dashboard-kpi-theme-{{ theme }}" data-dashboard-kpi-card data-kpi-label="{{ label }}"{% if kpi_href %} data-kpi-href="{{ kpi_href }}" role="link" tabindex="0" aria-label="Open MikroTik Routers in System Settings"{% endif %}>
         <div class="card-body">
           <div class="d-flex justify-content-between align-items-start mb-2">
             <div class="d-flex align-items-center gap-2">
@@ -566,6 +570,19 @@
       } catch (_error) {
       }
     };
+    kpiCards.forEach((card) => {
+      const href = String(card.getAttribute("data-kpi-href") || "").trim();
+      if (!href) return;
+      const openHref = () => {
+        window.location.href = href;
+      };
+      card.addEventListener("click", openHref);
+      card.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        openHref();
+      });
+    });
 
     const SYSTEM_MODE_KEY = "threej_dashboard_system_mode_enabled";
     const readSystemMode = () => {

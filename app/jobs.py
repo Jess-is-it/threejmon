@@ -115,6 +115,7 @@ _SYSLOG_RFC3164_RE = re.compile(
     r"^(?P<month>[A-Z][a-z]{2})\s+(?P<day>\d{1,2})\s+(?P<time>\d{2}:\d{2}:\d{2})\s+(?P<host>\S+)\s+(?P<msg>.*)$",
     re.DOTALL,
 )
+_MIKROTIK_LOG_USER_RE = re.compile(r"\buser\s+(?P<user>[^\s:;,]+)", re.IGNORECASE)
 _SYSLOG_SEVERITIES = {
     0: "emergency",
     1: "alert",
@@ -221,6 +222,11 @@ def _normalize_mikrotik_logs_settings(settings):
         telegram["cooldown_seconds"] = max(5, min(int(telegram.get("cooldown_seconds") or 300), 86400))
     except Exception:
         telegram["cooldown_seconds"] = 300
+    telegram["per_user_summary_enabled"] = bool(telegram.get("per_user_summary_enabled", True))
+    try:
+        telegram["per_user_summary_delay_hours"] = max(1, min(int(telegram.get("per_user_summary_delay_hours") or 4), 168))
+    except Exception:
+        telegram["per_user_summary_delay_hours"] = 4
     drop_topics_cleanup = cfg["drop_topics_cleanup"]
     drop_topics_cleanup["auto_clear_enabled"] = bool(drop_topics_cleanup.get("auto_clear_enabled", False))
     try:
@@ -453,6 +459,38 @@ def _build_mikrotik_log_telegram_message(row, matches):
             f"Matched: {', '.join(matches or [])}",
             "",
             message or "No message.",
+        ]
+    )
+
+
+def _mikrotik_log_username(row):
+    text = " ".join([str(row.get("message") or ""), str(row.get("raw_message") or "")])
+    match = _MIKROTIK_LOG_USER_RE.search(text)
+    if not match:
+        return ""
+    return (match.group("user") or "").strip()
+
+
+def _build_mikrotik_log_user_summary_message(row, matches, username, count, first_seen_iso, last_seen_iso, delay_hours):
+    router = row.get("router_name") or row.get("router_id") or row.get("source_ip") or "n/a"
+    topics = row.get("topics") or "n/a"
+    first_seen = format_ts_ph(first_seen_iso) or "n/a"
+    last_seen = format_ts_ph(last_seen_iso) or "n/a"
+    message = str(row.get("message") or row.get("raw_message") or "").strip()
+    if len(message) > 500:
+        message = message[:497] + "..."
+    return "\n".join(
+        [
+            "MikroTik Log Summary",
+            f"Router: {router}",
+            f"User: {username}",
+            f"Total: {int(count or 0)} matching log(s)",
+            f"Window: {first_seen} to {last_seen}",
+            f"Delay: {delay_hours} hour(s)",
+            f"Topics: {topics}",
+            f"Matched: {', '.join(matches or [])}",
+            "",
+            f"Latest: {message or 'No message.'}",
         ]
     )
 
@@ -2964,6 +3002,7 @@ class JobsManager:
         cfg = _normalize_mikrotik_logs_settings(get_settings("mikrotik_logs", MIKROTIK_LOGS_DEFAULTS))
         router_map = _mikrotik_logs_router_map()
         telegram_cooldowns = {}
+        telegram_user_summaries = {}
         telegram_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="mikrotik-log-telegram")
         telegram_state_lock = threading.Lock()
 
@@ -3058,7 +3097,16 @@ class JobsManager:
             if not token or not chat_id:
                 return
             message = _build_mikrotik_log_telegram_message(row, matches)
+            _send_telegram_message(message, row=row)
 
+        def _send_telegram_message(message, row=None):
+            telegram_cfg = cfg.get("telegram") if isinstance(cfg.get("telegram"), dict) else {}
+            if not telegram_cfg.get("enabled"):
+                return
+            token = (telegram_cfg.get("bot_token") or "").strip()
+            chat_id = (telegram_cfg.get("chat_id") or "").strip()
+            if not token or not chat_id or not (message or "").strip():
+                return
             def _worker():
                 try:
                     send_telegram(token, chat_id, message, timeout=10)
@@ -3067,8 +3115,9 @@ class JobsManager:
                         if not isinstance(state, dict):
                             state = {}
                         state["telegram_last_alert_at"] = utc_now_iso()
-                        state["telegram_last_alert_router"] = row.get("router_name") or row.get("router_id") or row.get("source_ip") or ""
-                        state["telegram_last_alert_severity"] = row.get("severity") or ""
+                        if isinstance(row, dict):
+                            state["telegram_last_alert_router"] = row.get("router_name") or row.get("router_id") or row.get("source_ip") or ""
+                            state["telegram_last_alert_severity"] = row.get("severity") or ""
                         state["telegram_last_error"] = ""
                         save_state("mikrotik_logs_state", state)
                 except TelegramError as exc:
@@ -3090,10 +3139,63 @@ class JobsManager:
 
             telegram_executor.submit(_worker)
 
+        def _maybe_flush_user_summaries(force=False):
+            telegram_cfg = cfg.get("telegram") if isinstance(cfg.get("telegram"), dict) else {}
+            if not telegram_cfg.get("enabled"):
+                telegram_user_summaries.clear()
+                return
+            delay_hours = max(int(telegram_cfg.get("per_user_summary_delay_hours") or 4), 1)
+            delay_seconds = delay_hours * 3600
+            now = time_module.monotonic()
+            for key, summary in list(telegram_user_summaries.items()):
+                due_at = float(summary.get("due_at") or 0.0)
+                if not force and now < due_at:
+                    continue
+                row = summary.get("last_row") if isinstance(summary.get("last_row"), dict) else {}
+                message = _build_mikrotik_log_user_summary_message(
+                    row,
+                    summary.get("matches") or [],
+                    summary.get("username") or "unknown",
+                    int(summary.get("count") or 0),
+                    summary.get("first_seen_iso") or "",
+                    summary.get("last_seen_iso") or "",
+                    delay_hours,
+                )
+                _send_telegram_message(message, row=row)
+                telegram_user_summaries.pop(key, None)
+
+        def _queue_user_summary(row, matches, username):
+            telegram_cfg = cfg.get("telegram") if isinstance(cfg.get("telegram"), dict) else {}
+            delay_hours = max(int(telegram_cfg.get("per_user_summary_delay_hours") or 4), 1)
+            now = time_module.monotonic()
+            router_key = str(row.get("router_id") or row.get("source_ip") or "").strip().lower()
+            rule_key = ",".join(matches or [])
+            key = "\t".join([router_key, rule_key.lower(), username.lower()])
+            now_iso = row.get("received_at") or utc_now_iso()
+            existing = telegram_user_summaries.get(key)
+            if not existing:
+                telegram_user_summaries[key] = {
+                    "username": username,
+                    "matches": list(matches or []),
+                    "count": 1,
+                    "first_seen_iso": now_iso,
+                    "last_seen_iso": now_iso,
+                    "last_row": dict(row),
+                    "due_at": now + (delay_hours * 3600),
+                }
+                return
+            existing["count"] = int(existing.get("count") or 0) + 1
+            existing["last_seen_iso"] = now_iso
+            existing["last_row"] = dict(row)
+
         def _maybe_send_telegram_alert(row):
             telegram_cfg = cfg.get("telegram") if isinstance(cfg.get("telegram"), dict) else {}
             matches = _mikrotik_log_telegram_match(row, telegram_cfg)
             if not matches:
+                return
+            username = _mikrotik_log_username(row)
+            if bool(telegram_cfg.get("per_user_summary_enabled")) and username:
+                _queue_user_summary(row, matches, username)
                 return
             cooldown_seconds = max(int(telegram_cfg.get("cooldown_seconds") or 300), 5)
             now = time_module.monotonic()
@@ -3118,6 +3220,7 @@ class JobsManager:
                     router_map = _mikrotik_logs_router_map()
                     last_settings_check = now_mono
                 _maybe_auto_delete_hidden_drop_logs()
+                _maybe_flush_user_summaries()
 
                 if not cfg.get("enabled"):
                     _flush()
@@ -3214,6 +3317,10 @@ class JobsManager:
 
         try:
             _flush()
+        except Exception:
+            pass
+        try:
+            _maybe_flush_user_summaries(force=True)
         except Exception:
             pass
         try:

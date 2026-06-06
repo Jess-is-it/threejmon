@@ -851,6 +851,21 @@
                       <div class="form-hint">Matches are case-insensitive and check router name, topic, message, and raw log text.</div>
                     </div>
                     <div class="col-md-4">
+                      <div class="card mb-3">
+                        <div class="card-body">
+                          <label class="form-check form-switch mb-2">
+                            <input class="form-check-input" type="checkbox" name="telegram_per_user_summary_enabled" {% if mikrotik_logs_settings.telegram.per_user_summary_enabled %}checked{% endif %} {% if not can_edit_mikrotik_logs %}disabled{% endif %} />
+                            <span class="form-check-label">Group user-based alerts per account</span>
+                          </label>
+                          <div class="form-hint mb-3">For logs like <span class="font-monospace">user LannaP1N2S3PelagiaT authentication failed</span>, the system extracts the username and tracks each user separately. Other users will not be blocked by Lanna's summary window.</div>
+                          <label class="form-label">Send Summary After</label>
+                          <div class="input-group">
+                            <input class="form-control" type="number" min="1" max="168" name="telegram_per_user_summary_delay_hours" value="{{ mikrotik_logs_settings.telegram.per_user_summary_delay_hours }}" {% if not can_edit_mikrotik_logs %}readonly{% endif %} />
+                            <span class="input-group-text">hours</span>
+                          </div>
+                          <div class="form-hint">Default is 4 hours. During this window, matching logs are counted silently and sent as one summary per router + matched rule + user.</div>
+                        </div>
+                      </div>
                       <label class="form-label">Repeat Alert Cooldown</label>
                       <div class="input-group">
                         <input class="form-control" type="number" min="5" max="86400" name="telegram_cooldown_seconds" value="{{ mikrotik_logs_settings.telegram.cooldown_seconds }}" {% if not can_edit_mikrotik_logs %}readonly{% endif %} />

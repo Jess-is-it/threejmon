@@ -4748,6 +4748,11 @@ def normalize_mikrotik_logs_settings(settings):
         telegram["cooldown_seconds"] = max(5, min(int(telegram.get("cooldown_seconds") or 300), 86400))
     except Exception:
         telegram["cooldown_seconds"] = 300
+    telegram["per_user_summary_enabled"] = bool(telegram.get("per_user_summary_enabled", True))
+    try:
+        telegram["per_user_summary_delay_hours"] = max(1, min(int(telegram.get("per_user_summary_delay_hours") or 4), 168))
+    except Exception:
+        telegram["per_user_summary_delay_hours"] = 4
 
     drop_topics_cleanup = cfg.setdefault("drop_topics_cleanup", {})
     drop_topics_cleanup["auto_clear_enabled"] = bool(drop_topics_cleanup.get("auto_clear_enabled", False))
@@ -4783,6 +4788,8 @@ def _mikrotik_logs_telegram_from_form(form, existing=None):
         "keyword_enabled": parse_bool(form, "telegram_keyword_enabled"),
         "keywords": parse_lines(form.get("telegram_keywords")),
         "cooldown_seconds": parse_int(form, "telegram_cooldown_seconds", 300),
+        "per_user_summary_enabled": parse_bool(form, "telegram_per_user_summary_enabled"),
+        "per_user_summary_delay_hours": parse_int(form, "telegram_per_user_summary_delay_hours", 4),
     }
 
 
@@ -5864,6 +5871,7 @@ def detect_routed_wan_autofill(pulsewatch_settings, wan_rows, probe_public=True)
             int(core.get("port", 8728)),
             core.get("username", ""),
             core.get("password", ""),
+            timeout=3,
         )
         try:
             client.connect()
@@ -6098,6 +6106,7 @@ def fetch_mikrotik_lists(cores):
             int(core.get("port", 8728)),
             core.get("username", ""),
             core.get("password", ""),
+            timeout=3,
         )
         try:
             client.connect()
@@ -6136,6 +6145,7 @@ def fetch_mikrotik_interfaces(cores):
             int(core.get("port", 8728)),
             core.get("username", ""),
             core.get("password", ""),
+            timeout=3,
         )
         try:
             client.connect()
@@ -7541,6 +7551,189 @@ def _dashboard_mikrotik_router_summary():
             "state_label": "Error",
             "tone": "red",
             "rows": [],
+        }
+
+
+def _system_mikrotik_router_health_payload(wan_settings_data=None, pulse_settings_data=None):
+    try:
+        if wan_settings_data is None:
+            wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+        if pulse_settings_data is None:
+            pulse_settings_data = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+        routers = wan_settings_data.get("pppoe_routers") if isinstance(wan_settings_data.get("pppoe_routers"), list) else []
+        cores = (((pulse_settings_data.get("pulsewatch") or {}).get("mikrotik") or {}).get("cores") or [])
+        health_state = get_state("mikrotik_router_health_state", {})
+        health_rows = health_state.get("rows") if isinstance(health_state, dict) and isinstance(health_state.get("rows"), list) else []
+        health_by_key = {}
+        for row in health_rows:
+            if not isinstance(row, dict):
+                continue
+            key = (row.get("key") or f"{row.get('kind') or ''}:{row.get('id') or ''}").strip()
+            if key:
+                health_by_key[key] = row
+
+        def _tone_for_status(status):
+            if status == "up":
+                return "green"
+            if status == "down":
+                return "red"
+            return "secondary"
+
+        def _label_for_status(status):
+            if status == "up":
+                return "Up"
+            if status == "down":
+                return "Down"
+            return "Unknown"
+
+        def _build_row(kind, router_id, label, host, port, router=None):
+            router = router if isinstance(router, dict) else {}
+            router_id = (router_id or "").strip()
+            if not router_id:
+                return None
+            key = f"{kind}:{router_id}"
+            health = health_by_key.get(key) or {}
+            status = (health.get("status") or "").strip().lower()
+            if status not in {"up", "down"}:
+                status = "unknown"
+            host = (host or health.get("host") or "").strip()
+            error = (health.get("error") or "").strip()
+            if not host:
+                status = "down"
+                error = error or "Router host is not configured."
+            response_ms = health.get("response_ms")
+            try:
+                response_ms_label = f"{float(response_ms):.1f} ms" if response_ms is not None else "n/a"
+            except Exception:
+                response_ms_label = "n/a"
+            last_check_at = health.get("last_check_at") or ""
+            return {
+                "key": key,
+                "kind": kind,
+                "id": router_id,
+                "label": (label or router_id).strip(),
+                "host": host,
+                "port": port or router.get("port") or 8728,
+                "status": status,
+                "status_label": _label_for_status(status),
+                "tone": _tone_for_status(status),
+                "connected": health.get("connected") is True,
+                "response_ms": response_ms,
+                "response_ms_label": response_ms_label,
+                "last_check_at": last_check_at,
+                "last_check_at_ph": format_ts_ph(last_check_at) if last_check_at else "Waiting for first check",
+                "error": error,
+            }
+
+        core_rows = []
+        for core in cores:
+            if not isinstance(core, dict):
+                continue
+            core_id = (core.get("id") or "").strip()
+            if not core_id:
+                continue
+            row = _build_row(
+                "core",
+                core_id,
+                core.get("label") or core_id,
+                core.get("host"),
+                core.get("port") or 8728,
+                core,
+            )
+            if row:
+                core_rows.append(row)
+
+        rows = []
+        for router in routers:
+            if not isinstance(router, dict):
+                continue
+            router_id = (router.get("id") or "").strip()
+            if not router_id:
+                continue
+            row = _build_row(
+                "pppoe",
+                router_id,
+                router.get("name") or router_id,
+                router.get("host"),
+                router.get("port") or 8728,
+                router,
+            )
+            if row:
+                rows.append(row)
+
+        def _counts(items):
+            return {
+                "total": len(items),
+                "up": sum(1 for row in items if row.get("status") == "up"),
+                "down": sum(1 for row in items if row.get("status") == "down"),
+                "unknown": sum(1 for row in items if row.get("status") == "unknown"),
+            }
+
+        pppoe_counts = _counts(rows)
+        core_counts = _counts(core_rows)
+        up = pppoe_counts["up"]
+        down = pppoe_counts["down"]
+        unknown = pppoe_counts["unknown"]
+        if down:
+            state_label = "Routers down"
+            tone = "red"
+        elif unknown:
+            state_label = "Waiting for checks"
+            tone = "secondary"
+        elif rows:
+            state_label = "All routers up"
+            tone = "green"
+        else:
+            state_label = "No routers"
+            tone = "secondary"
+        rows_by_id = {row.get("id"): row for row in rows if row.get("id")}
+        return {
+            "total": len(rows),
+            "up": up,
+            "down": down,
+            "unknown": unknown,
+            "state_label": state_label,
+            "tone": tone,
+            "core_total": core_counts["total"],
+            "core_up": core_counts["up"],
+            "core_down": core_counts["down"],
+            "core_unknown": core_counts["unknown"],
+            "core_state_label": (
+                "Cores down"
+                if core_counts["down"]
+                else "Waiting for checks"
+                if core_counts["unknown"]
+                else "All cores up"
+                if core_counts["total"]
+                else "No cores"
+            ),
+            "core_tone": (
+                "red"
+                if core_counts["down"]
+                else "secondary"
+                if core_counts["unknown"] or not core_counts["total"]
+                else "green"
+            ),
+            "last_check_at": health_state.get("last_check_at") if isinstance(health_state, dict) else "",
+            "last_check_at_ph": format_ts_ph(health_state.get("last_check_at")) if isinstance(health_state, dict) else "n/a",
+            "rows": rows,
+            "rows_by_id": rows_by_id,
+            "core_rows": core_rows,
+            "core_rows_by_id": {row.get("id"): row for row in core_rows if row.get("id")},
+        }
+    except Exception as exc:
+        return {
+            "total": 0,
+            "up": 0,
+            "down": 0,
+            "unknown": 0,
+            "state_label": "Health unavailable",
+            "tone": "red",
+            "last_check_at": "",
+            "last_check_at_ph": "n/a",
+            "rows": [],
+            "rows_by_id": {},
+            "error": str(exc),
         }
 
 
@@ -24649,6 +24842,7 @@ def render_system_settings_response(
                 "wan_rows": wan_rows,
                 "wan_rows_loaded": wan_rows_loaded,
                 "wan_autodetect_warnings": wan_autodetect_warnings,
+                "mikrotik_router_health": _system_mikrotik_router_health_payload(wan_settings_data, pulse_settings),
                 "telegram_state": telegram_state,
                 "system_settings": system_settings,
                 "auth_settings": auth_settings,
@@ -24668,6 +24862,13 @@ def render_system_settings_response(
             },
         ),
     )
+
+
+@app.get("/settings/system/routers/health", response_class=JSONResponse)
+async def system_mikrotik_router_health(request: Request):
+    wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    pulse_settings_data = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    return _json_no_store({"ok": True, "health": _system_mikrotik_router_health_payload(wan_settings_data, pulse_settings_data)})
 
 
 def _parse_wan_pppoe_routers_from_form(form, count: int):

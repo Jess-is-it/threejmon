@@ -15,6 +15,19 @@
     min-width: 12rem;
     width: 12rem;
   }
+  .sys-router-health-cell {
+    min-width: 13rem;
+  }
+  .sys-router-health-row.table-danger,
+  .sys-router-health-row.table-success {
+    --tblr-table-bg: transparent;
+  }
+  .sys-router-health-error {
+    max-width: 18rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 </style>
 
 <ul class="nav nav-tabs mb-3" data-bs-toggle="tabs">
@@ -226,9 +239,16 @@
     <div class="tab-content pt-4">
       {% if can_view_system_router_cores %}
       <div class="tab-pane {% if routers_tab == 'cores' %}active{% endif %}" id="sys-routers-cores">
-        <div class="card mb-4">
-          <div class="card-header">
+        {% set core_health_by_id = (mikrotik_router_health or {}).get('core_rows_by_id', {}) %}
+        <div class="card mb-4" id="system-core-router-card" data-router-health-url="/settings/system/routers/health" data-router-health-kind="core">
+          <div class="card-header d-flex align-items-center">
             <h3 class="card-title">MikroTik API Cores</h3>
+            <div class="ms-3 d-flex align-items-center gap-2 flex-wrap small" data-router-health-summary>
+              <span class="badge bg-green-lt text-green" data-router-health-summary-up>{{ (mikrotik_router_health or {}).get('core_up', 0) }} up</span>
+              <span class="badge bg-red-lt text-red" data-router-health-summary-down>{{ (mikrotik_router_health or {}).get('core_down', 0) }} down</span>
+              <span class="badge bg-secondary-lt text-secondary" data-router-health-summary-unknown>{{ (mikrotik_router_health or {}).get('core_unknown', 0) }} unknown</span>
+              <span class="text-muted" data-router-health-summary-last>Last check: {{ (mikrotik_router_health or {}).get('last_check_at_ph') or 'n/a' }}</span>
+            </div>
           </div>
           <div class="card-body">
             <form method="post" action="/settings/system/mikrotik">
@@ -236,8 +256,16 @@
               <textarea name="core_ids" style="display: none;">{% for core in cores %}{{ core.id }}
 {% endfor %}</textarea>
               {% for core in cores %}
-                <div class="border rounded p-3 mb-3">
-                  <div class="fw-semibold mb-2">{{ core.label }}</div>
+                {% set row_health = core_health_by_id.get(core.id, {}) %}
+                {% set row_tone = row_health.get('tone') or 'secondary' %}
+                <div class="border rounded p-3 mb-3 sys-router-health-row" data-router-health-row data-router-health-kind="core" data-router-health-id="{{ core.id }}">
+                  <div class="d-flex align-items-center gap-2 flex-wrap mb-2">
+                    <div class="fw-semibold">{{ core.label }}</div>
+                    <span class="badge bg-{{ row_tone }}-lt text-{{ row_tone }}" data-router-health-status>{{ row_health.get('status_label') or 'Unknown' }}</span>
+                    <span class="text-muted small" data-router-health-latency>{{ row_health.get('response_ms_label') or 'n/a' }}</span>
+                    <span class="text-muted small" data-router-health-last>Last check: {{ row_health.get('last_check_at_ph') or 'Waiting for first check' }}</span>
+                    <span class="text-danger small sys-router-health-error{% if not row_health.get('error') %} d-none{% endif %}" data-router-health-error title="{{ row_health.get('error') or '' }}">{{ row_health.get('error') or '' }}</span>
+                  </div>
                   <div class="row g-3">
                     <div class="col-md-3">
                       <label class="form-label">Core ID <span class="info" data-tip="Internal identifier for this MikroTik entry.">i</span></label>
@@ -289,9 +317,16 @@
       {% if can_view_system_router_mikrotik %}
       <div class="tab-pane {% if routers_tab == 'mikrotik-routers' %}active{% endif %}" id="sys-routers-mikrotik">
         <form method="post" action="/settings/system/routers/pppoe">
-          <div class="card mb-4">
+          {% set health_by_id = (mikrotik_router_health or {}).get('rows_by_id', {}) %}
+          <div class="card mb-4" id="system-mikrotik-router-card" data-router-health-url="/settings/system/routers/health" data-router-health-kind="pppoe">
             <div class="card-header d-flex align-items-center">
               <h3 class="card-title mb-0">Mikrotik Routers</h3>
+              <div class="ms-3 d-flex align-items-center gap-2 flex-wrap small" data-router-health-summary>
+                <span class="badge bg-green-lt text-green" data-router-health-summary-up>{{ (mikrotik_router_health or {}).get('up', 0) }} up</span>
+                <span class="badge bg-red-lt text-red" data-router-health-summary-down>{{ (mikrotik_router_health or {}).get('down', 0) }} down</span>
+                <span class="badge bg-secondary-lt text-secondary" data-router-health-summary-unknown>{{ (mikrotik_router_health or {}).get('unknown', 0) }} unknown</span>
+                <span class="text-muted" data-router-health-summary-last>Last check: {{ (mikrotik_router_health or {}).get('last_check_at_ph') or 'n/a' }}</span>
+              </div>
               <div class="ms-auto">
                 <button type="submit" class="btn btn-outline-primary" formaction="/settings/system/routers/pppoe/add" formmethod="post" {% if not can_edit_system_router_mikrotik %}disabled{% endif %}>
                   Add Router
@@ -308,6 +343,7 @@
                   <thead>
                     <tr>
                       <th title="Friendly label for the PPPoE router.">Name</th>
+                      <th title="Latest RouterOS API health check result.">Status</th>
                       <th title="Router IP or hostname for RouterOS API.">Host</th>
                       <th title="API port (8728) or API-SSL port (8729).">Port</th>
                       <th title="RouterOS API username.">Username</th>
@@ -319,10 +355,22 @@
                   </thead>
                   <tbody>
                     {% for router in wan_settings.pppoe_routers %}
-                      <tr>
+                      {% set row_health = health_by_id.get(router.id, {}) %}
+                      {% set row_tone = row_health.get('tone') or 'secondary' %}
+                      <tr class="sys-router-health-row" data-router-health-row data-router-health-kind="pppoe" data-router-health-id="{{ router.id }}">
                         <td>
                           <input type="hidden" name="router_{{ loop.index0 }}_id" value="{{ router.id }}" />
                           <input class="form-control" type="text" name="router_{{ loop.index0 }}_name" value="{{ router.name }}" {% if not can_edit_system_router_mikrotik %}readonly{% endif %} />
+                        </td>
+                        <td class="sys-router-health-cell">
+                          <div class="d-flex flex-column gap-1">
+                            <div>
+                              <span class="badge bg-{{ row_tone }}-lt text-{{ row_tone }}" data-router-health-status>{{ row_health.get('status_label') or 'Unknown' }}</span>
+                              <span class="text-muted small ms-1" data-router-health-latency>{{ row_health.get('response_ms_label') or 'n/a' }}</span>
+                            </div>
+                            <div class="text-muted small" data-router-health-last>Last check: {{ row_health.get('last_check_at_ph') or 'Waiting for first check' }}</div>
+                            <div class="text-danger small sys-router-health-error{% if not row_health.get('error') %} d-none{% endif %}" data-router-health-error title="{{ row_health.get('error') or '' }}">{{ row_health.get('error') or '' }}</div>
+                          </div>
                         </td>
                         <td><input class="form-control" type="text" name="router_{{ loop.index0 }}_host" value="{{ router.host }}" {% if not can_edit_system_router_mikrotik %}readonly{% endif %} /></td>
                         <td><input class="form-control" type="number" name="router_{{ loop.index0 }}_port" value="{{ router.port or 8728 }}" {% if not can_edit_system_router_mikrotik %}readonly{% endif %} /></td>
@@ -1925,6 +1973,87 @@
     toggleWanFields(input.dataset.row);
     input.addEventListener("input", () => toggleWanFields(input.dataset.row));
   });
+
+  const routerHealthRoots = Array.from(document.querySelectorAll("[data-router-health-url]"));
+  if (routerHealthRoots.length) {
+    const healthUrl = routerHealthRoots[0].dataset.routerHealthUrl || "/settings/system/routers/health";
+    const toneClasses = ["green", "red", "yellow", "orange", "blue", "azure", "secondary"];
+
+    const setHealthBadgeTone = (badge, tone) => {
+      if (!badge) return;
+      const safeTone = tone || "secondary";
+      toneClasses.forEach((name) => {
+        badge.classList.remove(`bg-${name}-lt`, `text-${name}`);
+      });
+      badge.classList.add(`bg-${safeTone}-lt`, `text-${safeTone}`);
+    };
+
+    const renderMikrotikRouterHealth = (payload) => {
+      const health = payload?.health || payload || {};
+      const pppoeRows = Array.isArray(health.rows) ? health.rows : [];
+      const coreRows = Array.isArray(health.core_rows) ? health.core_rows : [];
+      const byKey = new Map([...pppoeRows, ...coreRows].map((item) => [`${String(item.kind || "")}:${String(item.id || "")}`, item]));
+
+      routerHealthRoots.forEach((root) => {
+        const summaryKind = String(root.dataset.routerHealthKind || "pppoe");
+        const summaryUpEl = root.querySelector("[data-router-health-summary-up]");
+        const summaryDownEl = root.querySelector("[data-router-health-summary-down]");
+        const summaryUnknownEl = root.querySelector("[data-router-health-summary-unknown]");
+        const summaryLastEl = root.querySelector("[data-router-health-summary-last]");
+        if (summaryKind === "core") {
+          if (summaryUpEl) summaryUpEl.textContent = `${Number(health.core_up || 0)} up`;
+          if (summaryDownEl) summaryDownEl.textContent = `${Number(health.core_down || 0)} down`;
+          if (summaryUnknownEl) summaryUnknownEl.textContent = `${Number(health.core_unknown || 0)} unknown`;
+        } else {
+          if (summaryUpEl) summaryUpEl.textContent = `${Number(health.up || 0)} up`;
+          if (summaryDownEl) summaryDownEl.textContent = `${Number(health.down || 0)} down`;
+          if (summaryUnknownEl) summaryUnknownEl.textContent = `${Number(health.unknown || 0)} unknown`;
+        }
+        if (summaryLastEl) summaryLastEl.textContent = `Last check: ${health.last_check_at_ph || "n/a"}`;
+
+        root.querySelectorAll("[data-router-health-row]").forEach((rowEl) => {
+          const routerKind = String(rowEl.dataset.routerHealthKind || summaryKind || "pppoe");
+          const routerId = String(rowEl.dataset.routerHealthId || "");
+          const item = byKey.get(`${routerKind}:${routerId}`) || {};
+          const status = String(item.status || "unknown").toLowerCase();
+          const tone = item.tone || (status === "up" ? "green" : status === "down" ? "red" : "secondary");
+          const statusEl = rowEl.querySelector("[data-router-health-status]");
+          const latencyEl = rowEl.querySelector("[data-router-health-latency]");
+          const lastEl = rowEl.querySelector("[data-router-health-last]");
+          const errorEl = rowEl.querySelector("[data-router-health-error]");
+          if (statusEl) {
+            statusEl.textContent = item.status_label || (status === "up" ? "Up" : status === "down" ? "Down" : "Unknown");
+            setHealthBadgeTone(statusEl, tone);
+          }
+          if (latencyEl) latencyEl.textContent = item.response_ms_label || "n/a";
+          if (lastEl) lastEl.textContent = `Last check: ${item.last_check_at_ph || "Waiting for first check"}`;
+          if (errorEl) {
+            const errorText = String(item.error || "");
+            errorEl.textContent = errorText;
+            errorEl.title = errorText;
+            errorEl.classList.toggle("d-none", !errorText);
+          }
+        });
+      });
+    };
+
+    const fetchMikrotikRouterHealth = async () => {
+      try {
+        const response = await fetch(healthUrl, { headers: { "Accept": "application/json" }, cache: "no-store" });
+        if (!response.ok) return;
+        renderMikrotikRouterHealth(await response.json());
+      } catch (_error) {
+      }
+    };
+
+    renderMikrotikRouterHealth({{ (mikrotik_router_health or {})|tojson }});
+    if (window.ThreeJPolling?.createTask) {
+      window.ThreeJPolling.createTask(fetchMikrotikRouterHealth, { intervalMs: 10000, resumeDelayMs: 400 });
+    } else {
+      fetchMikrotikRouterHealth();
+      setInterval(fetchMikrotikRouterHealth, 10000);
+    }
+  }
 
   const systemUpdateRoot = document.getElementById("sys-update");
   if (systemUpdateRoot) {

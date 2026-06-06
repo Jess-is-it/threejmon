@@ -628,6 +628,8 @@ MIKROTIK_LOGS_DEFAULTS = {
         "keyword_enabled": False,
         "keywords": [],
         "cooldown_seconds": 300,
+        "per_user_summary_enabled": True,
+        "per_user_summary_delay_hours": 4,
     },
     "drop_topics_cleanup": {
         "auto_clear_enabled": False,
