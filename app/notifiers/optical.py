@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 from .telegram import send_telegram
 from ..db import get_latest_non_null_optical_tx_for_devices, insert_optical_result, utc_now_iso
-from ..mikrotik import RouterOSClient
+from ..mikrotik import borrow_routeros_client
 from ..settings_defaults import USAGE_DEFAULTS, WAN_PING_DEFAULTS
 from ..settings_store import get_settings, get_state, save_state
 from . import usage as usage_notifier
@@ -335,23 +335,21 @@ def _build_mikrotik_truth_index(timeout_seconds=5):
         secret_rows = []
         connected = False
         error = ""
-        client = RouterOSClient(
-            (router.get("host") or "").strip(),
-            int(router.get("port", 8728) or 8728),
-            router.get("username", ""),
-            router.get("password", ""),
-            timeout=max(int(timeout_seconds or 0), 1),
-        )
         try:
-            client.connect()
-            connected = True
-            active_rows = usage_notifier.fetch_pppoe_active(client) or []
-            secret_rows = usage_notifier.fetch_pppoe_secrets(client) or []
-            connected_router_count += 1
+            with borrow_routeros_client(
+                (router.get("host") or "").strip(),
+                int(router.get("port", 8728) or 8728),
+                router.get("username", ""),
+                router.get("password", ""),
+                timeout=max(int(timeout_seconds or 0), 1),
+                max_size=1,
+            ) as client:
+                connected = True
+                active_rows = usage_notifier.fetch_pppoe_active(client) or []
+                secret_rows = usage_notifier.fetch_pppoe_secrets(client) or []
+                connected_router_count += 1
         except Exception as exc:
             error = str(exc)
-        finally:
-            client.close()
 
         secret_count = 0
         active_count = 0

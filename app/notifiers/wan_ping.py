@@ -9,7 +9,7 @@ import time as time_module
 
 from ..db import utc_now_iso, insert_wan_history_row, insert_wan_target_ping_result
 from ..settings_defaults import WAN_MESSAGE_DEFAULTS, WAN_SUMMARY_DEFAULTS
-from ..mikrotik import RouterOSClient
+from ..mikrotik import RouterOSClient, borrow_routeros_client
 from .telegram import send_telegram, TelegramError
 
 
@@ -600,26 +600,32 @@ def run_check(settings, pulse_settings, state):
 
     # Process groups.
     for group in groups.values():
-        client = RouterOSClient(
-            group.get("host", ""),
-            int(group.get("port", 8728)),
-            group.get("username", ""),
-            group.get("password", ""),
-        )
-        group_clients = [client]
+        group_leases = []
+        group_clients = []
         try:
-            client.connect()
+            client_lease = borrow_routeros_client(
+                group.get("host", ""),
+                int(group.get("port", 8728)),
+                group.get("username", ""),
+                group.get("password", ""),
+                max_size=1,
+            )
+            client = client_lease.__enter__()
+            group_leases.append(client_lease)
+            group_clients.append(client)
 
             def _ensure_parallel_clients(required_total):
                 needed = max(int(required_total or 1), 1)
                 while len(group_clients) < needed:
-                    extra_client = RouterOSClient(
+                    extra_lease = borrow_routeros_client(
                         group.get("host", ""),
                         int(group.get("port", 8728)),
                         group.get("username", ""),
                         group.get("password", ""),
+                        max_size=needed,
                     )
-                    extra_client.connect()
+                    extra_client = extra_lease.__enter__()
+                    group_leases.append(extra_lease)
                     group_clients.append(extra_client)
                 return group_clients
 
@@ -858,12 +864,11 @@ def run_check(settings, pulse_settings, state):
                 prev.update({"status": "down", "last_check": now_iso, "last_error": error_msg})
                 wan_state[wan_id] = prev
         finally:
-            for extra_client in group_clients[1:]:
+            for lease in reversed(group_leases):
                 try:
-                    extra_client.close()
+                    lease.__exit__(None, None, None)
                 except Exception:
                     pass
-            client.close()
 
     state["wans"] = wan_state
     stamp_now = utc_now_iso()

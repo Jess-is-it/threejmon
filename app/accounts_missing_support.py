@@ -16,7 +16,7 @@ from .db import (
     delete_pppoe_usage_samples_for_pppoe,
     delete_surveillance_sessions_for_pppoe,
 )
-from .mikrotik import RouterOSClient
+from .mikrotik import borrow_routeros_client
 from .notifiers import usage as usage_notifier
 from .settings_defaults import ACCOUNTS_MISSING_DEFAULTS, SURVEILLANCE_DEFAULTS, WAN_PING_DEFAULTS
 from .settings_store import get_settings, get_state, save_settings, save_state
@@ -144,25 +144,23 @@ def build_accounts_missing_secret_snapshot(settings, routers=None, now=None):
             )
             continue
 
-        client = RouterOSClient(
-            host,
-            int(router.get("port", 8728) or 8728),
-            router.get("username", ""),
-            router.get("password", ""),
-            timeout=timeout_seconds,
-        )
         secret_rows = []
         connected = False
         error = ""
         try:
-            client.connect()
-            connected = True
-            connected_router_ids.append(router_id)
-            secret_rows = usage_notifier.fetch_pppoe_secrets(client) or []
+            with borrow_routeros_client(
+                host,
+                int(router.get("port", 8728) or 8728),
+                router.get("username", ""),
+                router.get("password", ""),
+                timeout=timeout_seconds,
+                max_size=1,
+            ) as client:
+                connected = True
+                connected_router_ids.append(router_id)
+                secret_rows = usage_notifier.fetch_pppoe_secrets(client) or []
         except Exception as exc:
             error = str(exc)
-        finally:
-            client.close()
 
         secret_count = 0
         for row in secret_rows:

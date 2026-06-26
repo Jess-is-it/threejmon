@@ -3,7 +3,6 @@ import time as time_module
 from datetime import datetime, time, timedelta
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout, as_completed
 import os
-import queue
 import re
 import subprocess
 import select
@@ -83,7 +82,7 @@ from .usage_logic import (
     normalize_usage_modem_reboot_state,
     usage_issue_key,
 )
-from .mikrotik import RouterOSClient
+from .mikrotik import RouterOSClient, borrow_routeros_client, close_routeros_sessions, routeros_session_stats
 from .mikrotik_logs_setup import auto_configure_mikrotik_logs
 from .feature_usage import add_feature_cpu, register_feature
 
@@ -1389,6 +1388,7 @@ class JobsManager:
         self.stop_event.set()
         for thread in self.threads:
             thread.join(timeout=2)
+        close_routeros_sessions()
 
     def _optical_loop(self):
         while not self.stop_event.is_set():
@@ -1861,9 +1861,8 @@ class JobsManager:
 
                 _safe_update_job_status("accounts_ping", last_run_at=utc_now_iso())
 
-                router_client_pools = {}
+                router_pool_sizes = {}
                 router_pool_wait_seconds = {}
-                router_clients_to_close = []
                 mikrotik_due_counts = {}
                 for target in due_targets:
                     if normalize_accounts_ping_source_mode(target.get("source_mode") or source_mode) != ACCOUNTS_PING_SOURCE_MIKROTIK:
@@ -1886,27 +1885,11 @@ class JobsManager:
                         burst_timeout_seconds * burst_count,
                         1,
                     )
+                    router_pool_sizes[router_id] = pool_size
                     router_pool_wait_seconds[router_id] = max(
                         int(((router_target_count + pool_size - 1) // pool_size) * ping_budget_seconds) + 2,
                         2,
                     )
-                    pool = queue.LifoQueue()
-                    for _ in range(pool_size):
-                        try:
-                            client = RouterOSClient(
-                                host,
-                                int(router.get("port", 8728) or 8728),
-                                router.get("username", ""),
-                                router.get("password", ""),
-                                timeout=mikrotik_timeout_seconds,
-                            )
-                            client.connect()
-                            pool.put(client)
-                            router_clients_to_close.append(client)
-                        except Exception:
-                            break
-                    if not pool.empty():
-                        router_client_pools[router_id] = pool
 
                 def _ping_via_router(router_id, ip, mode, client=None):
                     router = router_catalog.get(router_id) or {}
@@ -1954,33 +1937,22 @@ class JobsManager:
                     target_source_mode = normalize_accounts_ping_source_mode(target_row.get("source_mode") or source_mode)
                     router_id = (target_row.get("router_id") or "").strip()
                     if target_source_mode == ACCOUNTS_PING_SOURCE_MIKROTIK and router_id:
-                        pool = router_client_pools.get(router_id)
                         wait_timeout = router_pool_wait_seconds.get(
                             router_id,
                             max(timeout_seconds * count, burst_timeout_seconds * burst_count, 1) + 2,
                         )
-                        if pool is not None:
-                            client = None
-                            try:
-                                client = pool.get(timeout=wait_timeout)
-                                return target_row, _ping_via_router(router_id, ip, mode, client=client)
-                            except queue.Empty:
-                                client = None
-                            except Exception:
-                                if client is not None:
-                                    try:
-                                        client.close()
-                                    except Exception:
-                                        pass
-                                    client = None
-                            finally:
-                                if client is not None:
-                                    try:
-                                        pool.put(client)
-                                    except Exception:
-                                        pass
                         try:
-                            return target_row, _ping_via_router(router_id, ip, mode)
+                            router = router_catalog.get(router_id) or {}
+                            with borrow_routeros_client(
+                                (router.get("host") or "").strip(),
+                                int(router.get("port", 8728) or 8728),
+                                router.get("username", ""),
+                                router.get("password", ""),
+                                timeout=mikrotik_timeout_seconds,
+                                max_size=router_pool_sizes.get(router_id, 1),
+                                wait_timeout=wait_timeout,
+                            ) as client:
+                                return target_row, _ping_via_router(router_id, ip, mode, client=client)
                         except Exception as exc:
                             return target_row, {
                                 "loss": None,
@@ -2110,11 +2082,7 @@ class JobsManager:
                         state["accounts"] = accounts_state
                         save_state("accounts_ping_state", state)
                 finally:
-                    for client in router_clients_to_close:
-                        try:
-                            client.close()
-                        except Exception:
-                            pass
+                    pass
 
                 # auto-transition surveillance entries (every ~5 seconds)
                 if surv_enabled and (has_surveillance_targets or auto_add_enabled):
@@ -2661,14 +2629,16 @@ class JobsManager:
                 )
                 for group in groups.values():
                     core = group.get("core") or {}
-                    client = RouterOSClient(
-                        core.get("host", ""),
-                        int(core.get("port", 8728)),
-                        core.get("username", ""),
-                        core.get("password", ""),
-                    )
+                    client_lease = None
                     try:
-                        client.connect()
+                        client_lease = borrow_routeros_client(
+                            core.get("host", ""),
+                            int(core.get("port", 8728)),
+                            core.get("username", ""),
+                            core.get("password", ""),
+                            max_size=1,
+                        )
+                        client = client_lease.__enter__()
                     except Exception as exc:
                         error_text = str(exc)
                         for wan_id, wan, label, interface_name in group.get("items", []):
@@ -2696,7 +2666,6 @@ class JobsManager:
                                 capacity_reason=error_text,
                                 retention_days=cfg.get("history_retention_days", 400),
                             )
-                        client.close()
                         continue
                     try:
                         for wan_id, wan, label, interface_name in group.get("items", []):
@@ -2820,7 +2789,8 @@ class JobsManager:
                                     retention_days=cfg.get("history_retention_days", 400),
                                 )
                     finally:
-                        client.close()
+                        if client_lease is not None:
+                            client_lease.__exit__(None, None, None)
 
                 state["last_check_at"] = now_iso
                 telegram_cfg = cfg.get("telegram") if isinstance(cfg.get("telegram"), dict) else {}
@@ -2922,23 +2892,23 @@ class JobsManager:
             if row.get("use_tls"):
                 base["error"] = "TLS/API-SSL is not supported by the current RouterOS API client. Disable TLS or use port 8728."
                 return base
-            client = RouterOSClient(
-                base["host"],
-                base["port"],
-                row.get("username", ""),
-                row.get("password", ""),
-                timeout=3,
-            )
             started = time_module.monotonic()
             try:
-                client.connect()
+                with borrow_routeros_client(
+                    base["host"],
+                    base["port"],
+                    row.get("username", ""),
+                    row.get("password", ""),
+                    timeout=3,
+                    max_size=1,
+                    wait_timeout=3,
+                ) as client:
+                    client.talk(["/system/resource/print"])
                 base["status"] = "up"
                 base["connected"] = True
                 base["response_ms"] = round((time_module.monotonic() - started) * 1000.0, 1)
             except Exception as exc:
                 base["error"] = str(exc)
-            finally:
-                client.close()
             return base
 
         while not self.stop_event.is_set():
@@ -2981,6 +2951,7 @@ class JobsManager:
                     "down": down,
                     "unknown": 0,
                     "rows": rows,
+                    "api_sessions": routeros_session_stats(),
                 }
                 save_state("mikrotik_router_health_state", state)
                 _safe_update_job_status("mikrotik_router_health", last_success_at=utc_now_iso(), last_error="", last_error_at="")

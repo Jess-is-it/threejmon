@@ -2,6 +2,9 @@ import hashlib
 import logging
 import re
 import socket
+import threading
+import time
+from contextlib import contextmanager
 
 
 logger = logging.getLogger(__name__)
@@ -136,19 +139,23 @@ class RouterOSClient:
         return words
 
     def talk(self, words):
-        self._write_sentence(words)
-        replies = []
-        while True:
-            sentence = self._read_sentence()
-            if not sentence:
-                continue
-            replies.append(sentence)
-            # RouterOS typically ends a command with "!done". Even on errors ("!trap"),
-            # it still sends a final "!done". We must drain until "!done" to avoid
-            # leaving unread sentences in the socket buffer.
-            if sentence[0] == "!done":
-                break
-        return replies
+        try:
+            self._write_sentence(words)
+            replies = []
+            while True:
+                sentence = self._read_sentence()
+                if not sentence:
+                    continue
+                replies.append(sentence)
+                # RouterOS typically ends a command with "!done". Even on errors ("!trap"),
+                # it still sends a final "!done". We must drain until "!done" to avoid
+                # leaving unread sentences in the socket buffer.
+                if sentence[0] == "!done":
+                    break
+            return replies
+        except Exception:
+            self.close()
+            raise
 
     def _login(self):
         replies = self.talk(["/login", f"=name={self.username}", f"=password={self.password}"])
@@ -399,3 +406,213 @@ class RouterOSClient:
                 if parsed is not None:
                     times.append(parsed)
         return times
+
+
+class _RouterOSSessionPool:
+    def __init__(self, host, port, username, password, timeout):
+        self.host = host
+        self.port = int(port or 8728)
+        self.username = username or ""
+        self.password = password or ""
+        self.timeout = max(int(timeout or 5), 1)
+        self.max_size = 1
+        self.idle_timeout = 1800
+        self.active_count = 0
+        self.idle = []
+        self.lock = threading.Condition()
+        self.closed = False
+        self.created_count = 0
+        self.reconnect_count = 0
+        self.last_error = ""
+        self.last_error_at = 0.0
+
+    def _new_client(self):
+        client = RouterOSClient(
+            self.host,
+            self.port,
+            self.username,
+            self.password,
+            timeout=self.timeout,
+        )
+        client.connect()
+        return client
+
+    def _close_client(self, client):
+        try:
+            client.close()
+        except Exception:
+            pass
+
+    def _prune_idle_locked(self):
+        if not self.idle:
+            return
+        now = time.monotonic()
+        keep = []
+        for client, last_used in self.idle:
+            if self.closed or now - last_used >= self.idle_timeout:
+                self._close_client(client)
+            else:
+                keep.append((client, last_used))
+        self.idle = keep
+
+    def acquire(self, max_size=1, wait_timeout=None, idle_timeout=None):
+        max_size = max(int(max_size or 1), 1)
+        wait_timeout = max(float(wait_timeout), 0.1) if wait_timeout is not None else None
+        if idle_timeout is not None:
+            self.idle_timeout = max(int(idle_timeout or 0), 30)
+        deadline = time.monotonic() + wait_timeout if wait_timeout is not None else None
+        create_new = False
+        client = None
+        with self.lock:
+            if self.closed:
+                self.closed = False
+            if max_size > self.max_size:
+                self.max_size = max_size
+            self._prune_idle_locked()
+            while True:
+                if self.idle:
+                    client, _last_used = self.idle.pop()
+                    self.active_count += 1
+                    break
+                if self.active_count < self.max_size:
+                    self.active_count += 1
+                    create_new = True
+                    break
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    raise TimeoutError("Timed out waiting for RouterOS API session.")
+                self.lock.wait(remaining if remaining is not None else 1.0)
+
+        if not create_new:
+            return client
+
+        try:
+            client = self._new_client()
+            with self.lock:
+                self.created_count += 1
+            return client
+        except Exception as exc:
+            with self.lock:
+                self.active_count = max(self.active_count - 1, 0)
+                self.last_error = str(exc)
+                self.last_error_at = time.time()
+                self.lock.notify_all()
+            raise
+
+    def release(self, client, reusable=True):
+        if not client:
+            with self.lock:
+                self.active_count = max(self.active_count - 1, 0)
+                self.lock.notify_all()
+            return
+        with self.lock:
+            self.active_count = max(self.active_count - 1, 0)
+            if reusable and not self.closed and client.sock is not None:
+                self.idle.append((client, time.monotonic()))
+            else:
+                self.reconnect_count += 1
+                self._close_client(client)
+            self.lock.notify_all()
+
+    @contextmanager
+    def lease(self, max_size=1, wait_timeout=None, idle_timeout=None):
+        client = self.acquire(max_size=max_size, wait_timeout=wait_timeout, idle_timeout=idle_timeout)
+        reusable = True
+        try:
+            yield client
+        except Exception:
+            reusable = False
+            raise
+        finally:
+            self.release(client, reusable=reusable)
+
+    def close_all(self):
+        with self.lock:
+            self.closed = True
+            idle = [client for client, _last_used in self.idle]
+            self.idle = []
+            self.lock.notify_all()
+        for client in idle:
+            self._close_client(client)
+
+    def stats(self):
+        with self.lock:
+            self._prune_idle_locked()
+            return {
+                "host": self.host,
+                "port": self.port,
+                "username": self.username,
+                "max_size": self.max_size,
+                "active": self.active_count,
+                "idle": len(self.idle),
+                "created_count": self.created_count,
+                "reconnect_count": self.reconnect_count,
+                "last_error": self.last_error,
+                "last_error_at": self.last_error_at,
+            }
+
+
+class RouterOSSessionManager:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.pools = {}
+
+    def _key(self, host, port, username, password, timeout):
+        return (
+            str(host or "").strip(),
+            int(port or 8728),
+            str(username or ""),
+            str(password or ""),
+            max(int(timeout or 5), 1),
+        )
+
+    def _pool(self, host, port, username, password, timeout):
+        key = self._key(host, port, username, password, timeout)
+        with self.lock:
+            pool = self.pools.get(key)
+            if pool is None:
+                pool = _RouterOSSessionPool(*key)
+                self.pools[key] = pool
+            return pool
+
+    @contextmanager
+    def lease(self, host, port, username, password, timeout=5, max_size=1, wait_timeout=None, idle_timeout=1800):
+        pool = self._pool(host, port, username, password, timeout)
+        with pool.lease(max_size=max_size, wait_timeout=wait_timeout, idle_timeout=idle_timeout) as client:
+            yield client
+
+    def close_all(self):
+        with self.lock:
+            pools = list(self.pools.values())
+            self.pools = {}
+        for pool in pools:
+            pool.close_all()
+
+    def stats(self):
+        with self.lock:
+            pools = list(self.pools.values())
+        return [pool.stats() for pool in pools]
+
+
+routeros_session_manager = RouterOSSessionManager()
+
+
+def borrow_routeros_client(host, port, username, password, timeout=5, max_size=1, wait_timeout=None, idle_timeout=1800):
+    return routeros_session_manager.lease(
+        host,
+        port,
+        username,
+        password,
+        timeout=timeout,
+        max_size=max_size,
+        wait_timeout=wait_timeout,
+        idle_timeout=idle_timeout,
+    )
+
+
+def close_routeros_sessions():
+    routeros_session_manager.close_all()
+
+
+def routeros_session_stats():
+    return routeros_session_manager.stats()

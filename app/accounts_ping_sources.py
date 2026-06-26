@@ -1,7 +1,7 @@
 import base64
 from datetime import datetime
 
-from .mikrotik import RouterOSClient
+from .mikrotik import borrow_routeros_client
 from .notifiers import rto as rto_notifier
 from .notifiers import usage as usage_notifier
 
@@ -249,93 +249,94 @@ def build_accounts_ping_mikrotik_devices(cfg, routers, previous_devices=None, no
         secrets_error = ""
         profiles = []
         secrets = []
-        client = RouterOSClient(
-            host,
-            int(router.get("port", 8728) or 8728),
-            router.get("username", ""),
-            router.get("password", ""),
-            timeout=max(int(mikrotik_cfg.get("timeout_seconds", 5) or 5), 1),
-        )
+        secrets_by_name = {}
+        profile_active_counts = {}
+        profile_secret_counts = {}
         try:
-            client.connect()
-            connected = True
-            try:
-                profiles = usage_notifier.fetch_ppp_profiles(client) or []
-            except Exception as exc:
-                profile_error = str(exc)
-                profiles = []
-            try:
-                secrets = usage_notifier.fetch_pppoe_secrets(client) or []
-            except Exception as exc:
-                secrets_error = str(exc)
-                secrets = []
-            secrets_by_name = {
-                (secret.get("name") or "").strip().lower(): secret
-                for secret in secrets
-                if isinstance(secret, dict) and (secret.get("name") or "").strip()
-            }
-            profile_active_counts = {}
-            profile_secret_counts = {}
-            for secret in secrets_by_name.values():
-                profile = (secret.get("profile") or "").strip()
-                if profile:
-                    profile_secret_counts[profile] = profile_secret_counts.get(profile, 0) + 1
-            for row in usage_notifier.fetch_pppoe_active(client) or []:
-                pppoe = (row.get("name") or "").strip()
-                if not pppoe:
-                    continue
-                ip = (row.get("address") or "").strip()
-                key = pppoe.lower()
-                active_keys.add(key)
-                previous = previous_for_router.get(key) or {}
-                secret = secrets_by_name.get(key) or {}
-                profile = (secret.get("profile") or previous.get("profile") or "").strip()
-                if profile:
-                    profile_active_counts[profile] = profile_active_counts.get(profile, 0) + 1
-                profile_disabled = not is_profile_enabled(router_id, profile)
-                device = normalize_accounts_ping_device(
-                    {
-                        **previous,
-                        "account_id": build_accounts_ping_account_id(
-                            pppoe,
-                            source_mode=ACCOUNTS_PING_SOURCE_MIKROTIK,
-                            router_id=router_id,
-                        ),
-                        "pppoe": pppoe,
-                        "name": pppoe,
-                        "ip": ip or (previous.get("ip") or ""),
-                        "router_id": router_id,
-                        "router_name": router_name,
-                        "profile": profile,
-                        "source_mode": ACCOUNTS_PING_SOURCE_MIKROTIK,
-                        "source_missing": not bool(ip),
-                        "source_missing_since": "" if ip else (previous.get("source_missing_since") or now_iso),
-                        "last_source_seen_at": now_iso,
-                        "secret_seen_at": now_iso if secret else (previous.get("secret_seen_at") or ""),
-                        "profile_disabled": profile_disabled,
-                        "profile_disabled_since": (
-                            (previous.get("profile_disabled_since") or now_iso)
-                            if profile_disabled
-                            else ""
-                        ),
-                        "last_profile_seen_at": now_iso if profile else (previous.get("last_profile_seen_at") or ""),
-                    },
-                    default_source_mode=ACCOUNTS_PING_SOURCE_MIKROTIK,
-                )
-                if not device:
-                    continue
-                device_map[device["account_id"]] = device
-                active_count += 1
-                if profile_disabled:
-                    disabled_profile_count += 1
-                else:
-                    tracked_count += 1
+            with borrow_routeros_client(
+                host,
+                int(router.get("port", 8728) or 8728),
+                router.get("username", ""),
+                router.get("password", ""),
+                timeout=max(int(mikrotik_cfg.get("timeout_seconds", 5) or 5), 1),
+                max_size=1,
+            ) as client:
+                connected = True
+                try:
+                    profiles = usage_notifier.fetch_ppp_profiles(client) or []
+                except Exception as exc:
+                    profile_error = str(exc)
+                    profiles = []
+                try:
+                    secrets = usage_notifier.fetch_pppoe_secrets(client) or []
+                except Exception as exc:
+                    secrets_error = str(exc)
+                    secrets = []
+                secrets_by_name = {
+                    (secret.get("name") or "").strip().lower(): secret
+                    for secret in secrets
+                    if isinstance(secret, dict) and (secret.get("name") or "").strip()
+                }
+                profile_active_counts = {}
+                profile_secret_counts = {}
+                for secret in secrets_by_name.values():
+                    profile = (secret.get("profile") or "").strip()
+                    if profile:
+                        profile_secret_counts[profile] = profile_secret_counts.get(profile, 0) + 1
+                for row in usage_notifier.fetch_pppoe_active(client) or []:
+                    pppoe = (row.get("name") or "").strip()
+                    if not pppoe:
+                        continue
+                    ip = (row.get("address") or "").strip()
+                    key = pppoe.lower()
+                    active_keys.add(key)
+                    previous = previous_for_router.get(key) or {}
+                    secret = secrets_by_name.get(key) or {}
+                    profile = (secret.get("profile") or previous.get("profile") or "").strip()
+                    if profile:
+                        profile_active_counts[profile] = profile_active_counts.get(profile, 0) + 1
+                    profile_disabled = not is_profile_enabled(router_id, profile)
+                    device = normalize_accounts_ping_device(
+                        {
+                            **previous,
+                            "account_id": build_accounts_ping_account_id(
+                                pppoe,
+                                source_mode=ACCOUNTS_PING_SOURCE_MIKROTIK,
+                                router_id=router_id,
+                            ),
+                            "pppoe": pppoe,
+                            "name": pppoe,
+                            "ip": ip or (previous.get("ip") or ""),
+                            "router_id": router_id,
+                            "router_name": router_name,
+                            "profile": profile,
+                            "source_mode": ACCOUNTS_PING_SOURCE_MIKROTIK,
+                            "source_missing": not bool(ip),
+                            "source_missing_since": "" if ip else (previous.get("source_missing_since") or now_iso),
+                            "last_source_seen_at": now_iso,
+                            "secret_seen_at": now_iso if secret else (previous.get("secret_seen_at") or ""),
+                            "profile_disabled": profile_disabled,
+                            "profile_disabled_since": (
+                                (previous.get("profile_disabled_since") or now_iso)
+                                if profile_disabled
+                                else ""
+                            ),
+                            "last_profile_seen_at": now_iso if profile else (previous.get("last_profile_seen_at") or ""),
+                        },
+                        default_source_mode=ACCOUNTS_PING_SOURCE_MIKROTIK,
+                    )
+                    if not device:
+                        continue
+                    device_map[device["account_id"]] = device
+                    active_count += 1
+                    if profile_disabled:
+                        disabled_profile_count += 1
+                    else:
+                        tracked_count += 1
         except Exception as exc:
             error = str(exc)
             for device in previous_for_router.values():
                 device_map[device["account_id"]] = dict(device)
-        finally:
-            client.close()
 
         if connected:
             for key, previous in previous_for_router.items():
