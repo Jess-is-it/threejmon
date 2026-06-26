@@ -1,0 +1,800 @@
+{% extends "base.html" %}
+{% block title %}Dashboard 2.0{% endblock %}
+{% block header_title %}Dashboard 2.0{% endblock %}
+{% block header_badge %}
+  <span class="badge bg-indigo-lt text-indigo header-icon-badge"><i class="ti ti-chart-infographic"></i></span>
+{% endblock %}
+{% block content %}
+
+{% set kpi = dashboard_kpis or {} %}
+{% set trends = dashboard_attention_trends or {} %}
+
+<style>
+  .dash2-spark{height:46px;margin:0 -.35rem -.45rem}
+  .dash2-chart{min-height:340px}
+  .dash2-mini-chart{min-height:260px}
+  .dash2-report-table thead th{position:sticky;top:0;z-index:2;background:var(--tblr-bg-surface)}
+  .dash2-report-table tbody tr{cursor:pointer}
+  .dash2-gauge{min-height:210px}
+  .dash2-filter-strip{display:inline-flex;align-items:stretch;gap:0;height:40px;padding:0;background:#f8fafc;border:1px solid rgba(98,105,118,.16);overflow:hidden}
+  .dash2-range-group{height:100%}
+  .dash2-range-group .btn{height:100%;padding:0 .65rem;color:var(--tblr-muted);border-color:rgba(98,105,118,.24);background:var(--tblr-bg-surface);font-size:.75rem;line-height:1}
+  .dash2-range-group .btn.active,
+  .dash2-range-group .btn:active{color:var(--tblr-body-color);background:#eef1f5;border-color:rgba(98,105,118,.32);box-shadow:none}
+  .dash2-filter-btn{width:40px;height:100%;padding:0;border-top:0;border-right:0;border-bottom:0;border-radius:0}
+  [data-dash2-drag-key] > .card{position:relative}
+  [data-dash2-drag-key] .card-body,
+  [data-dash2-drag-key] .card-header{padding-right:2.75rem}
+  .dash2-drag-handle{position:absolute;top:.75rem;right:.75rem;display:inline-flex;align-items:center;justify-content:center;color:var(--tblr-muted);cursor:grab;border:0;background:transparent;z-index:3;font-size:1rem;line-height:1}
+  .dash2-drag-handle:hover{color:var(--tblr-body-color)}
+  .dash2-drag-handle:active{cursor:grabbing}
+  [data-dash2-drag-key].dash2-dragging{opacity:.55}
+  @media (max-width: 991.98px){
+    .dash2-chart{min-height:300px}
+  }
+</style>
+
+<div>
+  <div class="card mb-3">
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-sm-6 col-xl-3">
+          <div class="d-flex align-items-center gap-2">
+            <span class="badge bg-secondary-lt text-secondary header-icon-badge" id="dash2-overall-icon"><i class="ti ti-activity"></i></span>
+            <div>
+              <div class="subheader">Overall status</div>
+              <div class="fw-bold" id="dash2-overall-status">Calculating...</div>
+            </div>
+          </div>
+        </div>
+        <div class="col-sm-6 col-xl-3">
+          <div class="d-flex align-items-center gap-2">
+            <span class="badge bg-red-lt text-red header-icon-badge"><i class="ti ti-alert-triangle"></i></span>
+            <div>
+              <div class="subheader">Attention total</div>
+              <div class="fw-bold" id="dash2-hero-attention">0 issues</div>
+            </div>
+          </div>
+        </div>
+        <div class="col-sm-6 col-xl-3">
+          <div class="d-flex align-items-center gap-2">
+            <span class="badge bg-blue-lt text-blue header-icon-badge"><i class="ti ti-refresh"></i></span>
+            <div>
+              <div class="subheader">Latest KPI refresh</div>
+              <div class="fw-bold" id="dash2-updated">Loading...</div>
+            </div>
+          </div>
+        </div>
+        <div class="col-sm-6 col-xl-3">
+          <div class="d-flex align-items-center justify-content-between gap-2">
+            <div class="d-flex align-items-center gap-2 min-w-0">
+              <span class="badge bg-indigo-lt text-indigo header-icon-badge"><i class="ti ti-clock"></i></span>
+              <div>
+                <div class="subheader">Report mode</div>
+                <div class="fw-bold" id="dash2-range-label">Live telemetry</div>
+              </div>
+            </div>
+            <div class="dash2-filter-strip rounded flex-shrink-0">
+              <div class="btn-group dash2-range-group" role="group" aria-label="Date range">
+                <button type="button" class="btn btn-sm btn-outline-secondary active" data-dash2-range="live">Live</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-dash2-range="24h">Last 24H</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-dash2-range="7d">7D</button>
+              </div>
+              <div class="dropdown">
+                <button type="button" class="btn btn-icon btn-sm btn-outline-secondary dash2-filter-btn" data-bs-toggle="dropdown" aria-label="Filter domains" title="Filter domains">
+                  <i class="ti ti-filter"></i>
+                </button>
+                <div class="dropdown-menu dropdown-menu-end">
+                  <button type="button" class="dropdown-item active" data-dash2-domain-filter="all">
+                    <i class="ti ti-layout-grid me-2"></i>All domains
+                  </button>
+                  <button type="button" class="dropdown-item" data-dash2-domain-filter="network">
+                    <i class="ti ti-world me-2"></i>Network
+                  </button>
+                  <button type="button" class="dropdown-item" data-dash2-domain-filter="subscriber">
+                    <i class="ti ti-users me-2"></i>Subscribers
+                  </button>
+                  <button type="button" class="dropdown-item" data-dash2-domain-filter="operations">
+                    <i class="ti ti-briefcase me-2"></i>Operations
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row row-cards mb-3" id="dash2-scorecards" data-dash2-drag-group="scorecards">
+    <div class="col-md-6 col-xl-4 col-xxl-2" data-dash2-domain="operations" data-dash2-drag-key="operations-risk">
+      <div class="card card-sm h-100">
+        <div class="card-body">
+          <div class="d-flex align-items-start justify-content-between gap-2">
+            <div>
+              <div class="subheader">Operations Risk</div>
+              <div class="h1 mb-1" id="dash2-risk-value">0</div>
+            </div>
+            <div class="d-flex align-items-center gap-2">
+              <span class="badge" id="dash2-risk-trend">Live</span>
+              <span class="dash2-drag-handle" data-dash2-drag-handle role="button" aria-label="Drag card horizontally to reorder" title="Drag horizontally to reorder"><i class="ti ti-grip-horizontal"></i></span>
+            </div>
+          </div>
+          <div class="text-muted small" id="dash2-risk-note">Total issues requiring attention.</div>
+          <div class="dash2-spark" id="dash2-risk-spark"></div>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-6 col-xl-4 col-xxl-2" data-dash2-domain="subscriber" data-dash2-drag-key="reachability">
+      <div class="card card-sm h-100">
+        <div class="card-body">
+          <div class="d-flex align-items-start justify-content-between gap-2">
+            <div class="subheader">Reachability</div>
+            <span class="dash2-drag-handle" data-dash2-drag-handle role="button" aria-label="Drag card horizontally to reorder" title="Drag horizontally to reorder"><i class="ti ti-grip-horizontal"></i></span>
+          </div>
+          <div class="h1 mb-1" id="dash2-reachability-value">0%</div>
+          <div class="text-muted small" id="dash2-reachability-note">Accounts Ping stable rate.</div>
+          <div class="dash2-spark" id="dash2-reachability-spark"></div>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-6 col-xl-4 col-xxl-2" data-dash2-domain="subscriber" data-dash2-drag-key="optical-findings">
+      <div class="card card-sm h-100">
+        <div class="card-body">
+          <div class="d-flex align-items-start justify-content-between gap-2">
+            <div class="subheader">Optical Findings</div>
+            <span class="dash2-drag-handle" data-dash2-drag-handle role="button" aria-label="Drag card horizontally to reorder" title="Drag horizontally to reorder"><i class="ti ti-grip-horizontal"></i></span>
+          </div>
+          <div class="h1 mb-1" id="dash2-optical-value">0</div>
+          <div class="text-muted small" id="dash2-optical-note">RX/TX threshold findings.</div>
+          <div class="dash2-spark" id="dash2-optical-spark"></div>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-6 col-xl-4 col-xxl-2" data-dash2-domain="network" data-dash2-drag-key="isp-capacity">
+      <div class="card card-sm h-100">
+        <div class="card-body">
+          <div class="d-flex align-items-start justify-content-between gap-2">
+            <div class="subheader">ISP Capacity</div>
+            <span class="dash2-drag-handle" data-dash2-drag-handle role="button" aria-label="Drag card horizontally to reorder" title="Drag horizontally to reorder"><i class="ti ti-grip-horizontal"></i></span>
+          </div>
+          <div class="h1 mb-1" id="dash2-isp-value">0</div>
+          <div class="text-muted small" id="dash2-isp-note">100M capacity exceptions.</div>
+          <div class="dash2-spark" id="dash2-isp-spark"></div>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-6 col-xl-4 col-xxl-2" data-dash2-domain="subscriber" data-dash2-drag-key="offline-now">
+      <div class="card card-sm h-100">
+        <div class="card-body">
+          <div class="d-flex align-items-start justify-content-between gap-2">
+            <div class="subheader">Offline Now</div>
+            <span class="dash2-drag-handle" data-dash2-drag-handle role="button" aria-label="Drag card horizontally to reorder" title="Drag horizontally to reorder"><i class="ti ti-grip-horizontal"></i></span>
+          </div>
+          <div class="h1 mb-1" id="dash2-offline-value">0</div>
+          <div class="text-muted small" id="dash2-offline-note">Currently offline accounts.</div>
+          <div class="dash2-spark" id="dash2-offline-spark"></div>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-6 col-xl-4 col-xxl-2" data-dash2-domain="network" data-dash2-drag-key="router-health">
+      <div class="card card-sm h-100">
+        <div class="card-body">
+          <div class="d-flex align-items-start justify-content-between gap-2">
+            <div class="subheader">Router Health</div>
+            <span class="dash2-drag-handle" data-dash2-drag-handle role="button" aria-label="Drag card horizontally to reorder" title="Drag horizontally to reorder"><i class="ti ti-grip-horizontal"></i></span>
+          </div>
+          <div class="h1 mb-1" id="dash2-router-value">0/0</div>
+          <div class="text-muted small" id="dash2-router-note">MikroTik API up count.</div>
+          <div class="dash2-spark" id="dash2-router-spark"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row row-cards mb-3" id="dash2-primary-charts" data-dash2-drag-group="primary-charts">
+    <div class="col-12 col-xl-8" data-dash2-domain="operations" data-dash2-drag-key="needs-attention-trend">
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h3 class="card-title mb-1">Needs Attention Trend</h3>
+            <div class="text-muted small">Issue movement over time. Use the chart toolbar to zoom, pan, and reset.</div>
+          </div>
+          <div class="ms-auto d-flex align-items-center gap-2">
+            <span class="badge bg-red-lt text-red" id="dash2-trend-badge">0 active</span>
+            <span class="dash2-drag-handle" data-dash2-drag-handle role="button" aria-label="Drag card horizontally to reorder" title="Drag horizontally to reorder"><i class="ti ti-grip-horizontal"></i></span>
+          </div>
+        </div>
+        <div class="card-body">
+          <div id="dash2-risk-chart" class="dash2-chart"></div>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-xl-4" data-dash2-domain="subscriber" data-dash2-drag-key="subscriber-state-mix">
+      <div class="card h-100">
+        <div class="card-header">
+          <div>
+            <h3 class="card-title mb-1">Subscriber State Mix</h3>
+            <div class="text-muted small">Accounts Ping states only, so the donut totals 100%.</div>
+          </div>
+          <span class="dash2-drag-handle ms-auto" data-dash2-drag-handle role="button" aria-label="Drag card horizontally to reorder" title="Drag horizontally to reorder"><i class="ti ti-grip-horizontal"></i></span>
+        </div>
+        <div class="card-body">
+          <div id="dash2-subscriber-donut" class="dash2-mini-chart"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row row-cards mb-3" id="dash2-secondary-charts" data-dash2-drag-group="secondary-charts">
+    <div class="col-12 col-xl-4" data-dash2-domain="network" data-dash2-drag-key="network-health-matrix">
+      <div class="card h-100">
+        <div class="card-header">
+          <h3 class="card-title">Network Health Matrix</h3>
+          <span class="dash2-drag-handle ms-auto" data-dash2-drag-handle role="button" aria-label="Drag card horizontally to reorder" title="Drag horizontally to reorder"><i class="ti ti-grip-horizontal"></i></span>
+        </div>
+        <div class="card-body">
+          <div id="dash2-network-bars" class="dash2-mini-chart"></div>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-xl-4" data-dash2-domain="operations" data-dash2-drag-key="server-resource-gauges">
+      <div class="card h-100">
+        <div class="card-header">
+          <h3 class="card-title">Server Resource Gauges</h3>
+          <span class="text-muted small ms-auto" id="dash2-resource-updated">Updating...</span>
+          <span class="dash2-drag-handle" data-dash2-drag-handle role="button" aria-label="Drag card horizontally to reorder" title="Drag horizontally to reorder"><i class="ti ti-grip-horizontal"></i></span>
+        </div>
+        <div class="card-body">
+          <div class="row g-2">
+            <div class="col-6"><div id="dash2-cpu-gauge" class="dash2-gauge"></div></div>
+            <div class="col-6"><div id="dash2-ram-gauge" class="dash2-gauge"></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-xl-4" data-dash2-domain="subscriber" data-dash2-drag-key="customer-impact-stack">
+      <div class="card h-100">
+        <div class="card-header">
+          <h3 class="card-title">Customer Impact Stack</h3>
+          <span class="dash2-drag-handle ms-auto" data-dash2-drag-handle role="button" aria-label="Drag card horizontally to reorder" title="Drag horizontally to reorder"><i class="ti ti-grip-horizontal"></i></span>
+        </div>
+        <div class="card-body">
+          <div id="dash2-impact-bars" class="dash2-mini-chart"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row row-cards">
+    <div class="col-12" data-dash2-domain="operations">
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h3 class="card-title mb-1">Operational KPI Report</h3>
+            <div class="text-muted small">Sorted by severity. Click a row to inspect why it matters and where to act.</div>
+          </div>
+          <div class="ms-auto d-flex gap-2">
+            <input class="form-control form-control-sm" id="dash2-report-search" placeholder="Search KPI" style="width: 220px;" />
+            <button class="btn btn-sm btn-outline-secondary" type="button" id="dash2-report-clear">Clear</button>
+          </div>
+        </div>
+        <div class="table-responsive" style="max-height: 420px;">
+          <table class="table table-vcenter dash2-report-table mb-0">
+            <thead>
+              <tr>
+                <th data-dash2-sort="name">KPI</th>
+                <th data-dash2-sort="domain">Domain</th>
+                <th data-dash2-sort="value">Value</th>
+                <th>Status</th>
+                <th>Interpretation</th>
+                <th class="text-end">Action</th>
+              </tr>
+            </thead>
+            <tbody id="dash2-report-body">
+              <tr><td colspan="6" class="text-muted">Loading KPI report...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="offcanvas offcanvas-end" tabindex="-1" id="dash2-drawer" aria-labelledby="dash2-drawer-title">
+  <div class="offcanvas-header border-bottom align-items-start">
+    <div>
+      <div class="text-muted small" id="dash2-drawer-domain">KPI detail</div>
+      <h3 class="mb-0" id="dash2-drawer-title">Metric</h3>
+    </div>
+    <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Close"></button>
+  </div>
+  <div class="offcanvas-body">
+    <div class="d-flex align-items-center gap-2 mb-3">
+      <span class="badge" id="dash2-drawer-badge">Status</span>
+      <span class="fw-bold fs-2" id="dash2-drawer-value">0</span>
+    </div>
+    <div class="text-muted mb-3" id="dash2-drawer-note"></div>
+    <div class="alert alert-info">
+      <div class="fw-semibold mb-1">Recommended operator action</div>
+      <div id="dash2-drawer-action">Review the source module for more detail.</div>
+    </div>
+    <a class="btn btn-primary" id="dash2-drawer-link" href="/">Open source page</a>
+  </div>
+</div>
+
+<script>
+  (() => {
+    const initialKpis = {{ (kpi or {})|tojson }};
+    const initialTrends = {{ (trends or {})|tojson }};
+    let kpis = initialKpis || {};
+    let trends = initialTrends || {};
+    let range = "live";
+    let domainFilter = "all";
+    let reportRows = [];
+    let reportSort = { key: "value", dir: "desc" };
+    const charts = {};
+    let drawerInstance = null;
+    const colors = {
+      red: "#d63939",
+      green: "#2fb344",
+      blue: "#206bc4",
+      azure: "#4299e1",
+      orange: "#f76707",
+      yellow: "#f59f00",
+      indigo: "#4263eb",
+      cyan: "#0ca678",
+      muted: "#6c7a91",
+    };
+
+    const el = (id) => document.getElementById(id);
+    const num = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
+    const intFmt = (value) => Math.round(num(value)).toLocaleString();
+    const pct = (part, total) => num(total) > 0 ? Math.max(0, Math.min(100, (num(part) / num(total)) * 100)) : 0;
+    const setText = (id, value) => { const node = el(id); if (node) node.textContent = value; };
+    const rangeLabel = () => range === "live" ? "Live telemetry" : range === "24h" ? "Last 24 hours" : "Last 7 days";
+    const cutoffMs = () => {
+      if (range === "24h") return Date.now() - 24 * 60 * 60 * 1000;
+      if (range === "7d") return Date.now() - 7 * 24 * 60 * 60 * 1000;
+      return Date.now() - 6 * 60 * 60 * 1000;
+    };
+    const filteredPoints = (points = []) => {
+      const cutoff = cutoffMs();
+      return (Array.isArray(points) ? points : []).filter((point) => {
+        const ts = Date.parse(point.x || point.ts);
+        return Number.isFinite(ts) && ts >= cutoff;
+      });
+    };
+    const latestTrendDelta = (points = []) => {
+      const pts = filteredPoints(points);
+      if (pts.length < 2) return 0;
+      return num(pts[pts.length - 1].y) - num(pts[0].y);
+    };
+    const seriesByKey = () => {
+      const map = {};
+      (trends.items || []).forEach((item) => { map[item.key] = item; });
+      return map;
+    };
+    const sparkData = (key, fallbackValue) => {
+      if (key === "total") {
+        const points = filteredPoints(trends.total || []);
+        if (points.length) return points.map((point) => [Date.parse(point.x), num(point.y)]);
+      } else {
+        const item = seriesByKey()[key] || {};
+        const points = filteredPoints(item.series || []);
+        if (points.length) return points.map((point) => [Date.parse(point.x), num(point.y)]);
+      }
+      const now = Date.now();
+      return Array.from({ length: 8 }, (_, idx) => [now - (7 - idx) * 8 * 60 * 1000, Math.max(0, num(fallbackValue) + (idx % 3) - 1)]);
+    };
+    const sparkOptions = (data, color) => ({
+      chart: { type: "area", height: 46, sparkline: { enabled: true }, animations: { enabled: false } },
+      series: [{ data }],
+      stroke: { curve: "smooth", width: 2 },
+      fill: { opacity: .18, type: "solid" },
+      colors: [color],
+      tooltip: { enabled: false },
+    });
+    const renderSpark = (id, key, fallbackValue, color) => {
+      const node = el(id);
+      if (!node || !window.ApexCharts) return;
+      const options = sparkOptions(sparkData(key, fallbackValue), color);
+      if (charts[id]) {
+        charts[id].updateOptions(options, false, true);
+      } else {
+        charts[id] = new window.ApexCharts(node, options);
+        charts[id].render();
+      }
+    };
+    const gaugeOptions = (label, value, color) => ({
+      chart: { type: "radialBar", height: 210, sparkline: { enabled: true }, animations: { enabled: false } },
+      series: [Math.max(0, Math.min(100, num(value)))],
+      labels: [label],
+      colors: [color],
+      plotOptions: {
+        radialBar: {
+          hollow: { size: "58%" },
+          dataLabels: {
+            name: { fontSize: "13px", offsetY: 18 },
+            value: { fontSize: "24px", fontWeight: 800, offsetY: -12, formatter: (v) => `${Math.round(v)}%` },
+          },
+        },
+      },
+    });
+    const upsertChart = (id, options) => {
+      const node = el(id);
+      if (!node || !window.ApexCharts) return;
+      if (charts[id]) {
+        charts[id].updateOptions(options, false, true);
+      } else {
+        charts[id] = new window.ApexCharts(node, options);
+        charts[id].render();
+      }
+    };
+    const kpiRows = () => {
+      const acc = kpis.accounts_ping || {};
+      const optical = kpis.optical || {};
+      const offline = kpis.offline || {};
+      const usage = kpis.usage || {};
+      const wan = kpis.wan || {};
+      const isp = kpis.isp_status || {};
+      const ispCounts = isp.counts || {};
+      const routers = kpis.mikrotik_routers || {};
+      const surv = kpis.surveillance || {};
+      return [
+        { name: "Operations Risk", domain: "Operations", value: num(kpis.attention?.total_count), status: num(kpis.attention?.total_count) ? "Needs Attention" : "Healthy", tone: num(kpis.attention?.total_count) ? "red" : "green", note: "Total customer-impacting issues currently counted across monitoring modules.", action: "Open the Needs Attention trend and drill into the highest category.", href: "/" },
+        { name: "Accounts Ping Issues", domain: "Subscribers", value: num(acc.issue), status: num(acc.issue) ? "Impaired" : "Stable", tone: num(acc.issue) ? "red" : "green", note: "Accounts classified as down or issue by Accounts Ping.", action: "Open Accounts Ping and review Connection Issues.", href: "/settings/accounts-ping" },
+        { name: "Reachability Rate", domain: "Subscribers", value: pct(acc.up, acc.accounts), suffix: "%", status: pct(acc.up, acc.accounts) >= 95 ? "Good" : "Review", tone: pct(acc.up, acc.accounts) >= 95 ? "green" : "orange", note: "Stable Accounts Ping accounts divided by total tracked accounts.", action: "If below target, compare Accounts Ping issues against Offline and Optical findings.", href: "/settings/accounts-ping" },
+        { name: "Optical Findings", domain: "Subscribers", value: num(optical.issue_rx) + num(optical.issue_tx), status: (num(optical.issue_rx) + num(optical.issue_tx)) ? "Signal Risk" : "Clear", tone: (num(optical.issue_rx) + num(optical.issue_tx)) ? "orange" : "green", note: "Latest RX/TX threshold violations.", action: "Open Optical and inspect customers with bad RX/TX.", href: "/settings/optical" },
+        { name: "Usage Issues", domain: "Subscribers", value: num(usage.anytime_issues), status: num(usage.anytime_issues) ? "Investigate" : "Clear", tone: num(usage.anytime_issues) ? "orange" : "green", note: "Accounts detected with no/abnormal usage under Usage rules.", action: "Open Usage Issues and review reboot or detection status.", href: "/settings/usage" },
+        { name: "Offline Now", domain: "Subscribers", value: num(offline.current), status: num(offline.current) ? "Customer Impact" : "Clear", tone: num(offline.current) ? "red" : "green", note: "Accounts currently in the Offline page.", action: "Open Offline and group by aging tab.", href: "/settings/offline" },
+        { name: "WAN Down", domain: "Network", value: num(wan.down), status: num(wan.down) ? "ISP Down" : "OK", tone: num(wan.down) ? "red" : "green", note: "WAN Ping ISP rows currently marked down.", action: "Open WAN Ping and validate down ISP targets.", href: "/settings/wan" },
+        { name: "ISP 100M Exceptions", domain: "Network", value: num(ispCounts["100m"]), status: num(ispCounts["100m"]) ? "Capacity Drop" : "1G OK", tone: num(ispCounts["100m"]) ? "red" : "green", note: "ISP ports detected as 100M capacity.", action: "Open ISP Port Status and check interface tagging/capacity history.", href: "/settings/isp-status" },
+        { name: "MikroTik Router Down", domain: "Network", value: num(routers.down), status: num(routers.down) ? "Router Down" : "OK", tone: num(routers.down) ? "red" : "green", note: "Routers failing RouterOS API health checks.", action: "Open System Settings -> Routers and inspect API status.", href: "/settings/system?tab=routers&routers_tab=mikrotik-routers" },
+        { name: "Needs Manual Fix", domain: "Operations", value: num(surv.level2), status: num(surv.level2) ? "Action Needed" : "None", tone: num(surv.level2) ? "red" : "green", note: "Under Surveillance accounts requiring manual repair.", action: "Open Under Surveillance -> Needs Manual Fix.", href: "/surveillance" },
+      ];
+    };
+    const valueText = (row) => `${row.suffix === "%" ? num(row.value).toFixed(1) : intFmt(row.value)}${row.suffix || ""}`;
+    const renderScorecards = () => {
+      const acc = kpis.accounts_ping || {};
+      const optical = kpis.optical || {};
+      const ispCounts = kpis.isp_status?.counts || {};
+      const routers = kpis.mikrotik_routers || {};
+      const attentionTotal = num(kpis.attention?.total_count);
+      const riskDelta = latestTrendDelta(trends.total || []);
+      setText("dash2-risk-value", intFmt(attentionTotal));
+      const trendBadge = el("dash2-risk-trend");
+      if (trendBadge) {
+        trendBadge.className = `badge ${riskDelta > 0 ? "bg-red-lt text-red" : riskDelta < 0 ? "bg-green-lt text-green" : "bg-secondary-lt text-secondary"}`;
+        trendBadge.textContent = riskDelta > 0 ? `+${intFmt(riskDelta)}` : riskDelta < 0 ? `${intFmt(riskDelta)}` : "No change";
+      }
+      setText("dash2-reachability-value", `${pct(acc.up, acc.accounts).toFixed(1)}%`);
+      setText("dash2-reachability-note", `${intFmt(acc.up)} stable of ${intFmt(acc.accounts)} tracked.`);
+      setText("dash2-optical-value", intFmt(num(optical.issue_rx) + num(optical.issue_tx)));
+      setText("dash2-optical-note", `${intFmt(optical.issue_rx)} RX · ${intFmt(optical.issue_tx)} TX findings.`);
+      setText("dash2-isp-value", intFmt(ispCounts["100m"] || 0));
+      setText("dash2-isp-note", `${intFmt(ispCounts["1g"] || 0)} ports at 1G.`);
+      setText("dash2-offline-value", intFmt(kpis.offline?.current || 0));
+      setText("dash2-offline-note", `${intFmt(kpis.offline?.history_24h || 0)} offline events in 24H.`);
+      setText("dash2-router-value", `${intFmt(routers.up || 0)}/${intFmt(routers.total || 0)}`);
+      setText("dash2-router-note", `${intFmt(routers.down || 0)} down · ${intFmt(routers.unknown || 0)} unknown.`);
+      setText("dash2-hero-attention", `${intFmt(attentionTotal)} issue${attentionTotal === 1 ? "" : "s"}`);
+      setText("dash2-range-label", rangeLabel());
+      const overallStatus = attentionTotal > 0 || num(routers.down) > 0 || num(ispCounts["100m"]) > 0 ? "Needs attention" : "Healthy";
+      const overallIcon = el("dash2-overall-icon");
+      if (overallIcon) {
+        overallIcon.className = `badge header-icon-badge ${overallStatus === "Healthy" ? "bg-green-lt text-green" : "bg-red-lt text-red"}`;
+      }
+      const overallText = el("dash2-overall-status");
+      if (overallText) {
+        overallText.className = "fw-bold";
+        overallText.textContent = overallStatus;
+      }
+      renderSpark("dash2-risk-spark", "total", attentionTotal, colors.red);
+      renderSpark("dash2-reachability-spark", "accounts_ping_issues", acc.issue || 0, colors.green);
+      renderSpark("dash2-optical-spark", "optical_monitoring_issues", num(optical.issue_rx) + num(optical.issue_tx), colors.orange);
+      renderSpark("dash2-isp-spark", "wan_ping_down_isps", ispCounts["100m"] || 0, colors.cyan);
+      renderSpark("dash2-offline-spark", "offline_accounts", kpis.offline?.current || 0, colors.red);
+      renderSpark("dash2-router-spark", "wan_ping_down_isps", routers.down || 0, colors.indigo);
+    };
+    const renderMainCharts = () => {
+      const visibleSeries = (trends.items || []).map((item, idx) => ({
+        name: item.label || item.key,
+        data: filteredPoints(item.series || []).map((point) => [Date.parse(point.x), num(point.y)]),
+        color: [colors.red, colors.orange, colors.indigo, colors.blue, colors.cyan, colors.yellow, colors.muted][idx % 7],
+      })).filter((item) => item.data.length);
+      upsertChart("dash2-risk-chart", {
+        chart: { type: "line", height: 350, toolbar: { show: true, tools: { download: false, selection: true, zoom: true, zoomin: true, zoomout: true, pan: true, reset: true } }, zoom: { enabled: true, type: "x", autoScaleYaxis: true }, animations: { enabled: false } },
+        series: visibleSeries.length ? visibleSeries : [{ name: "No samples", data: [] }],
+        colors: visibleSeries.length ? visibleSeries.map((item) => item.color) : [colors.muted],
+        stroke: { width: 3, curve: "smooth" },
+        markers: { size: 0 },
+        xaxis: { type: "datetime" },
+        yaxis: { min: 0, labels: { formatter: (v) => Math.round(v).toLocaleString() } },
+        tooltip: { shared: true, intersect: false, x: { format: "dd MMM HH:mm" } },
+        legend: { position: "bottom" },
+        grid: { borderColor: "#e9ecef", strokeDashArray: 4 },
+      });
+      const acc = kpis.accounts_ping || {};
+      const pending = Math.max(num(acc.accounts) - num(acc.up) - num(acc.issue), 0);
+      upsertChart("dash2-subscriber-donut", {
+        chart: { type: "donut", height: 280, animations: { enabled: false } },
+        series: [num(acc.up), num(acc.issue), pending],
+        labels: ["Stable", "Issue/Down", "Pending"],
+        colors: [colors.green, colors.red, colors.muted],
+        legend: { position: "bottom" },
+        plotOptions: { pie: { donut: { size: "68%", labels: { show: true, total: { show: true, label: "Tracked", formatter: () => intFmt(acc.accounts) } } } } },
+      });
+      const wan = kpis.wan || {};
+      const routers = kpis.mikrotik_routers || {};
+      const ispCounts = kpis.isp_status?.counts || {};
+      upsertChart("dash2-network-bars", {
+        chart: { type: "bar", height: 280, toolbar: { show: false }, animations: { enabled: false } },
+        series: [
+          { name: "Healthy", data: [num(wan.up), num(routers.up), num(ispCounts["1g"])] },
+          { name: "Issue", data: [num(wan.down), num(routers.down), num(ispCounts["100m"])] },
+          { name: "Unknown/Observing", data: [num(wan.unknown), num(routers.unknown), num(ispCounts.observing)] },
+        ],
+        colors: [colors.green, colors.red, colors.muted],
+        xaxis: { categories: ["WAN", "Routers", "ISP Ports"] },
+        plotOptions: { bar: { horizontal: false, columnWidth: "55%", borderRadius: 5 } },
+        legend: { position: "bottom" },
+      });
+      const usage = kpis.usage || {};
+      const surv = kpis.surveillance || {};
+      const optical = kpis.optical || {};
+      upsertChart("dash2-impact-bars", {
+        chart: { type: "bar", height: 280, toolbar: { show: false }, animations: { enabled: false } },
+        series: [{ name: "Accounts", data: [num(kpis.offline?.current), num(acc.issue), num(usage.anytime_issues), num(optical.issue_rx) + num(optical.issue_tx), num(surv.level2)] }],
+        colors: [colors.red],
+        xaxis: { categories: ["Offline", "ACC Ping", "Usage", "Optical", "Manual Fix"] },
+        plotOptions: { bar: { horizontal: true, borderRadius: 5, barHeight: "58%" } },
+        dataLabels: { enabled: true },
+      });
+      setText("dash2-trend-badge", `${intFmt(kpis.attention?.active_total || 0)} active categories`);
+    };
+    const renderReport = () => {
+      reportRows = kpiRows();
+      const body = el("dash2-report-body");
+      if (!body) return;
+      const query = String(el("dash2-report-search")?.value || "").trim().toLowerCase();
+      const dir = reportSort.dir === "asc" ? 1 : -1;
+      const rows = reportRows
+        .filter((row) => domainFilter === "all" || row.domain.toLowerCase() === domainFilter)
+        .filter((row) => !query || `${row.name} ${row.domain} ${row.status} ${row.note}`.toLowerCase().includes(query))
+        .sort((a, b) => {
+          if (reportSort.key === "value") return (num(a.value) - num(b.value)) * dir;
+          return String(a[reportSort.key] || "").localeCompare(String(b[reportSort.key] || "")) * dir;
+        });
+      if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="6" class="text-muted">No KPIs match the current filter.</td></tr>';
+        return;
+      }
+      body.innerHTML = rows.map((row, idx) => `
+        <tr data-dash2-row="${idx}">
+          <td class="fw-semibold">${row.name}</td>
+          <td><span class="badge bg-secondary-lt text-secondary">${row.domain}</span></td>
+          <td class="fw-bold">${valueText(row)}</td>
+          <td><span class="badge bg-${row.tone}-lt text-${row.tone}">${row.status}</span></td>
+          <td class="text-muted">${row.note}</td>
+          <td class="text-end">
+            <button type="button"
+                    class="badge bg-azure-lt text-azure header-icon-badge border-0"
+                    data-dash2-open="${idx}"
+                    title="Inspect KPI"
+                    aria-label="Inspect KPI">
+              <i class="ti ti-eye"></i>
+            </button>
+          </td>
+        </tr>
+      `).join("");
+      body.querySelectorAll("[data-dash2-row]").forEach((node) => {
+        node.addEventListener("click", (event) => {
+          const rowEl = event.target.closest("[data-dash2-row]");
+          const idx = Number(rowEl?.dataset.dash2Row ?? event.target.dataset.dash2Open);
+          const row = rows[idx];
+          if (row) openDrawer(row);
+        });
+      });
+    };
+    const renderDomainFilter = () => {
+      document.querySelectorAll("[data-dash2-domain]").forEach((node) => {
+        const domain = String(node.dataset.dash2Domain || "all");
+        node.classList.toggle("d-none", domainFilter !== "all" && domain !== domainFilter);
+      });
+      renderReport();
+    };
+    const openDrawer = (row) => {
+      setText("dash2-drawer-domain", row.domain);
+      setText("dash2-drawer-title", row.name);
+      setText("dash2-drawer-value", valueText(row));
+      setText("dash2-drawer-note", row.note);
+      setText("dash2-drawer-action", row.action);
+      const badge = el("dash2-drawer-badge");
+      if (badge) {
+        badge.className = `badge bg-${row.tone}-lt text-${row.tone}`;
+        badge.textContent = row.status;
+      }
+      const link = el("dash2-drawer-link");
+      if (link) link.href = row.href || "/";
+      const drawerEl = el("dash2-drawer");
+      if (drawerEl && window.bootstrap?.Offcanvas) {
+        drawerInstance = drawerInstance || window.bootstrap.Offcanvas.getOrCreateInstance(drawerEl);
+        drawerInstance.show();
+      }
+    };
+    const reorderStorageKey = "threej_dashboard_2_card_order";
+    const readSavedOrders = () => {
+      try {
+        const raw = localStorage.getItem(reorderStorageKey);
+        const parsed = raw ? JSON.parse(raw) : {};
+        return parsed && typeof parsed === "object" ? parsed : {};
+      } catch (_error) {
+        return {};
+      }
+    };
+    const saveGroupOrder = (groupEl) => {
+      if (!groupEl) return;
+      const groupName = String(groupEl.dataset.dash2DragGroup || "").trim();
+      if (!groupName) return;
+      const orders = readSavedOrders();
+      orders[groupName] = Array.from(groupEl.querySelectorAll(":scope > [data-dash2-drag-key]"))
+        .map((item) => String(item.dataset.dash2DragKey || "").trim())
+        .filter(Boolean);
+      try {
+        localStorage.setItem(reorderStorageKey, JSON.stringify(orders));
+      } catch (_error) {
+      }
+    };
+    const applySavedOrders = () => {
+      const orders = readSavedOrders();
+      document.querySelectorAll("[data-dash2-drag-group]").forEach((groupEl) => {
+        const groupName = String(groupEl.dataset.dash2DragGroup || "").trim();
+        const saved = Array.isArray(orders[groupName]) ? orders[groupName] : [];
+        if (!saved.length) return;
+        const items = Array.from(groupEl.querySelectorAll(":scope > [data-dash2-drag-key]"));
+        const byKey = new Map(items.map((item) => [String(item.dataset.dash2DragKey || ""), item]));
+        saved.forEach((key) => {
+          const item = byKey.get(key);
+          if (item) groupEl.appendChild(item);
+        });
+        items.forEach((item) => {
+          if (!saved.includes(String(item.dataset.dash2DragKey || ""))) groupEl.appendChild(item);
+        });
+      });
+    };
+    const getDragAfterElement = (groupEl, x) => {
+      const items = Array.from(groupEl.querySelectorAll(":scope > [data-dash2-drag-key]:not(.dash2-dragging)"))
+        .filter((item) => !item.classList.contains("d-none"));
+      return items.reduce((closest, item) => {
+        const box = item.getBoundingClientRect();
+        const offset = x - box.left - box.width / 2;
+        if (offset < 0 && offset > closest.offset) {
+          return { offset, element: item };
+        }
+        return closest;
+      }, { offset: Number.NEGATIVE_INFINITY, element: null }).element;
+    };
+    const initDashboardReorder = () => {
+      applySavedOrders();
+      let draggedItem = null;
+      document.querySelectorAll("[data-dash2-drag-handle]").forEach((handle) => {
+        handle.setAttribute("draggable", "true");
+        handle.addEventListener("dragstart", (event) => {
+          draggedItem = handle.closest("[data-dash2-drag-key]");
+          if (!draggedItem) return;
+          draggedItem.classList.add("dash2-dragging");
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", String(draggedItem.dataset.dash2DragKey || ""));
+        });
+        handle.addEventListener("dragend", () => {
+          if (draggedItem) {
+            draggedItem.classList.remove("dash2-dragging");
+            saveGroupOrder(draggedItem.closest("[data-dash2-drag-group]"));
+          }
+          draggedItem = null;
+        });
+      });
+      document.querySelectorAll("[data-dash2-drag-group]").forEach((groupEl) => {
+        groupEl.addEventListener("dragover", (event) => {
+          if (!draggedItem || draggedItem.closest("[data-dash2-drag-group]") !== groupEl) return;
+          event.preventDefault();
+          const afterElement = getDragAfterElement(groupEl, event.clientX);
+          if (afterElement == null) {
+            groupEl.appendChild(draggedItem);
+          } else {
+            groupEl.insertBefore(draggedItem, afterElement);
+          }
+        });
+        groupEl.addEventListener("drop", (event) => {
+          if (!draggedItem || draggedItem.closest("[data-dash2-drag-group]") !== groupEl) return;
+          event.preventDefault();
+          saveGroupOrder(groupEl);
+        });
+      });
+    };
+    const renderAll = () => {
+      renderScorecards();
+      renderMainCharts();
+      renderReport();
+      renderDomainFilter();
+    };
+    const refreshKpis = async () => {
+      try {
+        const res = await fetch("/dashboard/kpis", { headers: { "Accept": "application/json" }, cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.dashboard_kpis) kpis = data.dashboard_kpis;
+        setText("dash2-updated", new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
+        renderAll();
+      } catch (_error) {
+      }
+    };
+    const refreshTrends = async () => {
+      try {
+        const res = await fetch("/dashboard/attention-trends", { headers: { "Accept": "application/json" }, cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.trends) trends = data.trends;
+        renderAll();
+      } catch (_error) {
+      }
+    };
+    const refreshResources = async () => {
+      try {
+        const res = await fetch("/system/resources", { headers: { "Accept": "application/json" }, cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json();
+        upsertChart("dash2-cpu-gauge", gaugeOptions("CPU", data.cpu_pct || 0, colors.blue));
+        upsertChart("dash2-ram-gauge", gaugeOptions("RAM Pressure", data.ram_pressure_pct ?? data.ram_pct ?? 0, colors.orange));
+        setText("dash2-resource-updated", "Updated " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
+      } catch (_error) {
+      }
+    };
+
+    document.querySelectorAll("[data-dash2-range]").forEach((button) => {
+      button.addEventListener("click", () => {
+        range = button.dataset.dash2Range || "live";
+        document.querySelectorAll("[data-dash2-range]").forEach((item) => item.classList.toggle("active", item === button));
+        renderAll();
+      });
+    });
+    document.querySelectorAll("[data-dash2-domain-filter]").forEach((item) => {
+      item.addEventListener("click", () => {
+        domainFilter = item.dataset.dash2DomainFilter || "all";
+        document.querySelectorAll("[data-dash2-domain-filter]").forEach((button) => {
+          button.classList.toggle("active", button === item);
+        });
+        renderDomainFilter();
+      });
+    });
+    el("dash2-report-search")?.addEventListener("input", renderReport);
+    el("dash2-report-clear")?.addEventListener("click", () => {
+      const search = el("dash2-report-search");
+      if (search) search.value = "";
+      renderReport();
+    });
+    document.querySelectorAll("[data-dash2-sort]").forEach((th) => {
+      th.style.cursor = "pointer";
+      th.addEventListener("click", () => {
+        const key = th.dataset.dash2Sort || "value";
+        reportSort = { key, dir: reportSort.key === key && reportSort.dir === "desc" ? "asc" : "desc" };
+        renderReport();
+      });
+    });
+    initDashboardReorder();
+    renderAll();
+    refreshResources();
+    if (window.ThreeJPolling?.createTask) {
+      window.ThreeJPolling.createTask(refreshKpis, { intervalMs: 10000, resumeDelayMs: 250 });
+      window.ThreeJPolling.createTask(refreshTrends, { intervalMs: 60000, resumeDelayMs: 1000 });
+      window.ThreeJPolling.createTask(refreshResources, { intervalMs: 15000, resumeDelayMs: 500 });
+    } else {
+      setInterval(refreshKpis, 10000);
+      setInterval(refreshTrends, 60000);
+      setInterval(refreshResources, 15000);
+    }
+  })();
+</script>
+
+{% endblock %}

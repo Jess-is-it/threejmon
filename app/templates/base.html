@@ -69,11 +69,29 @@
 	        <div class="collapse navbar-collapse d-lg-flex flex-lg-column" id="sidebar-menu">
           <ul class="navbar-nav pt-lg-3">
             {% if not auth_enabled or has_perm('dashboard.view') %}
+              {% set dashboard_nav_open = request.url.path == '/' or request.url.path.startswith('/dashboard') %}
               <li class="nav-item">
-                <a class="nav-link {% if request.url.path == '/' %}active{% endif %}" href="/">
+                <a class="nav-link {% if dashboard_nav_open %}active{% endif %}" data-bs-toggle="collapse" href="#sidebar-dashboard-menu" role="button" aria-expanded="{{ 'true' if dashboard_nav_open else 'false' }}" aria-controls="sidebar-dashboard-menu">
                   <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-dashboard"></i></span>
                   <span class="nav-link-title">Dashboard</span>
+                  <span class="ms-auto"><i class="ti ti-chevron-down"></i></span>
                 </a>
+                <div class="collapse{% if dashboard_nav_open %} show{% endif %}" id="sidebar-dashboard-menu">
+                  <ul class="navbar-nav sidebar-subnav">
+                    <li class="nav-item">
+                      <a class="nav-link {% if request.url.path == '/' %}active{% endif %}" href="/">
+                        <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-layout-dashboard"></i></span>
+                        <span class="nav-link-title">Dashboard</span>
+                      </a>
+                    </li>
+                    <li class="nav-item">
+                      <a class="nav-link {% if request.url.path.startswith('/dashboard/2') %}active{% endif %}" href="/dashboard/2">
+                        <span class="nav-link-icon d-md-none d-lg-inline-block"><i class="ti ti-chart-infographic"></i></span>
+                        <span class="nav-link-title">Dashboard 2.0</span>
+                      </a>
+                    </li>
+                  </ul>
+                </div>
               </li>
             {% endif %}
             {% if not auth_enabled or has_perm('surveillance.view') %}

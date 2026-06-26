@@ -8280,6 +8280,28 @@ async def dashboard(request: Request):
     )
 
 
+@app.get("/dashboard/2", response_class=HTMLResponse)
+async def dashboard_2(request: Request):
+    job_status = {item["job_name"]: dict(item) for item in get_job_status()}
+    for status in job_status.values():
+        status["last_run_at_ph"] = format_ts_ph(status.get("last_run_at"))
+        status["last_success_at_ph"] = format_ts_ph(status.get("last_success_at"))
+        status["last_error_at_ph"] = format_ts_ph(status.get("last_error_at"))
+    dashboard_kpis = _get_dashboard_kpis_cached(job_status)
+    attention = dashboard_kpis.get("attention") if isinstance(dashboard_kpis, dict) else {}
+    return templates.TemplateResponse(
+        "dashboard_2.html",
+        make_context(
+            request,
+            {
+                "job_status": job_status,
+                "dashboard_kpis": dashboard_kpis,
+                "dashboard_attention_trends": _dashboard_attention_trends_payload(attention if isinstance(attention, dict) else {}),
+            },
+        ),
+    )
+
+
 @app.get("/dashboard/latest-logs", response_class=JSONResponse)
 async def dashboard_latest_logs(request: Request, limit: int = 20):
     try:
