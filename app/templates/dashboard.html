@@ -62,6 +62,7 @@
   .dashboard-resource-kpi.rto-tip:focus-visible::after,
   .dashboard-resource-kpi.rto-tip:hover::after{opacity:1}
   .dashboard-attention-chart{min-height:360px}
+  .dashboard-chart-loader{min-height:360px;display:flex;align-items:center;justify-content:center;color:var(--tblr-muted);gap:.5rem}
   .dashboard-attention-issue{border:1px solid rgba(31,41,55,.1);border-radius:14px;background:var(--tblr-bg-surface);min-height:74px;cursor:pointer;transition:border-color .16s ease,box-shadow .16s ease,opacity .16s ease}
   .dashboard-attention-issue:hover,
   .dashboard-attention-issue:focus-visible{border-color:var(--attention-color,rgba(32,107,196,.45));box-shadow:0 .55rem 1.25rem rgba(15,31,42,.08);outline:0}
@@ -154,7 +155,12 @@
                     </div>
                     <span class="badge bg-red-lt text-red fs-6" id="dashboard-attention-total-badge">{{ attention_total_count }}</span>
                   </div>
-                  <div id="dashboard-attention-total-chart" class="dashboard-attention-chart"></div>
+                  <div id="dashboard-attention-total-chart" class="dashboard-attention-chart">
+                    <div class="dashboard-chart-loader">
+                      <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+                      <span>Loading trend chart...</span>
+                    </div>
+                  </div>
                 </div>
               </div>
               <div class="col-12">
@@ -293,7 +299,7 @@
               <div class="small" title="{{ message_text }}">{{ message_text }}</div>
             </div>
           {% else %}
-            <div class="text-muted small">No logs yet.</div>
+            <div class="text-muted small">Loading latest logs...</div>
           {% endfor %}
         </div>
       </div>
@@ -424,6 +430,15 @@
       }
       if (!attentionTotalChartEl) return;
       attentionTotalChartEl.innerHTML = `<div class="text-muted d-flex align-items-center justify-content-center" style="height:360px;">${esc(message)}</div>`;
+    };
+    const setAttentionChartLoading = (message = "Loading trend chart...") => {
+      if (!attentionTotalChartEl || attentionChartState.chart || attentionChartState.allSeriesDefs.length) return;
+      attentionTotalChartEl.innerHTML = `
+        <div class="dashboard-chart-loader">
+          <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+          <span>${esc(message)}</span>
+        </div>
+      `;
     };
     const normalizeAttentionSeriesDefs = (seriesDefs) => (Array.isArray(seriesDefs) ? seriesDefs : [])
         .map((def, index) => ({
@@ -838,6 +853,7 @@
 
     const updateAttentionTrends = async () => {
       if (!hasAttentionPanel) return;
+      setAttentionChartLoading();
       try {
         const res = await fetch("/dashboard/attention-trends", { headers: { "Accept": "application/json" }, cache: "no-store" });
         if (!res.ok) return;

@@ -38,6 +38,513 @@ Use this file to record every meaningful system change in reverse-chronological 
 
 ## Entries
 
+## 2026-07-29 16:32 UTC — Prevented low utilization from being tagged as 100M
+- Type: fix
+- Scope: ISP Port Status / capacity classification / Capacity Settings / Telegram reporting
+- Summary:
+  - Replaced the short-window maximum-only rule with sustained range evidence: every recent peak in a completed window must stay at or above the configured minimum and at or below the ceiling before the ISP can be tagged 100M.
+  - Replaced the previous 70%-of-window shortcut with near-full configured duration coverage, allowing only a small boundary tolerance of up to two background poll intervals.
+  - Kept below-minimum traffic in Observing and added an explicit reason that low utilization cannot determine circuit capacity. The optional average rule can no longer override a below-floor reading in the current short window.
+  - Added an operator-controlled non-peak exclusion in Asia/Manila time, including overnight schedules. While active, the classifier suppresses possible 100M tagging and reporting, restarts peak-hour evidence after the interval, and still honors above-ceiling 1G evidence.
+  - Updated the Capacity Settings guidance to distinguish observed utilization from capacity evidence.
+- Files:
+  - `app/settings_defaults.py`
+  - `app/jobs.py`
+  - `app/main.py`
+  - `app/templates/settings_isp_status.html`
+  - `tests/test_isp_status_capacity.py`
+  - `README.md`
+  - `PROJECT_DESCRIPTION.md`
+  - `PROJECT_CHANGELOG.md`
+- DB/Config Impact:
+  - Schema: none.
+  - Settings keys: adds `isp_status.capacity.non_peak_exclusion_enabled` (default false), `non_peak_start_time` (default `00:00`), and `non_peak_end_time` (default `06:00`).
+- Runtime Impact:
+  - A single in-range spike surrounded by below-floor traffic no longer produces a 100M label. Existing saved settings remain compatible and new schedule fields normalize safely.
+  - The current deployment retains its configured 90–105 Mbps thresholds, 15-minute short window, enabled average detector, and 10-hour average window. The short rule now waits for approximately the complete 15 minutes instead of the former 10.5-minute shortcut; the non-peak exclusion remains opt-in until an operator enables and saves it.
+  - Permissions and audit behavior are unchanged because the existing Capacity Settings form and route own the new fields.
+- Validation:
+  - Focused classifier coverage for sustained/inadequate evidence, average safeguards, overnight exclusion, post-exclusion reset, above-ceiling handling, settings normalization/save, and UI controls.
+  - Packaged-image unit suite: 45 tests passed. Python compilation, all 17 Jinja templates, inline Live-chart JavaScript, Compose validation, and `git diff --check` also passed.
+  - Graphify refreshed to 1,462 nodes and 5,269 edges; its extracted path still links `_isp_status_loop()` directly to `_classify_isp_capacity()`, and the classifier now links to the non-peak helper.
+  - Version-aware image rebuild, host/container source checksum comparison, login/protected-route checks, rendered Capacity form probe, deployed synthetic classifier cases, and a successful post-rebuild ISP Status collector cycle.
+- Rollback:
+  - Restore maximum-only short-window classification and the prior average condition; remove the three non-peak settings fields and their Capacity Settings controls.
+
+## 2026-07-29 16:23 UTC — Stabilized Live bandwidth hover inspection
+- Type: fix
+- Scope: ISP Port Status / Live Bandwidth Trend / ApexCharts tooltip and legend interaction
+- Summary:
+  - Held visual chart redraws while the mouse pointer is over the Live plot or legend so the shared hover tooltip is not removed by the next one-second update.
+  - Kept one-second RouterOS polling and in-memory sample collection active during inspection, displayed the number of buffered ticks, and applied the latest complete chart state immediately when the pointer leaves.
+  - Removed the redundant options/color redraw from ordinary ticks. Stable series now use one data update, while options and series are updated together only when the series identity, name, or color changes.
+- Files:
+  - `app/templates/settings_isp_status.html`
+  - `tests/test_isp_status_live.py`
+  - `README.md`
+  - `PROJECT_DESCRIPTION.md`
+  - `PROJECT_CHANGELOG.md`
+- DB/Config Impact:
+  - Schema: none.
+  - Settings/State keys: none.
+- Runtime Impact:
+  - Hover inspection no longer flickers once per second, polling is not paused, and ordinary Live ticks perform one ApexCharts redraw instead of two.
+  - Permissions and audit behavior are unchanged because this is a client-side rendering fix with no new route or mutation.
+- Validation:
+  - ISP Live template regression coverage, complete Python unit suite, Jinja and inline JavaScript parsing, Compose validation, and `git diff --check`.
+  - Version-aware image rebuild plus deployed-source and protected-route smoke checks.
+- Rollback:
+  - Remove the pointer inspection hold/buffer state and restore the unconditional options-plus-series redraw on each Live tick.
+
+## 2026-07-29 16:11 UTC — Added view-scoped one-second ISP bandwidth sampling
+- Type: feature
+- Scope: ISP Port Status / Bandwidth Trend / RouterOS traffic sampling
+- Summary:
+  - Added a non-persistent `/isp-status/live` sampler that reads current RX/TX rates independently of the configured background Poll Interval.
+  - Batched every configured traffic interface into one RouterOS monitor request per core, sampled cores concurrently outside the async event loop, and coalesced near-simultaneous browser requests so multiple viewers do not duplicate the same router tick. A per-interface fallback isolates an invalid interface if RouterOS rejects a batch.
+  - Limited one-second browser polling to the visible Live chart on the active Status tab. Polling stops when the document is hidden, the chart leaves the viewport, Settings or a historical range is selected, or the page is left.
+  - Kept persisted history, capacity detection, Telegram alerts, current-table refresh, and historical chart refresh on the configured general interval. Direct Live points are never inserted into history.
+  - Suppressed the combined All ISP point on partial samples so an unavailable interface cannot make the total appear lower than it really is.
+- Files:
+  - `app/mikrotik.py`
+  - `app/main.py`
+  - `app/templates/settings_isp_status.html`
+  - `tests/test_isp_status_live.py`
+  - `README.md`
+  - `PROJECT_DESCRIPTION.md`
+  - `PROJECT_CHANGELOG.md`
+- DB/Config Impact:
+  - Schema: none.
+  - Settings/State keys: none; the existing `isp_status.general.poll_interval_seconds` remains the background interval and `live_window_minutes` remains the displayed Live retention window.
+- Runtime Impact:
+  - While one or more users actively view the Live chart, the application performs at most one batched sample per core for each coalesced one-second tick. No Live sampling is performed when the chart is not being viewed.
+  - The new GET endpoint inherits the existing authenticated ISP Port Status route permission; no role migration is required.
+- Validation:
+  - Focused unit coverage for batched RouterOS commands, partial totals, asynchronous endpoint execution, request coalescing, one-second UI configuration, and visibility/range stop conditions.
+  - Current configured-router read test returned six interface records per core in one command, completing in approximately 11 ms and 129 ms respectively.
+  - Full unit suite, Python compilation, Jinja and inline JavaScript parsing, Compose validation, and `git diff --check`.
+- Rollback:
+  - Remove `/isp-status/live`, the batch traffic helper and Live polling lifecycle code; restore collector-interval chart refresh in `settings_isp_status.html`.
+
+## 2026-07-29 15:47 UTC — Made ISP Port Status load from a lightweight live window
+- Type: perf
+- Scope: ISP Port Status / Bandwidth Trend / current interface table / PostgreSQL latest-sample lookup
+- Summary:
+  - Added a Live Bandwidth Trend mode that opens by default with only the most recent 15 minutes, refreshes without recreating the chart, and retains the existing 1H through 30D historical filters on demand.
+  - Replaced the old default-chart-hours control with a bounded 5–60 minute Live Chart Window setting.
+  - Stopped page and status refreshes from querying historical latest rows when current collector state already contains the ISP, while retaining a database fallback for missing state.
+  - Reworked the PostgreSQL fallback into one indexed lateral latest-row probe per ISP instead of sorting all matching history.
+- Files:
+  - `app/settings_defaults.py`
+  - `app/main.py`
+  - `app/db.py`
+  - `app/templates/settings_isp_status.html`
+  - `tests/test_isp_status_live.py`
+  - `README.md`
+  - `PROJECT_DESCRIPTION.md`
+  - `PROJECT_CHANGELOG.md`
+- DB/Config Impact:
+  - Schema: none.
+  - Settings keys: adds `isp_status.general.live_window_minutes` with a 15-minute default and 5–60 minute bounds; the older `chart_window_hours` value no longer controls initial chart loading.
+- Runtime Impact:
+  - The current deployment's page-row path decreased from about 5.2 seconds to about 0.16 seconds during pre-deployment measurement.
+  - The complete packaged page rendered in about 0.25 seconds during the post-deployment smoke test.
+  - Initial chart history decreases from a 24-hour payload of roughly 2,900 points to a 15-minute live payload of roughly 390 points; longer history remains opt-in.
+  - The existing ISP Status permissions and audit behavior are unchanged because no route or protected action was added.
+- Validation:
+  - Focused live-window, state-first rendering, endpoint payload, template behavior, and PostgreSQL query-shape regression tests.
+  - Complete packaged-image unit suite: 26 tests passed.
+  - Python compilation, all-template Jinja parsing, updated inline JavaScript syntax checking, Compose validation, and `git diff --check`.
+  - Version-aware Compose rebuild plus live login/protected-route smoke checks, default Live and historical-series probes, and application-helper page/endpoint timing.
+- Rollback:
+  - Restore the 24-hour `chart_window_hours` default/UI, the prior `hours`-only series request, unconditional latest-history lookup, and the former PostgreSQL `DISTINCT ON` query; remove `tests/test_isp_status_live.py`.
+
+## 2026-07-29 14:43 UTC — Made routed WAN IP management fully manual
+- Type: refactor
+- Scope: System Settings / Add ISP / WAN Ping / RouterOS Netwatch
+- Summary:
+  - Removed public-IP provider probing, `Verify now`, automatic/manual mode selection, configurable revalidation timing, background refresh scheduling, and automatic WAN-IP replacement.
+  - Replaced the routed WAN-IP controls with one required operator-entered public IPv4 field. The saved value is audited when changed and remains the authoritative Netwatch host.
+  - Kept routed local source-IP and route discovery, but constrained that path so it cannot overwrite the saved public WAN address.
+  - Added compatibility normalization that retains each existing saved address, including an old manual override, while dropping the retired settings fields.
+- Files:
+  - `app/settings_defaults.py`
+  - `app/main.py`
+  - `app/jobs.py`
+  - `app/notifiers/wan_ping.py`
+  - `app/templates/settings_system.html`
+  - `tests/test_wan_ip_manual.py`
+  - `README.md`
+  - `PROJECT_DESCRIPTION.md`
+  - `PROJECT_CHANGELOG.md`
+- DB/Config Impact:
+  - Schema: none.
+  - Settings keys: removes `wan_ping.general.wan_ip_refresh_interval_minutes`, `wan_ip_mode`, and `manual_wan_ip` during normalization; `netwatch_host` is the single routed WAN-IP field.
+  - State keys: existing `wan_ping_state.wan_ip_detection` history is ignored; no new verification state is written.
+- Runtime Impact:
+  - The WAN job performs no external public-IP fetches and can no longer change routed WAN IPs automatically.
+  - Operators must update changed ISP addresses in Add ISP and save; successful saves synchronize Netwatch immediately.
+- Validation:
+  - Manual target selection, route-refresh immutability, Netwatch read-back, UI control removal, and runtime probe-removal regression tests.
+  - Python compilation, full unit suite, template parsing, Compose validation, Graphify refresh, and live configuration/Netwatch checks.
+- Rollback:
+  - Restore the WAN-IP probe providers, automatic/manual controls, refresh endpoint, periodic refresh job, verification state helpers, and prior documentation; keep the current `netwatch_host` values as the initial automatic cache.
+
+## 2026-07-28 08:59 UTC — Prevented rotating WAN egress from causing false verification failures
+- Type: fix
+- Scope: System Settings / Add ISP / automatic WAN IP revalidation / RouterOS Netwatch
+- Summary:
+  - Replaced the two-sample cross-provider vote with three encrypted samples from one provider. The fallback provider is used only when the primary returns no usable result, so two services can no longer disagree inside one consensus vote.
+  - Added pooled-egress safeguards: an observed saved address is preserved, mixed unseen addresses become `inconclusive`, and an address already saved for another configured ISP cannot replace the current WAN IP.
+  - Changed inconclusive multi-egress checks to wait for the normal revalidation interval instead of entering the five-minute failure retry loop. Genuine route/provider failures still retry after five minutes.
+  - Added an amber multi-egress status and the selected probe provider to Add ISP while retaining validated manual override for ISP-issued static addresses that outbound NAT cannot identify reliably.
+- Files:
+  - `app/main.py`
+  - `app/jobs.py`
+  - `app/notifiers/wan_ping.py`
+  - `app/templates/settings_system.html`
+  - `tests/test_wan_ip_refresh.py`
+  - `README.md`
+  - `PROJECT_DESCRIPTION.md`
+  - `PROJECT_CHANGELOG.md`
+- DB/Config Impact:
+  - Schema: none.
+  - Settings keys: none.
+  - State keys: existing `wan_ping_state.wan_ip_detection` entries now include `probe_provider` and may use the `inconclusive` status.
+- Runtime Impact:
+  - Each automatic check uses three same-provider HTTPS fetches. A fallback set of three is attempted only when the primary yields no usable response.
+  - Saved WAN and Netwatch addresses are not changed by pooled or cross-WAN observations; recurring false failures stop without hiding real probe outages.
+- Validation:
+  - WAN IP unit coverage for provider isolation, saved-address preservation, mixed-egress classification, cross-WAN rejection, stable replacements, state scheduling, and existing Netwatch safeguards.
+  - Python compilation, full unit suite, template parsing, Compose validation, Graphify refresh, and live routed-ISP verification.
+- Rollback:
+  - Restore alternating provider order and two background attempts, remove the pooled-egress evaluator and `inconclusive` UI/state handling, and revert the documentation entry.
+
+## 2026-07-28 08:29 UTC — Added safe routed WAN IP revalidation and override controls
+- Type: fix
+- Scope: System Settings / Add ISP / WAN Ping / RouterOS Netwatch
+- Summary:
+  - Corrected routed WAN detection so an explicit public-IP probe no longer treats the previously saved address as a successful result merely because the local source IP is unchanged.
+  - Corrected Cloudflare trace parsing to use only its explicit `ip=` client-address field instead of the earlier `h=1.1.1.1` service-host field; the plain-IP fallback now requires an exact public IPv4 response.
+  - Added route-safety checks and multi-sample consensus. Ambiguous routing, a failed temporary routing mark, inconsistent responses, or no public response preserves the currently saved address.
+  - Alternates Cloudflare trace and a strict plain-IP provider across samples and requires a true majority (all samples for a two-sample background check) before replacement.
+  - Places the temporary source-specific probe rule first in RouterOS's output mangle chain with `passthrough=no`, preventing earlier load-balancing rules from intermittently sending samples through another WAN.
+  - Added per-ISP Automatic and Manual override controls, a targeted `Verify now` action, verification status/timestamps, configurable periodic revalidation, targeted Netwatch synchronization, concurrent-edit protection, and audit events.
+  - Added post-write Netwatch read-back verification and timestamp-aware verification-state merging so a silent RouterOS no-op or an overlapping WAN job cannot hide or erase the result.
+  - Added staggered background revalidation with a 60-minute default interval and a five-minute retry after failures.
+- Files:
+  - `app/settings_defaults.py`
+  - `app/main.py`
+  - `app/jobs.py`
+  - `app/notifiers/wan_ping.py`
+  - `app/templates/settings_system.html`
+  - `tests/test_wan_ip_refresh.py`
+  - `README.md`
+  - `PROJECT_DESCRIPTION.md`
+  - `PROJECT_CHANGELOG.md`
+- DB/Config Impact:
+  - Schema: none.
+  - Settings keys: adds `wan_ping.general.wan_ip_refresh_interval_minutes`; routed WAN rows add `wan_ip_mode` and `manual_wan_ip`.
+  - State keys: adds `wan_ping_state.wan_ip_detection` entries for last check, verification/change timestamps, current/previous address, route source, and error status.
+- Runtime Impact:
+  - One due Automatic routed ISP is revalidated per WAN job cycle. Successful changed addresses are persisted and synchronized to only that ISP's Netwatch entry; failed checks retry without replacing the saved address.
+  - Manual overrides must be valid public IPv4 addresses, stop automatic replacement for that ISP, and are recorded in the access audit log.
+- Validation:
+  - WAN IP regression tests for verified replacement, failure preservation, manual exclusion, stagger/retry timing, concurrent-edit protection, and state tracking.
+  - Full Python unit suite, compilation, Jinja/JavaScript parsing, Compose validation, Graphify refresh, deployment smoke checks, and live route/status inspection.
+- Rollback:
+  - Remove the Add ISP WAN-IP controls and refresh route, periodic refresh block, notifier refresh helpers, new settings/state fields, and detector consensus metadata; restore cached-address reuse during `probe_public=True`.
+
+## 2026-07-28 03:49 UTC — Stabilized System Settings tabs and isolated Backup from Danger
+- Type: fix
+- Scope: System Settings / top-level navigation / Data Retention / Backup / Danger
+- Summary:
+  - Replaced the mixed Bootstrap hash and server-link navigation with stable `/settings/system?tab=<section>` URLs for every top-level System Settings tab.
+  - Moved all top-level panes under one tab-content boundary and server-renders only the selected pane, eliminating stale active state after Data Retention and reducing unused HTML.
+  - Made Backup and Danger mutually exclusive in rendered output and stopped loading Access permission, role, and user lists outside the Access tab.
+- Files:
+  - `app/main.py`
+  - `app/templates/settings_system.html`
+  - `tests/test_system_settings_navigation.py`
+  - `README.md`
+  - `PROJECT_DESCRIPTION.md`
+  - `PROJECT_CHANGELOG.md`
+- DB/Config Impact:
+  - Schema: none.
+  - Settings/State keys: none.
+  - Permissions: unchanged; existing per-tab capability checks remain authoritative.
+- Runtime Impact:
+  - Top-level tab clicks perform a normal server navigation with one authoritative active pane. Nested Router and Access tabs continue using local Bootstrap behavior.
+  - Data Retention no longer carries the inactive Access tab's permission, role, and user payload.
+- Validation:
+  - Navigation regression tests for all top-level URLs, one-active-tab behavior, the shared pane container, and Backup/Danger content isolation
+  - Python compilation, complete Jinja parse, packaged-page render checks, Compose validation, and `git diff --check`
+- Rollback:
+  - Restore the top-level hash links and Bootstrap tab toggles, render all top-level panes again, and remove the navigation regression test.
+
+## 2026-07-28 03:19 UTC — Added deletion disk snapshots and repaired Backup tab navigation
+- Type: fix
+- Scope: System Settings / Data Retention history / Backup & Restore
+- Summary:
+  - Split Automatic Deletion History disk information into explicit Previous disk and Current disk percentage columns.
+  - Populated the existing disk snapshot fields for all future scheduled deletions, including generic feature pruning and the WAN status, WAN target, and ISP Port Status inline retention paths. Emergency guardian events continue using their existing snapshots.
+  - Changed Backup from a hash-only JavaScript tab target to the stable permission-protected `/settings/system?tab=backup` route so clicking it reliably renders Backup & Restore.
+- Files:
+  - `app/db.py`
+  - `app/main.py`
+  - `app/templates/settings_system.html`
+  - `tests/test_data_retention.py`
+  - `README.md`
+  - `PROJECT_DESCRIPTION.md`
+  - `PROJECT_CHANGELOG.md`
+- DB/Config Impact:
+  - Schema: none; `data_retention_history.disk_percent_before` and `disk_percent_after` already exist.
+  - Settings/State keys: none.
+- Runtime Impact:
+  - Filesystem snapshots use lightweight disk-usage reads immediately around an actual scheduled deletion. Older history rows without recorded snapshots remain unchanged and display `—`.
+  - Backup permissions and import/export endpoints are unchanged; only tab navigation is repaired.
+- Validation:
+  - Nine SQLite retention tests, including deterministic scheduled before/after disk snapshot persistence
+  - Python compilation, complete Jinja template parse, packaged-page render checks, Compose validation, and `git diff --check`
+- Rollback:
+  - Restore the combined Disk used cell and hash-only Backup link, remove scheduled snapshot collection and formatting, and revert the associated tests/documentation.
+
+## 2026-07-13 06:04 UTC — Batched scheduled retention across every tracked feature
+- Type: feature
+- Scope: Data Retention / scheduled pruning / PostgreSQL indexing / feature policy editor
+- Summary:
+  - Replaced continuous rolling scheduled deletion with a batch threshold for Accounts Ping, Usage, Optical, WAN, ISP Port Status, Offline, MikroTik Logs, and Access Audit.
+  - A feature with retention `R` and interval `I` now waits until data exceeds `R + I`, then deletes accumulated rows older than `R`. Every feature defaults to a 30-day interval, matching the 30-day retention example of growing to about 60 days and returning to about 30 days.
+  - Added a per-feature Scheduled cleanup interval field to the existing policy modal and displayed the active interval in the feature table.
+  - Preserved existing deletion-history rows as an audit trail; future scheduled rows are created only when a batch actually deletes data. Emergency guardian behavior is unchanged.
+  - Added compact PostgreSQL BRIN time indexes for large append-only Accounts Ping, Usage, and Optical tables and ordinary time indexes for Offline and Usage reboot history to keep due checks efficient.
+- Files:
+  - `app/data_retention.py`
+  - `app/db.py`
+  - `app/jobs.py`
+  - `app/main.py`
+  - `app/notifiers/wan_ping.py`
+  - `app/templates/settings_system.html`
+  - `tests/test_data_retention.py`
+  - `README.md`
+  - `PROJECT_DESCRIPTION.md`
+  - `PROJECT_CHANGELOG.md`
+- DB/Config Impact:
+  - Schema: adds three BRIN time indexes and two ordinary time indexes; no table or column changes.
+  - Settings/State keys: adds `settings.data_retention.features.<feature>.scheduled_cleanup_interval_days`, normalized to 1–365 days with a default of 30.
+- Runtime Impact:
+  - High-volume scheduled cleanup is less frequent and occurs as a larger accumulated batch. Indexed threshold checks replace repeated rolling deletions and history entries.
+  - The migration itself does not invoke deletion, and saving a modal still changes policy only.
+- Validation:
+  - Nine SQLite tests, including the exact ISP insertion path and retention-plus-interval batch semantics
+  - Disposable PostgreSQL 16 integration covering batch gating, deletion-to-window behavior, tracking, and BRIN index creation
+  - Python compilation, full Jinja parse, modal render/route/permission checks, Compose validation, and `git diff --check`
+- Rollback:
+  - Remove the scheduled interval setting and arguments, restore direct cutoff deletion in scheduled paths, and remove the new modal field. The additive indexes may remain safely or be dropped separately after confirming no active query uses them.
+
+## 2026-07-13 05:36 UTC — Unified per-feature retention editing in a modal
+- Type: refactor
+- Scope: System Settings / Data Retention / feature policy editor / deletion history guidance
+- Summary:
+  - Replaced the inline Normal scheduled policy editor and table-row Save button with one Edit action per feature.
+  - Added a feature-scoped modal containing all scheduled-retention day fields, the emergency deletion percentage, and the recent-data protection window.
+  - Clarified that repeated history entries for high-volume features are genuine bounded scheduled deletions produced as a rolling cutoff advances. Live inspection confirmed ISP Port Status is configured for 30 days and is pruning roughly 290 newly expired samples every five minutes.
+- Files:
+  - `app/templates/settings_system.html`
+  - `README.md`
+  - `PROJECT_DESCRIPTION.md`
+  - `PROJECT_CHANGELOG.md`
+- DB/Config Impact:
+  - Schema: none
+  - Settings/State keys: none
+- Runtime Impact:
+  - The existing feature-scoped save route and permission remain unchanged. Saving the modal does not execute deletion.
+  - Scheduled pruning cadence and truthful per-event history are unchanged.
+- Validation:
+  - Full Jinja template parse and modal render smoke checks
+  - Seven SQLite retention tests, application compilation, route/permission check, and `git diff --check`
+- Rollback:
+  - Restore the inline feature inputs and row Save button, remove the generated feature modals, and revert the accompanying documentation text.
+
+## 2026-07-13 05:11 UTC — Split Data Retention views and added direct feature policy editing
+- Type: feature
+- Scope: System Settings / Data Retention / retention policy editing
+- Summary:
+  - Split Data Retention into Overview & Feature Policies, Settings, and Deletion History views; Mandatory Guardian Policy now appears only in Settings.
+  - Added an Edit control to each Normal scheduled policy cell and a scoped feature Save action that updates that feature's normal retention days, emergency deletion percentage, and recent-data floor.
+  - Kept guardian saves isolated from feature policies, preserved history filters and pagination in the history view, and added an audit event for each feature policy change.
+- Files:
+  - `app/data_retention.py`
+  - `app/main.py`
+  - `app/templates/settings_system.html`
+  - `tests/test_data_retention.py`
+  - `README.md`
+  - `PROJECT_DESCRIPTION.md`
+  - `PROJECT_CHANGELOG.md`
+- DB/Config Impact:
+  - Schema: none
+  - Settings/State keys: none; existing feature settings and `settings.data_retention` values remain authoritative.
+- Runtime Impact:
+  - Policy forms are smaller and independently saved. Saving guardian or feature settings never starts a cleanup cycle.
+- Validation:
+  - `python3 -m compileall -q app tests`
+  - Full Jinja template parse and nested-view render smoke checks
+  - Seven SQLite unit tests, route/permission checks, and `git diff --check`
+- Rollback:
+  - Remove the nested `retention_tab` rendering branches and feature save route, restore the centralized retention form, and remove the feature-to-normal-field mapping helper.
+
+## 2026-07-13 04:40 UTC — Added mandatory storage guardian and deletion tracking
+- Type: feature
+- Scope: System Settings / data retention / PostgreSQL storage health / background jobs / access control
+- Summary:
+  - Added a protected Data Retention tab with live storage health, mandatory global guardian settings, per-feature emergency deletion percentages and recent-data floors, centralized normal retention settings, dataset-size estimates, latest-deletion status, filters, and 25/50/100-row pagination.
+  - Added an independent five-minute guardian loop that triggers at 85% storage use by default, runs only one bounded cleanup cycle, ignores collector enabled/disabled state, caps each dataset transaction at 100,000 rows by default, protects at least seven recent days, and enforces a six-hour cooldown. A per-feature value of 0% explicitly excludes that feature.
+  - Added durable per-dataset tracking for existing scheduled pruning and guardian cleanup, including timestamps, trigger, feature/dataset, cutoff, rows deleted, disk use, duration, status, actor, details, and errors.
+  - Added optional ordinary PostgreSQL `VACUUM` after guardian deletions to make relation pages reusable. Automated cleanup never runs `VACUUM FULL` and never loops until filesystem use falls because PostgreSQL row deletion does not guarantee immediate filesystem reclamation.
+  - Added view/edit permissions, route mapping, permission dependencies/compatibility, built-in role synchronization, custom broad-System-role backfill, and settings-change audit logging.
+- Files:
+  - `app/data_retention.py`
+  - `app/db.py`
+  - `app/jobs.py`
+  - `app/main.py`
+  - `app/templates/settings_system.html`
+  - `tests/test_data_retention.py`
+  - `README.md`
+  - `PROJECT_DESCRIPTION.md`
+  - `PROJECT_CHANGELOG.md`
+- DB/Config Impact:
+  - Schema: adds `data_retention_history` and indexes for start time, feature/start time, and run ID on PostgreSQL and SQLite-compatible installs.
+  - Settings/State keys: adds `settings.data_retention` and `state.data_retention_guardian_state`; existing feature retention keys remain the source used by their scheduled jobs and are edited centrally by the new tab.
+- Runtime Impact:
+  - Adds one lightweight background filesystem check. Destructive guardian work occurs only at the configured threshold and outside cooldown, is bounded per dataset, and may perform ordinary VACUUM after committed deletions.
+  - Saving settings does not run cleanup. The shared test/production server remains below the default trigger after the safe host cleanup, so deployment does not immediately delete data.
+- Validation:
+  - `python3 -m compileall -q app`
+  - Full Jinja template parse and a rendered Data Retention tab smoke check in the application image
+  - Six SQLite unit tests covering scheduled history, bounded/age-protected deletion, safe setting clamps, below-threshold behavior, emergency cooldown behavior, and centralized feature-setting synchronization
+  - Disposable PostgreSQL 16 integration test covering schema initialization, bounded deletion, scheduled tracking, dataset statistics, and ordinary VACUUM
+  - Route import/permission mapping smoke check in the application image
+  - `git diff --check`
+- Rollback:
+  - Remove the Data Retention route/tab, guardian job/module, permission entries, and scheduled-prune tracking calls. The additive `data_retention_history` table and settings/state rows may be left unused or dropped only after exporting any desired audit history.
+
+## 2026-07-13 03:49 UTC — Bounded container logs and reclaimed safe host cache space
+- Type: perf
+- Scope: Docker Compose logging / host disk housekeeping
+- Summary:
+  - Added Docker `json-file` rotation to the application and PostgreSQL services with a 10 MiB file limit and three retained files per service.
+  - Removed only regenerable Docker build cache and package-manager cache data; runtime containers, images required by the deployment, volumes, databases, Graphify artifacts, OTA files, and user data were preserved.
+  - Increased available host disk space from approximately 25 GiB to 29 GiB and reduced filesystem use from 86% to 83%.
+- Files:
+  - `docker-compose.yml`
+  - `README.md`
+  - `PROJECT_DESCRIPTION.md`
+  - `PROJECT_CHANGELOG.md`
+- DB/Config Impact:
+  - Schema: none
+  - Settings/State keys: none; Compose logging configuration changed for both services
+- Runtime Impact:
+  - Future container stdout/stderr logs are bounded to roughly 30 MiB per service. Removed caches will be downloaded or rebuilt again only when needed.
+- Validation:
+  - `docker compose config --quiet`
+  - Docker service status and disk-usage checks before/after cleanup
+- Rollback:
+  - Remove the two Compose `logging` blocks and recreate the services. Deleted caches are regenerable and do not require restoration.
+
+## 2026-07-13 03:46 UTC — Corrected project documentation and reduced repository noise
+- Type: docs
+- Scope: README / project architecture map / Graphify corpus / Docker build context / Python source hygiene
+- Summary:
+  - Rewrote the README around the current ISP operations portal, PostgreSQL deployment, supported installer/updater options, version-aware build commands, current integrations, and optional Graphify workflow.
+  - Corrected the project description's live host/environment context, navigation, feature map, background loops, database tables, deployment workflow, security caveats, and Graphify scope/access/freshness guidance.
+  - Corrected the feature heading hierarchy so major modules are nested beneath the Core Features section.
+  - Restored strict reverse-chronological ordering for the two previously misplaced onboarding/changelog entries.
+  - Excluded Graphify's own `.codex/` implementation from future graph extraction and excluded vendored/test/cache output from the Docker build context.
+  - Removed generated Python bytecode/cache directories and nine statically verified unused imports without changing application behavior.
+- Files:
+  - `README.md`
+  - `PROJECT_DESCRIPTION.md`
+  - `PROJECT_CHANGELOG.md`
+  - `.graphifyignore`
+  - `.dockerignore`
+  - `app/jobs.py`
+  - `app/main.py`
+  - `app/usage_logic.py`
+- DB/Config Impact:
+  - Schema: none
+  - Settings/State keys: none
+- Runtime Impact:
+  - No intended application behavior change. Future Docker builds send less irrelevant context, and the next Graphify refresh omits its self-referential skill/manual files.
+- Validation:
+  - Python compile/import checks for the edited modules
+  - Markdown structure/content review against current routes, jobs, schema, Compose, install, and update source
+  - `docker compose config --quiet`
+  - `git diff --check`
+- Rollback:
+  - Restore the listed documentation/ignore files and unused imports. Generated Python caches may be recreated automatically and do not require restoration.
+
+## 2026-07-13 02:57 UTC — Added protected Graphify view to System Settings
+- Type: feature
+- Scope: System Settings / Graphify development tooling / access control / Compose
+- Summary:
+  - Added a Graphify tab with live artifact statistics, an AI workflow guide, safety limitations, and clickable links to the interactive knowledge graph and architecture report.
+  - Added fixed authenticated artifact routes with no-store, content-type protections, and a sandboxed content security policy; raw graph data and cache files remain unserved.
+  - Added the `system.tab.graphify.view` permission, dependency/compatibility handling, and startup backfill for existing roles with broad System Settings access.
+  - Mounted `graphify-out/` read-only into the application container while keeping Graphify generation host-only and outside application dependencies.
+- Files:
+  - `.dockerignore`
+  - `app/db.py`
+  - `app/main.py`
+  - `app/templates/settings_system.html`
+  - `docker-compose.yml`
+  - `PROJECT_DESCRIPTION.md`
+  - `PROJECT_CHANGELOG.md`
+- DB/Config Impact:
+  - Schema: none; one permission catalog row is seeded through existing auth initialization.
+  - Settings/State keys: none; added `THREEJ_GRAPHIFY_OUT_DIR=/graphify-out` and a read-only Compose bind mount.
+- Runtime Impact:
+  - Authorized System Settings users can open the local development graph/report. Metadata is parsed only when the Graphify tab is requested; no Graphify process runs in the web application.
+- Validation:
+  - Python AST and Jinja template parsing
+  - `docker compose config --quiet`
+  - `git diff --check`
+  - Graphify incremental refresh and application container rebuild
+  - Auth redirect, permission mapping, artifact mount, response MIME/security headers, and unserved raw artifact checks
+- Rollback:
+  - Remove the Graphify tab/routes/status helper and permission seed/backfill, remove the Compose environment/mount and `.dockerignore`, then rebuild the application container. Host Graphify artifacts can remain for CLI-only development use.
+
+## 2026-07-13 02:38 UTC — Added local Graphify knowledge graph for AI development
+- Type: docs
+- Scope: AI onboarding / development tooling / architecture discovery
+- Summary:
+  - Installed Graphify 0.9.13 in an isolated host environment without adding it to the application dependencies, image, or Compose services.
+  - Added project-scoped and user-global Codex Graphify skills plus workspace/repository `AGENTS.md` instructions that require graph-first architecture queries with source verification.
+  - Added strict Graphify exclusions for runtime databases, backups, credentials, logs, vendored assets, and generated graph output.
+  - Generated an initial local code-only graph and architecture report without LLM calls, live PostgreSQL access, Git hooks, or HTTP MCP.
+- Files:
+  - `.gitignore`
+  - `.graphifyignore`
+  - `.codex/skills/graphify/*`
+  - `AGENTS.md`
+  - `/home/threejmon/AGENTS.md`
+  - `PROJECT_DESCRIPTION.md`
+  - `PROJECT_CHANGELOG.md`
+- DB/Config Impact:
+  - Schema: none
+  - Settings/State keys: none
+- Runtime Impact:
+  - No application runtime impact. Graphify runs only as an isolated host development command, and generated graph files remain local and Git-ignored.
+- Validation:
+  - `graphify --version`
+  - `graphify extract . --code-only --max-workers 2`
+  - `graphify cluster-only /opt/threejnotif --no-label`
+  - `graphify explain JobsManager --graph graphify-out/graph.json`
+  - `graphify query 'what connects accounts ping to surveillance' --graph graphify-out/graph.json --budget 1600`
+  - `graphify affected clear_accounts_ping_data --graph graphify-out/graph.json --depth 3`
+  - `graphify hook status`
+- Rollback:
+  - Remove the project Graphify skill, `AGENTS.md` Graphify instructions, `.graphifyignore`, and Graphify-related `.gitignore`/documentation entries; delete the isolated host environment and local generated graph artifacts.
+
 ## 2026-03-25 06:30 UTC — Added dedicated one-line updater for existing servers
 - Type: feature
 - Scope: Deployment tooling / update workflow / project docs
@@ -636,24 +1143,6 @@ Use this file to record every meaningful system change in reverse-chronological 
 - Rollback:
   - Revert latest docs commit or remove onboarding section and changelog entry.
 
-## 2026-03-09 03:33 UTC — Added project-level AI onboarding documentation
-- Type: docs
-- Scope: repository documentation
-- Summary:
-  - Added `PROJECT_DESCRIPTION.md` with architecture, feature map, DB overview, runtime instructions, and security rules.
-  - Added mandatory documentation policy requiring updates whenever system behavior changes.
-- Files:
-  - `PROJECT_DESCRIPTION.md`
-- DB/Config Impact:
-  - Schema: none
-  - Settings/State keys: none
-- Runtime Impact:
-  - No runtime impact.
-- Validation:
-  - Verified file exists and content is readable.
-- Rollback:
-  - Remove `PROJECT_DESCRIPTION.md`.
-
 ## 2026-03-09 03:36 UTC — Added formal project changelog system
 - Type: docs
 - Scope: repository documentation governance
@@ -672,3 +1161,21 @@ Use this file to record every meaningful system change in reverse-chronological 
   - Verified both markdown files and cross-reference.
 - Rollback:
   - Remove `PROJECT_CHANGELOG.md` and revert `PROJECT_DESCRIPTION.md` changelog references.
+
+## 2026-03-09 03:33 UTC — Added project-level AI onboarding documentation
+- Type: docs
+- Scope: repository documentation
+- Summary:
+  - Added `PROJECT_DESCRIPTION.md` with architecture, feature map, DB overview, runtime instructions, and security rules.
+  - Added mandatory documentation policy requiring updates whenever system behavior changes.
+- Files:
+  - `PROJECT_DESCRIPTION.md`
+- DB/Config Impact:
+  - Schema: none
+  - Settings/State keys: none
+- Runtime Impact:
+  - No runtime impact.
+- Validation:
+  - Verified file exists and content is readable.
+- Rollback:
+  - Remove `PROJECT_DESCRIPTION.md`.

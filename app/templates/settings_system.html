@@ -30,49 +30,440 @@
   }
 </style>
 
-<ul class="nav nav-tabs mb-3" data-bs-toggle="tabs">
+<ul class="nav nav-tabs mb-3" id="system-settings-tabs" aria-label="System Settings sections">
   {% if can_view_general_tab %}
     <li class="nav-item">
-      <a href="#sys-general" class="nav-link {% if active_tab == 'general' %}active{% endif %}" data-bs-toggle="tab">General</a>
+      <a href="/settings/system?tab=general" class="nav-link {% if active_tab == 'general' %}active{% endif %}" {% if active_tab == 'general' %}aria-current="page"{% endif %}>General</a>
     </li>
   {% endif %}
   {% if can_view_telegram_tab %}
     <li class="nav-item">
-      <a href="#sys-telegram" class="nav-link {% if active_tab == 'telegram' %}active{% endif %}" data-bs-toggle="tab">Telegram Commands</a>
+      <a href="/settings/system?tab=telegram" class="nav-link {% if active_tab == 'telegram' %}active{% endif %}" {% if active_tab == 'telegram' %}aria-current="page"{% endif %}>Telegram Commands</a>
     </li>
   {% endif %}
   {% if can_view_routers_tab %}
     <li class="nav-item">
-      <a href="#sys-routers" class="nav-link {% if active_tab == 'routers' %}active{% endif %}" data-bs-toggle="tab">Routers</a>
+      <a href="/settings/system?tab=routers" class="nav-link {% if active_tab == 'routers' %}active{% endif %}" {% if active_tab == 'routers' %}aria-current="page"{% endif %}>Routers</a>
     </li>
   {% endif %}
   {% if can_view_access_tab %}
     <li class="nav-item">
-      <a href="#sys-access" class="nav-link {% if active_tab == 'access' %}active{% endif %}" data-bs-toggle="tab">Access</a>
+      <a href="/settings/system?tab=access" class="nav-link {% if active_tab == 'access' %}active{% endif %}" {% if active_tab == 'access' %}aria-current="page"{% endif %}>Access</a>
     </li>
   {% endif %}
   {% if can_view_update_tab %}
     <li class="nav-item">
-      <a href="#sys-update" class="nav-link {% if active_tab == 'update' %}active{% endif %}" data-bs-toggle="tab">System Update</a>
+      <a href="/settings/system?tab=update" class="nav-link {% if active_tab == 'update' %}active{% endif %}" {% if active_tab == 'update' %}aria-current="page"{% endif %}>System Update</a>
+    </li>
+  {% endif %}
+  {% if can_view_data_retention_tab %}
+    <li class="nav-item">
+      <a href="/settings/system?tab=data-retention" class="nav-link {% if active_tab == 'data-retention' %}active{% endif %}" {% if active_tab == 'data-retention' %}aria-current="page"{% endif %}>
+        <i class="ti ti-database-cog me-1"></i>Data Retention
+      </a>
+    </li>
+  {% endif %}
+  {% if can_view_graphify_tab %}
+    <li class="nav-item">
+      <a href="/settings/system?tab=graphify" class="nav-link {% if active_tab == 'graphify' %}active{% endif %}" {% if active_tab == 'graphify' %}aria-current="page"{% endif %}>
+        <i class="ti ti-git-branch me-1"></i>Graphify
+      </a>
     </li>
   {% endif %}
   {% if can_manage_import_export %}
     <li class="nav-item">
-      <a href="#sys-backup" class="nav-link {% if active_tab == 'backup' %}active{% endif %}" data-bs-toggle="tab">Backup</a>
+      <a href="/settings/system?tab=backup" class="nav-link {% if active_tab == 'backup' %}active{% endif %}" {% if active_tab == 'backup' %}aria-current="page"{% endif %}>Backup</a>
     </li>
   {% endif %}
   {% if can_view_danger_tab %}
     <li class="nav-item">
-      <a href="#sys-danger" class="nav-link {% if active_tab == 'danger' %}active{% endif %}" data-bs-toggle="tab">Danger</a>
+      <a href="/settings/system?tab=danger" class="nav-link {% if active_tab == 'danger' %}active{% endif %}" {% if active_tab == 'danger' %}aria-current="page"{% endif %}>Danger</a>
     </li>
   {% endif %}
 </ul>
 
-{% if not can_view_general_tab and not can_view_telegram_tab and not can_view_routers_tab and not can_view_access_tab and not can_view_update_tab and not can_manage_import_export and not can_view_danger_tab %}
+{% if not can_view_general_tab and not can_view_telegram_tab and not can_view_routers_tab and not can_view_access_tab and not can_view_update_tab and not can_view_data_retention_tab and not can_view_graphify_tab and not can_manage_import_export and not can_view_danger_tab %}
   <div class="alert alert-warning">Your role can open System Settings, but no system sections are assigned yet.</div>
 {% endif %}
 
 <div class="tab-content">
+  {% if can_view_data_retention_tab and active_tab == 'data-retention' %}
+  <div class="tab-pane {% if active_tab == 'data-retention' %}active{% endif %}" id="sys-data-retention">
+    <div class="alert alert-warning">
+      <div class="d-flex align-items-start gap-2">
+        <i class="ti ti-shield-check mt-1"></i>
+        <div>
+          <div class="fw-semibold">The storage guardian is always active</div>
+          <div class="small text-muted mt-1">
+            When storage reaches {{ data_retention.settings.guardian.trigger_percent }}%, it runs one bounded cleanup cycle even if a feature collector is disabled, then observes a {{ data_retention.settings.guardian.cooldown_hours }}-hour cooldown. It never loops until a target usage is reached. A feature set to 0% is explicitly excluded.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <ul class="nav nav-tabs mb-4">
+      <li class="nav-item">
+        <a class="nav-link {% if data_retention.active_tab == 'overview' %}active{% endif %}" href="/settings/system?tab=data-retention&retention_tab=overview">
+          <i class="ti ti-layout-dashboard me-1"></i>Overview & Feature Policies
+        </a>
+      </li>
+      <li class="nav-item">
+        <a class="nav-link {% if data_retention.active_tab == 'settings' %}active{% endif %}" href="/settings/system?tab=data-retention&retention_tab=settings">
+          <i class="ti ti-adjustments me-1"></i>Settings
+        </a>
+      </li>
+      <li class="nav-item">
+        <a class="nav-link {% if data_retention.active_tab == 'history' %}active{% endif %}" href="/settings/system?tab=data-retention&retention_tab=history">
+          <i class="ti ti-history me-1"></i>Deletion History
+        </a>
+      </li>
+    </ul>
+
+    {% if data_retention.active_tab == 'overview' %}
+    <div class="row g-3 mb-4">
+      <div class="col-12 col-md-6 col-xl-3">
+        <div class="card h-100"><div class="card-body">
+          <div class="d-flex align-items-center justify-content-between gap-2">
+            <div class="text-muted small">Storage used</div>
+            {% if data_retention.storage.status == 'critical' %}
+              <span class="badge bg-red-lt text-red">Cleanup threshold reached</span>
+            {% elif data_retention.storage.status == 'warning' %}
+              <span class="badge bg-yellow-lt text-yellow">Watch</span>
+            {% else %}
+              <span class="badge bg-green-lt text-green">Healthy</span>
+            {% endif %}
+          </div>
+          <div class="h1 mb-1 mt-2">{{ data_retention.storage.used_percent }}%</div>
+          <div class="progress progress-sm mb-2">
+            <div class="progress-bar {% if data_retention.storage.status == 'critical' %}bg-red{% elif data_retention.storage.status == 'warning' %}bg-yellow{% else %}bg-green{% endif %}" style="width: {{ data_retention.storage.used_percent }}%"></div>
+          </div>
+          <div class="text-muted small">{{ data_retention.storage.used_label }} of {{ data_retention.storage.total_label }}</div>
+        </div></div>
+      </div>
+      <div class="col-12 col-md-6 col-xl-3">
+        <div class="card h-100"><div class="card-body">
+          <div class="text-muted small">Free storage</div>
+          <div class="h1 mb-1 mt-2">{{ data_retention.storage.free_label }}</div>
+          <div class="text-muted small">Monitored path: <span class="font-monospace">{{ data_retention.storage.path }}</span></div>
+        </div></div>
+      </div>
+      <div class="col-12 col-md-6 col-xl-3">
+        <div class="card h-100"><div class="card-body">
+          <div class="text-muted small">Last guardian check</div>
+          <div class="h3 mb-1 mt-2">{{ data_retention.guardian_state.last_checked_at_ph }}</div>
+          <div class="text-muted small">Result: {{ (data_retention.guardian_state.last_check_result or 'waiting')|replace('_', ' ')|title }}</div>
+        </div></div>
+      </div>
+      <div class="col-12 col-md-6 col-xl-3">
+        <div class="card h-100"><div class="card-body">
+          <div class="text-muted small">Last emergency cycle</div>
+          <div class="h3 mb-1 mt-2">{{ data_retention.guardian_state.last_triggered_at_ph }}</div>
+          <div class="text-muted small">{{ data_retention.guardian_state.last_rows_deleted or 0 }} row(s) deleted in the last cycle</div>
+        </div></div>
+      </div>
+    </div>
+
+    {% if data_retention.guardian_state.last_error %}
+      <div class="alert alert-danger">
+        <div class="fw-semibold">Last guardian error</div>
+        <div class="small mt-1 text-break">{{ data_retention.guardian_state.last_error }}</div>
+      </div>
+    {% endif %}
+    {% endif %}
+
+    {% if data_retention.active_tab == 'settings' %}
+    <form method="post" action="/settings/system/data-retention/settings?retention_tab=settings">
+      <div class="card mb-4">
+        <div class="card-header">
+          <div>
+            <h3 class="card-title mb-0">Mandatory Guardian Policy</h3>
+            <div class="text-muted small mt-1">The threshold and cooldown are global safety rules and cannot be disabled.</div>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="row g-3">
+            <div class="col-12 col-md-6 col-xl-3">
+              <label class="form-label">Trigger at storage used (%)</label>
+              <input type="number" class="form-control" name="guardian_trigger_percent" min="70" max="98" value="{{ data_retention.settings.guardian.trigger_percent }}" required {% if not can_edit_data_retention_settings %}disabled{% endif %}>
+              <div class="form-hint">Allowed: 70–98%. Default: 85%.</div>
+            </div>
+            <div class="col-12 col-md-6 col-xl-3">
+              <label class="form-label">Healthy target (%)</label>
+              <input type="number" class="form-control" name="guardian_recovery_percent" min="50" max="97" value="{{ data_retention.settings.guardian.recovery_percent }}" required {% if not can_edit_data_retention_settings %}disabled{% endif %}>
+              <div class="form-hint">Informational target; cleanup does not loop toward it.</div>
+            </div>
+            <div class="col-12 col-md-6 col-xl-3">
+              <label class="form-label">Check every (minutes)</label>
+              <input type="number" class="form-control" name="guardian_check_interval_minutes" min="1" max="60" value="{{ data_retention.settings.guardian.check_interval_minutes }}" required {% if not can_edit_data_retention_settings %}disabled{% endif %}>
+            </div>
+            <div class="col-12 col-md-6 col-xl-3">
+              <label class="form-label">Cooldown (hours)</label>
+              <input type="number" class="form-control" name="guardian_cooldown_hours" min="1" max="168" value="{{ data_retention.settings.guardian.cooldown_hours }}" required {% if not can_edit_data_retention_settings %}disabled{% endif %}>
+            </div>
+            <div class="col-12 col-md-6 col-xl-3">
+              <label class="form-label">Maximum rows per dataset/cycle</label>
+              <input type="number" class="form-control" name="guardian_max_rows_per_dataset" min="1000" max="1000000" step="1000" value="{{ data_retention.settings.guardian.max_rows_per_dataset }}" required {% if not can_edit_data_retention_settings %}disabled{% endif %}>
+              <div class="form-hint">Hard cap keeps every transaction bounded.</div>
+            </div>
+            <div class="col-12 col-md-6 col-xl-3">
+              <label class="form-label">Tracking history (days)</label>
+              <input type="number" class="form-control" name="guardian_history_retention_days" min="30" max="3650" value="{{ data_retention.settings.guardian.history_retention_days }}" required {% if not can_edit_data_retention_settings %}disabled{% endif %}>
+            </div>
+            <div class="col-12 col-md-6 col-xl-6 d-flex align-items-end">
+              <label class="form-check mb-2">
+                <input class="form-check-input" type="checkbox" name="guardian_vacuum_after_cleanup" {% if data_retention.settings.guardian.vacuum_after_cleanup %}checked{% endif %} {% if not can_edit_data_retention_settings %}disabled{% endif %}>
+                <span class="form-check-label">Run ordinary VACUUM after rows are deleted</span>
+                <span class="form-hint d-block">VACUUM makes space reusable inside PostgreSQL. The guardian never runs VACUUM FULL.</span>
+              </label>
+            </div>
+          </div>
+        </div>
+        {% if can_edit_data_retention_settings %}
+        <div class="card-footer d-flex align-items-center justify-content-between gap-3 flex-wrap">
+          <div class="text-muted small">Saving this policy does not run a cleanup cycle.</div>
+          <button type="submit" class="btn btn-primary"><i class="ti ti-device-floppy me-1"></i>Save Guardian Policy</button>
+        </div>
+        {% endif %}
+      </div>
+    </form>
+    {% endif %}
+
+      {% if data_retention.active_tab == 'overview' %}
+      <div class="card mb-4">
+        <div class="card-header">
+          <div>
+            <h3 class="card-title mb-0">Emergency Deletion by Feature</h3>
+            <div class="text-muted small mt-1">The percentage sets a target from estimated rows; the global row cap always wins. Data newer than “keep recent days” is protected.</div>
+          </div>
+        </div>
+        <div class="table-responsive">
+          <table class="table table-vcenter card-table">
+            <thead>
+              <tr>
+                <th>Feature</th>
+                <th>Current data</th>
+                <th>Normal scheduled policy</th>
+                <th style="min-width: 10rem;">Delete (%)</th>
+                <th style="min-width: 11rem;">Keep recent days</th>
+                <th>Last deletion</th>
+                <th class="text-end">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for feature in data_retention.features %}
+              <tr>
+                <td>
+                  <div class="fw-semibold">{{ feature.label }}</div>
+                  <div class="text-muted small">
+                    {% for dataset in feature.datasets_detail %}{{ dataset.label }}{% if not loop.last %}, {% endif %}{% endfor %}
+                  </div>
+                </td>
+                <td>
+                  <div>{{ feature.total_bytes_label }}</div>
+                  <div class="text-muted small">~{{ "{:,}".format(feature.estimated_rows) }} rows</div>
+                </td>
+                <td style="min-width: 15rem;">
+                  <div class="text-muted small">{{ feature.normal_policy }}</div>
+                  <div class="text-muted small mt-1">Batch cleanup every {{ feature.scheduled_cleanup_interval_days }} days</div>
+                </td>
+                <td>
+                  <div class="fw-semibold">{{ feature.delete_percent }}%</div>
+                  {% if feature.delete_percent == 0 %}<span class="badge bg-secondary-lt text-secondary mt-1">Excluded</span>{% endif %}
+                </td>
+                <td>{{ feature.min_keep_days }} days</td>
+                <td>
+                  <div>{{ feature.last_cleanup_at_ph }}</div>
+                  {% if feature.last_cleanup %}
+                    <div class="text-muted small">{{ feature.last_cleanup.rows_deleted or 0 }} rows · {{ feature.last_cleanup.trigger_type|title }}</div>
+                  {% endif %}
+                </td>
+                <td class="text-end">
+                  {% if can_edit_data_retention_settings %}
+                  <button type="button" class="btn btn-outline-primary btn-sm" data-bs-toggle="modal" data-bs-target="#retention-feature-modal-{{ feature.key }}">
+                    <i class="ti ti-pencil me-1"></i>Edit
+                  </button>
+                  {% else %}
+                  <span class="text-muted small">Read only</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {% if can_edit_data_retention_settings %}
+        {% for feature in data_retention.features %}
+        <div class="modal modal-blur fade" id="retention-feature-modal-{{ feature.key }}" tabindex="-1" aria-labelledby="retention-feature-modal-title-{{ feature.key }}" aria-hidden="true">
+          <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable" role="document">
+            <form class="modal-content" method="post" action="/settings/system/data-retention/feature/{{ feature.key }}?retention_tab=overview">
+              <div class="modal-header">
+                <div>
+                  <h3 class="modal-title" id="retention-feature-modal-title-{{ feature.key }}">Edit {{ feature.label }} Retention</h3>
+                  <div class="text-muted small mt-1">Update scheduled retention and emergency storage-recovery rules together.</div>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+              </div>
+              <div class="modal-body">
+                <div class="mb-4">
+                  <h4 class="mb-1">Normal scheduled policy</h4>
+                  <div class="text-muted small">These values control the feature's ordinary background retention cleanup.</div>
+                </div>
+                <div class="row g-3">
+                  {% for normal_field in feature.normal_fields %}
+                  <div class="col-12 col-md-6">
+                    <label class="form-label">{{ normal_field.label }}</label>
+                    <div class="input-group input-group-flat">
+                      <input type="number" class="form-control" name="{{ normal_field.name }}" min="1" max="3650" value="{{ normal_field.value }}" required>
+                      <span class="input-group-text">days</span>
+                    </div>
+                  </div>
+                  {% endfor %}
+                  <div class="col-12 col-md-6">
+                    <label class="form-label">Scheduled cleanup interval</label>
+                    <div class="input-group input-group-flat">
+                      <input type="number" class="form-control" name="scheduled_cleanup_interval_days" min="1" max="365" value="{{ feature.scheduled_cleanup_interval_days }}" required>
+                      <span class="input-group-text">days</span>
+                    </div>
+                    <div class="form-hint">Default: 30 days. Cleanup waits until history exceeds retention plus this interval, then returns it to the retention window.</div>
+                  </div>
+                </div>
+
+                <hr class="my-4">
+
+                <div class="mb-4">
+                  <h4 class="mb-1">Emergency deletion policy</h4>
+                  <div class="text-muted small">Used only when the mandatory guardian reaches its storage trigger.</div>
+                </div>
+                <div class="row g-3">
+                  <div class="col-12 col-md-6">
+                    <label class="form-label">Delete from eligible data (%)</label>
+                    <div class="input-group input-group-flat">
+                      <input type="number" class="form-control" name="delete_percent" min="0" max="50" value="{{ feature.delete_percent }}" required>
+                      <span class="input-group-text">%</span>
+                    </div>
+                    <div class="form-hint">Set 0% to exclude this feature from emergency deletion.</div>
+                  </div>
+                  <div class="col-12 col-md-6">
+                    <label class="form-label">Keep recent data</label>
+                    <div class="input-group input-group-flat">
+                      <input type="number" class="form-control" name="min_keep_days" min="1" max="3650" value="{{ feature.min_keep_days }}" required>
+                      <span class="input-group-text">days</span>
+                    </div>
+                    <div class="form-hint">Rows newer than this window remain protected.</div>
+                  </div>
+                </div>
+
+                <div class="alert alert-info mt-4 mb-0">
+                  Saving only updates policy values. It does not run scheduled or emergency deletion.
+                </div>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn btn-link link-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn btn-primary"><i class="ti ti-device-floppy me-1"></i>Save policy</button>
+              </div>
+            </form>
+          </div>
+        </div>
+        {% endfor %}
+      {% endif %}
+      {% endif %}
+
+    {% if data_retention.active_tab == 'history' %}
+    <div class="card mb-4">
+      <div class="card-header">
+        <div>
+          <h3 class="card-title mb-0">Automatic Deletion History</h3>
+          <div class="text-muted small mt-1">Durable records for scheduled feature pruning and storage-triggered emergency cleanup. Previous and current disk usage are snapshots captured around each deletion; older audit rows without snapshots show “—”.</div>
+        </div>
+      </div>
+      <div class="card-body border-bottom py-3">
+        <form method="get" action="/settings/system" class="row g-2 align-items-end">
+          <input type="hidden" name="tab" value="data-retention">
+          <input type="hidden" name="retention_tab" value="history">
+          <div class="col-12 col-md-4 col-xl-3">
+            <label class="form-label">Feature</label>
+            <select class="form-select" name="retention_feature">
+              <option value="">All features</option>
+              {% for feature in data_retention.features %}
+                <option value="{{ feature.key }}" {% if data_retention.filters.feature == feature.key %}selected{% endif %}>{{ feature.label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-6 col-md-3 col-xl-2">
+            <label class="form-label">Trigger</label>
+            <select class="form-select" name="retention_trigger">
+              <option value="">All</option>
+              <option value="scheduled" {% if data_retention.filters.trigger == 'scheduled' %}selected{% endif %}>Scheduled</option>
+              <option value="emergency" {% if data_retention.filters.trigger == 'emergency' %}selected{% endif %}>Emergency</option>
+            </select>
+          </div>
+          <div class="col-6 col-md-3 col-xl-2">
+            <label class="form-label">Status</label>
+            <select class="form-select" name="retention_status">
+              <option value="">All</option>
+              <option value="completed" {% if data_retention.filters.status == 'completed' %}selected{% endif %}>Completed</option>
+              <option value="failed" {% if data_retention.filters.status == 'failed' %}selected{% endif %}>Failed</option>
+            </select>
+          </div>
+          <div class="col-6 col-md-2 col-xl-2">
+            <label class="form-label">Rows/page</label>
+            <select class="form-select" name="retention_limit">
+              {% for option in [25, 50, 100] %}<option value="{{ option }}" {% if data_retention.filters.limit == option %}selected{% endif %}>{{ option }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="col-6 col-md-auto"><button type="submit" class="btn btn-outline-primary">Apply filters</button></div>
+        </form>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-vcenter card-table">
+          <thead><tr><th>When</th><th>Trigger</th><th>Feature / dataset</th><th>Deleted</th><th>Previous disk</th><th>Current disk</th><th>Status</th><th>Cutoff</th></tr></thead>
+          <tbody>
+            {% for row in data_retention.history %}
+            <tr>
+              <td><div>{{ row.started_at_ph }}</div><div class="text-muted small">{{ row.duration_label }}</div></td>
+              <td>
+                {% if row.trigger_type == 'emergency' %}<span class="badge bg-orange-lt text-orange">Emergency</span>{% else %}<span class="badge bg-blue-lt text-blue">Scheduled</span>{% endif %}
+              </td>
+              <td><div class="fw-semibold">{{ row.feature_label }}</div><div class="text-muted small">{{ row.dataset_label }}</div></td>
+              <td>{{ "{:,}".format(row.rows_deleted or 0) }}</td>
+              <td><span class="text-muted small">{{ row.disk_percent_before_label }}</span></td>
+              <td><span class="text-muted small">{{ row.disk_percent_after_label }}</span></td>
+              <td>
+                {% if row.status == 'completed' %}<span class="badge bg-green-lt text-green">Completed</span>{% else %}<span class="badge bg-red-lt text-red">Failed</span>{% endif %}
+                {% if row.error_message %}<div class="text-danger small text-break mt-1">{{ row.error_message }}</div>{% endif %}
+              </td>
+              <td><span class="text-muted small">{{ row.cutoff_at or '—' }}</span></td>
+            </tr>
+            {% else %}
+            <tr><td colspan="8" class="text-center text-muted py-4">No automatic deletion records match these filters yet.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="card-footer d-flex align-items-center justify-content-between gap-3 flex-wrap">
+        <div class="text-muted small">
+          {% if data_retention.pagination.total %}Showing {{ data_retention.pagination.start }}–{{ data_retention.pagination.end }} of {{ data_retention.pagination.total }}{% else %}0 records{% endif %}
+        </div>
+        <div class="btn-list">
+          <a class="btn btn-outline-secondary btn-sm {% if not data_retention.pagination.previous_url %}disabled{% endif %}" {% if data_retention.pagination.previous_url %}href="{{ data_retention.pagination.previous_url }}"{% endif %}>Previous</a>
+          <span class="btn btn-ghost-secondary btn-sm disabled">Page {{ data_retention.pagination.page }} of {{ data_retention.pagination.page_count }}</span>
+          <a class="btn btn-outline-secondary btn-sm {% if not data_retention.pagination.next_url %}disabled{% endif %}" {% if data_retention.pagination.next_url %}href="{{ data_retention.pagination.next_url }}"{% endif %}>Next</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="alert alert-info">
+      <div class="fw-semibold">How storage recovery works</div>
+      <div class="small text-muted mt-1">
+        PostgreSQL DELETE removes rows logically and ordinary VACUUM makes that space reusable by future writes; filesystem usage may not drop immediately. VACUUM FULL is intentionally prohibited because it rewrites and locks large tables. The hard row cap, recent-data floor, cooldown, and single-cycle rule keep emergency cleanup bounded on this shared test/production server.
+      </div>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+  {% if can_view_general_tab and active_tab == 'general' %}
   <div class="tab-pane {% if active_tab == 'general' %}active{% endif %}" id="sys-general">
     {% if not can_view_general_tab %}
       <div class="alert alert-warning">You do not have permission to view the General tab.</div>
@@ -142,7 +533,9 @@
     </div>
     {% endif %}
   </div>
+  {% endif %}
 
+  {% if can_view_telegram_tab and active_tab == 'telegram' %}
   <div class="tab-pane {% if active_tab == 'telegram' %}active{% endif %}" id="sys-telegram">
     {% if not can_view_telegram_tab %}
       <div class="alert alert-warning">You do not have permission to view Telegram Commands.</div>
@@ -194,7 +587,9 @@
       </div>
     {% endif %}
   </div>
+  {% endif %}
 
+  {% if can_view_routers_tab and active_tab == 'routers' %}
   <div class="tab-pane {% if active_tab == 'routers' %}active{% endif %}" id="sys-routers">
     {% if not can_view_routers_tab %}
       <div class="alert alert-warning">You do not have permission to view router references.</div>
@@ -435,7 +830,8 @@
                   <span class="me-2"><i class="ti ti-info-circle"></i></span>
                   <div>
                     ISPs are detected from each Core’s RouterOS address-lists (TO-ISP). This is the main ISP list used by WAN Ping and other modules. Manage the Identifier and Color here.
-                    <div class="mt-2"><span class="fw-semibold">Routed mode:</span> Local IP is auto-detected from RouterOS and set to read-only. WAN IP is auto-detected and used for Netwatch host checks.</div>
+                    <div class="mt-2"><span class="fw-semibold">Routed mode:</span> Local IP is auto-detected from RouterOS. Enter the public WAN IPv4 address manually; it is used for Netwatch host checks and will never be replaced automatically.</div>
+                    <div class="mt-2"><span class="fw-semibold">WAN IP changes:</span> The system validates every routed public IPv4 address and records changes in the audit log.</div>
                     <div class="mt-2"><span class="fw-semibold">Bridged mode:</span> Local IP stays manual and is used as ping source and Netwatch host.</div>
                     <div class="mt-2">Color is used for charts/labels when available. ISP Port Status bandwidth tracking uses the Core interface selected in the <span class="fw-semibold">ISP Port Tagging</span> tab.</div>
                   </div>
@@ -462,6 +858,7 @@
                       <th title="Optional color for charts/labels.">Color</th>
                       <th title="Routed = ping via core router; Bridged = ping via PPPoE router.">Mode</th>
                       <th title="Routed: auto-detected source IP. Bridged: manual source IP.">Local IP</th>
+                      <th title="Operator-entered public IPv4 address used by RouterOS Netwatch.">WAN IP</th>
                       <th title="Select PPPoE router for Bridged mode.">PPPoE Router</th>
                       <th title="Disable to skip checks for this ISP.">Enabled</th>
                     </tr>
@@ -497,20 +894,26 @@
                             value="{{ row.local_ip }}"
                             data-row="{{ loop.index0 }}"
                             data-auto-local-ip="{{ row.detected_local_ip or '' }}"
+                            data-can-edit="{{ 1 if can_edit_system_router_isp else 0 }}"
                             {% if row.mode == 'routed' or not can_edit_system_router_isp %}readonly{% endif %}
                           />
-                          <input
-                            type="hidden"
-                            class="wan-netwatch-host"
-                            name="wan_{{ loop.index0 }}_netwatch_host"
-                            value="{{ row.netwatch_host or '' }}"
-                            data-row="{{ loop.index0 }}"
-                            data-auto-netwatch-host="{{ row.detected_netwatch_host or '' }}"
-                          />
-                          <div class="form-hint mt-1 wan-wan-ip-wrap {% if row.mode == 'bridged' %}d-none{% endif %}" data-row="{{ loop.index0 }}">
-                            WAN IP:
-                            <span class="wan-netwatch-host-label" data-row="{{ loop.index0 }}">{{ row.netwatch_host or 'n/a' }}</span>
+                        </td>
+                        <td style="min-width: 280px;">
+                          <div class="wan-wan-ip-wrap {% if row.mode == 'bridged' %}d-none{% endif %}" data-row="{{ loop.index0 }}">
+                            <input
+                              type="text"
+                              class="form-control wan-netwatch-host"
+                              name="wan_{{ loop.index0 }}_netwatch_host"
+                              value="{{ row.netwatch_host or '' }}"
+                              data-row="{{ loop.index0 }}"
+                              placeholder="Public IPv4 address"
+                              inputmode="decimal"
+                              autocomplete="off"
+                              {% if not can_edit_system_router_isp %}readonly{% endif %}
+                            />
+                            <div class="form-hint mt-1">Required in Routed mode. Saved changes are audited and synchronized to Netwatch.</div>
                           </div>
+                          <div class="form-hint wan-wan-ip-bridged {% if row.mode != 'bridged' %}d-none{% endif %}" data-row="{{ loop.index0 }}">Bridged mode uses Local IP as the Netwatch host.</div>
                         </td>
                         <td>
                           <select name="wan_{{ loop.index0 }}_pppoe_router_id" class="form-select wan-router" data-row="{{ loop.index0 }}" {% if not can_edit_system_router_isp %}disabled{% endif %}>
@@ -677,7 +1080,9 @@
     </div>
     {% endif %}
   </div>
+  {% endif %}
 
+  {% if can_view_access_tab and active_tab == 'access' %}
   <div class="tab-pane {% if active_tab == 'access' %}active{% endif %}" id="sys-access">
     {% if not can_view_access_tab %}
       <div class="alert alert-warning">You do not have permission to manage access settings.</div>
@@ -1200,8 +1605,9 @@
       </div>
     {% endif %}
   </div>
+  {% endif %}
 
-  {% if can_view_update_tab %}
+  {% if can_view_update_tab and active_tab == 'update' %}
   <div class="tab-pane {% if active_tab == 'update' %}active{% endif %}" id="sys-update">
     <div class="alert alert-info">
       <div class="d-flex align-items-start">
@@ -1325,7 +1731,177 @@
   </div>
   {% endif %}
 
-  {% if can_manage_import_export %}
+  {% if can_view_graphify_tab and active_tab == 'graphify' %}
+  <div class="tab-pane {% if active_tab == 'graphify' %}active{% endif %}" id="sys-graphify">
+    <div class="alert alert-info">
+      <div class="d-flex align-items-start">
+        <span class="me-2"><i class="ti ti-info-circle"></i></span>
+        <div>
+          <div class="fw-semibold">Development knowledge graph</div>
+          <div class="small text-muted mt-1">
+            Graphify maps source files, functions, classes, and their relationships so AI coding assistants can orient themselves before changing the project. It is a development aid, not application monitoring or production telemetry.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row g-3 mb-4">
+      <div class="col-6 col-lg-3">
+        <div class="card h-100"><div class="card-body">
+          <div class="text-muted small">Nodes</div>
+          <div class="h2 mb-0">{{ graphify_status.nodes or 0 }}</div>
+        </div></div>
+      </div>
+      <div class="col-6 col-lg-3">
+        <div class="card h-100"><div class="card-body">
+          <div class="text-muted small">Relationships</div>
+          <div class="h2 mb-0">{{ graphify_status.relationships or 0 }}</div>
+        </div></div>
+      </div>
+      <div class="col-6 col-lg-3">
+        <div class="card h-100"><div class="card-body">
+          <div class="text-muted small">Communities</div>
+          <div class="h2 mb-0">{{ graphify_status.communities or 0 }}</div>
+        </div></div>
+      </div>
+      <div class="col-6 col-lg-3">
+        <div class="card h-100"><div class="card-body">
+          <div class="text-muted small">Artifacts</div>
+          {% if graphify_status.available %}
+            <span class="badge bg-green-lt text-green mt-2">Interactive graph ready</span>
+          {% else %}
+            <span class="badge bg-yellow-lt text-yellow mt-2">Graph unavailable</span>
+          {% endif %}
+        </div></div>
+      </div>
+    </div>
+
+    {% if graphify_status.metadata_error %}
+      <div class="alert alert-warning">{{ graphify_status.metadata_error }}</div>
+    {% endif %}
+
+    <div class="row g-4">
+      <div class="col-12 col-xl-7">
+        <div class="card h-100">
+          <div class="card-header">
+            <div>
+              <h3 class="card-title mb-1">Interactive Project Graph</h3>
+              <div class="text-muted small">Explore connections visually or read the generated architecture audit.</div>
+            </div>
+          </div>
+          <div class="card-body">
+            {% if graphify_status.available or graphify_status.report_available %}
+              <div class="d-flex flex-column flex-sm-row gap-2 mb-4">
+                {% if graphify_status.available %}
+                  <a class="btn btn-primary" href="/settings/system/graphify/graph" target="_blank" rel="noopener noreferrer">
+                    <i class="ti ti-external-link me-1"></i>Open Interactive Graph
+                  </a>
+                {% endif %}
+                {% if graphify_status.report_available %}
+                  <a class="btn btn-outline-secondary" href="/settings/system/graphify/report" target="_blank" rel="noopener noreferrer">
+                    <i class="ti ti-file-description me-1"></i>View Architecture Report
+                  </a>
+                {% endif %}
+              </div>
+            {% else %}
+              <div class="alert alert-warning">
+                Graphify artifacts are unavailable inside the application container. Run the refresh commands on the server host, then reload this tab.
+              </div>
+            {% endif %}
+
+            <div class="row g-3">
+              <div class="col-12 col-md-6">
+                <div class="border rounded p-3 h-100">
+                  <div class="text-muted small">Last artifact update</div>
+                  <div class="fw-semibold mt-1">{{ graphify_status.updated_at_ph or 'n/a' }}</div>
+                  <div class="text-muted small mt-1">Philippine time</div>
+                </div>
+              </div>
+              <div class="col-12 col-md-6">
+                <div class="border rounded p-3 h-100">
+                  <div class="text-muted small">Built at commit</div>
+                  <div class="fw-semibold font-monospace text-break mt-1">{{ graphify_status.built_at_commit_short or 'n/a' }}</div>
+                  {% if graphify_status.commit_state == 'match' %}
+                    <span class="badge bg-green-lt text-green mt-2">Matches installed commit</span>
+                  {% elif graphify_status.commit_state == 'different' %}
+                    <span class="badge bg-yellow-lt text-yellow mt-2">Refresh recommended</span>
+                  {% endif %}
+                </div>
+              </div>
+            </div>
+
+            <div class="mt-4">
+              <div class="fw-semibold mb-2">Relationship confidence</div>
+              <div class="d-flex gap-2 flex-wrap">
+                <span class="badge bg-blue-lt text-blue">{{ graphify_status.extracted_relationships or 0 }} extracted</span>
+                <span class="badge bg-yellow-lt text-yellow">{{ graphify_status.inferred_relationships or 0 }} inferred</span>
+              </div>
+              <div class="text-muted small mt-2">Verify inferred or ambiguous connections against source code before using them for implementation decisions.</div>
+            </div>
+
+            <div class="alert alert-secondary mt-4 mb-0">
+              The visualization loads the integrity-pinned <span class="font-monospace">vis-network</span> library from unpkg.com. It may not render when the browser has no internet access.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-12 col-xl-5">
+        <div class="card h-100">
+          <div class="card-header"><h3 class="card-title">AI Workflow Guide</h3></div>
+          <div class="card-body">
+            <ol class="ps-3 mb-4">
+              <li class="mb-2">Read <span class="font-monospace">AGENTS.md</span> and the current project description.</li>
+              <li class="mb-2">Query Graphify before broad source searches.</li>
+              <li class="mb-2">Verify graph findings in the referenced source files.</li>
+              <li>Refresh the graph after code changes.</li>
+            </ol>
+
+            <div class="fw-semibold mb-2">Ask an architecture question</div>
+            <pre class="system-update-command mb-3"><code>cd /opt/threejnotif
+graphify query "how does Accounts Ping connect to Surveillance?" --graph graphify-out/graph.json</code></pre>
+
+            <div class="fw-semibold mb-2">Explain or trace a connection</div>
+            <pre class="system-update-command mb-3"><code>graphify explain JobsManager --graph graphify-out/graph.json
+graphify path "JobsManager" "Database" --graph graphify-out/graph.json</code></pre>
+
+            <div class="fw-semibold mb-2">Refresh after development changes</div>
+            <pre class="system-update-command mb-0"><code>graphify update .
+graphify cluster-only /opt/threejnotif --no-label</code></pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-12">
+        <div class="card">
+          <div class="card-header"><h3 class="card-title">Scope, Safety, and Limitations</h3></div>
+          <div class="card-body">
+            <div class="row g-3">
+              <div class="col-12 col-lg-4">
+                <div class="fw-semibold mb-1"><i class="ti ti-code me-1"></i>Code-only extraction</div>
+                <div class="text-muted small">The current graph is generated from repository source structure without an LLM or external AI API.</div>
+              </div>
+              <div class="col-12 col-lg-4">
+                <div class="fw-semibold mb-1"><i class="ti ti-shield-lock me-1"></i>Excluded data</div>
+                <div class="text-muted small">Runtime databases, credentials, backups, logs, generated artifacts, and other sensitive/noisy paths are excluded.</div>
+              </div>
+              <div class="col-12 col-lg-4">
+                <div class="fw-semibold mb-1"><i class="ti ti-tool me-1"></i>Manual development tool</div>
+                <div class="text-muted small">Automatic Git hooks and live database introspection are disabled. Graphify does not replace tests, source review, or monitoring.</div>
+              </div>
+            </div>
+            <div class="mt-3 text-muted small">
+              Installed version: <span class="font-monospace">{{ graphify_status.version or '0.9.13' }}</span>
+              · <a href="https://graphify.net/" target="_blank" rel="noopener noreferrer">Graphify website <i class="ti ti-external-link"></i></a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if can_manage_import_export and active_tab == 'backup' %}
   <div class="tab-pane {% if active_tab == 'backup' %}active{% endif %}" id="sys-backup">
     <div class="card mb-4">
       <div class="card-header">
@@ -1365,7 +1941,7 @@
   </div>
   {% endif %}
 
-  {% if can_view_danger_tab %}
+  {% if can_view_danger_tab and active_tab == 'danger' %}
     <div class="tab-pane {% if active_tab == 'danger' %}active{% endif %}" id="sys-danger">
       <div class="alert alert-warning">
         <div class="d-flex align-items-start">
@@ -1374,6 +1950,26 @@
             <div class="fw-semibold">Centralized destructive actions</div>
             <div class="small text-muted mt-1">Feature-level danger tabs were moved here. Each format action preserves settings but deletes stored feature data.</div>
           </div>
+        </div>
+      </div>
+
+      <div class="card mb-4 d-none" id="system-danger-progress-card">
+        <div class="card-header">
+          <div>
+            <h3 class="card-title mb-1">Danger Action Progress</h3>
+            <div class="text-muted small" id="system-danger-progress-stage">Waiting for a format job...</div>
+          </div>
+          <span class="badge bg-warning-lt text-warning ms-auto" id="system-danger-progress-badge">Queued</span>
+        </div>
+        <div class="card-body">
+          <div class="d-flex align-items-center justify-content-between mb-2">
+            <div class="fw-semibold" id="system-danger-progress-label">Formatting data</div>
+            <div class="text-muted small" id="system-danger-progress-percent">0%</div>
+          </div>
+          <div class="progress mb-3">
+            <div class="progress-bar bg-warning" id="system-danger-progress-bar" style="width: 0%"></div>
+          </div>
+          <div class="system-danger-module-list" id="system-danger-progress-modules"></div>
         </div>
       </div>
 
@@ -1492,7 +2088,7 @@
   {% endif %}
 </div>
 
-{% if can_view_danger_tab %}
+{% if can_view_danger_tab and active_tab == 'danger' %}
   <div class="modal modal-blur fade" id="system-danger-modal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered" role="document">
       <form method="post" action="/settings/system/danger/run" class="modal-content" id="system-danger-form">
@@ -1548,6 +2144,20 @@
     border: 1px solid var(--tblr-border-color, #d9dee3);
     border-radius: 10px;
     background: var(--tblr-bg-surface-secondary, #f8f9fb);
+  }
+  .system-danger-module-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: .75rem;
+  }
+  .system-danger-module {
+    border: 1px solid var(--tblr-border-color, #d9dee3);
+    border-radius: 10px;
+    padding: .75rem;
+    background: var(--tblr-bg-surface, #fff);
+  }
+  .system-danger-module .progress {
+    height: .35rem;
   }
   .system-update-log {
     margin: 0;
@@ -1923,42 +2533,33 @@
     const mode = document.querySelector(`.wan-mode[data-row="${rowId}"]`);
     const localInput = document.querySelector(`.wan-local-ip[data-row="${rowId}"]`);
     const netwatchInput = document.querySelector(`.wan-netwatch-host[data-row="${rowId}"]`);
-    const netwatchLabel = document.querySelector(`.wan-netwatch-host-label[data-row="${rowId}"]`);
     const wanIpWrap = document.querySelector(`.wan-wan-ip-wrap[data-row="${rowId}"]`);
+    const wanIpBridged = document.querySelector(`.wan-wan-ip-bridged[data-row="${rowId}"]`);
     const routerSelect = document.querySelector(`.wan-router[data-row="${rowId}"]`);
     const enabledToggle = document.querySelector(`.wan-enabled[data-row="${rowId}"]`);
     if (!mode || !localInput || !routerSelect || !enabledToggle) return;
     const isBridged = mode.value === "bridged";
+    const canEdit = localInput.dataset.canEdit !== "0";
     const autoLocal = String(localInput.dataset.autoLocalIp || "").trim();
-    const autoNetwatch = String(netwatchInput ? netwatchInput.dataset.autoNetwatchHost || "" : "").trim();
     if (isBridged) {
-      localInput.readOnly = false;
+      localInput.readOnly = !canEdit;
       localInput.title = "Manual source IP for bridged mode";
       if (wanIpWrap) wanIpWrap.classList.add("d-none");
+      if (wanIpBridged) wanIpBridged.classList.remove("d-none");
     } else {
       if (autoLocal) localInput.value = autoLocal;
       localInput.readOnly = true;
       localInput.title = "Auto-detected source IP for routed mode";
       if (wanIpWrap) wanIpWrap.classList.remove("d-none");
-      if (netwatchInput) {
-        netwatchInput.value = autoNetwatch;
-      }
-      if (netwatchLabel) {
-        netwatchLabel.textContent = autoNetwatch || "n/a";
-      }
+      if (wanIpBridged) wanIpBridged.classList.add("d-none");
     }
     localInput.disabled = false;
-    routerSelect.disabled = !isBridged;
+    routerSelect.disabled = !isBridged || !canEdit;
     localInput.style.opacity = "1";
     routerSelect.style.opacity = isBridged ? "1" : "0.6";
-    if (isBridged && netwatchInput) {
-      netwatchInput.value = localInput.value.trim();
-    }
-    if (isBridged && netwatchLabel) {
-      netwatchLabel.textContent = localInput.value.trim() || "n/a";
-    }
+    if (netwatchInput) netwatchInput.readOnly = isBridged || !canEdit;
     const hasLocal = Boolean(localInput.value.trim());
-    enabledToggle.disabled = !hasLocal;
+    enabledToggle.disabled = !hasLocal || !canEdit;
     if (!hasLocal) {
       enabledToggle.checked = false;
     }
@@ -2055,10 +2656,104 @@
     }
   }
 
+  const systemDangerProgressCard = document.getElementById("system-danger-progress-card");
+  if (systemDangerProgressCard) {
+    const dangerProgressLabel = document.getElementById("system-danger-progress-label");
+    const dangerProgressStage = document.getElementById("system-danger-progress-stage");
+    const dangerProgressBadge = document.getElementById("system-danger-progress-badge");
+    const dangerProgressPercent = document.getElementById("system-danger-progress-percent");
+    const dangerProgressBar = document.getElementById("system-danger-progress-bar");
+    const dangerProgressModules = document.getElementById("system-danger-progress-modules");
+    const dangerToneClasses = ["warning", "success", "danger", "secondary", "blue"];
+    const dangerEscapeHtml = (value) => String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+    const setDangerTone = (node, tone, prefix = "bg") => {
+      if (!node) return;
+      if (prefix === "progress") {
+        dangerToneClasses.forEach((name) => node.classList.remove(`bg-${name}`));
+        node.classList.add(`bg-${tone}`);
+      } else {
+        dangerToneClasses.forEach((name) => {
+          node.classList.remove(`bg-${name}-lt`, `text-${name}`);
+        });
+        node.classList.add(`bg-${tone}-lt`, `text-${tone}`);
+      }
+    };
+    const toneForDangerStatus = (status) => {
+      const value = String(status || "").toLowerCase();
+      if (value === "completed") return "success";
+      if (value === "failed") return "danger";
+      if (value === "running") return "warning";
+      return "secondary";
+    };
+    const renderSystemDangerProgress = (job = {}) => {
+      if (!job.visible) {
+        systemDangerProgressCard.classList.add("d-none");
+        return;
+      }
+      const status = String(job.status || "running").toLowerCase();
+      const tone = toneForDangerStatus(status);
+      const percent = Math.max(0, Math.min(100, Number(job.percent ?? 0) || 0));
+      systemDangerProgressCard.classList.remove("d-none");
+      if (dangerProgressLabel) dangerProgressLabel.textContent = job.label || "Formatting data";
+      if (dangerProgressStage) dangerProgressStage.textContent = job.stage || "Processing modules...";
+      if (dangerProgressPercent) dangerProgressPercent.textContent = `${Math.round(percent)}%`;
+      if (dangerProgressBadge) {
+        dangerProgressBadge.textContent = status === "completed" ? "Completed" : status === "failed" ? "Failed" : status === "queued" ? "Queued" : "Running";
+        setDangerTone(dangerProgressBadge, tone);
+      }
+      if (dangerProgressBar) {
+        dangerProgressBar.style.width = `${percent}%`;
+        setDangerTone(dangerProgressBar, tone, "progress");
+      }
+      const modules = Array.isArray(job.modules) ? job.modules : [];
+      if (dangerProgressModules) {
+        dangerProgressModules.innerHTML = modules.length
+          ? modules.map((module) => {
+              const moduleStatus = String(module.status || "queued").toLowerCase();
+              const moduleTone = toneForDangerStatus(moduleStatus);
+              const modulePercent = Math.max(0, Math.min(100, Number(module.percent ?? 0) || 0));
+              const moduleError = String(module.error || "").trim();
+              return `
+                <div class="system-danger-module">
+                  <div class="d-flex align-items-center justify-content-between gap-2 mb-2">
+                    <div class="fw-semibold">${dangerEscapeHtml(module.label || module.key || "Module")}</div>
+                    <span class="badge bg-${moduleTone}-lt text-${moduleTone}">${dangerEscapeHtml(moduleStatus || "queued")}</span>
+                  </div>
+                  <div class="progress mb-2">
+                    <div class="progress-bar bg-${moduleTone}" style="width: ${modulePercent}%"></div>
+                  </div>
+                  <div class="text-muted small">${Math.round(modulePercent)}%${moduleError ? ` · <span class="text-danger">${dangerEscapeHtml(moduleError)}</span>` : ""}</div>
+                </div>
+              `;
+            }).join("")
+          : '<div class="text-muted small">No module progress yet.</div>';
+      }
+    };
+    const fetchSystemDangerProgress = async () => {
+      try {
+        const response = await fetch("/system/background-tasks", { headers: { "Accept": "application/json" }, cache: "no-store" });
+        if (!response.ok) return;
+        const data = await response.json();
+        renderSystemDangerProgress(data.system_danger_job || {});
+      } catch (_error) {
+      }
+    };
+    fetchSystemDangerProgress();
+    if (window.ThreeJPolling?.createTask) {
+      window.ThreeJPolling.createTask(fetchSystemDangerProgress, { intervalMs: 1500, resumeDelayMs: 250 });
+    } else {
+      setInterval(fetchSystemDangerProgress, 1500);
+    }
+  }
+
   const systemUpdateRoot = document.getElementById("sys-update");
   if (systemUpdateRoot) {
     const updateCheckUrl = "/settings/system/update/check";
-    const updateTabLink = document.querySelector('a[href="#sys-update"]');
     const updateCheckBtn = document.getElementById("system-update-check-btn");
     const updateActionNote = document.getElementById("system-update-action-note");
     const updateEmpty = document.getElementById("system-update-empty");
@@ -2236,14 +2931,6 @@
       });
     }
 
-    if (updateTabLink) {
-      updateTabLink.addEventListener("shown.bs.tab", () => {
-        if ({{ 'true' if can_check_system_update else 'false' }}) {
-          fetchUpdateCheck();
-        }
-      });
-    }
-
     refreshUpdateActionNote();
     {% if can_check_system_update %}
     if ({{ 'true' if active_tab == 'update' else 'false' }}) {
@@ -2277,6 +2964,7 @@
       if (dangerTitleEl) dangerTitleEl.textContent = label;
       if (dangerSummaryEl) dangerSummaryEl.textContent = summary || "Review the impact before continuing.";
       if (dangerSubmit) dangerSubmit.textContent = action === "uninstall" ? "Uninstall Everything" : "Continue";
+      if (dangerSubmit) dangerSubmit.disabled = false;
       if (dangerPasswordEl) dangerPasswordEl.value = "";
 
       if (requiredConfirmText) {
@@ -2294,6 +2982,13 @@
         }
       }
     });
+    const dangerForm = document.getElementById("system-danger-form");
+    if (dangerForm && dangerSubmit) {
+      dangerForm.addEventListener("submit", () => {
+        dangerSubmit.disabled = true;
+        dangerSubmit.textContent = "Queueing...";
+      });
+    }
   }
 
 </script>

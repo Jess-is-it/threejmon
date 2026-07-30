@@ -90,7 +90,7 @@
             <span class="me-2"><i class="ti ti-info-circle"></i></span>
             <div>
               ISP Port Status reads live RX/TX traffic from the MikroTik interface assigned in <span class="fw-semibold">System Settings - Routers - ISP Port Tagging</span>.
-              This is observed bandwidth usage, not the physical link negotiation speed. If traffic stays inside the configured 100M window for the configured duration, the ISP is labeled 100M. If observed traffic rises above the 100M ceiling, it is labeled 1G.
+              This is observed bandwidth usage, not the physical link negotiation speed. A 100M label requires sustained evidence inside the configured range; traffic below the minimum remains Observing. If observed traffic rises above the 100M ceiling, it is labeled 1G.
             </div>
           </div>
         </div>
@@ -101,14 +101,15 @@
               <div class="card-header d-flex flex-wrap align-items-center gap-2">
                 <div>
                   <h3 class="card-title mb-0">Bandwidth Trend</h3>
-                  <div class="text-muted small">All ISP is the combined RX+TX total from configured ISP interfaces.</div>
+                  <div class="text-muted small">Live polls every second while visible. Hover the plot or legend to hold the display for inspection; polling continues and the chart catches up when you move away.</div>
                 </div>
-                <div class="ms-auto">
+                <div class="ms-auto d-flex flex-wrap align-items-center justify-content-end gap-2">
+                  <span class="badge bg-yellow-lt text-yellow d-none" id="isp-status-chart-inspection" title="Live samples continue in the background and will be drawn when you move away.">Inspecting · live display held</span>
                   <div class="dropdown">
                     <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" id="isp-status-window-button">Filter</button>
                     <div class="dropdown-menu dropdown-menu-end" id="isp-status-window-menu">
-                      {% for label, hours in window_options %}
-                        <button type="button" class="dropdown-item isp-status-window-row" data-hours="{{ hours }}" data-label="{{ label }}">{{ label }}</button>
+                      {% for label, window in window_options %}
+                        <button type="button" class="dropdown-item isp-status-window-row" data-window="{{ window }}" data-label="{{ label }}">{{ label }}</button>
                       {% endfor %}
                     </div>
                   </div>
@@ -116,7 +117,7 @@
               </div>
               <div class="card-body">
                 <div id="isp-status-chart" class="isp-status-chart"></div>
-                <div class="text-muted small mt-2" id="isp-status-chart-meta">Loading bandwidth history...</div>
+                <div class="text-muted small mt-2" id="isp-status-chart-meta">Loading live bandwidth trend...</div>
               </div>
             </div>
           </div>
@@ -211,7 +212,7 @@
                     <div class="col-md-4">
                       <label class="form-label">Poll Interval (seconds)</label>
                       <input class="form-control" type="number" min="5" name="poll_interval_seconds" value="{{ settings.general.poll_interval_seconds }}" {% if not can_edit_isp_status %}readonly{% endif %} />
-                      <div class="form-hint">How often the system asks MikroTik for interface RX/TX rates.</div>
+                      <div class="form-hint">Controls background history, capacity checks, alerts, and non-Live page refreshes. The visible Live chart uses its own one-second, non-persistent sampler.</div>
                     </div>
                     <div class="col-md-4">
                       <label class="form-label">History Retention (days)</label>
@@ -219,8 +220,9 @@
                       <div class="form-hint">Old bandwidth samples are automatically deleted after this many days.</div>
                     </div>
                     <div class="col-md-4">
-                      <label class="form-label">Default Chart Window (hours)</label>
-                      <input class="form-control" type="number" min="1" name="chart_window_hours" value="{{ settings.general.chart_window_hours }}" {% if not can_edit_isp_status %}readonly{% endif %} />
+                      <label class="form-label">Live Chart Window (minutes)</label>
+                      <input class="form-control" type="number" min="5" max="60" name="live_window_minutes" value="{{ settings.general.live_window_minutes }}" {% if not can_edit_isp_status %}readonly{% endif %} />
+                      <div class="form-hint">The page opens with this recent history, then appends one-second samples while Live is visible. Historical ranges remain available from the chart filter.</div>
                     </div>
                   </div>
                 </div>
@@ -243,7 +245,7 @@
                     <div class="d-flex align-items-start">
                       <span class="me-2"><i class="ti ti-info-circle"></i></span>
                       <div>
-                        Example: with a 90 to 105 Mbps window for 10 minutes, an ISP that stays in that range is treated as a 100M circuit. If the same ISP later shows traffic above 105 Mbps, it is treated as 1G because a 100M circuit should not exceed that ceiling.
+                        Example: with a 90 to 105 Mbps window for 10 minutes, every observed peak in the completed window must stay inside that range before the ISP is treated as a possible 100M circuit. Readings below 90 Mbps remain Observing because low utilization cannot determine circuit capacity. Traffic above 105 Mbps is treated as 1G because a 100M circuit should not exceed that ceiling.
                       </div>
                     </div>
                   </div>
@@ -270,7 +272,24 @@
                     <div class="col-md-4">
                       <label class="form-label">Average Window (hours)</label>
                       <input class="form-control" type="number" min="1" name="average_window_hours" value="{{ settings.capacity.average_window_hours }}" {% if not can_edit_isp_status %}readonly{% endif %} />
-                      <div class="form-hint">Default 4h. If the average peak bandwidth stays inside the 100M min/max range, it is also treated as 100M.</div>
+                      <div class="form-hint">Default 4h. The average rule can confirm 100M only after the full average period and while the current short window contains no reading outside the min/max range.</div>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Non-peak Exclusion</label>
+                      <label class="form-check form-switch mt-2">
+                        <input class="form-check-input" type="checkbox" name="non_peak_exclusion_enabled" {% if settings.capacity.non_peak_exclusion_enabled %}checked{% endif %} {% if not can_edit_isp_status %}disabled{% endif %} />
+                        <span class="form-check-label">Pause 100M tagging and reporting</span>
+                      </label>
+                      <div class="form-hint">The schedule uses Asia/Manila time. Above-ceiling traffic can still prove 1G during this window.</div>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Non-peak Start</label>
+                      <input class="form-control" type="time" step="60" name="non_peak_start_time" value="{{ settings.capacity.non_peak_start_time }}" {% if not can_edit_isp_status %}readonly{% endif %} />
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label">Non-peak End</label>
+                      <input class="form-control" type="time" step="60" name="non_peak_end_time" value="{{ settings.capacity.non_peak_end_time }}" {% if not can_edit_isp_status %}readonly{% endif %} />
+                      <div class="form-hint">Overnight ranges are supported, for example 22:00 to 06:00. Matching start and end times disable the interval.</div>
                     </div>
                   </div>
                 </div>
@@ -366,6 +385,7 @@
   document.addEventListener("DOMContentLoaded", () => {
     const chartEl = document.getElementById("isp-status-chart");
     const metaEl = document.getElementById("isp-status-chart-meta");
+    const inspectionBadgeEl = document.getElementById("isp-status-chart-inspection");
     const windowButton = document.getElementById("isp-status-window-button");
     const windowRows = Array.from(document.querySelectorAll(".isp-status-window-row"));
     const tableBody = document.getElementById("isp-status-table-body");
@@ -376,8 +396,27 @@
     const oneGBadgeEl = document.getElementById("isp-status-1g-badge");
     const hundredMBadgeEl = document.getElementById("isp-status-100m-badge");
     const needsBadgeEl = document.getElementById("isp-status-needs-badge");
+    const statusPaneEl = document.getElementById("isp-status-main");
     let chart = null;
-    let activeHours = Number({{ settings.general.chart_window_hours or 24 }});
+    let chartSeriesSignature = "";
+    let chartInteractionHeld = false;
+    let liveRenderPending = false;
+    let heldLiveSampleCount = 0;
+    let activeWindow = "live";
+    let chartRequestId = 0;
+    let liveSeriesState = [];
+    let liveWindowMinutes = Number({{ settings.general.live_window_minutes or 15 }});
+    let liveSeriesReady = false;
+    let liveChartInViewport = true;
+    let livePollingActive = false;
+    let livePollGeneration = 0;
+    let livePollTimer = null;
+    let livePollController = null;
+    let pageDisposed = false;
+    let fallbackStatusTimer = null;
+    let fallbackHistoryTimer = null;
+    const generalPollMs = Math.max(Number({{ settings.general.poll_interval_seconds or 30 }}) * 1000, 5000);
+    const livePollMs = 1000;
 
     const esc = (value) => String(value ?? "")
       .replace(/&/g, "&amp;")
@@ -410,6 +449,8 @@
         try { chart.destroy(); } catch (_err) {}
         chart = null;
       }
+      chartSeriesSignature = "";
+      liveRenderPending = false;
       if (chartEl) chartEl.innerHTML = `<div class="text-muted py-5 text-center">${message}</div>`;
       if (metaEl) metaEl.textContent = "";
     };
@@ -486,120 +527,444 @@
       },
     };
 
-    const renderChart = async (hours) => {
+    const normalizeChartRows = (rawSeries) => (Array.isArray(rawSeries) ? rawSeries : [])
+      .map((item) => {
+        const data = (Array.isArray(item.points) ? item.points : [])
+          .map((point) => {
+            const ts = typeof point.x === "number" ? point.x : Date.parse(String(point.x || ""));
+            if (!Number.isFinite(ts)) return null;
+            if (point.y === null) return { x: ts, y: null };
+            const value = Number(point.y);
+            if (!Number.isFinite(value)) return null;
+            return { x: ts, y: value };
+          })
+          .filter(Boolean);
+        return {
+          id: String(item.id || item.name || "isp"),
+          name: item.name || "ISP",
+          color: item.color || "#6c7a91",
+          data,
+        };
+      })
+      .filter((item) => item.data.some((point) => Number.isFinite(point.y)));
+
+    const updateChartSeries = async (rawSeries) => {
+      const chartRows = normalizeChartRows(rawSeries);
+      if (!chartRows.length) {
+        setPlaceholder("No ISP bandwidth samples available yet.");
+        return false;
+      }
+      if (!window.ApexCharts) {
+        setPlaceholder("Chart library unavailable.");
+        return false;
+      }
+      const series = chartRows.map((item) => ({ name: item.name, data: item.data }));
+      const colors = chartRows.map((item) => item.color);
+      const nextSeriesSignature = chartRows
+        .map((item) => `${item.id}\u001f${item.name}\u001f${item.color}`)
+        .join("\u001e");
+      if (chart) {
+        if (chartSeriesSignature !== nextSeriesSignature) {
+          await chart.updateOptions({ series, colors }, false, false, false);
+          chartSeriesSignature = nextSeriesSignature;
+        } else {
+          await chart.updateSeries(series, false);
+        }
+        return true;
+      }
+      chartEl.innerHTML = "";
+      chart = new window.ApexCharts(chartEl, {
+        chart: {
+          type: "line",
+          height: 390,
+          toolbar: zoomToolbarOptions,
+          zoom: { enabled: true, type: "x", autoScaleYaxis: true },
+          animations: { enabled: false },
+        },
+        series,
+        colors,
+        stroke: { width: 2.5, curve: "smooth" },
+        markers: { size: 0 },
+        grid: { strokeDashArray: 4 },
+        xaxis: { type: "datetime" },
+        yaxis: {
+          title: { text: "Mbps" },
+          min: 0,
+          labels: {
+            formatter: (value) => {
+              const num = Number(value);
+              return Number.isFinite(num) ? num.toFixed(0) : "";
+            },
+          },
+        },
+        tooltip: {
+          shared: true,
+          intersect: false,
+          x: { formatter: (value) => formatTsPHT(value) },
+          y: {
+            formatter: (value) => {
+              const num = Number(value);
+              return Number.isFinite(num) ? `${num.toFixed(2)} Mbps` : "n/a";
+            },
+          },
+        },
+        legend: { position: "bottom" },
+      });
+      await chart.render();
+      chartSeriesSignature = nextSeriesSignature;
+      if (activeWindow === "live" && chartEl.matches(":hover")) {
+        holdChartForInspection();
+      }
+      return true;
+    };
+
+    const updateInspectionBadge = () => {
+      if (!inspectionBadgeEl) return;
+      inspectionBadgeEl.classList.toggle("d-none", !chartInteractionHeld);
+      if (!chartInteractionHeld) {
+        inspectionBadgeEl.textContent = "Inspecting · live display held";
+        return;
+      }
+      inspectionBadgeEl.textContent = heldLiveSampleCount > 0
+        ? `Inspecting · ${heldLiveSampleCount.toLocaleString()} live sample${heldLiveSampleCount === 1 ? "" : "s"} buffered`
+        : "Inspecting · live display held";
+    };
+
+    const holdChartForInspection = () => {
+      if (activeWindow !== "live" || !chart) return;
+      chartInteractionHeld = true;
+      heldLiveSampleCount = 0;
+      updateInspectionBadge();
+    };
+
+    const releaseChartInspection = ({ flush = true } = {}) => {
+      const shouldFlush = flush && liveRenderPending && activeWindow === "live" && chart;
+      chartInteractionHeld = false;
+      heldLiveSampleCount = 0;
+      updateInspectionBadge();
+      if (!shouldFlush) {
+        if (!flush) liveRenderPending = false;
+        return;
+      }
+      liveRenderPending = false;
+      void updateChartSeries(liveSeriesPayload()).catch(() => {
+        liveRenderPending = true;
+      });
+    };
+
+    const initializeLiveSeries = (rawSeries, minutes) => {
+      liveWindowMinutes = Math.min(Math.max(Number(minutes || liveWindowMinutes || 15), 5), 60);
+      const cutoff = Date.now() - (liveWindowMinutes * 60 * 1000);
+      liveSeriesState = (Array.isArray(rawSeries) ? rawSeries : []).map((item) => ({
+        id: String(item.id || item.name || "isp"),
+        name: item.name || "ISP",
+        color: item.color || "#6c7a91",
+        points: (Array.isArray(item.points) ? item.points : [])
+          .map((point) => {
+            const ts = typeof point.x === "number" ? point.x : Date.parse(String(point.x || ""));
+            if (!Number.isFinite(ts) || ts < cutoff) return null;
+            if (point.y === null) return { x: ts, y: null };
+            const value = Number(point.y);
+            return Number.isFinite(value) ? { x: ts, y: value } : null;
+          })
+          .filter(Boolean),
+      }));
+    };
+
+    const liveSeriesPayload = () => liveSeriesState.map((item) => ({
+      id: item.id,
+      name: item.name,
+      color: item.color,
+      points: item.points,
+    }));
+
+    const livePointCount = () => liveSeriesState.reduce(
+      (total, item) => total + item.points.filter((point) => Number.isFinite(point.y)).length,
+      0,
+    );
+
+    const appendLiveSnapshot = async (payload) => {
+      if (activeWindow !== "live") return;
+      const snapshotSeries = Array.isArray(payload?.series) ? payload.series : [];
+      const cutoff = Date.now() - (liveWindowMinutes * 60 * 1000);
+      liveSeriesState.forEach((item) => {
+        item.points = item.points.filter((point) => Number(point.x) >= cutoff);
+      });
+      snapshotSeries.forEach((snapshot) => {
+        const id = String(snapshot.id || snapshot.name || "isp");
+        let item = liveSeriesState.find((candidate) => candidate.id === id);
+        if (!item) {
+          item = {
+            id,
+            name: snapshot.name || "ISP",
+            color: snapshot.color || "#6c7a91",
+            points: [],
+          };
+          liveSeriesState.push(item);
+        } else {
+          item.name = snapshot.name || item.name;
+          item.color = snapshot.color || item.color;
+        }
+        const point = snapshot.point || {};
+        const ts = Date.parse(String(point.x || payload?.sampled_at || ""));
+        if (!Number.isFinite(ts)) return;
+        let value = null;
+        if (point.y !== null && point.y !== undefined) {
+          value = Number(point.y);
+          if (!Number.isFinite(value)) return;
+        }
+        const existingIndex = item.points.findIndex((candidate) => Number(candidate.x) === ts);
+        const nextPoint = { x: ts, y: value };
+        if (existingIndex >= 0) {
+          item.points[existingIndex] = nextPoint;
+        } else {
+          item.points.push(nextPoint);
+        }
+        item.points = item.points
+          .filter((candidate) => Number(candidate.x) >= cutoff)
+          .sort((left, right) => Number(left.x) - Number(right.x));
+      });
+      if (chartInteractionHeld && chart) {
+        liveRenderPending = true;
+        heldLiveSampleCount += 1;
+        updateInspectionBadge();
+      } else {
+        await updateChartSeries(liveSeriesPayload());
+      }
+      if (!metaEl) return;
+      const targets = Number(payload?.target_count || 0);
+      const sampled = Number(payload?.sampled_count || 0);
+      const errors = Number(payload?.error_count || 0);
+      const duration = Number(payload?.sample_duration_ms || 0);
+      const parts = [
+        `Live · 1-second direct polling`,
+        `last ${liveWindowMinutes} minutes`,
+        `${livePointCount().toLocaleString()} points`,
+        `${sampled}/${targets} interfaces sampled`,
+      ];
+      if (duration > 0) parts.push(`${duration.toLocaleString()} ms router sample`);
+      if (errors > 0) parts.push(`${errors} unavailable this sample`);
+      metaEl.textContent = `${parts.join(" · ")}.`;
+    };
+
+    const renderChart = async (windowKey, options = {}) => {
       if (!chartEl) return;
-      const safeHours = Number.isFinite(Number(hours)) && Number(hours) > 0 ? Number(hours) : 24;
-      activeHours = safeHours;
-      if (windowButton) windowButton.textContent = `Filter: ${safeHours}h`;
-      chartEl.innerHTML = "<div class='text-muted py-5 text-center'>Loading bandwidth history...</div>";
-      if (metaEl) metaEl.textContent = "Loading bandwidth history...";
+      const safeWindow = String(windowKey || "live").trim().toLowerCase() || "live";
+      const quiet = Boolean(options.quiet);
+      const requestId = ++chartRequestId;
+      activeWindow = safeWindow;
+      if (safeWindow === "live") liveSeriesReady = false;
+      const selectedRow = windowRows.find((row) => row.getAttribute("data-window") === safeWindow);
+      const selectedLabel = selectedRow?.getAttribute("data-label") || (safeWindow === "live" ? "Live" : `${safeWindow}h`);
+      if (windowButton) windowButton.textContent = `Filter: ${selectedLabel}`;
+      if (!chart) {
+        chartEl.innerHTML = "<div class='text-muted py-5 text-center'>Loading bandwidth trend...</div>";
+      }
+      if (!quiet) {
+        if (metaEl) metaEl.textContent = "Loading bandwidth trend...";
+      }
       try {
-        const res = await fetch(`/isp-status/series?hours=${encodeURIComponent(String(safeHours))}`, {
+        const res = await fetch(`/isp-status/series?window=${encodeURIComponent(safeWindow)}`, {
           headers: { "Accept": "application/json" },
           cache: "no-store",
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const payload = await res.json();
+        if (requestId !== chartRequestId) return;
         const rawSeries = Array.isArray(payload.series) ? payload.series : [];
-        const series = rawSeries
-          .map((item) => ({
-            name: item.name || "ISP",
-            data: (Array.isArray(item.points) ? item.points : [])
-              .map((point) => {
-                const ts = Date.parse(String(point.x || ""));
-                const value = Number(point.y);
-                if (!Number.isFinite(ts) || !Number.isFinite(value)) return null;
-                return { x: ts, y: value };
-              })
-              .filter(Boolean),
-          }))
-          .filter((item) => item.data.length);
-        const colors = rawSeries
-          .filter((item) => Array.isArray(item.points) && item.points.length)
-          .map((item) => item.color || "#6c7a91");
-        if (!series.length) {
-          setPlaceholder("No ISP bandwidth samples available yet.");
-          return;
+        if (payload.window?.mode === "live") {
+          initializeLiveSeries(rawSeries, payload.window?.minutes);
         }
-        if (!window.ApexCharts) {
-          setPlaceholder("Chart library unavailable.");
-          return;
-        }
-        if (chart) {
-          try { chart.destroy(); } catch (_err) {}
-          chart = null;
-        }
-        chartEl.innerHTML = "";
-        chart = new window.ApexCharts(chartEl, {
-          chart: {
-            type: "line",
-            height: 390,
-            toolbar: zoomToolbarOptions,
-            zoom: { enabled: true, type: "x", autoScaleYaxis: true },
-            animations: { enabled: false },
-          },
-          series,
-          colors: colors.length ? colors : undefined,
-          stroke: { width: 2.5, curve: "smooth" },
-          markers: { size: 0 },
-          grid: { strokeDashArray: 4 },
-          xaxis: { type: "datetime" },
-          yaxis: {
-            title: { text: "Mbps" },
-            min: 0,
-            labels: {
-              formatter: (value) => {
-                const num = Number(value);
-                return Number.isFinite(num) ? num.toFixed(0) : "";
-              },
-            },
-          },
-          tooltip: {
-            shared: true,
-            intersect: false,
-            x: { formatter: (value) => formatTsPHT(value) },
-            y: {
-              formatter: (value) => {
-                const num = Number(value);
-                return Number.isFinite(num) ? `${num.toFixed(2)} Mbps` : "n/a";
-              },
-            },
-          },
-          legend: { position: "bottom" },
-        });
-        await chart.render();
+        await updateChartSeries(rawSeries);
         if (metaEl) {
           const startText = payload.window && payload.window.start ? formatTsPHT(payload.window.start) : "n/a";
           const endText = payload.window && payload.window.end ? formatTsPHT(payload.window.end) : "n/a";
-          metaEl.textContent = `Showing ${startText} to ${endText}. Use the toolbar to zoom, pan, or reset.`;
+          const points = Number(payload.point_count || 0);
+          if (payload.window?.mode === "live") {
+            const minutes = Number(payload.window.minutes || 15);
+            metaEl.textContent = `Live · last ${minutes} minutes · ${points.toLocaleString()} history points · one-second polling starts while this chart is visible.`;
+          } else {
+            metaEl.textContent = `Showing ${startText} to ${endText} · ${points.toLocaleString()} points. Use the toolbar to zoom, pan, or reset.`;
+          }
         }
       } catch (err) {
-        setPlaceholder("Unable to load ISP bandwidth history.");
+        if (requestId === chartRequestId && (!quiet || !chart)) {
+          setPlaceholder("Unable to load ISP bandwidth trend.");
+        }
+      } finally {
+        if (safeWindow === "live" && requestId === chartRequestId) {
+          liveSeriesReady = true;
+        }
+        reconcileLivePolling();
       }
     };
 
+    const statusTabIsActive = () => Boolean(statusPaneEl?.classList.contains("active"));
+    const shouldPollLive = () => (
+      !pageDisposed
+      && activeWindow === "live"
+      && liveSeriesReady
+      && !document.hidden
+      && statusTabIsActive()
+      && liveChartInViewport
+    );
+
+    const stopLivePolling = () => {
+      livePollingActive = false;
+      livePollGeneration += 1;
+      if (livePollTimer) {
+        window.clearTimeout(livePollTimer);
+        livePollTimer = null;
+      }
+      if (livePollController) {
+        livePollController.abort();
+        livePollController = null;
+      }
+    };
+
+    const runLivePoll = async (generation) => {
+      if (generation !== livePollGeneration || !livePollingActive || !shouldPollLive()) return;
+      const startedAt = performance.now();
+      const controller = new AbortController();
+      livePollController = controller;
+      const requestTimeout = window.setTimeout(() => controller.abort(), 4500);
+      try {
+        const res = await fetch("/isp-status/live", {
+          headers: { "Accept": "application/json" },
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const payload = await res.json();
+        if (generation !== livePollGeneration || activeWindow !== "live") return;
+        if (payload?.collector_enabled === false) {
+          if (metaEl) metaEl.textContent = payload.message || "Live sampling is disabled in ISP Port Status settings.";
+          stopLivePolling();
+          return;
+        }
+        if (Number(payload?.target_count || 0) < 1) {
+          if (metaEl) metaEl.textContent = "No enabled ISP traffic interfaces are configured for Live sampling.";
+          stopLivePolling();
+          return;
+        }
+        await appendLiveSnapshot(payload);
+      } catch (err) {
+        if (err?.name !== "AbortError" && generation === livePollGeneration && metaEl) {
+          metaEl.textContent = "Live sampling is temporarily unavailable; retrying while the chart remains visible.";
+        }
+      } finally {
+        window.clearTimeout(requestTimeout);
+        if (generation !== livePollGeneration) return;
+        livePollController = null;
+        if (!livePollingActive || !shouldPollLive()) {
+          stopLivePolling();
+          return;
+        }
+        const elapsed = performance.now() - startedAt;
+        livePollTimer = window.setTimeout(
+          () => void runLivePoll(generation),
+          Math.max(livePollMs - elapsed, 0),
+        );
+      }
+    };
+
+    const startLivePolling = () => {
+      if (livePollingActive || !shouldPollLive()) return;
+      livePollingActive = true;
+      const generation = ++livePollGeneration;
+      void runLivePoll(generation);
+    };
+
+    function reconcileLivePolling() {
+      if (shouldPollLive()) {
+        startLivePolling();
+      } else {
+        stopLivePolling();
+      }
+    }
+
     windowRows.forEach((row) => {
       row.addEventListener("click", () => {
-        const hours = Number(row.getAttribute("data-hours") || "24");
-        const label = row.getAttribute("data-label") || `${hours}h`;
+        const windowKey = row.getAttribute("data-window") || "live";
+        const label = row.getAttribute("data-label") || (windowKey === "live" ? "Live" : `${windowKey}h`);
         if (windowButton) windowButton.textContent = `Filter: ${label}`;
-        renderChart(hours);
+        releaseChartInspection({ flush: false });
+        stopLivePolling();
+        void renderChart(windowKey);
       });
     });
 
-    const matchingRow = windowRows.find((row) => Number(row.getAttribute("data-hours") || 0) === activeHours);
+    const matchingRow = windowRows.find((row) => row.getAttribute("data-window") === activeWindow);
     if (windowButton && matchingRow) {
-      windowButton.textContent = `Filter: ${matchingRow.getAttribute("data-label") || `${activeHours}h`}`;
+      windowButton.textContent = `Filter: ${matchingRow.getAttribute("data-label") || "Live"}`;
     }
-    renderChart(activeHours);
+
+    if ("IntersectionObserver" in window && chartEl) {
+      const chartObserver = new IntersectionObserver((entries) => {
+        const entry = entries[0];
+        liveChartInViewport = Boolean(entry?.isIntersecting && entry.intersectionRatio > 0);
+        reconcileLivePolling();
+      }, { threshold: 0.01 });
+      chartObserver.observe(chartEl);
+    }
+
+    if (chartEl) {
+      chartEl.addEventListener("pointerenter", (event) => {
+        if (!event.pointerType || event.pointerType === "mouse") holdChartForInspection();
+      });
+      chartEl.addEventListener("pointerleave", (event) => {
+        if (!event.pointerType || event.pointerType === "mouse") releaseChartInspection();
+      });
+    }
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) releaseChartInspection({ flush: false });
+      reconcileLivePolling();
+    });
+    document.querySelectorAll('a[data-bs-toggle="tab"][href^="#isp-status-"]').forEach((tabLink) => {
+      tabLink.addEventListener("hide.bs.tab", () => {
+        if (tabLink.getAttribute("href") === "#isp-status-main") {
+          releaseChartInspection({ flush: false });
+          stopLivePolling();
+        }
+      });
+      tabLink.addEventListener("shown.bs.tab", () => {
+        if (!statusTabIsActive()) {
+          reconcileLivePolling();
+          return;
+        }
+        void renderChart(activeWindow, { quiet: true });
+      });
+    });
+
+    const refreshStatusWhenVisible = () => {
+      if (!statusTabIsActive()) return;
+      return refreshStatus();
+    };
+    const refreshHistoryWhenVisible = () => {
+      if (!statusTabIsActive() || activeWindow === "live") return;
+      return renderChart(activeWindow, { quiet: true });
+    };
+
+    if (statusTabIsActive()) {
+      void renderChart(activeWindow);
+    }
     if (window.ThreeJPolling?.createTask) {
-      window.ThreeJPolling.createTask(refreshStatus, { intervalMs: 10000, resumeDelayMs: 200 });
-      window.ThreeJPolling.createTask(() => renderChart(activeHours), { intervalMs: 60000, resumeDelayMs: 1000 });
+      window.ThreeJPolling.createTask(refreshStatusWhenVisible, { intervalMs: generalPollMs, resumeDelayMs: 200 });
+      window.ThreeJPolling.createTask(refreshHistoryWhenVisible, { intervalMs: generalPollMs, resumeDelayMs: 1000 });
     } else {
-      refreshStatus();
-      setInterval(refreshStatus, 10000);
-      setInterval(() => renderChart(activeHours), 60000);
+      void refreshStatusWhenVisible();
+      fallbackStatusTimer = window.setInterval(refreshStatusWhenVisible, generalPollMs);
+      fallbackHistoryTimer = window.setInterval(refreshHistoryWhenVisible, generalPollMs);
     }
+
+    window.addEventListener("pagehide", () => {
+      pageDisposed = true;
+      releaseChartInspection({ flush: false });
+      stopLivePolling();
+      if (fallbackStatusTimer) window.clearInterval(fallbackStatusTimer);
+      if (fallbackHistoryTimer) window.clearInterval(fallbackHistoryTimer);
+    }, { once: true });
   });
 </script>
 {% endblock %}

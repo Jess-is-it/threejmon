@@ -581,7 +581,7 @@ ISP_STATUS_DEFAULTS = {
     "general": {
         "poll_interval_seconds": 30,
         "history_retention_days": 400,
-        "chart_window_hours": 24,
+        "live_window_minutes": 15,
     },
     "capacity": {
         "hundred_mbps_min": 90,
@@ -589,6 +589,9 @@ ISP_STATUS_DEFAULTS = {
         "window_minutes": 10,
         "average_detection_enabled": True,
         "average_window_hours": 4,
+        "non_peak_exclusion_enabled": False,
+        "non_peak_start_time": "00:00",
+        "non_peak_end_time": "06:00",
     },
     "telegram": {
         "daily_enabled": False,

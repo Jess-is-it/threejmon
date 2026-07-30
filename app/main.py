@@ -21,6 +21,7 @@ import threading
 import urllib.parse
 import urllib.request
 import ipaddress
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta, time as dt_time
 from zoneinfo import ZoneInfo
 from email.message import EmailMessage
@@ -49,7 +50,7 @@ from .db import (
     clear_wan_history,
     count_offline_history_accounts_since,
     count_usage_modem_reboot_history,
-    create_auth_permission,
+    count_data_retention_history,
     create_auth_role,
     create_auth_session,
     create_auth_user,
@@ -98,7 +99,6 @@ from .db import (
     get_optical_results_for_device_since,
     get_optical_series_for_devices_since,
     get_optical_samples_for_devices_since,
-    get_optical_worst_candidates,
     get_wan_status_counts,
     get_mikrotik_log_facets,
     get_mikrotik_log_stats,
@@ -118,6 +118,8 @@ from .db import (
     list_auth_permissions,
     list_auth_roles,
     list_auth_users,
+    list_data_retention_history,
+    latest_data_retention_history_by_feature,
     list_active_surveillance_sessions,
     list_surveillance_history,
     revoke_auth_session,
@@ -131,7 +133,6 @@ from .db import (
     update_auth_user,
     update_auth_role,
     insert_wan_target_ping_result,
-    delete_mikrotik_logs_older_than,
     update_mikrotik_logs_router_for_sources,
     utc_now_iso,
 )
@@ -148,13 +149,10 @@ from .accounts_ping_sources import (
     normalize_accounts_ping_source_mode,
 )
 from .accounts_missing_support import (
-    auto_delete_accounts_missing_entries,
-    build_accounts_missing_secret_snapshot,
     mark_accounts_missing_deleted,
     normalize_accounts_missing_settings,
     purge_pppoe_account_data,
     reconcile_accounts_missing_state,
-    selected_accounts_missing_routers,
 )
 from .mikrotik_logs_setup import (
     auto_configure_mikrotik_log_router,
@@ -163,8 +161,8 @@ from .mikrotik_logs_setup import (
     get_mikrotik_log_setup_routers,
 )
 from .forms import parse_bool, parse_float, parse_int, parse_int_list, parse_lines
-from .jobs import JobsManager
-from .mikrotik import RouterOSClient
+from .jobs import JobsManager, _normalize_isp_status_clock
+from .mikrotik import RouterOSClient, borrow_routeros_client, parse_routeros_bps
 from .feature_usage import add_feature_cpu, sample_feature_cpu_percent, register_feature
 from .ai_investigator import AIInvestigatorError, generate_investigation_report
 from .offline_rules import enabled_offline_tracking_rules, normalize_offline_tracking_rules, offline_rules_summary_text
@@ -187,10 +185,27 @@ from .settings_defaults import (
 )
 from .settings_store import export_settings, get_settings, get_state, import_settings, save_settings, save_state
 from .usage_logic import build_usage_summary_data as build_usage_summary_data_shared, normalize_usage_modem_reboot_settings
+from .data_retention import (
+    DATA_RETENTION_FEATURES,
+    data_retention_feature_rows,
+    data_retention_normal_fields_for_feature,
+    format_bytes as format_retention_bytes,
+    get_data_retention_guardian_state,
+    get_data_retention_settings,
+    normal_retention_values,
+    save_data_retention_settings,
+    save_normal_retention_values,
+    scheduled_cleanup_interval_days_for_feature,
+    storage_health as data_retention_storage_health,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 PH_TZ = ZoneInfo("Asia/Manila")
 DATA_DIR = Path("/data")
+GRAPHIFY_OUT_DIR = Path(
+    os.environ.get("THREEJ_GRAPHIFY_OUT_DIR")
+    or str(BASE_DIR.parent / "graphify-out")
+)
 SYSTEM_UPDATE_STATUS_PATH = DATA_DIR / "system_update_status.json"
 SYSTEM_UPDATE_LOG_PATH = DATA_DIR / "system_update.log"
 SYSTEM_UPDATE_CHECK_LIMIT = 50
@@ -256,10 +271,23 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 NO_STORE_HEADERS = {"Cache-Control": "no-store, max-age=0"}
 
 jobs_manager = JobsManager()
+_ISP_STATUS_LIVE_SAMPLE_LOCK = threading.Lock()
+_ISP_STATUS_LIVE_SAMPLE_CACHE = {
+    "configuration_key": "",
+    "sample_started_at": 0.0,
+    "payload": None,
+}
+_ISP_STATUS_LIVE_CACHE_SECONDS = 0.9
 _cpu_sample = {"total": None, "idle": None, "at": 0.0, "pct": 0.0}
 _dashboard_kpis_cache_lock = threading.Lock()
-_dashboard_kpis_cache = {"at": 0.0, "data": None}
-_DASHBOARD_KPI_CACHE_SECONDS = 120
+_dashboard_kpis_cache = {
+    "at": 0.0,
+    "data": None,
+    "refreshing": False,
+    "last_error": "",
+    "last_refresh_started_at": 0.0,
+}
+_DASHBOARD_KPI_CACHE_SECONDS = 20
 _DASHBOARD_ATTENTION_HISTORY_KEY = "dashboard_attention_history"
 _DASHBOARD_ATTENTION_HISTORY_DAYS = 7
 _DASHBOARD_ATTENTION_SAMPLE_SECONDS = 300
@@ -288,6 +316,10 @@ _mikrotik_drop_logs_delete_lock = threading.Lock()
 _mikrotik_drop_logs_delete_running = False
 _mikrotik_drop_logs_delete_progress = {}
 _MIKROTIK_DROP_LOGS_DELETE_VISIBLE_SECONDS = 30
+_system_danger_job_lock = threading.Lock()
+_system_danger_job_running = False
+_system_danger_job_progress = {}
+_SYSTEM_DANGER_JOB_VISIBLE_SECONDS = 45
 _offline_new_seen_lock = threading.Lock()
 _OFFLINE_NEW_SEEN_STATE_KEY = "offline_new_seen_by_user_v1"
 _OFFLINE_NEW_VIEW_SECONDS = 10
@@ -545,6 +577,9 @@ AUTH_PERMISSION_DEPENDENCIES = {
     "system.routers.mikrotik.edit": ["system.routers.mikrotik.view"],
     "system.routers.cores.edit": ["system.routers.cores.view"],
     "system.routers.isp.edit": ["system.routers.isp.view"],
+    "system.tab.graphify.view": ["system.view"],
+    "system.tab.data_retention.view": ["system.view"],
+    "system.data_retention.settings.edit": ["system.tab.data_retention.view"],
     "system.update.check.run": ["system.tab.update.view"],
     "system.update.run": ["system.tab.update.view", "system.update.check.run"],
     "surveillance.settings.danger.run": ["surveillance.view", "surveillance.edit", "system.view", "system.tab.danger.view"],
@@ -736,6 +771,9 @@ AUTH_PERMISSION_COMPAT_GRANTS = {
     "system.routers.cores.edit": ["system.edit"],
     "system.routers.isp.view": ["system.edit"],
     "system.routers.isp.edit": ["system.edit"],
+    "system.tab.graphify.view": ["system.edit"],
+    "system.tab.data_retention.view": ["system.edit"],
+    "system.data_retention.settings.edit": ["system.edit"],
     "system.tab.update.view": ["system.edit"],
     "system.update.check.run": ["system.edit"],
     "system.update.run": ["system.edit"],
@@ -1191,6 +1229,7 @@ AUTH_PERMISSION_ITEM_LABELS = {
     "checkers": "Checkers",
     "cores": "Cores",
     "datasource": "Data Source",
+    "data_retention": "Data Retention",
     "genieacs": "GenieACS",
     "history": "History",
     "import_export": "Import / Export",
@@ -1642,6 +1681,14 @@ def _auth_permission_for_route(path: str, method: str):
         return "system.update.check.run"
     if path == "/settings/system/update/start":
         return "system.update.run"
+    if path == "/settings/system/data-retention/settings":
+        return "system.data_retention.settings.edit"
+    if path.startswith("/settings/system/data-retention/feature/"):
+        return "system.data_retention.settings.edit"
+    if path.startswith("/settings/system/data-retention"):
+        return "system.tab.data_retention.view"
+    if path.startswith("/settings/system/graphify/"):
+        return "system.tab.graphify.view"
 
     if path == "/settings/system/auth/settings" or path == "/settings/system/auth/test-email":
         return "system.access.auth.edit"
@@ -1666,7 +1713,7 @@ def _auth_permission_for_route(path: str, method: str):
         return "system.routers.cores.edit"
     if path == "/settings/system/routers/pppoe" or path.startswith("/settings/system/routers/pppoe/"):
         return "system.routers.mikrotik.edit"
-    if path == "/settings/system/routers/isps" or path == "/settings/system/routers/isp-port-tags":
+    if path == "/settings/system/routers/isps" or path.startswith("/settings/system/routers/isps/") or path == "/settings/system/routers/isp-port-tags":
         return "system.routers.isp.edit"
 
     if path.startswith("/settings/system"):
@@ -2085,7 +2132,10 @@ def _auth_prune_audit_logs_if_due(system_settings):
         _auth_audit_prune_last = now
     cutoff = (_auth_now_utc() - timedelta(days=retention_days)).isoformat() + "Z"
     try:
-        delete_auth_audit_logs_older_than(cutoff)
+        delete_auth_audit_logs_older_than(
+            cutoff,
+            scheduled_cleanup_interval_days_for_feature("auth_audit"),
+        )
     except Exception:
         pass
 
@@ -2267,6 +2317,14 @@ async def startup_event():
         pass
     try:
         _auth_sync_builtin_role_permissions()
+    except Exception:
+        pass
+    try:
+        _auth_sync_graphify_role_permissions()
+    except Exception:
+        pass
+    try:
+        _auth_sync_data_retention_role_permissions()
     except Exception:
         pass
     try:
@@ -4432,6 +4490,9 @@ def normalize_wan_ping_settings(settings):
     telegram.setdefault("chat_id", "")
     general = settings.setdefault("general", {})
     general.setdefault("interval_seconds", 30)
+    # Routed public WAN addresses are operator-managed. Drop the former
+    # automatic revalidation interval when legacy settings are normalized.
+    general.pop("wan_ip_refresh_interval_minutes", None)
     general.setdefault("target_latency_interval_seconds", general.get("interval_seconds", 30))
     general.setdefault("target_rotation_enabled", False)
     general.setdefault("target_parallel_workers", 0)
@@ -4544,13 +4605,18 @@ def normalize_wan_ping_settings(settings):
             mode = "routed"
         local_ip = (item.get("local_ip") or "").strip()
         netwatch_host = (item.get("netwatch_host") or "").strip()
-        if mode == "bridged" and not netwatch_host:
+        # Migrate the old Manual override value into the single authoritative
+        # WAN/Netwatch field. Existing automatically detected values remain
+        # unchanged and become the operator's initial manual value.
+        legacy_wan_ip_mode = (item.get("wan_ip_mode") or "auto").strip().lower()
+        legacy_manual_wan_ip = (item.get("manual_wan_ip") or "").strip()
+        if mode == "routed" and legacy_wan_ip_mode == "manual" and legacy_manual_wan_ip:
+            netwatch_host = legacy_manual_wan_ip
+        if mode == "bridged":
             netwatch_host = local_ip
         enabled = bool(item.get("enabled", True))
-        if not local_ip:
+        if not local_ip or (mode == "routed" and not netwatch_host):
             enabled = False
-        elif mode == "routed" and not netwatch_host and not enabled:
-            enabled = True
         cleaned_wans.append(
             {
                 "id": (item.get("id") or wan_row_id(core_id, list_name)).strip(),
@@ -4601,12 +4667,15 @@ def normalize_isp_status_settings(settings):
     except Exception:
         general["history_retention_days"] = int(default_general.get("history_retention_days", 400))
     try:
-        general["chart_window_hours"] = max(
-            int(general.get("chart_window_hours") or default_general.get("chart_window_hours", 24)),
-            1,
+        general["live_window_minutes"] = min(
+            max(
+                int(general.get("live_window_minutes") or default_general.get("live_window_minutes", 15)),
+                5,
+            ),
+            60,
         )
     except Exception:
-        general["chart_window_hours"] = int(default_general.get("chart_window_hours", 24))
+        general["live_window_minutes"] = int(default_general.get("live_window_minutes", 15))
     capacity = settings.setdefault("capacity", {})
     default_capacity = defaults.get("capacity", {})
     try:
@@ -4643,6 +4712,20 @@ def normalize_isp_status_settings(settings):
         )
     except Exception:
         capacity["average_window_hours"] = int(default_capacity.get("average_window_hours", 4))
+    capacity["non_peak_exclusion_enabled"] = bool(
+        capacity.get(
+            "non_peak_exclusion_enabled",
+            default_capacity.get("non_peak_exclusion_enabled", False),
+        )
+    )
+    capacity["non_peak_start_time"] = _normalize_isp_status_clock(
+        capacity.get("non_peak_start_time"),
+        default_capacity.get("non_peak_start_time", "00:00"),
+    )
+    capacity["non_peak_end_time"] = _normalize_isp_status_clock(
+        capacity.get("non_peak_end_time"),
+        default_capacity.get("non_peak_end_time", "06:00"),
+    )
     telegram = settings.setdefault("telegram", {})
     default_telegram = defaults.get("telegram", {})
     telegram["daily_enabled"] = bool(telegram.get("daily_enabled", default_telegram.get("daily_enabled", False)))
@@ -4924,9 +5007,135 @@ def _mikrotik_drop_logs_delete_status_payload():
     }
 
 
+def _system_danger_feature_label(action_key: str) -> str:
+    meta = (globals().get("_SYSTEM_DANGER_ACTIONS") or {}).get(str(action_key or "").strip().lower()) or {}
+    return str(meta.get("label") or action_key or "Feature").strip()
+
+
+def _system_danger_features_for_action(action_key: str):
+    action = str(action_key or "").strip().lower()
+    if action == "all":
+        return list(_SYSTEM_DANGER_FEATURE_ORDER)
+    return [action] if action in _SYSTEM_DANGER_ACTIONS and action not in {"uninstall"} else []
+
+
+def _set_system_danger_job_progress(
+    status="running",
+    percent=None,
+    stage="",
+    action_key="",
+    modules=None,
+    current_key="",
+    error="",
+):
+    now = time.time()
+    with _system_danger_job_lock:
+        item = dict(_system_danger_job_progress or {})
+        item.setdefault("started_at", now)
+        item["status"] = str(status or "running").strip().lower()
+        item["stage"] = str(stage or item.get("stage") or "").strip()
+        item["updated_at"] = now
+        if action_key:
+            item["action_key"] = str(action_key or "").strip().lower()
+        if current_key:
+            item["current_key"] = str(current_key or "").strip().lower()
+        if modules is not None:
+            item["modules"] = [dict(module) for module in modules if isinstance(module, dict)]
+        else:
+            item["modules"] = [dict(module) for module in (item.get("modules") or []) if isinstance(module, dict)]
+        if percent is not None:
+            try:
+                item["percent"] = max(0, min(100, int(round(float(percent)))))
+            except Exception:
+                item["percent"] = 0
+        else:
+            module_rows = item.get("modules") if isinstance(item.get("modules"), list) else []
+            if module_rows:
+                item["percent"] = round(
+                    sum(max(0, min(100, float(module.get("percent") or 0))) for module in module_rows)
+                    / max(len(module_rows), 1)
+                )
+            else:
+                item["percent"] = max(0, min(100, int(item.get("percent") or 0)))
+        if error:
+            item["error"] = str(error).strip()[:1000]
+        if item["status"] in {"completed", "failed"}:
+            item["completed_at"] = now
+        _system_danger_job_progress.clear()
+        _system_danger_job_progress.update(item)
+
+
+def _system_danger_job_status_payload():
+    now = time.time()
+    with _system_danger_job_lock:
+        item = dict(_system_danger_job_progress or {})
+        status = str(item.get("status") or "idle").lower()
+        completed_at = float(item.get("completed_at") or 0)
+        if status in {"completed", "failed"} and completed_at and (now - completed_at) > _SYSTEM_DANGER_JOB_VISIBLE_SECONDS:
+            _system_danger_job_progress.clear()
+            item = {}
+            status = "idle"
+
+    if not item:
+        return {
+            "visible": False,
+            "status": "idle",
+            "percent": 0,
+            "stage": "",
+            "label": "",
+            "title": "",
+            "modules": [],
+        }
+
+    modules = [dict(module) for module in (item.get("modules") or []) if isinstance(module, dict)]
+    total = len(modules)
+    completed = sum(1 for module in modules if str(module.get("status") or "").lower() == "completed")
+    failed = sum(1 for module in modules if str(module.get("status") or "").lower() == "failed")
+    percent = max(0, min(100, int(item.get("percent") or 0)))
+    stage = str(item.get("stage") or "").strip()
+    current_key = str(item.get("current_key") or "").strip()
+    current_label = _system_danger_feature_label(current_key) if current_key else ""
+    if status == "completed":
+        label = f"Formatted {completed}/{total} modules · 100%"
+        percent = 100
+    elif status == "failed":
+        label = f"Format failed · {completed}/{total} done"
+    elif current_label:
+        label = f"Formatting {current_label} · {percent}%"
+    else:
+        label = f"Formatting data · {percent}%"
+
+    title_parts = [label]
+    if stage:
+        title_parts.append(f"Current step: {stage}")
+    for module in modules:
+        module_label = str(module.get("label") or _system_danger_feature_label(module.get("key"))).strip()
+        module_status = str(module.get("status") or "queued").strip()
+        module_percent = max(0, min(100, int(module.get("percent") or 0)))
+        line = f"{module_label}: {module_status} {module_percent}%"
+        if str(module.get("error") or "").strip():
+            line += f" · {str(module.get('error') or '').strip()}"
+        title_parts.append(line)
+    if str(item.get("error") or "").strip():
+        title_parts.append(str(item.get("error") or "").strip())
+    return {
+        "visible": True,
+        "status": status,
+        "percent": percent,
+        "stage": stage,
+        "label": label,
+        "title": "\n".join(title_parts),
+        "total_count": total,
+        "completed_count": completed,
+        "failed_count": failed,
+        "modules": modules,
+    }
+
+
 def _system_delete_progress_payload():
     account_purge = _accounts_missing_purge_status_payload()
     hidden_logs = _mikrotik_drop_logs_delete_status_payload()
+    danger_job = _system_danger_job_status_payload()
 
     def _rank(item):
         if not bool((item or {}).get("visible")):
@@ -4938,6 +5147,10 @@ def _system_delete_progress_payload():
             return 2
         return 1
 
+    candidates = [account_purge, hidden_logs, danger_job]
+    best = max(candidates, key=_rank)
+    if _rank(best) > 0:
+        return best
     if _rank(hidden_logs) > _rank(account_purge):
         return hidden_logs
     if _rank(account_purge) > 0:
@@ -5302,6 +5515,11 @@ WAN_STATUS_WINDOW_OPTIONS = [
     ("30D", 720),
 ]
 
+ISP_STATUS_WINDOW_OPTIONS = [
+    ("Live", "live"),
+    *[(label, str(hours)) for label, hours in WAN_STATUS_WINDOW_OPTIONS],
+]
+
 
 def _normalize_wan_window(value):
     if value is None:
@@ -5346,6 +5564,280 @@ def _isp_status_bucket_seconds(hours):
     return 7200
 
 
+def _normalize_isp_status_series_window(value, live_window_minutes=15):
+    raw = str(value or "").strip().lower()
+    try:
+        live_minutes = min(max(int(live_window_minutes or 15), 5), 60)
+    except Exception:
+        live_minutes = 15
+    if not raw or raw == "live":
+        return {
+            "key": "live",
+            "label": "Live",
+            "mode": "live",
+            "minutes": live_minutes,
+            "hours": 0,
+            "bucket_seconds": 30,
+        }
+    history_hours = _normalize_wan_window(raw)
+    history_label = next(
+        (label for label, hours in WAN_STATUS_WINDOW_OPTIONS if hours == history_hours),
+        "1D",
+    )
+    return {
+        "key": str(history_hours),
+        "label": history_label,
+        "mode": "history",
+        "minutes": history_hours * 60,
+        "hours": history_hours,
+        "bucket_seconds": _isp_status_bucket_seconds(history_hours),
+    }
+
+
+def _isp_status_live_configuration_key(pulse_settings, wan_settings):
+    cores = (((pulse_settings.get("pulsewatch") or {}).get("mikrotik") or {}).get("cores")) or []
+    core_rows = []
+    for core in cores:
+        if not isinstance(core, dict):
+            continue
+        password_hash = hashlib.sha256(str(core.get("password") or "").encode("utf-8")).hexdigest()
+        core_rows.append(
+            [
+                str(core.get("id") or "").strip(),
+                str(core.get("host") or "").strip(),
+                int(core.get("port") or 8728),
+                str(core.get("username") or ""),
+                password_hash,
+            ]
+        )
+    wan_rows = []
+    for wan in wan_settings.get("wans") or []:
+        if not isinstance(wan, dict):
+            continue
+        wan_rows.append(
+            [
+                str(wan.get("id") or "").strip(),
+                str(wan.get("core_id") or "").strip(),
+                str(wan.get("list_name") or "").strip(),
+                str(wan.get("traffic_interface") or "").strip(),
+                bool(wan.get("enabled", True)),
+            ]
+        )
+    serialized = json.dumps(
+        {"cores": core_rows, "wans": wan_rows},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _build_isp_status_live_targets(pulse_settings, wan_settings):
+    cores = (((pulse_settings.get("pulsewatch") or {}).get("mikrotik") or {}).get("cores")) or []
+    core_map = {
+        str(core.get("id") or "").strip(): core
+        for core in cores
+        if isinstance(core, dict) and str(core.get("id") or "").strip()
+    }
+    targets = []
+    for wan in wan_settings.get("wans") or []:
+        if not isinstance(wan, dict) or not bool(wan.get("enabled", True)):
+            continue
+        interface_name = str(wan.get("traffic_interface") or "").strip()
+        if not interface_name:
+            continue
+        core_id = str(wan.get("core_id") or "").strip()
+        list_name = str(wan.get("list_name") or "").strip()
+        wan_id = str(wan.get("id") or "").strip() or wan_row_id(core_id, list_name)
+        core = core_map.get(core_id)
+        core_label = str((core or {}).get("label") or core_id).strip()
+        label = str(wan.get("identifier") or list_name or wan_id).strip()
+        targets.append(
+            {
+                "id": wan_id,
+                "name": " · ".join(part for part in (label, core_label, interface_name) if part),
+                "color": _sanitize_hex_color(str(wan.get("color") or "")) or "#6c7a91",
+                "interface_name": interface_name,
+                "core": core,
+            }
+        )
+    return targets
+
+
+def _sample_isp_status_live_group(core, targets):
+    results = {}
+    if not isinstance(core, dict) or not str(core.get("host") or "").strip():
+        for target in targets:
+            results[target["id"]] = {"ok": False}
+        return results
+    interface_names = list(
+        dict.fromkeys(
+            target.get("interface_name")
+            for target in targets
+            if target.get("interface_name")
+        )
+    )
+    try:
+        with borrow_routeros_client(
+            core.get("host", ""),
+            int(core.get("port", 8728)),
+            core.get("username", ""),
+            core.get("password", ""),
+            timeout=3,
+            max_size=2,
+            wait_timeout=3,
+        ) as client:
+            try:
+                traffic_rows = client.monitor_interfaces_traffic(interface_names)
+            except Exception:
+                traffic_rows = []
+                for interface_name in interface_names:
+                    try:
+                        traffic_rows.extend(client.monitor_interfaces_traffic([interface_name]))
+                    except Exception:
+                        continue
+                if not traffic_rows:
+                    raise RuntimeError("No configured interfaces could be sampled.")
+    except Exception:
+        for target in targets:
+            results[target["id"]] = {"ok": False}
+        return results
+
+    traffic_map = {
+        str(item.get("name") or item.get("interface") or "").strip(): item
+        for item in traffic_rows
+        if isinstance(item, dict)
+    }
+    for target in targets:
+        traffic = traffic_map.get(target.get("interface_name"))
+        rx_bps = parse_routeros_bps((traffic or {}).get("rx-bits-per-second"))
+        tx_bps = parse_routeros_bps((traffic or {}).get("tx-bits-per-second"))
+        if not isinstance(traffic, dict) or (rx_bps is None and tx_bps is None):
+            results[target["id"]] = {"ok": False}
+            continue
+        results[target["id"]] = {
+            "ok": True,
+            "rx_bps": rx_bps or 0.0,
+            "tx_bps": tx_bps or 0.0,
+        }
+    return results
+
+
+def _collect_isp_status_live_snapshot(pulse_settings, wan_settings):
+    started_at = time.monotonic()
+    sampled_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    targets = _build_isp_status_live_targets(pulse_settings, wan_settings)
+    grouped_targets = {}
+    for target in targets:
+        core = target.get("core")
+        if not isinstance(core, dict):
+            group_key = ("missing", target.get("id"))
+        else:
+            group_key = (
+                str(core.get("host") or "").strip(),
+                int(core.get("port") or 8728),
+                str(core.get("username") or ""),
+                str(core.get("password") or ""),
+            )
+        grouped_targets.setdefault(group_key, {"core": core, "targets": []})["targets"].append(target)
+
+    sampled = {}
+    groups = list(grouped_targets.values())
+    if groups:
+        with ThreadPoolExecutor(
+            max_workers=min(len(groups), 4),
+            thread_name_prefix="isp-status-live",
+        ) as executor:
+            futures = [
+                executor.submit(
+                    _sample_isp_status_live_group,
+                    group.get("core"),
+                    group.get("targets") or [],
+                )
+                for group in groups
+            ]
+            for future in futures:
+                try:
+                    sampled.update(future.result())
+                except Exception:
+                    continue
+
+    successful_targets = [
+        target
+        for target in targets
+        if bool((sampled.get(target.get("id")) or {}).get("ok"))
+    ]
+    complete = bool(targets) and len(successful_targets) == len(targets)
+    combined_bps = sum(
+        float((sampled.get(target["id"]) or {}).get("rx_bps") or 0.0)
+        + float((sampled.get(target["id"]) or {}).get("tx_bps") or 0.0)
+        for target in successful_targets
+    )
+    series = [
+        {
+            "id": "all",
+            "name": "All ISP",
+            "color": "#206bc4",
+            "point": {
+                "x": sampled_at,
+                "y": round(combined_bps / 1_000_000.0, 3) if complete else None,
+            },
+        }
+    ]
+    for target in targets:
+        result = sampled.get(target["id"]) or {}
+        total_bps = (
+            float(result.get("rx_bps") or 0.0) + float(result.get("tx_bps") or 0.0)
+            if result.get("ok")
+            else None
+        )
+        series.append(
+            {
+                "id": target["id"],
+                "name": target["name"],
+                "color": target["color"],
+                "point": {
+                    "x": sampled_at,
+                    "y": round(total_bps / 1_000_000.0, 3) if total_bps is not None else None,
+                },
+            }
+        )
+    return {
+        "collector_enabled": True,
+        "sampled_at": sampled_at,
+        "poll_seconds": 1,
+        "target_count": len(targets),
+        "sampled_count": len(successful_targets),
+        "error_count": max(len(targets) - len(successful_targets), 0),
+        "complete": complete,
+        "sample_duration_ms": round((time.monotonic() - started_at) * 1000),
+        "series": series,
+    }
+
+
+def _get_cached_isp_status_live_snapshot(pulse_settings, wan_settings):
+    configuration_key = _isp_status_live_configuration_key(pulse_settings, wan_settings)
+    with _ISP_STATUS_LIVE_SAMPLE_LOCK:
+        now = time.monotonic()
+        cached_payload = _ISP_STATUS_LIVE_SAMPLE_CACHE.get("payload")
+        if (
+            isinstance(cached_payload, dict)
+            and _ISP_STATUS_LIVE_SAMPLE_CACHE.get("configuration_key") == configuration_key
+            and now - float(_ISP_STATUS_LIVE_SAMPLE_CACHE.get("sample_started_at") or 0.0)
+            < _ISP_STATUS_LIVE_CACHE_SECONDS
+        ):
+            return copy.deepcopy(cached_payload)
+        sample_started_at = time.monotonic()
+        payload = _collect_isp_status_live_snapshot(pulse_settings, wan_settings)
+        _ISP_STATUS_LIVE_SAMPLE_CACHE.update(
+            {
+                "configuration_key": configuration_key,
+                "sample_started_at": sample_started_at,
+                "payload": copy.deepcopy(payload),
+            }
+        )
+        return payload
+
+
 def _bps_to_mbps(value):
     try:
         return round(float(value or 0.0) / 1_000_000.0, 2)
@@ -5380,9 +5872,14 @@ def _capacity_status_badge(status):
 def _build_isp_status_rows(pulse_settings, wan_settings, state=None):
     wan_rows = build_wan_rows(pulse_settings, wan_settings)
     wan_ids = [row.get("wan_id") for row in wan_rows if row.get("wan_id")]
-    db_latest = fetch_isp_status_latest_map(wan_ids)
     state = state if isinstance(state, dict) else get_state("isp_status_state", {})
     state_latest = state.get("latest") if isinstance(state.get("latest"), dict) else {}
+    missing_wan_ids = [
+        wan_id
+        for wan_id in wan_ids
+        if not isinstance(state_latest.get(wan_id), dict) or not state_latest.get(wan_id)
+    ]
+    db_latest = fetch_isp_status_latest_map(missing_wan_ids) if missing_wan_ids else {}
     rows = []
     for row in wan_rows:
         wan_id = row.get("wan_id")
@@ -5599,16 +6096,6 @@ def _routeros_rows(client, words):
     return rows
 
 
-def _routeros_trap_message(replies):
-    for sentence in replies:
-        if not sentence or sentence[0] != "!trap":
-            continue
-        data = _routeros_sentence_to_dict(sentence)
-        message = (data.get("message") or "").strip()
-        return message or "RouterOS trap"
-    return ""
-
-
 def _routeros_flag_true(value):
     return str(value or "").strip().lower() in {"true", "yes", "on", "1"}
 
@@ -5694,23 +6181,6 @@ def _pick_interface_local_ip(address_rows, interface_name="", gateway_ip=""):
     return candidates[0][1]
 
 
-def _remove_mangle_rules_by_comment(client, comment):
-    if not comment:
-        return
-    try:
-        rows = _routeros_rows(client, ["/ip/firewall/mangle/print", f"?comment={comment}"])
-    except Exception:
-        return
-    for row in rows:
-        rule_id = (row.get(".id") or "").strip()
-        if not rule_id:
-            continue
-        try:
-            client.talk(["/ip/firewall/mangle/remove", f"=.id={rule_id}"])
-        except Exception:
-            continue
-
-
 def _is_public_ipv4(value):
     raw = (value or "").strip()
     if not raw:
@@ -5719,107 +6189,11 @@ def _is_public_ipv4(value):
         ip_obj = ipaddress.ip_address(raw)
     except Exception:
         return False
-    if ip_obj.version != 4:
-        return False
-    return not (ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local or ip_obj.is_multicast or ip_obj.is_unspecified)
+    return bool(ip_obj.version == 4 and ip_obj.is_global)
 
 
-def _detect_public_ip_for_source(client, src_address, routing_mark="", sample_index=0):
-    src = (src_address or "").strip()
-    if not src:
-        return ""
-    mark = (routing_mark or "").strip()
-    providers = [
-        "http://1.1.1.1/cdn-cgi/trace",
-        "http://ifconfig.me/ip",
-    ]
-    safe_src = re.sub(r"[^0-9A-Za-z_.-]", "_", src)
-    probe_comment = ""
-    probe_rule_added = False
-    if mark:
-        probe_comment = f"threej_wanip_probe_{safe_src}_{int(time.time() * 1000)}_{sample_index}"
-        try:
-            replies = client.talk(
-                [
-                    "/ip/firewall/mangle/add",
-                    "=chain=output",
-                    "=action=mark-routing",
-                    f"=new-routing-mark={mark}",
-                    "=passthrough=no",
-                    f"=src-address={src}",
-                    f"=comment={probe_comment}",
-                ]
-            )
-            trap_message = _routeros_trap_message(replies)
-            if not trap_message:
-                probe_rule_added = True
-        except Exception:
-            probe_rule_added = False
-    try:
-        for idx, url in enumerate(providers):
-            stamp = int(time.time() * 1000)
-            delimiter = "&" if "?" in url else "?"
-            probe_url = f"{url}{delimiter}threej_probe={stamp}_{sample_index}_{idx}"
-            file_name = f"threej_wanip_{safe_src}_{stamp}_{idx}.txt"
-            try:
-                replies = client.talk(
-                    [
-                        "/tool/fetch",
-                        f"=url={probe_url}",
-                        f"=dst-path={file_name}",
-                        f"=src-address={src}",
-                        "=keep-result=yes",
-                    ]
-                )
-                trap_message = _routeros_trap_message(replies)
-                if trap_message:
-                    continue
-                file_rows = _routeros_rows(client, ["/file/print", "=detail=yes", f"?name={file_name}"])
-                if not file_rows:
-                    continue
-                contents = (file_rows[0].get("contents") or "").strip()
-                if not contents:
-                    continue
-                for token in _IPV4_RE.findall(contents):
-                    try:
-                        ip_obj = ipaddress.ip_address(token)
-                        if ip_obj.version == 4:
-                            return str(ip_obj)
-                    except Exception:
-                        continue
-            except Exception:
-                continue
-            finally:
-                try:
-                    client.talk(["/file/remove", f"=numbers={file_name}"])
-                except Exception:
-                    pass
-    finally:
-        if probe_rule_added:
-            _remove_mangle_rules_by_comment(client, probe_comment)
-    return ""
-
-
-def _collect_public_ip_samples(client, local_ip, routing_mark, attempts=1, start_index=0):
-    src = (local_ip or "").strip()
-    if not src:
-        return []
-    samples = []
-    for idx in range(max(int(attempts or 1), 1)):
-        probe = _detect_public_ip_for_source(
-            client,
-            src,
-            routing_mark=routing_mark,
-            sample_index=max(int(start_index or 0), 0) + idx,
-        )
-        if probe:
-            samples.append(probe)
-        if idx < max(int(attempts or 1), 1) - 1:
-            time.sleep(0.2)
-    return samples
-
-
-def detect_routed_wan_autofill(pulsewatch_settings, wan_rows, probe_public=True):
+def detect_routed_wan_autofill(pulsewatch_settings, wan_rows):
+    """Detect routed source/route metadata without probing or changing WAN IPs."""
     wanted_by_core = {}
     existing_by_key = {}
     for row in (wan_rows or []):
@@ -5834,7 +6208,6 @@ def detect_routed_wan_autofill(pulsewatch_settings, wan_rows, probe_public=True)
             continue
         existing_by_key[(core_id, list_name)] = {
             "local_ip": (row.get("local_ip") or "").strip(),
-            "netwatch_host": (row.get("netwatch_host") or "").strip(),
         }
         if not is_wan_list_name(list_name):
             continue
@@ -5852,17 +6225,27 @@ def detect_routed_wan_autofill(pulsewatch_settings, wan_rows, probe_public=True)
     detected = {}
     warnings = []
 
+    def _fallback_result(core_id, list_name):
+        existing = existing_by_key.get((core_id, list_name), {}) or {}
+        return {
+            "local_ip": (existing.get("local_ip") or "").strip(),
+            "interface": "",
+            "routing_mark": "",
+            "route_source": "unavailable",
+            "route_ambiguous": False,
+        }
+
     for core_id, wanted_lists in wanted_by_core.items():
         core = core_map.get(core_id)
         if not core:
             for list_name in wanted_lists:
-                detected[(core_id, list_name)] = {"local_ip": "", "netwatch_host": "", "interface": "", "routing_mark": ""}
+                detected[(core_id, list_name)] = _fallback_result(core_id, list_name)
             warnings.append(f"{core_id}: core not found")
             continue
         host = (core.get("host") or "").strip()
         if not host:
             for list_name in wanted_lists:
-                detected[(core_id, list_name)] = {"local_ip": "", "netwatch_host": "", "interface": "", "routing_mark": ""}
+                detected[(core_id, list_name)] = _fallback_result(core_id, list_name)
             warnings.append(f"{core_id}: core host not configured")
             continue
 
@@ -5913,12 +6296,18 @@ def detect_routed_wan_autofill(pulsewatch_settings, wan_rows, probe_public=True)
             def _pick_route(list_name):
                 marks = [item for item in marks_by_list.get(list_name, []) if item]
                 candidates = []
+                route_source = ""
                 if marks:
                     mark_set = set(marks)
                     for route in default_routes:
-                        routing_key = ((route.get("routing-table") or "").strip() or (route.get("routing-mark") or "").strip())
+                        routing_key = (
+                            (route.get("routing-table") or "").strip()
+                            or (route.get("routing-mark") or "").strip()
+                        )
                         if routing_key and routing_key in mark_set:
                             candidates.append(route)
+                    if candidates:
+                        route_source = "routing-mark"
                 if not candidates:
                     suffix_match = re.search(r"(\d+)$", list_name)
                     if suffix_match:
@@ -5927,19 +6316,27 @@ def detect_routed_wan_autofill(pulsewatch_settings, wan_rows, probe_public=True)
                         via_tag = f"via-{tag}"
                         for route in default_routes:
                             comment = (route.get("comment") or "").strip().upper()
-                            routing_key = ((route.get("routing-table") or "").strip() or (route.get("routing-mark") or "").strip())
+                            routing_key = (
+                                (route.get("routing-table") or "").strip()
+                                or (route.get("routing-mark") or "").strip()
+                            )
                             if tag in comment or routing_key == via_tag:
                                 candidates.append(route)
+                        if candidates:
+                            route_source = "list-suffix"
                 if not candidates and iface_hint_by_list.get(list_name):
                     iface_hint = iface_hint_by_list.get(list_name) or ""
                     for route in default_routes:
                         route_iface = _extract_route_interface(route)
                         if route_iface and route_iface == iface_hint:
                             candidates.append(route)
+                    if candidates:
+                        route_source = "interface-hint"
                 if not candidates:
                     candidates = list(default_routes)
+                    route_source = "sole-default" if len(candidates) == 1 else "default-fallback"
                 if not candidates:
-                    return None
+                    return None, "missing", False
 
                 def _route_score(route):
                     active = 0 if _routeros_flag_true(route.get("active")) else 1
@@ -5950,79 +6347,54 @@ def detect_routed_wan_autofill(pulsewatch_settings, wan_rows, probe_public=True)
                     return (active, distance)
 
                 candidates.sort(key=_route_score)
-                return candidates[0]
+                route_ambiguous = bool(route_source == "default-fallback" and len(candidates) > 1)
+                return candidates[0], route_source, route_ambiguous
 
-            used_wan_ips = set()
             for list_name in sorted(wanted_lists):
-                route = _pick_route(list_name) or {}
-                routing_mark = (
-                    (route.get("routing-table") or "").strip()
-                    or (route.get("routing-mark") or "").strip()
-                    or (marks_by_list.get(list_name, [""])[0] if marks_by_list.get(list_name) else "")
+                route, route_source, route_ambiguous = _pick_route(list_name)
+                route = route or {}
+                policy_mark = (
+                    marks_by_list.get(list_name, [""])[0]
+                    if marks_by_list.get(list_name)
+                    else ""
                 )
+                routing_mark = (
+                    (policy_mark or "").strip()
+                    or (route.get("routing-table") or "").strip()
+                    or (route.get("routing-mark") or "").strip()
+                )
+                if routing_mark.lower() == "main":
+                    routing_mark = ""
+                if (
+                    len(default_routes) > 1
+                    and route_source in ("list-suffix", "interface-hint")
+                    and not routing_mark
+                ):
+                    route_ambiguous = True
                 iface_name = _extract_route_interface(route) or (iface_hint_by_list.get(list_name) or "")
                 gateway_ip = _extract_route_gateway_ip(route)
                 local_ip = _pick_interface_local_ip(address_rows, iface_name, gateway_ip)
                 if not local_ip and gateway_ip:
                     local_ip = _pick_interface_local_ip(address_rows, "", gateway_ip)
 
-                netwatch_host = ""
-                existing = existing_by_key.get((core_id, list_name), {}) or {}
-                existing_local_ip = (existing.get("local_ip") or "").strip()
-                existing_netwatch = (existing.get("netwatch_host") or "").strip()
-                if local_ip and existing_local_ip == local_ip and _is_public_ipv4(existing_netwatch):
-                    netwatch_host = existing_netwatch
-                elif local_ip and probe_public:
-                    samples = _collect_public_ip_samples(client, local_ip, routing_mark, attempts=1)
-                    if (
-                        routing_mark
-                        and samples
-                        and samples[0] in used_wan_ips
-                    ):
-                        extra = _collect_public_ip_samples(client, local_ip, routing_mark, attempts=2, start_index=1)
-                        if extra:
-                            samples.extend(extra)
-                    if not samples:
-                        samples = _collect_public_ip_samples(client, local_ip, "", attempts=1)
-                    if samples:
-                        counts = {}
-                        order = []
-                        for item in samples:
-                            if item not in counts:
-                                counts[item] = 0
-                                order.append(item)
-                            counts[item] += 1
-                        order_index = {item: idx for idx, item in enumerate(order)}
-                        ranked = sorted(order, key=lambda item: (-counts[item], order_index[item]))
-                        for candidate in ranked:
-                            if candidate not in used_wan_ips:
-                                netwatch_host = candidate
-                                break
-                        if not netwatch_host:
-                            netwatch_host = ranked[0]
-                        if netwatch_host:
-                            used_wan_ips.add(netwatch_host)
-                        if len(counts) > 1:
-                            warnings.append(
-                                f"{core_id} {list_name}: WAN IP probe returned multiple values ({', '.join(order[:3])})"
-                            )
-                elif _is_public_ipv4(existing_netwatch):
-                    netwatch_host = existing_netwatch
-
                 detected[(core_id, list_name)] = {
                     "local_ip": local_ip,
-                    "netwatch_host": netwatch_host,
                     "interface": iface_name,
                     "routing_mark": routing_mark,
+                    "route_source": route_source,
+                    "route_ambiguous": route_ambiguous,
                 }
+                if route_ambiguous:
+                    warnings.append(
+                        f"{core_id} {list_name}: multiple default routes matched; "
+                        "verify the detected local IP before saving"
+                    )
                 if not local_ip:
                     warnings.append(f"{core_id} {list_name}: unable to auto-detect local IP")
-                if local_ip and not netwatch_host:
-                    warnings.append(f"{core_id} {list_name}: unable to auto-detect WAN/public IP")
         except Exception as exc:
             for list_name in wanted_lists:
-                detected[(core_id, list_name)] = {"local_ip": "", "netwatch_host": "", "interface": "", "routing_mark": ""}
-            warnings.append(f"{core_id}: auto-detect failed ({exc})")
+                detected[(core_id, list_name)] = _fallback_result(core_id, list_name)
+            warnings.append(f"{core_id}: route detection failed ({exc})")
         finally:
             client.close()
 
@@ -8236,19 +8608,70 @@ def _build_dashboard_kpis(job_status):
     return out
 
 
-def _get_dashboard_kpis_cached(job_status, force=False):
+def _set_dashboard_kpis_cache(data, error=""):
+    with _dashboard_kpis_cache_lock:
+        _dashboard_kpis_cache["data"] = copy.deepcopy(data)
+        _dashboard_kpis_cache["at"] = time.monotonic()
+        _dashboard_kpis_cache["last_error"] = (error or "").strip()
+    return data
+
+
+def _mark_dashboard_kpis_refreshing(value: bool, error: str = ""):
+    with _dashboard_kpis_cache_lock:
+        _dashboard_kpis_cache["refreshing"] = bool(value)
+        if value:
+            _dashboard_kpis_cache["last_refresh_started_at"] = time.monotonic()
+        if error:
+            _dashboard_kpis_cache["last_error"] = str(error)
+
+
+def _refresh_dashboard_kpis_cache(job_status=None):
+    if job_status is None:
+        job_status = {item["job_name"]: dict(item) for item in get_job_status()}
+    fresh = _build_dashboard_kpis(job_status)
+    return _set_dashboard_kpis_cache(fresh)
+
+
+def _start_dashboard_kpis_refresh(job_status=None):
+    with _dashboard_kpis_cache_lock:
+        if bool(_dashboard_kpis_cache.get("refreshing")):
+            return False
+        _dashboard_kpis_cache["refreshing"] = True
+        _dashboard_kpis_cache["last_refresh_started_at"] = time.monotonic()
+    job_status_copy = copy.deepcopy(job_status) if job_status is not None else None
+
+    def _worker():
+        try:
+            _refresh_dashboard_kpis_cache(job_status_copy)
+        except Exception as exc:
+            _mark_dashboard_kpis_refreshing(False, str(exc))
+            return
+        _mark_dashboard_kpis_refreshing(False)
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return True
+
+
+def _get_dashboard_kpis_cached(job_status, force=False, allow_stale=True):
     now_mono = time.monotonic()
     if not force:
         with _dashboard_kpis_cache_lock:
             cached = _dashboard_kpis_cache.get("data")
             cached_at = float(_dashboard_kpis_cache.get("at") or 0.0)
-            if cached is not None and (now_mono - cached_at) < float(_DASHBOARD_KPI_CACHE_SECONDS):
+            age = now_mono - cached_at if cached_at else float("inf")
+            if cached is not None and age < float(_DASHBOARD_KPI_CACHE_SECONDS):
                 return copy.deepcopy(cached)
-    fresh = _build_dashboard_kpis(job_status)
-    with _dashboard_kpis_cache_lock:
-        _dashboard_kpis_cache["data"] = copy.deepcopy(fresh)
-        _dashboard_kpis_cache["at"] = now_mono
-    return fresh
+            if cached is not None and allow_stale:
+                stale = copy.deepcopy(cached)
+                should_refresh = not bool(_dashboard_kpis_cache.get("refreshing"))
+            else:
+                stale = None
+                should_refresh = False
+        if stale is not None:
+            if should_refresh:
+                _start_dashboard_kpis_refresh(job_status)
+            return stale
+    return _refresh_dashboard_kpis_cache(job_status)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -8259,14 +8682,6 @@ async def dashboard(request: Request):
         status["last_success_at_ph"] = format_ts_ph(status.get("last_success_at"))
         status["last_error_at_ph"] = format_ts_ph(status.get("last_error_at"))
     dashboard_kpis = _get_dashboard_kpis_cached(job_status)
-    dashboard_latest_logs = _audit_log_rows(limit=20, surveillance_only=False)
-    if bool(getattr(request.state, "auth_enabled", True)):
-        allowed_categories = _auth_allowed_log_categories(getattr(request.state, "auth_permission_codes", []) or [])
-        dashboard_latest_logs = _audit_rows_for_categories(
-            limit=20,
-            allowed_categories=allowed_categories,
-            surveillance_only=False,
-        )
     return templates.TemplateResponse(
         "dashboard.html",
         make_context(
@@ -8274,7 +8689,7 @@ async def dashboard(request: Request):
             {
                 "job_status": job_status,
                 "dashboard_kpis": dashboard_kpis,
-                "dashboard_latest_logs": dashboard_latest_logs,
+                "dashboard_latest_logs": [],
             },
         ),
     )
@@ -8288,7 +8703,6 @@ async def dashboard_2(request: Request):
         status["last_success_at_ph"] = format_ts_ph(status.get("last_success_at"))
         status["last_error_at_ph"] = format_ts_ph(status.get("last_error_at"))
     dashboard_kpis = _get_dashboard_kpis_cached(job_status)
-    attention = dashboard_kpis.get("attention") if isinstance(dashboard_kpis, dict) else {}
     return templates.TemplateResponse(
         "dashboard_2.html",
         make_context(
@@ -8296,7 +8710,7 @@ async def dashboard_2(request: Request):
             {
                 "job_status": job_status,
                 "dashboard_kpis": dashboard_kpis,
-                "dashboard_attention_trends": _dashboard_attention_trends_payload(attention if isinstance(attention, dict) else {}),
+                "dashboard_attention_trends": {},
             },
         ),
     )
@@ -8329,13 +8743,13 @@ async def dashboard_attention_trends(request: Request):
 
 
 @app.get("/dashboard/kpis", response_class=JSONResponse)
-async def dashboard_kpis_live(request: Request):
+async def dashboard_kpis_live(request: Request, force: bool = False):
     job_status = {item["job_name"]: dict(item) for item in get_job_status()}
     for status in job_status.values():
         status["last_run_at_ph"] = format_ts_ph(status.get("last_run_at"))
         status["last_success_at_ph"] = format_ts_ph(status.get("last_success_at"))
         status["last_error_at_ph"] = format_ts_ph(status.get("last_error_at"))
-    dashboard_kpis = _get_dashboard_kpis_cached(job_status, force=True)
+    dashboard_kpis = _get_dashboard_kpis_cached(job_status, force=bool(force))
     return _json_no_store({"ok": True, "dashboard_kpis": dashboard_kpis, "updated_at": utc_now_iso()})
 
 
@@ -9406,6 +9820,7 @@ async def wan_targets_ping_stream(
 
     general_cfg = wan_settings.get("general") if isinstance(wan_settings.get("general"), dict) else {}
     history_retention_days = max(int(general_cfg.get("history_retention_days") or 400), 1)
+    scheduled_cleanup_interval_days = scheduled_cleanup_interval_days_for_feature("wan")
     enabled_targets = [
         {
             "id": (item.get("id") or "").strip(),
@@ -9690,6 +10105,7 @@ async def wan_targets_ping_stream(
                             label=wan.get("label") or "",
                             src_address=(src_address or "").strip(),
                             retention_days=history_retention_days,
+                            scheduled_cleanup_interval_days=scheduled_cleanup_interval_days,
                         )
                     except Exception:
                         pass
@@ -23393,7 +23809,7 @@ def _render_isp_status_response(request, message="", active_tab="status", settin
                 "active_tab": active_tab,
                 "settings_tab": settings_tab,
                 "message": message,
-                "window_options": WAN_STATUS_WINDOW_OPTIONS,
+                "window_options": ISP_STATUS_WINDOW_OPTIONS,
                 "wan_telegram": wan_settings.get("telegram") if isinstance(wan_settings.get("telegram"), dict) else {},
             },
         ),
@@ -23419,7 +23835,17 @@ async def isp_status_settings_save(request: Request):
         general = settings.setdefault("general", {})
         general["poll_interval_seconds"] = max(parse_int(form, "poll_interval_seconds", general.get("poll_interval_seconds", 30)), 5)
         general["history_retention_days"] = max(parse_int(form, "history_retention_days", general.get("history_retention_days", 400)), 1)
-        general["chart_window_hours"] = max(parse_int(form, "chart_window_hours", general.get("chart_window_hours", 24)), 1)
+        general["live_window_minutes"] = min(
+            max(
+                parse_int(
+                    form,
+                    "live_window_minutes",
+                    general.get("live_window_minutes", 15),
+                ),
+                5,
+            ),
+            60,
+        )
     elif settings_tab == "capacity":
         capacity = settings.setdefault("capacity", {})
         try:
@@ -23433,6 +23859,15 @@ async def isp_status_settings_save(request: Request):
         capacity["window_minutes"] = max(parse_int(form, "window_minutes", capacity.get("window_minutes", 10)), 1)
         capacity["average_detection_enabled"] = parse_bool(form, "average_detection_enabled")
         capacity["average_window_hours"] = max(parse_int(form, "average_window_hours", capacity.get("average_window_hours", 4)), 1)
+        capacity["non_peak_exclusion_enabled"] = parse_bool(form, "non_peak_exclusion_enabled")
+        capacity["non_peak_start_time"] = _normalize_isp_status_clock(
+            form.get("non_peak_start_time"),
+            capacity.get("non_peak_start_time", "00:00"),
+        )
+        capacity["non_peak_end_time"] = _normalize_isp_status_clock(
+            form.get("non_peak_end_time"),
+            capacity.get("non_peak_end_time", "06:00"),
+        )
     settings = normalize_isp_status_settings(settings)
     save_settings("isp_status", settings)
     return _render_isp_status_response(request, "ISP Port Status settings saved.", active_tab="settings", settings_tab=settings_tab)
@@ -23569,18 +24004,56 @@ async def isp_status_status():
     )
 
 
+@app.get("/isp-status/live", response_class=JSONResponse)
+async def isp_status_live():
+    settings = normalize_isp_status_settings(get_settings("isp_status", ISP_STATUS_DEFAULTS))
+    if not settings.get("enabled"):
+        return _json_no_store(
+            {
+                "collector_enabled": False,
+                "sampled_at": "",
+                "poll_seconds": 1,
+                "target_count": 0,
+                "sampled_count": 0,
+                "error_count": 0,
+                "complete": False,
+                "sample_duration_ms": 0,
+                "series": [],
+                "message": "Live sampling is disabled in ISP Port Status settings.",
+            }
+        )
+    pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
+    wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    payload = await asyncio.to_thread(
+        _get_cached_isp_status_live_snapshot,
+        pulse_settings,
+        wan_settings,
+    )
+    return _json_no_store(payload)
+
+
 @app.get("/isp-status/series", response_class=JSONResponse)
-async def isp_status_series(hours: int = 24):
-    hours = _normalize_wan_window(hours)
+async def isp_status_series(window: str = "live", hours: str = ""):
+    settings = normalize_isp_status_settings(get_settings("isp_status", ISP_STATUS_DEFAULTS))
+    requested_window = str(hours or "").strip() or window
+    window_config = _normalize_isp_status_series_window(
+        requested_window,
+        settings.get("general", {}).get("live_window_minutes", 15),
+    )
     now_dt = datetime.now(timezone.utc).replace(microsecond=0)
-    start_dt = now_dt - timedelta(hours=hours)
+    start_dt = now_dt - timedelta(minutes=window_config["minutes"])
     start_iso = start_dt.isoformat().replace("+00:00", "Z")
     end_iso = now_dt.isoformat().replace("+00:00", "Z")
     pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
     wan_settings = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
-    rows = _build_isp_status_rows(pulse_settings, wan_settings)
+    rows = build_wan_rows(pulse_settings, wan_settings)
     wan_ids = [row.get("wan_id") for row in rows if row.get("wan_id") and (row.get("traffic_interface") or "").strip()]
-    series_payload = fetch_isp_status_series_map(wan_ids, start_iso, end_iso, bucket_seconds=_isp_status_bucket_seconds(hours))
+    series_payload = fetch_isp_status_series_map(
+        wan_ids,
+        start_iso,
+        end_iso,
+        bucket_seconds=window_config["bucket_seconds"],
+    )
     series_map = series_payload.get("series") if isinstance(series_payload, dict) else {}
     total_points = series_payload.get("total") if isinstance(series_payload, dict) else []
     chart_series = [
@@ -23614,7 +24087,22 @@ async def isp_status_series(hours: int = 24):
                 ],
             }
         )
-    return JSONResponse({"series": chart_series, "window": {"start": start_iso, "end": end_iso}, "hours": hours})
+    point_count = sum(len(item.get("points") or []) for item in chart_series)
+    poll_seconds = max(int(settings.get("general", {}).get("poll_interval_seconds") or 30), 5)
+    return _json_no_store(
+        {
+            "series": chart_series,
+            "window": {
+                "start": start_iso,
+                "end": end_iso,
+                **window_config,
+            },
+            "hours": window_config["hours"],
+            "point_count": point_count,
+            "refresh_seconds": 1 if window_config["mode"] == "live" else poll_seconds,
+            "background_poll_seconds": poll_seconds,
+        }
+    )
 
 
 @app.post("/settings/isp-status/format", response_class=HTMLResponse)
@@ -23655,8 +24143,13 @@ async def wan_settings_save_wans(request: Request):
         if mode not in ("routed", "bridged"):
             mode = "routed"
         local_ip = (form.get(f"wan_{idx}_local_ip") or "").strip()
-        netwatch_host = (form.get(f"wan_{idx}_netwatch_host") or "").strip()
-        if mode == "bridged" and not netwatch_host:
+        raw_netwatch_host = form.get(f"wan_{idx}_netwatch_host")
+        netwatch_host = (
+            str(raw_netwatch_host).strip()
+            if raw_netwatch_host is not None
+            else (existing.get("netwatch_host") or "").strip()
+        )
+        if mode == "bridged":
             netwatch_host = local_ip
         enabled = parse_bool(form, f"wan_{idx}_enabled")
         if not local_ip:
@@ -23680,6 +24173,20 @@ async def wan_settings_save_wans(request: Request):
                     else (existing.get("traffic_interface") or "").strip()
                 ),
             }
+        )
+    invalid_wans = [
+        (wan.get("identifier") or wan.get("list_name") or wan.get("id") or "ISP").strip()
+        for wan in wans
+        if (wan.get("mode") or "routed").strip().lower() == "routed"
+        and not _is_public_ipv4(wan.get("netwatch_host"))
+    ]
+    if invalid_wans:
+        return render_system_settings_response(
+            request,
+            "WAN list was not saved: enter a valid public IPv4 address for "
+            + ", ".join(invalid_wans[:6]),
+            active_tab="routers",
+            routers_tab="isps",
         )
     wan_settings_data["wans"] = wans
     save_settings("wan_ping", wan_settings_data)
@@ -23996,6 +24503,7 @@ async def system_resources(details: int = 0):
         "uptime_seconds": _uptime_seconds(),
         "accounts_missing_purge": _accounts_missing_purge_status_payload(),
         "mikrotik_drop_logs_delete": _mikrotik_drop_logs_delete_status_payload(),
+        "system_danger_job": _system_danger_job_status_payload(),
         "delete_progress": _system_delete_progress_payload(),
     }
     include_details = False
@@ -24037,6 +24545,7 @@ async def system_background_tasks():
         {
             "accounts_missing_purge": _accounts_missing_purge_status_payload(),
             "mikrotik_drop_logs_delete": _mikrotik_drop_logs_delete_status_payload(),
+            "system_danger_job": _system_danger_job_status_payload(),
             "delete_progress": _system_delete_progress_payload(),
             "captured_at": utc_now_iso(),
         },
@@ -24182,6 +24691,7 @@ _SYSTEM_DANGER_ROLE_TRIGGER_CODES = (
     "system.danger.uninstall.run",
 )
 _SYSTEM_DANGER_ROLE_GRANTED_CODES = ("system.view", "system.tab.danger.view")
+_GRAPHIFY_ROLE_TRIGGER_CODES = ("system.view", "VIEW_SystemSettings", "system.edit", "EDIT_SystemSettings")
 
 
 def _system_danger_requires_password(request: Request) -> bool:
@@ -24275,6 +24785,74 @@ def _auth_sync_builtin_role_permissions():
         except Exception:
             continue
 
+    return updated_roles
+
+
+def _auth_sync_graphify_role_permissions():
+    """Backfill the new tab for custom roles that already had broad System access."""
+    updated_roles = []
+    try:
+        roles = list_auth_roles(include_permissions=True)
+    except Exception:
+        return updated_roles
+
+    trigger_keys = {str(code).strip().lower() for code in _GRAPHIFY_ROLE_TRIGGER_CODES}
+    grant_code = "system.tab.graphify.view"
+    grant_key = grant_code.lower()
+    for role in roles or []:
+        role_id = int(role.get("id") or 0)
+        role_name = str(role.get("name") or "").strip().lower()
+        if role_id <= 0 or role_name == "owner":
+            continue
+        permission_codes = [
+            str(code or "").strip()
+            for code in (role.get("permission_codes") or [])
+            if str(code or "").strip()
+        ]
+        raw_keys = {code.lower() for code in permission_codes}
+        if grant_key in raw_keys or not raw_keys.intersection(trigger_keys):
+            continue
+        try:
+            set_auth_role_permissions(role_id, permission_codes + [grant_code])
+            updated_roles.append(role_name or f"id={role_id}")
+        except Exception:
+            continue
+    return updated_roles
+
+
+def _auth_sync_data_retention_role_permissions():
+    """Backfill retention access for custom roles that already have broad System access."""
+    updated_roles = []
+    try:
+        roles = list_auth_roles(include_permissions=True)
+    except Exception:
+        return updated_roles
+
+    view_triggers = {"system.view", "view_systemsettings", "system.edit", "edit_systemsettings"}
+    edit_triggers = {"system.edit", "edit_systemsettings"}
+    for role in roles or []:
+        role_id = int(role.get("id") or 0)
+        role_name = str(role.get("name") or "").strip().lower()
+        if role_id <= 0 or role_name == "owner":
+            continue
+        permission_codes = [
+            str(code or "").strip()
+            for code in (role.get("permission_codes") or [])
+            if str(code or "").strip()
+        ]
+        raw_keys = {code.lower() for code in permission_codes}
+        additions = []
+        if raw_keys.intersection(view_triggers) and "system.tab.data_retention.view" not in raw_keys:
+            additions.append("system.tab.data_retention.view")
+        if raw_keys.intersection(edit_triggers) and "system.data_retention.settings.edit" not in raw_keys:
+            additions.append("system.data_retention.settings.edit")
+        if not additions:
+            continue
+        try:
+            set_auth_role_permissions(role_id, permission_codes + additions)
+            updated_roles.append(role_name or f"id={role_id}")
+        except Exception:
+            continue
     return updated_roles
 
 
@@ -24508,6 +25086,162 @@ def _run_system_danger_action(action_key: str):
     raise ValueError("Unsupported danger action.")
 
 
+def _system_danger_job_worker(action_key: str):
+    global _system_danger_job_running
+    action = str(action_key or "").strip().lower()
+    feature_keys = _system_danger_features_for_action(action)
+    modules = [
+        {
+            "key": feature_key,
+            "label": _system_danger_feature_label(feature_key),
+            "status": "queued",
+            "percent": 0,
+            "error": "",
+        }
+        for feature_key in feature_keys
+    ]
+    failures = []
+    try:
+        total = max(len(modules), 1)
+        _set_system_danger_job_progress(
+            status="running",
+            percent=0,
+            stage="Starting format",
+            action_key=action,
+            modules=modules,
+        )
+        for index, feature_key in enumerate(feature_keys):
+            label = _system_danger_feature_label(feature_key)
+            modules[index]["status"] = "running"
+            modules[index]["percent"] = 0
+            overall_start = round((index / total) * 100)
+            _set_system_danger_job_progress(
+                status="running",
+                percent=overall_start,
+                stage=f"Formatting {label}",
+                action_key=action,
+                modules=modules,
+                current_key=feature_key,
+            )
+            try:
+                _run_system_danger_action(feature_key)
+                modules[index]["status"] = "completed"
+                modules[index]["percent"] = 100
+                modules[index]["error"] = ""
+                _insert_system_audit(
+                    f"{feature_key}.formatted",
+                    resource=label,
+                    details=f"Background System Settings danger job action={action}.",
+                )
+            except Exception as exc:
+                error = str(exc)
+                modules[index]["status"] = "failed"
+                modules[index]["percent"] = 100
+                modules[index]["error"] = error[:500]
+                failures.append((feature_key, error))
+                _insert_system_audit(
+                    f"{feature_key}.format_failed",
+                    resource=label,
+                    details=error,
+                )
+            _set_system_danger_job_progress(
+                status="running",
+                percent=round(((index + 1) / total) * 100),
+                stage=f"{label} done" if modules[index]["status"] == "completed" else f"{label} failed",
+                action_key=action,
+                modules=modules,
+                current_key=feature_key,
+            )
+        if failures:
+            failed_labels = ", ".join(_system_danger_feature_label(key) for key, _error in failures)
+            _set_system_danger_job_progress(
+                status="failed",
+                percent=None,
+                stage=f"Failed modules: {failed_labels}",
+                action_key=action,
+                modules=modules,
+                error="; ".join(f"{_system_danger_feature_label(key)}: {error}" for key, error in failures)[:1000],
+            )
+            _insert_system_audit(
+                "system.danger.format_failed",
+                resource=_system_danger_feature_label(action),
+                details=f"Failed modules: {failed_labels}",
+            )
+        else:
+            _set_system_danger_job_progress(
+                status="completed",
+                percent=100,
+                stage="Format completed",
+                action_key=action,
+                modules=modules,
+            )
+            _insert_system_audit(
+                "system.danger.formatted_all" if action == "all" else f"{action}.formatted",
+                resource=_system_danger_feature_label(action),
+                details="Background System Settings danger job completed.",
+            )
+        try:
+            with _dashboard_kpis_cache_lock:
+                _dashboard_kpis_cache["data"] = None
+                _dashboard_kpis_cache["at"] = 0.0
+        except Exception:
+            pass
+    except Exception as exc:
+        _set_system_danger_job_progress(
+            status="failed",
+            percent=None,
+            stage="Format job failed",
+            action_key=action,
+            modules=modules,
+            error=str(exc),
+        )
+        _insert_system_audit(
+            "system.danger.format_failed",
+            resource=_system_danger_feature_label(action),
+            details=str(exc),
+        )
+    finally:
+        with _system_danger_job_lock:
+            _system_danger_job_running = False
+
+
+def _queue_system_danger_job(action_key: str):
+    global _system_danger_job_running
+    action = str(action_key or "").strip().lower()
+    feature_keys = _system_danger_features_for_action(action)
+    if not feature_keys:
+        raise ValueError("Unsupported danger action.")
+    modules = [
+        {
+            "key": feature_key,
+            "label": _system_danger_feature_label(feature_key),
+            "status": "queued",
+            "percent": 0,
+            "error": "",
+        }
+        for feature_key in feature_keys
+    ]
+    with _system_danger_job_lock:
+        if _system_danger_job_running:
+            return False
+        _system_danger_job_running = True
+        _system_danger_job_progress.clear()
+        _system_danger_job_progress.update(
+            {
+                "status": "queued",
+                "percent": 0,
+                "stage": "Queued",
+                "action_key": action,
+                "current_key": "",
+                "modules": modules,
+                "started_at": time.time(),
+                "updated_at": time.time(),
+            }
+        )
+    threading.Thread(target=_system_danger_job_worker, args=(action,), daemon=True).start()
+    return True
+
+
 def _handle_system_danger_submission(request: Request, form, default_action: str = ""):
     action_key = ((form.get("danger_action") or default_action or "").strip().lower())
     meta = _SYSTEM_DANGER_ACTIONS.get(action_key)
@@ -24557,23 +25291,33 @@ def _handle_system_danger_submission(request: Request, form, default_action: str
             return render_system_settings_response(request, f"Uninstall failed: {exc}", active_tab="danger")
 
     try:
-        message = _run_system_danger_action(action_key)
+        queued = _queue_system_danger_job(action_key)
     except Exception as exc:
-        return render_system_settings_response(request, f"{meta.get('label') or 'Action'} failed: {exc}", active_tab="danger")
+        return render_system_settings_response(request, f"{meta.get('label') or 'Action'} failed to queue: {exc}", active_tab="danger")
+    if not queued:
+        return render_system_settings_response(
+            request,
+            "A danger format job is already running. Watch the top navigation progress bar before starting another one.",
+            active_tab="danger",
+        )
 
     if action_key == "all":
-        audit_action = "system.danger.formatted_all"
+        audit_action = "system.danger.format_all_queued"
     elif action_key == "surveillance":
-        audit_action = "system.danger.formatted_surveillance"
+        audit_action = "system.danger.format_surveillance_queued"
     else:
-        audit_action = f"{action_key}.formatted"
+        audit_action = f"{action_key}.format_queued"
     _auth_log_event(
         request,
         action=audit_action,
         resource=meta.get("label") or action_key,
         details="source=system_settings",
     )
-    return render_system_settings_response(request, message, active_tab="danger")
+    return render_system_settings_response(
+        request,
+        f"{meta.get('label') or 'Format'} format queued. You can leave this page; progress is shown in the top navigation bar.",
+        active_tab="danger",
+    )
 
 
 def _system_settings_caps(request: Request):
@@ -24621,6 +25365,9 @@ def _system_settings_caps(request: Request):
         or caps["can_view_access_roles"]
         or caps["can_view_access_users"]
     )
+    caps["can_view_data_retention_tab"] = _allow("system.tab.data_retention.view")
+    caps["can_edit_data_retention_settings"] = _allow("system.data_retention.settings.edit")
+    caps["can_view_graphify_tab"] = _allow("system.tab.graphify.view")
     return caps
 
 
@@ -24629,7 +25376,7 @@ def _normalize_system_settings_tabs(active_tab: str, routers_tab: str, access_ta
     routers_tab = (routers_tab or "cores").strip().lower()
     access_tab = (access_tab or "auth").strip().lower()
 
-    if active_tab not in {"general", "telegram", "routers", "access", "update", "backup", "danger"}:
+    if active_tab not in {"general", "telegram", "routers", "access", "update", "data-retention", "graphify", "backup", "danger"}:
         active_tab = "general"
     if routers_tab not in {"cores", "mikrotik-routers", "isps", "isp-port-tagging"}:
         routers_tab = "cores"
@@ -24647,6 +25394,10 @@ def _normalize_system_settings_tabs(active_tab: str, routers_tab: str, access_ta
         allowed_main_tabs.append("access")
     if caps.get("can_view_update_tab"):
         allowed_main_tabs.append("update")
+    if caps.get("can_view_data_retention_tab"):
+        allowed_main_tabs.append("data-retention")
+    if caps.get("can_view_graphify_tab"):
+        allowed_main_tabs.append("graphify")
     if caps.get("can_manage_import_export"):
         allowed_main_tabs.append("backup")
     if caps.get("can_view_danger_tab"):
@@ -24681,6 +25432,255 @@ def _normalize_system_settings_tabs(active_tab: str, routers_tab: str, access_ta
     return active_tab, routers_tab, access_tab
 
 
+def _data_retention_tab_payload(request: Request):
+    settings = get_data_retention_settings()
+    feature_keys = {item["key"] for item in DATA_RETENTION_FEATURES}
+    active_retention_tab = str(request.query_params.get("retention_tab") or "overview").strip().lower()
+    if active_retention_tab not in {"overview", "settings", "history"}:
+        active_retention_tab = "overview"
+    feature_filter = str(request.query_params.get("retention_feature") or "").strip().lower()
+    trigger_filter = str(request.query_params.get("retention_trigger") or "").strip().lower()
+    status_filter = str(request.query_params.get("retention_status") or "").strip().lower()
+    if feature_filter not in feature_keys:
+        feature_filter = ""
+    if trigger_filter not in {"scheduled", "emergency"}:
+        trigger_filter = ""
+    if status_filter not in {"completed", "failed"}:
+        status_filter = ""
+    try:
+        limit = int(request.query_params.get("retention_limit") or 25)
+    except (TypeError, ValueError):
+        limit = 25
+    if limit not in {25, 50, 100}:
+        limit = 25
+    try:
+        page = max(int(request.query_params.get("retention_page") or 1), 1)
+    except (TypeError, ValueError):
+        page = 1
+    total = count_data_retention_history(feature_filter, trigger_filter, status_filter)
+    page_count = max((total + limit - 1) // limit, 1)
+    page = min(page, page_count)
+    history_rows = list_data_retention_history(
+        feature_filter,
+        trigger_filter,
+        status_filter,
+        limit=limit,
+        offset=(page - 1) * limit,
+    )
+    for row in history_rows:
+        row["started_at_ph"] = format_ts_ph(row.get("started_at"))
+        row["completed_at_ph"] = format_ts_ph(row.get("completed_at")) if row.get("completed_at") else "—"
+        duration_ms = max(int(row.get("duration_ms") or 0), 0)
+        row["duration_label"] = f"{duration_ms / 1000.0:.1f}s" if duration_ms else "—"
+        for field in ("disk_percent_before", "disk_percent_after"):
+            try:
+                value = float(row.get(field))
+                row[f"{field}_label"] = f"{value:.1f}%" if 0.0 <= value <= 100.0 else "—"
+            except (TypeError, ValueError):
+                row[f"{field}_label"] = "—"
+
+    latest_rows = {row.get("feature_key"): row for row in latest_data_retention_history_by_feature()}
+    feature_rows = data_retention_feature_rows(settings, include_stats=True)
+    for row in feature_rows:
+        latest = latest_rows.get(row["key"]) or {}
+        row["last_cleanup"] = latest
+        row["last_cleanup_at_ph"] = format_ts_ph(latest.get("started_at")) if latest else "Never"
+
+    def page_url(target_page):
+        params = {
+            "tab": "data-retention",
+            "retention_tab": "history",
+            "retention_page": max(int(target_page), 1),
+            "retention_limit": limit,
+        }
+        if feature_filter:
+            params["retention_feature"] = feature_filter
+        if trigger_filter:
+            params["retention_trigger"] = trigger_filter
+        if status_filter:
+            params["retention_status"] = status_filter
+        return f"/settings/system?{urllib.parse.urlencode(params)}"
+
+    health = data_retention_storage_health(settings)
+    health.update(
+        {
+            "total_label": format_retention_bytes(health["total_bytes"]),
+            "used_label": format_retention_bytes(health["used_bytes"]),
+            "free_label": format_retention_bytes(health["free_bytes"]),
+        }
+    )
+    guardian_state = get_data_retention_guardian_state()
+    guardian_state["last_checked_at_ph"] = (
+        format_ts_ph(guardian_state.get("last_checked_at")) if guardian_state.get("last_checked_at") else "Not checked yet"
+    )
+    guardian_state["last_triggered_at_ph"] = (
+        format_ts_ph(guardian_state.get("last_triggered_at")) if guardian_state.get("last_triggered_at") else "Never"
+    )
+    guardian_state["last_completed_at_ph"] = (
+        format_ts_ph(guardian_state.get("last_completed_at")) if guardian_state.get("last_completed_at") else "Never"
+    )
+    return {
+        "active_tab": active_retention_tab,
+        "settings": settings,
+        "features": feature_rows,
+        "storage": health,
+        "guardian_state": guardian_state,
+        "history": history_rows,
+        "filters": {
+            "feature": feature_filter,
+            "trigger": trigger_filter,
+            "status": status_filter,
+            "limit": limit,
+        },
+        "pagination": {
+            "page": page,
+            "page_count": page_count,
+            "total": total,
+            "start": ((page - 1) * limit + 1) if total else 0,
+            "end": min(page * limit, total),
+            "previous_url": page_url(page - 1) if page > 1 else "",
+            "next_url": page_url(page + 1) if page < page_count else "",
+        },
+    }
+
+
+_GRAPHIFY_ARTIFACT_NAMES = {"graph.html", "graph.json", "GRAPH_REPORT.md"}
+
+
+def _graphify_artifact_path(filename: str):
+    """Resolve one allowlisted Graphify artifact without exposing the directory."""
+    if filename not in _GRAPHIFY_ARTIFACT_NAMES:
+        return None
+    try:
+        root = GRAPHIFY_OUT_DIR.resolve(strict=True)
+        candidate = (root / filename).resolve(strict=True)
+        if candidate.parent != root or not candidate.is_file():
+            return None
+        return candidate
+    except (OSError, RuntimeError):
+        return None
+
+
+def _graphify_status_payload():
+    graph_html_path = _graphify_artifact_path("graph.html")
+    graph_json_path = _graphify_artifact_path("graph.json")
+    report_path = _graphify_artifact_path("GRAPH_REPORT.md")
+    status = {
+        "version": "0.9.13",
+        "available": bool(graph_html_path),
+        "report_available": bool(report_path),
+        "metadata_available": bool(graph_json_path),
+        "nodes": 0,
+        "relationships": 0,
+        "communities": 0,
+        "extracted_relationships": 0,
+        "inferred_relationships": 0,
+        "built_at_commit": "",
+        "built_at_commit_short": "",
+        "commit_state": "unknown",
+        "updated_at": "",
+        "updated_at_ph": "n/a",
+        "metadata_error": "",
+    }
+
+    if graph_json_path:
+        try:
+            graph_data = json.loads(graph_json_path.read_text(encoding="utf-8"))
+            nodes = graph_data.get("nodes") if isinstance(graph_data.get("nodes"), list) else []
+            links = graph_data.get("links") if isinstance(graph_data.get("links"), list) else []
+            communities = {
+                node.get("community")
+                for node in nodes
+                if isinstance(node, dict) and node.get("community") is not None
+            }
+            confidence_counts = {}
+            for link in links:
+                confidence = str((link or {}).get("confidence") or "").strip().upper()
+                if confidence:
+                    confidence_counts[confidence] = int(confidence_counts.get(confidence) or 0) + 1
+            built_at_commit = str(graph_data.get("built_at_commit") or "").strip()
+            if not re.fullmatch(r"[0-9a-fA-F]{7,64}", built_at_commit):
+                built_at_commit = ""
+            status.update(
+                {
+                    "nodes": len(nodes),
+                    "relationships": len(links),
+                    "communities": len(communities),
+                    "extracted_relationships": int(confidence_counts.get("EXTRACTED") or 0),
+                    "inferred_relationships": int(confidence_counts.get("INFERRED") or 0),
+                    "built_at_commit": built_at_commit,
+                    "built_at_commit_short": built_at_commit[:7],
+                }
+            )
+            installed_commit = str((_system_update_installed_version() or {}).get("full") or "").strip()
+            if built_at_commit and installed_commit:
+                status["commit_state"] = "match" if built_at_commit == installed_commit else "different"
+        except (OSError, ValueError, TypeError):
+            status["metadata_error"] = "Graph metadata could not be read. Refresh the Graphify artifacts on the host."
+
+    artifact_paths = [path for path in (graph_html_path, graph_json_path, report_path) if path]
+    if artifact_paths:
+        try:
+            modified_at = max(path.stat().st_mtime for path in artifact_paths)
+            modified_dt = datetime.fromtimestamp(modified_at, tz=timezone.utc)
+            status["updated_at"] = modified_dt.isoformat().replace("+00:00", "Z")
+            status["updated_at_ph"] = format_ts_ph(status["updated_at"])
+        except OSError:
+            pass
+    return status
+
+
+def _graphify_missing_response():
+    return Response(
+        "Graphify artifact is unavailable. Refresh the project graph on the server host and try again.",
+        status_code=404,
+        media_type="text/plain",
+        headers={**NO_STORE_HEADERS, "X-Content-Type-Options": "nosniff"},
+    )
+
+
+@app.get("/settings/system/graphify/graph", response_class=FileResponse)
+async def system_graphify_graph(request: Request):
+    graph_path = _graphify_artifact_path("graph.html")
+    if not graph_path:
+        return _graphify_missing_response()
+    return FileResponse(
+        str(graph_path),
+        media_type="text/html",
+        headers={
+            **NO_STORE_HEADERS,
+            "Content-Disposition": 'inline; filename="graphify-knowledge-graph.html"',
+            "X-Content-Type-Options": "nosniff",
+            "Referrer-Policy": "no-referrer",
+            "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+            "Content-Security-Policy": (
+                "sandbox allow-scripts; default-src 'none'; "
+                "script-src 'unsafe-inline' https://unpkg.com; style-src 'unsafe-inline'; "
+                "img-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; "
+                "form-action 'none'; frame-ancestors 'self'"
+            ),
+        },
+    )
+
+
+@app.get("/settings/system/graphify/report", response_class=FileResponse)
+async def system_graphify_report(request: Request):
+    report_path = _graphify_artifact_path("GRAPH_REPORT.md")
+    if not report_path:
+        return _graphify_missing_response()
+    return FileResponse(
+        str(report_path),
+        media_type="text/plain; charset=utf-8",
+        headers={
+            **NO_STORE_HEADERS,
+            "Content-Disposition": 'inline; filename="GRAPH_REPORT.md"',
+            "X-Content-Type-Options": "nosniff",
+            "Referrer-Policy": "no-referrer",
+            "Content-Security-Policy": "sandbox; default-src 'none'; frame-ancestors 'self'",
+        },
+    )
+
+
 @app.get("/settings/system", response_class=HTMLResponse)
 async def system_settings(request: Request):
     active_tab = (request.query_params.get("tab") or "general").strip().lower()
@@ -24711,6 +25711,12 @@ def render_system_settings_response(
         system_meta["action"] = "uninstall"
         danger_system_actions.append(system_meta)
     system_update_status = _system_update_status_payload(include_log=False) if caps.get("can_view_update_tab") else _normalize_system_update_status({})
+    data_retention = (
+        _data_retention_tab_payload(request)
+        if active_tab == "data-retention" and caps.get("can_view_data_retention_tab")
+        else {}
+    )
+    graphify_status = _graphify_status_payload() if active_tab == "graphify" and caps.get("can_view_graphify_tab") else {}
     system_settings = normalize_system_settings(get_settings("system", SYSTEM_DEFAULTS))
     auth_settings = system_settings.get("auth") if isinstance(system_settings.get("auth"), dict) else {}
     pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
@@ -24755,7 +25761,7 @@ def render_system_settings_response(
     role_permission_groups = []
     auth_roles = []
     auth_users = []
-    if caps.get("can_view_access_tab"):
+    if active_tab == "access" and caps.get("can_view_access_tab"):
         try:
             if caps.get("can_view_access_permissions") or caps.get("can_edit_access_roles"):
                 auth_permissions = list_auth_permissions()
@@ -24807,7 +25813,7 @@ def render_system_settings_response(
             wan_rows = build_wan_rows(pulse_settings, wan_settings_data)
             cores = ((pulse_settings.get("pulsewatch") or {}).get("mikrotik") or {}).get("cores") or []
             interface_map, interface_warnings = fetch_mikrotik_interfaces(cores)
-            detect_map, detect_warnings = detect_routed_wan_autofill(pulse_settings, wan_rows, probe_public=False)
+            detect_map, detect_warnings = detect_routed_wan_autofill(pulse_settings, wan_rows)
             wan_autodetect_warnings = list(interface_warnings or []) if routers_tab == "isp-port-tagging" else list(detect_warnings or [])
             for row in wan_rows:
                 key = ((row.get("core_id") or "").strip(), (row.get("list_name") or "").strip())
@@ -24829,20 +25835,16 @@ def render_system_settings_response(
                     )
                 row["traffic_interface_options"] = options
                 detected_local_ip = (detected.get("local_ip") or "").strip()
-                detected_netwatch = (detected.get("netwatch_host") or "").strip()
                 row["detected_local_ip"] = detected_local_ip
-                row["detected_netwatch_host"] = detected_netwatch
                 row["detected_interface"] = (detected.get("interface") or "").strip()
                 row["detected_routing_mark"] = (detected.get("routing_mark") or "").strip()
                 mode = (row.get("mode") or "routed").strip().lower()
                 local_ip = (row.get("local_ip") or "").strip()
                 netwatch_host = (row.get("netwatch_host") or "").strip()
                 if mode == "routed":
-                    local_ip = detected_local_ip
-                    netwatch_host = detected_netwatch
+                    local_ip = detected_local_ip or local_ip
                 else:
-                    if not netwatch_host:
-                        netwatch_host = local_ip
+                    netwatch_host = local_ip
                 row["local_ip"] = local_ip
                 row["netwatch_host"] = netwatch_host
                 row["enabled"] = bool(row.get("enabled")) and bool(local_ip)
@@ -24879,10 +25881,103 @@ def render_system_settings_response(
                 "danger_system_actions": danger_system_actions,
                 "danger_requires_password": _system_danger_requires_password(request),
                 "system_update_status": system_update_status,
+                "data_retention": data_retention,
+                "graphify_status": graphify_status,
                 "system_update_requires_password": _system_danger_requires_password(request),
                 **caps,
             },
         ),
+    )
+
+
+@app.post("/settings/system/data-retention/settings", response_class=HTMLResponse)
+async def system_data_retention_settings_save(request: Request):
+    form = await request.form()
+    current = get_data_retention_settings()
+    guardian = current["guardian"]
+    payload = {
+        "guardian": {
+            "trigger_percent": parse_int(form, "guardian_trigger_percent", guardian["trigger_percent"]),
+            "recovery_percent": parse_int(form, "guardian_recovery_percent", guardian["recovery_percent"]),
+            "check_interval_minutes": parse_int(
+                form, "guardian_check_interval_minutes", guardian["check_interval_minutes"]
+            ),
+            "cooldown_hours": parse_int(form, "guardian_cooldown_hours", guardian["cooldown_hours"]),
+            "max_rows_per_dataset": parse_int(
+                form, "guardian_max_rows_per_dataset", guardian["max_rows_per_dataset"]
+            ),
+            "vacuum_after_cleanup": parse_bool(form, "guardian_vacuum_after_cleanup"),
+            "history_retention_days": parse_int(
+                form, "guardian_history_retention_days", guardian["history_retention_days"]
+            ),
+        },
+        "features": current["features"],
+    }
+    try:
+        save_data_retention_settings(payload)
+    except Exception as exc:
+        return render_system_settings_response(
+            request,
+            f"Data retention settings could not be saved: {exc}",
+            active_tab="data-retention",
+        )
+
+    _auth_log_event(
+        request,
+        "system.data_retention.settings_saved",
+        resource="/settings/system/data-retention/settings",
+        details="Mandatory storage guardian policy updated",
+    )
+    return render_system_settings_response(
+        request,
+        "Data retention settings saved. The mandatory guardian will use them on its next storage check.",
+        active_tab="data-retention",
+    )
+
+
+@app.post("/settings/system/data-retention/feature/{feature_key}", response_class=HTMLResponse)
+async def system_data_retention_feature_save(request: Request, feature_key: str):
+    feature_key = str(feature_key or "").strip().lower()
+    feature_meta = next((item for item in DATA_RETENTION_FEATURES if item["key"] == feature_key), None)
+    if not feature_meta:
+        return Response("Unknown data-retention feature.", status_code=404, media_type="text/plain")
+
+    form = await request.form()
+    current = get_data_retention_settings()
+    existing = current["features"][feature_key]
+    current["features"][feature_key] = {
+        "delete_percent": parse_int(form, "delete_percent", existing["delete_percent"]),
+        "min_keep_days": parse_int(form, "min_keep_days", existing["min_keep_days"]),
+        "scheduled_cleanup_interval_days": parse_int(
+            form,
+            "scheduled_cleanup_interval_days",
+            existing["scheduled_cleanup_interval_days"],
+        ),
+    }
+    normal_current = normal_retention_values()
+    for field in data_retention_normal_fields_for_feature(feature_key, normal_current):
+        normal_current[field["name"]] = parse_int(form, field["name"], field["value"])
+
+    try:
+        save_data_retention_settings(current)
+        save_normal_retention_values(normal_current)
+    except Exception as exc:
+        return render_system_settings_response(
+            request,
+            f"{feature_meta['label']} retention policy could not be saved: {exc}",
+            active_tab="data-retention",
+        )
+
+    _auth_log_event(
+        request,
+        "system.data_retention.feature_saved",
+        resource=f"/settings/system/data-retention/feature/{feature_key}",
+        details=f"{feature_meta['label']} emergency and scheduled retention policy updated",
+    )
+    return render_system_settings_response(
+        request,
+        f"{feature_meta['label']} retention policy saved. No deletion was run.",
+        active_tab="data-retention",
     )
 
 
@@ -24937,8 +26032,13 @@ def _parse_wan_list_from_form(form, count: int, existing_wans=None):
         if mode not in ("routed", "bridged"):
             mode = "routed"
         local_ip = (form.get(f"wan_{idx}_local_ip") or "").strip()
-        netwatch_host = (form.get(f"wan_{idx}_netwatch_host") or "").strip()
-        if not netwatch_host:
+        raw_netwatch_host = form.get(f"wan_{idx}_netwatch_host")
+        netwatch_host = (
+            str(raw_netwatch_host).strip()
+            if raw_netwatch_host is not None
+            else (existing.get("netwatch_host") or "").strip()
+        )
+        if mode == "bridged":
             netwatch_host = local_ip
         enabled = parse_bool(form, f"wan_{idx}_enabled")
         if not local_ip:
@@ -25594,43 +26694,85 @@ async def system_save_isps(request: Request):
     form = await request.form()
     pulse_settings = normalize_pulsewatch_settings(get_settings("isp_ping", ISP_PING_DEFAULTS))
     wan_settings_data = normalize_wan_ping_settings(get_settings("wan_ping", WAN_PING_DEFAULTS))
+    existing_wan_map = {
+        (item.get("id") or wan_row_id(item.get("core_id"), item.get("list_name"))): item
+        for item in (wan_settings_data.get("wans") or [])
+        if isinstance(item, dict)
+    }
     count = parse_int(form, "wan_count", 0)
     parsed_wans = _parse_wan_list_from_form(form, count, wan_settings_data.get("wans") or [])
-    routed_detect_map, routed_detect_warnings = detect_routed_wan_autofill(pulse_settings, parsed_wans, probe_public=True)
-    local_warnings = []
+    validation_errors = []
     for wan in parsed_wans:
+        if (wan.get("mode") or "routed").strip().lower() != "routed":
+            continue
+        wan_ip = (wan.get("netwatch_host") or "").strip()
+        if not _is_public_ipv4(wan_ip):
+            label = (wan.get("identifier") or wan.get("list_name") or wan.get("id") or "ISP").strip()
+            validation_errors.append(f"{label}: enter a valid public WAN IPv4 address")
+    if validation_errors:
+        return render_system_settings_response(
+            request,
+            "ISP list was not saved: " + "; ".join(validation_errors[:6]),
+            active_tab="routers",
+            routers_tab="isps",
+        )
+
+    wan_settings_data["wans"] = parsed_wans
+    detect_map, routed_detect_warnings = detect_routed_wan_autofill(pulse_settings, parsed_wans)
+    local_warnings = []
+    for wan in wan_settings_data.get("wans") or []:
         mode = (wan.get("mode") or "routed").strip().lower()
-        local_ip = ""
-        netwatch_host = ""
         if mode == "routed":
             key = ((wan.get("core_id") or "").strip(), (wan.get("list_name") or "").strip())
-            detected = routed_detect_map.get(key) or {}
+            detected = detect_map.get(key) or {}
             detected_local = (detected.get("local_ip") or "").strip()
-            detected_netwatch = (detected.get("netwatch_host") or "").strip()
-            local_ip = detected_local
-            netwatch_host = detected_netwatch
+            if detected_local:
+                wan["local_ip"] = detected_local
+            local_ip = (wan.get("local_ip") or "").strip()
             if not local_ip:
-                local_warnings.append(f"{wan.get('core_id')} {wan.get('list_name')}: no auto-detected local IP")
-            if not netwatch_host:
-                local_warnings.append(f"{wan.get('core_id')} {wan.get('list_name')}: no auto-detected WAN/public IP")
+                local_warnings.append(
+                    f"{wan.get('core_id')} {wan.get('list_name')}: no auto-detected local source IP"
+                )
         else:
             local_ip = (wan.get("local_ip") or "").strip()
-            netwatch_host = (wan.get("netwatch_host") or "").strip()
-            if not netwatch_host:
-                netwatch_host = local_ip
-        wan["local_ip"] = local_ip
-        wan["netwatch_host"] = netwatch_host
+            wan["netwatch_host"] = local_ip
         if not local_ip:
             wan["enabled"] = False
-    wan_settings_data["wans"] = parsed_wans
+
     save_settings("wan_ping", wan_settings_data)
-    sync_errors = wan_ping_notifier.sync_netwatch(wan_settings_data, pulse_settings)
+    sync_errors = wan_ping_notifier.sync_netwatch(
+        wan_settings_data,
+        pulse_settings,
+        refresh_routes=False,
+    )
     save_settings("wan_ping", wan_settings_data)
+
+    for wan in wan_settings_data.get("wans") or []:
+        wan_id = (wan.get("id") or "").strip()
+        previous = existing_wan_map.get(wan_id) or {}
+        previous_ip = (previous.get("netwatch_host") or "").strip()
+        current_ip = (wan.get("netwatch_host") or "").strip()
+        if previous_ip != current_ip:
+            _auth_log_event(
+                request,
+                "system.routers.isp.wan_ip.manual_change",
+                resource=wan_id,
+                details=(
+                    f"{wan.get('core_id')} {wan.get('list_name')}: "
+                    f"address {previous_ip or 'unset'} -> {current_ip or 'unset'}"
+                ),
+            )
+    _auth_log_event(
+        request,
+        "system.routers.isp.save",
+        resource="wan_ping.wans",
+        details=f"Saved {len(parsed_wans)} ISP rows with operator-managed routed WAN IPs.",
+    )
     warn_parts = []
     if routed_detect_warnings:
-        warn_parts.append("Auto-detect: " + "; ".join(routed_detect_warnings[:6]))
+        warn_parts.append("Local route detection: " + "; ".join(routed_detect_warnings[:6]))
     if local_warnings:
-        warn_parts.append("Routed IP checks: " + "; ".join(local_warnings[:6]))
+        warn_parts.append("Routed source IP: " + "; ".join(local_warnings[:6]))
     if sync_errors:
         warn_parts.append("Netwatch: " + "; ".join(sync_errors[:6]))
     if warn_parts:

@@ -1,8 +1,10 @@
 import json
 import os
+import shutil
 import sqlite3
 import threading
 import time
+import uuid
 from datetime import datetime, timezone, timedelta
 
 DB_PATH = os.environ.get("THREEJ_DB_PATH", "/data/threejnotif.db")
@@ -159,6 +161,9 @@ AUTH_DEFAULT_PERMISSIONS = [
     {"code": "system.tab.routers.view", "label": "System Settings · Routers Tab", "description": "View System Settings routers tab."},
     {"code": "system.tab.access.view", "label": "System Settings · Access Tab", "description": "View System Settings access tab."},
     {"code": "system.tab.update.view", "label": "System Settings · Update Tab", "description": "View System Settings update tab and current updater status."},
+    {"code": "system.tab.data_retention.view", "label": "System Settings · Data Retention Tab", "description": "View storage health, retention policies, and automatic deletion history."},
+    {"code": "system.data_retention.settings.edit", "label": "System Data Retention · Edit Settings", "description": "Edit the mandatory storage guardian and per-feature retention policies."},
+    {"code": "system.tab.graphify.view", "label": "System Settings · Graphify Tab", "description": "View the Graphify development knowledge graph, report, and usage guide."},
     {"code": "system.backup.import_export.run", "label": "System Backup · Import / Export", "description": "Use backup and restore actions under System Settings → Backup."},
     {"code": "system.update.check.run", "label": "System Update · Check", "description": "Check the latest remote commits and update availability from System Settings."},
     {"code": "system.update.run", "label": "System Update · Run", "description": "Start the in-app system update workflow and service rebuild."},
@@ -274,6 +279,24 @@ def _should_run_retention_prune(key, interval_seconds):
 def _use_postgres():
     url = (DB_URL or "").lower()
     return url.startswith("postgres://") or url.startswith("postgresql://")
+
+
+def _truncate_or_delete(conn, table_names):
+    tables = [str(name or "").strip() for name in (table_names or []) if str(name or "").strip()]
+    if not tables:
+        return
+    if _use_postgres():
+        safe_tables = []
+        for name in tables:
+            if not name.replace("_", "").isalnum():
+                raise ValueError(f"Unsafe table name: {name}")
+            safe_tables.append(name)
+        conn.execute(f"TRUNCATE TABLE {', '.join(safe_tables)} RESTART IDENTITY")
+        return
+    for name in tables:
+        if not name.replace("_", "").isalnum():
+            raise ValueError(f"Unsafe table name: {name}")
+        conn.execute(f"DELETE FROM {name}")
 
 
 def _translate_qmarks(sql):
@@ -994,6 +1017,34 @@ def init_db():
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS data_retention_history (
+                    id BIGSERIAL PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    trigger_type TEXT NOT NULL,
+                    feature_key TEXT NOT NULL,
+                    feature_label TEXT NOT NULL,
+                    dataset_key TEXT NOT NULL,
+                    dataset_label TEXT NOT NULL,
+                    table_name TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    rows_deleted BIGINT NOT NULL DEFAULT 0,
+                    cutoff_at TEXT,
+                    delete_percent DOUBLE PRECISION,
+                    min_keep_days INTEGER,
+                    disk_percent_before DOUBLE PRECISION,
+                    disk_percent_after DOUBLE PRECISION,
+                    duration_ms BIGINT,
+                    actor_user_id BIGINT,
+                    actor_username TEXT,
+                    details TEXT,
+                    error_message TEXT
+                )
+                """
+            )
         else:
             conn.execute(
                 """
@@ -1385,6 +1436,34 @@ def init_db():
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS data_retention_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    trigger_type TEXT NOT NULL,
+                    feature_key TEXT NOT NULL,
+                    feature_label TEXT NOT NULL,
+                    dataset_key TEXT NOT NULL,
+                    dataset_label TEXT NOT NULL,
+                    table_name TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    rows_deleted INTEGER NOT NULL DEFAULT 0,
+                    cutoff_at TEXT,
+                    delete_percent REAL,
+                    min_keep_days INTEGER,
+                    disk_percent_before REAL,
+                    disk_percent_after REAL,
+                    duration_ms INTEGER,
+                    actor_user_id INTEGER,
+                    actor_username TEXT,
+                    details TEXT,
+                    error_message TEXT
+                )
+                """
+            )
 
         conn.execute(
             """
@@ -1435,14 +1514,35 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_optical_results_device_ts ON optical_results (device_id, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_optical_results_ip_ts ON optical_results (ip, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_optical_results_pppoe_ts ON optical_results (pppoe, timestamp)")
+        if _use_postgres():
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_optical_results_ts_brin "
+                "ON optical_results USING BRIN (timestamp)"
+            )
+        else:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_optical_results_ts_brin ON optical_results (timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ping_results_isp_ts ON ping_results (isp_id, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ping_rollups_isp_bucket ON ping_rollups (isp_id, bucket_ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_ping_results_acct_ts ON accounts_ping_results (account_id, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_ping_results_name_ts ON accounts_ping_results (name, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_ping_results_ip_ts ON accounts_ping_results (ip, timestamp)")
+        if _use_postgres():
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_accounts_ping_results_ts_brin "
+                "ON accounts_ping_results USING BRIN (timestamp)"
+            )
+        else:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_ping_results_ts_brin ON accounts_ping_results (timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_ping_rollups_acct_bucket ON accounts_ping_rollups (account_id, bucket_ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pppoe_usage_samples_pppoe_ts ON pppoe_usage_samples (pppoe, timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pppoe_usage_samples_router_ts ON pppoe_usage_samples (router_id, timestamp)")
+        if _use_postgres():
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_pppoe_usage_samples_ts_brin "
+                "ON pppoe_usage_samples USING BRIN (timestamp)"
+            )
+        else:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_pppoe_usage_samples_ts_brin ON pppoe_usage_samples (timestamp)")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_usage_modem_reboot_history_pppoe_attempted "
             "ON usage_modem_reboot_history (pppoe, attempted_at)"
@@ -1450,6 +1550,10 @@ def init_db():
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_usage_modem_reboot_history_router_attempted "
             "ON usage_modem_reboot_history (router_id, attempted_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_usage_modem_reboot_history_attempted "
+            "ON usage_modem_reboot_history (attempted_at)"
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_surveillance_sessions_pppoe_started ON surveillance_sessions (pppoe, started_at)"
@@ -1462,6 +1566,9 @@ def init_db():
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_offline_history_router_ended ON offline_history (router_id, offline_ended_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_offline_history_ended ON offline_history (offline_ended_at)"
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_auth_users_role_active ON auth_users (role_id, is_active)"
@@ -1477,6 +1584,16 @@ def init_db():
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_auth_audit_logs_user_ts ON auth_audit_logs (user_id, timestamp)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_data_retention_history_started ON data_retention_history (started_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_data_retention_history_feature_started "
+            "ON data_retention_history (feature_key, started_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_data_retention_history_run ON data_retention_history (run_id)"
         )
         # Lightweight schema upgrade for existing installs.
         try:
@@ -1964,23 +2081,22 @@ def list_offline_history_account_stats_map(since_iso=""):
         conn.close()
 
 
-def delete_offline_history_older_than(cutoff_iso):
+def delete_offline_history_older_than(cutoff_iso, scheduled_cleanup_interval_days=30):
     cutoff_iso = (cutoff_iso or "").strip()
     if not cutoff_iso:
-        return
-    conn = get_conn()
-    try:
-        with conn:
-            conn.execute("DELETE FROM offline_history WHERE offline_ended_at < ?", (cutoff_iso,))
-    finally:
-        conn.close()
+        return 0
+    return delete_data_retention_dataset_before(
+        "offline_history",
+        cutoff_iso,
+        scheduled_cleanup_interval_days=scheduled_cleanup_interval_days,
+    )
 
 
 def clear_offline_history():
     conn = get_conn()
     try:
         with conn:
-            conn.execute("DELETE FROM offline_history")
+            _truncate_or_delete(conn, ["offline_history"])
     finally:
         conn.close()
 
@@ -2675,6 +2791,558 @@ def get_job_status():
 
 def utc_now_iso():
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+_DATA_RETENTION_DATASETS = {
+    "accounts_ping_raw": {
+        "feature_key": "accounts_ping",
+        "feature_label": "Accounts Ping",
+        "dataset_label": "Raw ping samples",
+        "table": "accounts_ping_results",
+        "timestamp": "timestamp",
+        "keys": ("id",),
+    },
+    "accounts_ping_rollups": {
+        "feature_key": "accounts_ping",
+        "feature_label": "Accounts Ping",
+        "dataset_label": "Minute rollups",
+        "table": "accounts_ping_rollups",
+        "timestamp": "bucket_ts",
+        "keys": ("bucket_ts", "account_id"),
+    },
+    "usage_samples": {
+        "feature_key": "usage",
+        "feature_label": "Usage",
+        "dataset_label": "Usage samples",
+        "table": "pppoe_usage_samples",
+        "timestamp": "timestamp",
+        "keys": ("id",),
+    },
+    "usage_reboots": {
+        "feature_key": "usage",
+        "feature_label": "Usage",
+        "dataset_label": "Modem reboot history",
+        "table": "usage_modem_reboot_history",
+        "timestamp": "attempted_at",
+        "keys": ("id",),
+    },
+    "optical_results": {
+        "feature_key": "optical",
+        "feature_label": "Optical Monitoring",
+        "dataset_label": "Optical readings",
+        "table": "optical_results",
+        "timestamp": "timestamp",
+        "keys": ("id",),
+    },
+    "offline_history": {
+        "feature_key": "offline",
+        "feature_label": "Offline",
+        "dataset_label": "Offline history",
+        "table": "offline_history",
+        "timestamp": "offline_ended_at",
+        "keys": ("id",),
+    },
+    "wan_status": {
+        "feature_key": "wan",
+        "feature_label": "WAN Ping",
+        "dataset_label": "WAN status history",
+        "table": "wan_status_history",
+        "timestamp": "timestamp",
+        "keys": ("id",),
+    },
+    "wan_targets": {
+        "feature_key": "wan",
+        "feature_label": "WAN Ping",
+        "dataset_label": "Target latency samples",
+        "table": "wan_target_ping_results",
+        "timestamp": "timestamp",
+        "keys": ("id",),
+    },
+    "isp_status": {
+        "feature_key": "isp_status",
+        "feature_label": "ISP Port Status",
+        "dataset_label": "Bandwidth samples",
+        "table": "isp_status_samples",
+        "timestamp": "timestamp",
+        "keys": ("id",),
+    },
+    "mikrotik_logs": {
+        "feature_key": "mikrotik_logs",
+        "feature_label": "MikroTik Logs",
+        "dataset_label": "Router log messages",
+        "table": "mikrotik_logs",
+        "timestamp": "timestamp",
+        "keys": ("id",),
+    },
+    "auth_audit": {
+        "feature_key": "auth_audit",
+        "feature_label": "Access Audit",
+        "dataset_label": "Authentication audit events",
+        "table": "auth_audit_logs",
+        "timestamp": "timestamp",
+        "keys": ("id",),
+    },
+}
+
+
+def data_retention_dataset_catalog():
+    """Return a copy of the fixed dataset allowlist used by retention SQL."""
+    return {key: dict(value) for key, value in _DATA_RETENTION_DATASETS.items()}
+
+
+def _data_retention_spec(dataset_key):
+    key = str(dataset_key or "").strip()
+    spec = _DATA_RETENTION_DATASETS.get(key)
+    if not spec:
+        raise ValueError(f"Unsupported data-retention dataset: {key}")
+    return key, spec
+
+
+def _data_retention_disk_percent():
+    """Return the filesystem usage percentage used by the storage guardian."""
+    configured_path = os.environ.get("THREEJ_STORAGE_PATH", "/data")
+    storage_path = configured_path if os.path.exists(configured_path) else "/"
+    try:
+        usage = shutil.disk_usage(storage_path)
+    except OSError:
+        return None
+    return round((usage.used / usage.total * 100.0) if usage.total else 0.0, 1)
+
+
+def _record_data_retention_event_conn(
+    conn,
+    *,
+    run_id,
+    started_at,
+    completed_at,
+    trigger_type,
+    dataset_key,
+    status,
+    rows_deleted=0,
+    cutoff_at="",
+    delete_percent=None,
+    min_keep_days=None,
+    disk_percent_before=None,
+    disk_percent_after=None,
+    duration_ms=None,
+    actor_user_id=None,
+    actor_username="",
+    details="",
+    error_message="",
+):
+    dataset_key, spec = _data_retention_spec(dataset_key)
+    conn.execute(
+        """
+        INSERT INTO data_retention_history (
+            run_id, started_at, completed_at, trigger_type,
+            feature_key, feature_label, dataset_key, dataset_label, table_name,
+            status, rows_deleted, cutoff_at, delete_percent, min_keep_days,
+            disk_percent_before, disk_percent_after, duration_ms,
+            actor_user_id, actor_username, details, error_message
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(run_id or uuid.uuid4().hex),
+            str(started_at or utc_now_iso()),
+            str(completed_at or ""),
+            str(trigger_type or "scheduled")[:40],
+            spec["feature_key"],
+            spec["feature_label"],
+            dataset_key,
+            spec["dataset_label"],
+            spec["table"],
+            str(status or "completed")[:40],
+            max(int(rows_deleted or 0), 0),
+            str(cutoff_at or ""),
+            delete_percent,
+            min_keep_days,
+            disk_percent_before,
+            disk_percent_after,
+            duration_ms,
+            actor_user_id,
+            str(actor_username or "")[:120],
+            str(details or "")[:2000],
+            str(error_message or "")[:2000],
+        ),
+    )
+
+
+def record_data_retention_event(**payload):
+    conn = get_conn()
+    try:
+        with conn:
+            _record_data_retention_event_conn(conn, **payload)
+    finally:
+        conn.close()
+
+
+def _delete_before_conn(conn, dataset_key, cutoff_iso):
+    dataset_key, spec = _data_retention_spec(dataset_key)
+    table_name = spec["table"]
+    timestamp_column = spec["timestamp"]
+    if _use_postgres():
+        row = conn.execute(
+            f"""
+            WITH deleted AS (
+                DELETE FROM {table_name}
+                WHERE {timestamp_column} < ?
+                RETURNING 1
+            )
+            SELECT COUNT(*) AS deleted_count FROM deleted
+            """,
+            (cutoff_iso,),
+        ).fetchone()
+        return int(_row_get(row, "deleted_count", 0) or 0)
+    cursor = conn.execute(
+        f"DELETE FROM {table_name} WHERE {timestamp_column} < ?",
+        (cutoff_iso,),
+    )
+    return max(int(getattr(cursor, "rowcount", 0) or 0), 0)
+
+
+def _delete_scheduled_retention_before_conn(
+    conn,
+    dataset_key,
+    cutoff_iso,
+    scheduled_cleanup_interval_days=30,
+):
+    """Delete to the retention cutoff only after one full batch interval accumulates."""
+    dataset_key, spec = _data_retention_spec(dataset_key)
+    interval_days = max(min(int(scheduled_cleanup_interval_days or 30), 365), 1)
+    raw_cutoff = str(cutoff_iso or "").strip()
+    try:
+        cutoff_dt = datetime.fromisoformat(raw_cutoff.replace("Z", "+00:00"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Scheduled retention cutoff must be a valid ISO timestamp.") from exc
+    if cutoff_dt.tzinfo is None:
+        cutoff_dt = cutoff_dt.replace(tzinfo=timezone.utc)
+    else:
+        cutoff_dt = cutoff_dt.astimezone(timezone.utc)
+    trigger_cutoff = (cutoff_dt - timedelta(days=interval_days)).replace(microsecond=0).isoformat().replace(
+        "+00:00", "Z"
+    )
+    due_row = conn.execute(
+        f"SELECT COUNT(*) AS retention_due FROM {spec['table']} WHERE {spec['timestamp']} < ?",
+        (trigger_cutoff,),
+    ).fetchone()
+    if int(_row_get(due_row, "retention_due", 0) or 0) <= 0:
+        return 0
+    return _delete_before_conn(conn, dataset_key, raw_cutoff)
+
+
+def delete_data_retention_dataset_before(
+    dataset_key,
+    cutoff_iso,
+    trigger_type="scheduled",
+    details="",
+    scheduled_cleanup_interval_days=30,
+):
+    cutoff_iso = str(cutoff_iso or "").strip()
+    if not cutoff_iso:
+        return 0
+    started_at = utc_now_iso()
+    started_monotonic = time.monotonic()
+    disk_percent_before = _data_retention_disk_percent()
+    conn = get_conn()
+    try:
+        with conn:
+            if str(trigger_type or "scheduled").strip().lower() == "scheduled":
+                deleted = _delete_scheduled_retention_before_conn(
+                    conn,
+                    dataset_key,
+                    cutoff_iso,
+                    scheduled_cleanup_interval_days,
+                )
+            else:
+                deleted = _delete_before_conn(conn, dataset_key, cutoff_iso)
+            if deleted > 0:
+                event_details = details or "Feature retention policy"
+                if str(trigger_type or "scheduled").strip().lower() == "scheduled":
+                    interval_days = max(min(int(scheduled_cleanup_interval_days or 30), 365), 1)
+                    event_details = f"{event_details}; batched cleanup interval {interval_days} day(s)"
+                _record_data_retention_event_conn(
+                    conn,
+                    run_id=f"{trigger_type}-{uuid.uuid4().hex}",
+                    started_at=started_at,
+                    completed_at=utc_now_iso(),
+                    trigger_type=trigger_type,
+                    dataset_key=dataset_key,
+                    status="completed",
+                    rows_deleted=deleted,
+                    cutoff_at=cutoff_iso,
+                    disk_percent_before=disk_percent_before,
+                    disk_percent_after=_data_retention_disk_percent(),
+                    duration_ms=int((time.monotonic() - started_monotonic) * 1000),
+                    actor_username="system",
+                    details=event_details,
+                )
+        return deleted
+    finally:
+        conn.close()
+
+
+def estimate_data_retention_dataset_rows(dataset_key):
+    _, spec = _data_retention_spec(dataset_key)
+    conn = get_conn()
+    try:
+        if _use_postgres():
+            row = conn.execute(
+                "SELECT COALESCE(reltuples, 0) AS estimated_rows FROM pg_class WHERE oid = to_regclass(?)",
+                (spec["table"],),
+            ).fetchone()
+            return max(int(float(_row_get(row, "estimated_rows", 0) or 0)), 0)
+        row = conn.execute(f"SELECT COUNT(*) AS estimated_rows FROM {spec['table']}").fetchone()
+        return max(int(_row_get(row, "estimated_rows", 0) or 0), 0)
+    finally:
+        conn.close()
+
+
+def delete_data_retention_dataset_oldest(dataset_key, cutoff_iso, target_rows):
+    """Delete at most target_rows oldest eligible rows from one allowlisted dataset."""
+    dataset_key, spec = _data_retention_spec(dataset_key)
+    cutoff_iso = str(cutoff_iso or "").strip()
+    target_rows = max(min(int(target_rows or 0), 1_000_000), 0)
+    if not cutoff_iso or target_rows <= 0:
+        return 0
+    table_name = spec["table"]
+    timestamp_column = spec["timestamp"]
+    keys = tuple(spec["keys"])
+    order_sql = ", ".join(keys)
+    conn = get_conn()
+    try:
+        with conn:
+            if _use_postgres():
+                selected_keys = ", ".join(keys)
+                join_sql = " AND ".join(f"target.{column} = candidate.{column}" for column in keys)
+                row = conn.execute(
+                    f"""
+                    WITH candidate AS (
+                        SELECT {selected_keys}
+                        FROM {table_name}
+                        WHERE {timestamp_column} < ?
+                        ORDER BY {order_sql}
+                        LIMIT ?
+                    ), deleted AS (
+                        DELETE FROM {table_name} AS target
+                        USING candidate
+                        WHERE {join_sql}
+                        RETURNING 1
+                    )
+                    SELECT COUNT(*) AS deleted_count FROM deleted
+                    """,
+                    (cutoff_iso, target_rows),
+                ).fetchone()
+                return max(int(_row_get(row, "deleted_count", 0) or 0), 0)
+            cursor = conn.execute(
+                f"""
+                DELETE FROM {table_name}
+                WHERE rowid IN (
+                    SELECT rowid
+                    FROM {table_name}
+                    WHERE {timestamp_column} < ?
+                    ORDER BY {order_sql}
+                    LIMIT ?
+                )
+                """,
+                (cutoff_iso, target_rows),
+            )
+            return max(int(getattr(cursor, "rowcount", 0) or 0), 0)
+    finally:
+        conn.close()
+
+
+def get_data_retention_dataset_stats():
+    rows = []
+    conn = get_conn()
+    try:
+        for dataset_key, spec in _DATA_RETENTION_DATASETS.items():
+            if _use_postgres():
+                row = conn.execute(
+                    """
+                    SELECT
+                        COALESCE(pg_total_relation_size(to_regclass(?)), 0) AS total_bytes,
+                        COALESCE(c.reltuples, 0) AS estimated_rows
+                    FROM (SELECT 1) AS seed
+                    LEFT JOIN pg_class AS c ON c.oid = to_regclass(?)
+                    """,
+                    (spec["table"], spec["table"]),
+                ).fetchone()
+                total_bytes = int(_row_get(row, "total_bytes", 0) or 0)
+                estimated_rows = int(float(_row_get(row, "estimated_rows", 0) or 0))
+            else:
+                row = conn.execute(f"SELECT COUNT(*) AS estimated_rows FROM {spec['table']}").fetchone()
+                total_bytes = 0
+                estimated_rows = int(_row_get(row, "estimated_rows", 0) or 0)
+            rows.append(
+                {
+                    "dataset_key": dataset_key,
+                    "feature_key": spec["feature_key"],
+                    "feature_label": spec["feature_label"],
+                    "dataset_label": spec["dataset_label"],
+                    "table_name": spec["table"],
+                    "total_bytes": max(total_bytes, 0),
+                    "estimated_rows": max(estimated_rows, 0),
+                }
+            )
+        return rows
+    finally:
+        conn.close()
+
+
+def count_data_retention_history(feature_key="", trigger_type="", status=""):
+    clauses = []
+    params = []
+    if feature_key:
+        clauses.append("feature_key = ?")
+        params.append(str(feature_key))
+    if trigger_type:
+        clauses.append("trigger_type = ?")
+        params.append(str(trigger_type))
+    if status:
+        clauses.append("status = ?")
+        params.append(str(status))
+    where_sql = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            f"SELECT COUNT(*) AS count_value FROM data_retention_history{where_sql}",
+            tuple(params),
+        ).fetchone()
+        return max(int(_row_get(row, "count_value", 0) or 0), 0)
+    finally:
+        conn.close()
+
+
+def list_data_retention_history(feature_key="", trigger_type="", status="", limit=25, offset=0):
+    limit = max(min(int(limit or 25), 100), 1)
+    offset = max(int(offset or 0), 0)
+    clauses = []
+    params = []
+    if feature_key:
+        clauses.append("feature_key = ?")
+        params.append(str(feature_key))
+    if trigger_type:
+        clauses.append("trigger_type = ?")
+        params.append(str(trigger_type))
+    if status:
+        clauses.append("status = ?")
+        params.append(str(status))
+    where_sql = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.extend([limit, offset])
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM data_retention_history
+            {where_sql}
+            ORDER BY started_at DESC, id DESC
+            LIMIT ? OFFSET ?
+            """,
+            tuple(params),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def latest_data_retention_history_by_feature():
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM (
+                SELECT
+                    data_retention_history.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY feature_key
+                        ORDER BY started_at DESC, id DESC
+                    ) AS retention_rank
+                FROM data_retention_history
+            ) AS ranked
+            WHERE retention_rank = 1
+            ORDER BY feature_label
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def delete_data_retention_history_older_than(cutoff_iso):
+    cutoff_iso = str(cutoff_iso or "").strip()
+    if not cutoff_iso:
+        return 0
+    conn = get_conn()
+    try:
+        with conn:
+            if _use_postgres():
+                row = conn.execute(
+                    """
+                    WITH deleted AS (
+                        DELETE FROM data_retention_history WHERE started_at < ? RETURNING 1
+                    )
+                    SELECT COUNT(*) AS deleted_count FROM deleted
+                    """,
+                    (cutoff_iso,),
+                ).fetchone()
+                return max(int(_row_get(row, "deleted_count", 0) or 0), 0)
+            cursor = conn.execute("DELETE FROM data_retention_history WHERE started_at < ?", (cutoff_iso,))
+            return max(int(getattr(cursor, "rowcount", 0) or 0), 0)
+    finally:
+        conn.close()
+
+
+def vacuum_data_retention_datasets(dataset_keys):
+    """Run ordinary VACUUM only; never use VACUUM FULL in automated retention."""
+    keys = []
+    tables = []
+    for dataset_key in dataset_keys or []:
+        key, spec = _data_retention_spec(dataset_key)
+        if spec["table"] not in tables:
+            keys.append(key)
+            tables.append(spec["table"])
+    if not tables:
+        return {"vacuumed": [], "errors": {}}
+    if not _use_postgres():
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False, isolation_level=None)
+        try:
+            conn.execute("VACUUM")
+            return {"vacuumed": list(keys), "errors": {}}
+        finally:
+            conn.close()
+
+    pool = _get_pg_pool()
+    raw_conn = pool.getconn()
+    vacuumed = []
+    errors = {}
+    try:
+        raw_conn.autocommit = True
+        cur = raw_conn.cursor()
+        try:
+            timeout_ms = max(int(os.environ.get("THREEJ_RETENTION_VACUUM_TIMEOUT_SECONDS", "600") or 600), 30) * 1000
+            cur.execute(f"SET statement_timeout = {timeout_ms}")
+            for key, table_name in zip(keys, tables):
+                try:
+                    cur.execute(f"VACUUM {table_name}")
+                    vacuumed.append(key)
+                except Exception as exc:
+                    errors[key] = str(exc)[:500]
+                    try:
+                        raw_conn.rollback()
+                    except Exception:
+                        pass
+        finally:
+            cur.close()
+    finally:
+        try:
+            raw_conn.autocommit = False
+        except Exception:
+            pass
+        pool.putconn(raw_conn)
+    return {"vacuumed": vacuumed, "errors": errors}
 
 
 def _bucket_ts_iso(timestamp, bucket_seconds=60):
@@ -3878,16 +4546,15 @@ def list_surveillance_audit_logs_for_pppoe(pppoe, since_iso="", until_iso="", li
         conn.close()
 
 
-def delete_auth_audit_logs_older_than(cutoff_iso):
+def delete_auth_audit_logs_older_than(cutoff_iso, scheduled_cleanup_interval_days=30):
     cutoff_iso = (cutoff_iso or "").strip()
     if not cutoff_iso:
-        return
-    conn = get_conn()
-    try:
-        with conn:
-            conn.execute("DELETE FROM auth_audit_logs WHERE timestamp < ?", (cutoff_iso,))
-    finally:
-        conn.close()
+        return 0
+    return delete_data_retention_dataset_before(
+        "auth_audit",
+        cutoff_iso,
+        scheduled_cleanup_interval_days=scheduled_cleanup_interval_days,
+    )
 
 
 def delete_auth_audit_logs_by_action_prefix(prefix):
@@ -4046,22 +4713,20 @@ def insert_accounts_ping_result(
         conn.close()
 
 
-def delete_accounts_ping_raw_older_than(cutoff_iso):
-    conn = get_conn()
-    try:
-        with conn:
-            conn.execute("DELETE FROM accounts_ping_results WHERE timestamp < ?", (cutoff_iso,))
-    finally:
-        conn.close()
+def delete_accounts_ping_raw_older_than(cutoff_iso, scheduled_cleanup_interval_days=30):
+    return delete_data_retention_dataset_before(
+        "accounts_ping_raw",
+        cutoff_iso,
+        scheduled_cleanup_interval_days=scheduled_cleanup_interval_days,
+    )
 
 
-def delete_accounts_ping_rollups_older_than(cutoff_iso):
-    conn = get_conn()
-    try:
-        with conn:
-            conn.execute("DELETE FROM accounts_ping_rollups WHERE bucket_ts < ?", (cutoff_iso,))
-    finally:
-        conn.close()
+def delete_accounts_ping_rollups_older_than(cutoff_iso, scheduled_cleanup_interval_days=30):
+    return delete_data_retention_dataset_before(
+        "accounts_ping_rollups",
+        cutoff_iso,
+        scheduled_cleanup_interval_days=scheduled_cleanup_interval_days,
+    )
 
 
 def delete_accounts_ping_results_for_pppoe(pppoe, account_ids=None):
@@ -4915,6 +5580,7 @@ def insert_wan_history_row(
     label=None,
     up_pct=None,
     retention_days=400,
+    scheduled_cleanup_interval_days=30,
 ):
     stamp = timestamp or utc_now_iso()
     cutoff = (datetime.utcnow() - timedelta(days=max(int(retention_days or 1), 1))).replace(microsecond=0).isoformat() + "Z"
@@ -4933,13 +5599,34 @@ def insert_wan_history_row(
                 (stamp, wan_id, status, up_pct, target, core_id, label),
             )
             if _should_run_retention_prune("wan_status_history", prune_interval_seconds):
-                conn.execute(
-                    """
-                    DELETE FROM wan_status_history
-                    WHERE timestamp < ?
-                    """,
-                    (cutoff,),
+                prune_started = time.monotonic()
+                disk_percent_before = _data_retention_disk_percent()
+                deleted = _delete_scheduled_retention_before_conn(
+                    conn,
+                    "wan_status",
+                    cutoff,
+                    scheduled_cleanup_interval_days,
                 )
+                if deleted > 0:
+                    _record_data_retention_event_conn(
+                        conn,
+                        run_id=f"scheduled-{uuid.uuid4().hex}",
+                        started_at=utc_now_iso(),
+                        completed_at=utc_now_iso(),
+                        trigger_type="scheduled",
+                        dataset_key="wan_status",
+                        status="completed",
+                        rows_deleted=deleted,
+                        cutoff_at=cutoff,
+                        disk_percent_before=disk_percent_before,
+                        disk_percent_after=_data_retention_disk_percent(),
+                        duration_ms=int((time.monotonic() - prune_started) * 1000),
+                        actor_username="system",
+                        details=(
+                            "WAN history retention policy; batched cleanup interval "
+                            f"{max(min(int(scheduled_cleanup_interval_days or 30), 365), 1)} day(s)"
+                        ),
+                    )
     finally:
         conn.close()
 
@@ -4955,6 +5642,7 @@ def insert_wan_target_ping_result(
     label=None,
     src_address=None,
     retention_days=400,
+    scheduled_cleanup_interval_days=30,
 ):
     stamp = timestamp or utc_now_iso()
     cutoff = (datetime.utcnow() - timedelta(days=max(int(retention_days or 1), 1))).replace(microsecond=0).isoformat() + "Z"
@@ -4985,13 +5673,34 @@ def insert_wan_target_ping_result(
                 ),
             )
             if _should_run_retention_prune("wan_target_ping_results", prune_interval_seconds):
-                conn.execute(
-                    """
-                    DELETE FROM wan_target_ping_results
-                    WHERE timestamp < ?
-                    """,
-                    (cutoff,),
+                prune_started = time.monotonic()
+                disk_percent_before = _data_retention_disk_percent()
+                deleted = _delete_scheduled_retention_before_conn(
+                    conn,
+                    "wan_targets",
+                    cutoff,
+                    scheduled_cleanup_interval_days,
                 )
+                if deleted > 0:
+                    _record_data_retention_event_conn(
+                        conn,
+                        run_id=f"scheduled-{uuid.uuid4().hex}",
+                        started_at=utc_now_iso(),
+                        completed_at=utc_now_iso(),
+                        trigger_type="scheduled",
+                        dataset_key="wan_targets",
+                        status="completed",
+                        rows_deleted=deleted,
+                        cutoff_at=cutoff,
+                        disk_percent_before=disk_percent_before,
+                        disk_percent_after=_data_retention_disk_percent(),
+                        duration_ms=int((time.monotonic() - prune_started) * 1000),
+                        actor_username="system",
+                        details=(
+                            "WAN target history retention policy; batched cleanup interval "
+                            f"{max(min(int(scheduled_cleanup_interval_days or 30), 365), 1)} day(s)"
+                        ),
+                    )
     finally:
         conn.close()
 
@@ -5172,6 +5881,7 @@ def insert_isp_status_sample(
     capacity_status="",
     capacity_reason="",
     retention_days=400,
+    scheduled_cleanup_interval_days=30,
 ):
     stamp = timestamp or utc_now_iso()
     try:
@@ -5220,7 +5930,34 @@ def insert_isp_status_sample(
                 ),
             )
             if _should_run_retention_prune("isp_status_samples", prune_interval_seconds):
-                conn.execute("DELETE FROM isp_status_samples WHERE timestamp < ?", (cutoff,))
+                prune_started = time.monotonic()
+                disk_percent_before = _data_retention_disk_percent()
+                deleted = _delete_scheduled_retention_before_conn(
+                    conn,
+                    "isp_status",
+                    cutoff,
+                    scheduled_cleanup_interval_days,
+                )
+                if deleted > 0:
+                    _record_data_retention_event_conn(
+                        conn,
+                        run_id=f"scheduled-{uuid.uuid4().hex}",
+                        started_at=utc_now_iso(),
+                        completed_at=utc_now_iso(),
+                        trigger_type="scheduled",
+                        dataset_key="isp_status",
+                        status="completed",
+                        rows_deleted=deleted,
+                        cutoff_at=cutoff,
+                        disk_percent_before=disk_percent_before,
+                        disk_percent_after=_data_retention_disk_percent(),
+                        duration_ms=int((time.monotonic() - prune_started) * 1000),
+                        actor_username="system",
+                        details=(
+                            "ISP status history retention policy; batched cleanup interval "
+                            f"{max(min(int(scheduled_cleanup_interval_days or 30), 365), 1)} day(s)"
+                        ),
+                    )
     finally:
         conn.close()
 
@@ -5233,14 +5970,25 @@ def fetch_isp_status_latest_map(wan_ids):
     conn = get_conn()
     try:
         if _use_postgres():
+            value_rows = ",".join("(?)" for _ in ids)
             rows = conn.execute(
                 f"""
-                SELECT DISTINCT ON (wan_id)
-                    wan_id, timestamp, core_id, label, interface_name, rx_bps, tx_bps,
-                    total_bps, peak_mbps, capacity_status, capacity_reason
-                FROM isp_status_samples
-                WHERE wan_id IN ({placeholders})
-                ORDER BY wan_id, timestamp DESC
+                SELECT
+                    sample.wan_id, sample.timestamp, sample.core_id, sample.label,
+                    sample.interface_name, sample.rx_bps, sample.tx_bps,
+                    sample.total_bps, sample.peak_mbps, sample.capacity_status,
+                    sample.capacity_reason
+                FROM (VALUES {value_rows}) AS wanted(wan_id)
+                CROSS JOIN LATERAL (
+                    SELECT
+                        wan_id, timestamp, core_id, label, interface_name, rx_bps,
+                        tx_bps, total_bps, peak_mbps, capacity_status,
+                        capacity_reason
+                    FROM isp_status_samples
+                    WHERE wan_id = wanted.wan_id
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                ) AS sample
                 """,
                 ids,
             ).fetchall()
@@ -5375,7 +6123,7 @@ def clear_isp_status_data():
     conn = get_conn()
     try:
         with conn:
-            conn.execute("DELETE FROM isp_status_samples")
+            _truncate_or_delete(conn, ["isp_status_samples"])
     finally:
         conn.close()
 
@@ -5429,20 +6177,19 @@ def insert_mikrotik_logs(rows):
         conn.close()
 
 
-def delete_mikrotik_logs_older_than(cutoff_iso):
-    conn = get_conn()
-    try:
-        with conn:
-            conn.execute("DELETE FROM mikrotik_logs WHERE timestamp < ?", (cutoff_iso,))
-    finally:
-        conn.close()
+def delete_mikrotik_logs_older_than(cutoff_iso, scheduled_cleanup_interval_days=30):
+    return delete_data_retention_dataset_before(
+        "mikrotik_logs",
+        cutoff_iso,
+        scheduled_cleanup_interval_days=scheduled_cleanup_interval_days,
+    )
 
 
 def clear_mikrotik_logs():
     conn = get_conn()
     try:
         with conn:
-            conn.execute("DELETE FROM mikrotik_logs")
+            _truncate_or_delete(conn, ["mikrotik_logs"])
     finally:
         conn.close()
 
@@ -5823,11 +6570,7 @@ def clear_wan_history():
     conn = get_conn()
     try:
         with conn:
-            conn.execute("DELETE FROM wan_status_history")
-            try:
-                conn.execute("DELETE FROM wan_target_ping_results")
-            except Exception:
-                pass
+            _truncate_or_delete(conn, ["wan_status_history", "wan_target_ping_results"])
     finally:
         conn.close()
 
@@ -5836,7 +6579,7 @@ def clear_surveillance_history():
     conn = get_conn()
     try:
         with conn:
-            conn.execute("DELETE FROM surveillance_sessions")
+            _truncate_or_delete(conn, ["surveillance_sessions"])
     finally:
         conn.close()
 
@@ -5885,20 +6628,19 @@ def insert_optical_result(device_id, pppoe, ip, rx, tx, priority, timestamp=None
         conn.close()
 
 
-def delete_optical_results_older_than(cutoff_iso):
-    conn = get_conn()
-    try:
-        with conn:
-            conn.execute("DELETE FROM optical_results WHERE timestamp < ?", (cutoff_iso,))
-    finally:
-        conn.close()
+def delete_optical_results_older_than(cutoff_iso, scheduled_cleanup_interval_days=30):
+    return delete_data_retention_dataset_before(
+        "optical_results",
+        cutoff_iso,
+        scheduled_cleanup_interval_days=scheduled_cleanup_interval_days,
+    )
 
 
 def clear_optical_results():
     conn = get_conn()
     try:
         with conn:
-            conn.execute("DELETE FROM optical_results")
+            _truncate_or_delete(conn, ["optical_results"])
     finally:
         conn.close()
 
@@ -5957,20 +6699,19 @@ def insert_pppoe_usage_sample(
         conn.close()
 
 
-def delete_pppoe_usage_samples_older_than(cutoff_iso):
-    conn = get_conn()
-    try:
-        with conn:
-            conn.execute("DELETE FROM pppoe_usage_samples WHERE timestamp < ?", (cutoff_iso,))
-    finally:
-        conn.close()
+def delete_pppoe_usage_samples_older_than(cutoff_iso, scheduled_cleanup_interval_days=30):
+    return delete_data_retention_dataset_before(
+        "usage_samples",
+        cutoff_iso,
+        scheduled_cleanup_interval_days=scheduled_cleanup_interval_days,
+    )
 
 
 def clear_pppoe_usage_samples():
     conn = get_conn()
     try:
         with conn:
-            conn.execute("DELETE FROM pppoe_usage_samples")
+            _truncate_or_delete(conn, ["pppoe_usage_samples"])
     finally:
         conn.close()
 
@@ -6324,23 +7065,19 @@ def count_usage_modem_reboot_history():
         conn.close()
 
 
-def delete_usage_modem_reboot_history_older_than(cutoff_iso):
-    conn = get_conn()
-    try:
-        with conn:
-            conn.execute("DELETE FROM usage_modem_reboot_history WHERE attempted_at < ?", (cutoff_iso,))
-    finally:
-        conn.close()
+def delete_usage_modem_reboot_history_older_than(cutoff_iso, scheduled_cleanup_interval_days=30):
+    return delete_data_retention_dataset_before(
+        "usage_reboots",
+        cutoff_iso,
+        scheduled_cleanup_interval_days=scheduled_cleanup_interval_days,
+    )
 
 
 def clear_usage_modem_reboot_history():
     conn = get_conn()
     try:
         with conn:
-            if _use_postgres():
-                conn.execute("TRUNCATE TABLE usage_modem_reboot_history RESTART IDENTITY")
-            else:
-                conn.execute("DELETE FROM usage_modem_reboot_history")
+            _truncate_or_delete(conn, ["usage_modem_reboot_history"])
     finally:
         conn.close()
 
@@ -6680,10 +7417,6 @@ def clear_accounts_ping_data():
     conn = get_conn()
     try:
         with conn:
-            if _use_postgres():
-                conn.execute("TRUNCATE TABLE accounts_ping_results, accounts_ping_rollups RESTART IDENTITY")
-            else:
-                conn.execute("DELETE FROM accounts_ping_results")
-                conn.execute("DELETE FROM accounts_ping_rollups")
+            _truncate_or_delete(conn, ["accounts_ping_results", "accounts_ping_rollups"])
     finally:
         conn.close()

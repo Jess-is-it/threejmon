@@ -1,0 +1,31 @@
+# Runtime data, databases, backups, and credentials must never enter the graph.
+/data/
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+*.backup
+*.sql.gz
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+
+# Runtime/update artifacts and logs are operational data, not source context.
+*.log
+.ota.*
+/app/__pycache__/
+**/__pycache__/
+
+# Large third-party/generated assets add noise without explaining ThreeJ behavior.
+/.codex/
+/_third_party/
+/app/static/tabler/
+/app/static/vendor/
+/app/static/login-world-map.svg
+
+# Never recursively ingest Graphify's own generated output.
+/graphify-out/

@@ -13,6 +13,8 @@
   .dash2-spark{height:46px;margin:0 -.35rem -.45rem}
   .dash2-chart{min-height:340px}
   .dash2-mini-chart{min-height:260px}
+  .dash2-chart-loader{min-height:100%;display:flex;align-items:center;justify-content:center;color:var(--tblr-muted);gap:.5rem;padding:1rem;text-align:center}
+  .dash2-chart-loader-sm{min-height:46px;font-size:.75rem;padding:.35rem}
   .dash2-report-table thead th{position:sticky;top:0;z-index:2;background:var(--tblr-bg-surface)}
   .dash2-report-table tbody tr{cursor:pointer}
   .dash2-gauge{min-height:210px}
@@ -121,7 +123,7 @@
             </div>
           </div>
           <div class="text-muted small" id="dash2-risk-note">Total issues requiring attention.</div>
-          <div class="dash2-spark" id="dash2-risk-spark"></div>
+          <div class="dash2-spark" id="dash2-risk-spark"><div class="dash2-chart-loader dash2-chart-loader-sm"><span class="spinner-border spinner-border-sm"></span></div></div>
         </div>
       </div>
     </div>
@@ -134,7 +136,7 @@
           </div>
           <div class="h1 mb-1" id="dash2-reachability-value">0%</div>
           <div class="text-muted small" id="dash2-reachability-note">Accounts Ping stable rate.</div>
-          <div class="dash2-spark" id="dash2-reachability-spark"></div>
+          <div class="dash2-spark" id="dash2-reachability-spark"><div class="dash2-chart-loader dash2-chart-loader-sm"><span class="spinner-border spinner-border-sm"></span></div></div>
         </div>
       </div>
     </div>
@@ -147,7 +149,7 @@
           </div>
           <div class="h1 mb-1" id="dash2-optical-value">0</div>
           <div class="text-muted small" id="dash2-optical-note">RX/TX threshold findings.</div>
-          <div class="dash2-spark" id="dash2-optical-spark"></div>
+          <div class="dash2-spark" id="dash2-optical-spark"><div class="dash2-chart-loader dash2-chart-loader-sm"><span class="spinner-border spinner-border-sm"></span></div></div>
         </div>
       </div>
     </div>
@@ -160,7 +162,7 @@
           </div>
           <div class="h1 mb-1" id="dash2-isp-value">0</div>
           <div class="text-muted small" id="dash2-isp-note">100M capacity exceptions.</div>
-          <div class="dash2-spark" id="dash2-isp-spark"></div>
+          <div class="dash2-spark" id="dash2-isp-spark"><div class="dash2-chart-loader dash2-chart-loader-sm"><span class="spinner-border spinner-border-sm"></span></div></div>
         </div>
       </div>
     </div>
@@ -173,7 +175,7 @@
           </div>
           <div class="h1 mb-1" id="dash2-offline-value">0</div>
           <div class="text-muted small" id="dash2-offline-note">Currently offline accounts.</div>
-          <div class="dash2-spark" id="dash2-offline-spark"></div>
+          <div class="dash2-spark" id="dash2-offline-spark"><div class="dash2-chart-loader dash2-chart-loader-sm"><span class="spinner-border spinner-border-sm"></span></div></div>
         </div>
       </div>
     </div>
@@ -186,7 +188,7 @@
           </div>
           <div class="h1 mb-1" id="dash2-router-value">0/0</div>
           <div class="text-muted small" id="dash2-router-note">MikroTik API up count.</div>
-          <div class="dash2-spark" id="dash2-router-spark"></div>
+          <div class="dash2-spark" id="dash2-router-spark"><div class="dash2-chart-loader dash2-chart-loader-sm"><span class="spinner-border spinner-border-sm"></span></div></div>
         </div>
       </div>
     </div>
@@ -206,7 +208,12 @@
           </div>
         </div>
         <div class="card-body">
-          <div id="dash2-risk-chart" class="dash2-chart"></div>
+          <div id="dash2-risk-chart" class="dash2-chart">
+            <div class="dash2-chart-loader">
+              <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+              <span>Loading attention trend...</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -220,7 +227,12 @@
           <span class="dash2-drag-handle ms-auto" data-dash2-drag-handle role="button" aria-label="Drag card horizontally to reorder" title="Drag horizontally to reorder"><i class="ti ti-grip-horizontal"></i></span>
         </div>
         <div class="card-body">
-          <div id="dash2-subscriber-donut" class="dash2-mini-chart"></div>
+          <div id="dash2-subscriber-donut" class="dash2-mini-chart">
+            <div class="dash2-chart-loader">
+              <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+              <span>Loading subscriber mix...</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -234,7 +246,12 @@
           <span class="dash2-drag-handle ms-auto" data-dash2-drag-handle role="button" aria-label="Drag card horizontally to reorder" title="Drag horizontally to reorder"><i class="ti ti-grip-horizontal"></i></span>
         </div>
         <div class="card-body">
-          <div id="dash2-network-bars" class="dash2-mini-chart"></div>
+          <div id="dash2-network-bars" class="dash2-mini-chart">
+            <div class="dash2-chart-loader">
+              <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+              <span>Loading network matrix...</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -247,8 +264,8 @@
         </div>
         <div class="card-body">
           <div class="row g-2">
-            <div class="col-6"><div id="dash2-cpu-gauge" class="dash2-gauge"></div></div>
-            <div class="col-6"><div id="dash2-ram-gauge" class="dash2-gauge"></div></div>
+            <div class="col-6"><div id="dash2-cpu-gauge" class="dash2-gauge"><div class="dash2-chart-loader"><span class="spinner-border spinner-border-sm"></span></div></div></div>
+            <div class="col-6"><div id="dash2-ram-gauge" class="dash2-gauge"><div class="dash2-chart-loader"><span class="spinner-border spinner-border-sm"></span></div></div></div>
           </div>
         </div>
       </div>
@@ -260,7 +277,12 @@
           <span class="dash2-drag-handle ms-auto" data-dash2-drag-handle role="button" aria-label="Drag card horizontally to reorder" title="Drag horizontally to reorder"><i class="ti ti-grip-horizontal"></i></span>
         </div>
         <div class="card-body">
-          <div id="dash2-impact-bars" class="dash2-mini-chart"></div>
+          <div id="dash2-impact-bars" class="dash2-mini-chart">
+            <div class="dash2-chart-loader">
+              <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+              <span>Loading customer impact...</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -329,6 +351,9 @@
     const initialTrends = {{ (trends or {})|tojson }};
     let kpis = initialKpis || {};
     let trends = initialTrends || {};
+    const hasTrendPayload = (payload) => Array.isArray(payload?.total) || Array.isArray(payload?.items);
+    let trendsReady = hasTrendPayload(initialTrends);
+    let trendsLoadFailed = false;
     let range = "live";
     let domainFilter = "all";
     let reportRows = [];
@@ -353,6 +378,29 @@
     const pct = (part, total) => num(total) > 0 ? Math.max(0, Math.min(100, (num(part) / num(total)) * 100)) : 0;
     const setText = (id, value) => { const node = el(id); if (node) node.textContent = value; };
     const rangeLabel = () => range === "live" ? "Live telemetry" : range === "24h" ? "Last 24 hours" : "Last 7 days";
+    const destroyChart = (id) => {
+      if (charts[id]) {
+        try { charts[id].destroy(); } catch (_error) {}
+        delete charts[id];
+      }
+    };
+    const setChartLoader = (id, message, small = false) => {
+      const node = el(id);
+      if (!node) return;
+      destroyChart(id);
+      node.innerHTML = `
+        <div class="dash2-chart-loader${small ? " dash2-chart-loader-sm" : ""}">
+          <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+          <span>${message || ""}</span>
+        </div>
+      `;
+    };
+    const setChartMessage = (id, message, small = false) => {
+      const node = el(id);
+      if (!node) return;
+      destroyChart(id);
+      node.innerHTML = `<div class="dash2-chart-loader${small ? " dash2-chart-loader-sm" : ""}"><span>${message}</span></div>`;
+    };
     const cutoffMs = () => {
       if (range === "24h") return Date.now() - 24 * 60 * 60 * 1000;
       if (range === "7d") return Date.now() - 7 * 24 * 60 * 60 * 1000;
@@ -398,10 +446,16 @@
     const renderSpark = (id, key, fallbackValue, color) => {
       const node = el(id);
       if (!node || !window.ApexCharts) return;
+      if (!trendsReady) {
+        if (trendsLoadFailed) setChartMessage(id, "No trend data", true);
+        else setChartLoader(id, "", true);
+        return;
+      }
       const options = sparkOptions(sparkData(key, fallbackValue), color);
       if (charts[id]) {
         charts[id].updateOptions(options, false, true);
       } else {
+        node.innerHTML = "";
         charts[id] = new window.ApexCharts(node, options);
         charts[id].render();
       }
@@ -427,6 +481,7 @@
       if (charts[id]) {
         charts[id].updateOptions(options, false, true);
       } else {
+        node.innerHTML = "";
         charts[id] = new window.ApexCharts(node, options);
         charts[id].render();
       }
@@ -498,23 +553,28 @@
       renderSpark("dash2-router-spark", "wan_ping_down_isps", routers.down || 0, colors.indigo);
     };
     const renderMainCharts = () => {
-      const visibleSeries = (trends.items || []).map((item, idx) => ({
-        name: item.label || item.key,
-        data: filteredPoints(item.series || []).map((point) => [Date.parse(point.x), num(point.y)]),
-        color: [colors.red, colors.orange, colors.indigo, colors.blue, colors.cyan, colors.yellow, colors.muted][idx % 7],
-      })).filter((item) => item.data.length);
-      upsertChart("dash2-risk-chart", {
-        chart: { type: "line", height: 350, toolbar: { show: true, tools: { download: false, selection: true, zoom: true, zoomin: true, zoomout: true, pan: true, reset: true } }, zoom: { enabled: true, type: "x", autoScaleYaxis: true }, animations: { enabled: false } },
-        series: visibleSeries.length ? visibleSeries : [{ name: "No samples", data: [] }],
-        colors: visibleSeries.length ? visibleSeries.map((item) => item.color) : [colors.muted],
-        stroke: { width: 3, curve: "smooth" },
-        markers: { size: 0 },
-        xaxis: { type: "datetime" },
-        yaxis: { min: 0, labels: { formatter: (v) => Math.round(v).toLocaleString() } },
-        tooltip: { shared: true, intersect: false, x: { format: "dd MMM HH:mm" } },
-        legend: { position: "bottom" },
-        grid: { borderColor: "#e9ecef", strokeDashArray: 4 },
-      });
+      if (!trendsReady) {
+        if (trendsLoadFailed) setChartMessage("dash2-risk-chart", "Trend data unavailable.");
+        else setChartLoader("dash2-risk-chart", "Loading attention trend...");
+      } else {
+        const visibleSeries = (trends.items || []).map((item, idx) => ({
+          name: item.label || item.key,
+          data: filteredPoints(item.series || []).map((point) => [Date.parse(point.x), num(point.y)]),
+          color: [colors.red, colors.orange, colors.indigo, colors.blue, colors.cyan, colors.yellow, colors.muted][idx % 7],
+        })).filter((item) => item.data.length);
+        upsertChart("dash2-risk-chart", {
+          chart: { type: "line", height: 350, toolbar: { show: true, tools: { download: false, selection: true, zoom: true, zoomin: true, zoomout: true, pan: true, reset: true } }, zoom: { enabled: true, type: "x", autoScaleYaxis: true }, animations: { enabled: false } },
+          series: visibleSeries.length ? visibleSeries : [{ name: "No samples", data: [] }],
+          colors: visibleSeries.length ? visibleSeries.map((item) => item.color) : [colors.muted],
+          stroke: { width: 3, curve: "smooth" },
+          markers: { size: 0 },
+          xaxis: { type: "datetime" },
+          yaxis: { min: 0, labels: { formatter: (v) => Math.round(v).toLocaleString() } },
+          tooltip: { shared: true, intersect: false, x: { format: "dd MMM HH:mm" } },
+          legend: { position: "bottom" },
+          grid: { borderColor: "#e9ecef", strokeDashArray: 4 },
+        });
+      }
       const acc = kpis.accounts_ping || {};
       const pending = Math.max(num(acc.accounts) - num(acc.up) - num(acc.issue), 0);
       upsertChart("dash2-subscriber-donut", {
@@ -716,7 +776,6 @@
     const renderAll = () => {
       renderScorecards();
       renderMainCharts();
-      renderReport();
       renderDomainFilter();
     };
     const refreshKpis = async () => {
@@ -733,11 +792,19 @@
     const refreshTrends = async () => {
       try {
         const res = await fetch("/dashboard/attention-trends", { headers: { "Accept": "application/json" }, cache: "no-store" });
-        if (!res.ok) return;
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        if (data.trends) trends = data.trends;
+        if (data.trends) {
+          trends = data.trends;
+          trendsReady = true;
+          trendsLoadFailed = false;
+        }
         renderAll();
       } catch (_error) {
+        if (!trendsReady) {
+          trendsLoadFailed = true;
+          renderAll();
+        }
       }
     };
     const refreshResources = async () => {
@@ -784,12 +851,14 @@
     });
     initDashboardReorder();
     renderAll();
-    refreshResources();
     if (window.ThreeJPolling?.createTask) {
       window.ThreeJPolling.createTask(refreshKpis, { intervalMs: 10000, resumeDelayMs: 250 });
       window.ThreeJPolling.createTask(refreshTrends, { intervalMs: 60000, resumeDelayMs: 1000 });
       window.ThreeJPolling.createTask(refreshResources, { intervalMs: 15000, resumeDelayMs: 500 });
     } else {
+      refreshKpis();
+      refreshTrends();
+      refreshResources();
       setInterval(refreshKpis, 10000);
       setInterval(refreshTrends, 60000);
       setInterval(refreshResources, 15000);

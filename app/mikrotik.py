@@ -10,6 +10,7 @@ from contextlib import contextmanager
 logger = logging.getLogger(__name__)
 
 _DURATION_RE = re.compile(r"(\d+(?:\.\d+)?)(us|ms|s)")
+_BPS_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)?)([kmgt]?)(?:bps|b/s)?$")
 
 
 def _parse_duration_ms(value):
@@ -35,6 +36,27 @@ def _parse_duration_ms(value):
         elif unit == "us":
             total += num / 1000.0
     return total if matched else None
+
+
+def parse_routeros_bps(value):
+    raw = str(value if value is not None else "").strip().lower().replace(" ", "")
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        pass
+    match = _BPS_RE.match(raw)
+    if not match:
+        return None
+    multiplier = {
+        "": 1,
+        "k": 1_000,
+        "m": 1_000_000,
+        "g": 1_000_000_000,
+        "t": 1_000_000_000_000,
+    }.get(match.group(2), 1)
+    return float(match.group(1)) * multiplier
 
 
 def _encode_word(word):
@@ -277,11 +299,18 @@ class RouterOSClient:
             entries.append(data)
         return entries
 
-    def monitor_interface_traffic(self, interface_name):
-        interface_name = (interface_name or "").strip()
-        if not interface_name:
-            raise ValueError("Interface name is required.")
-        replies = self.talk(["/interface/monitor-traffic", f"=interface={interface_name}", "=once="])
+    def monitor_interfaces_traffic(self, interface_names):
+        names = list(
+            dict.fromkeys(
+                str(interface_name or "").strip()
+                for interface_name in (interface_names or [])
+                if str(interface_name or "").strip()
+            )
+        )
+        if not names:
+            raise ValueError("At least one interface name is required.")
+        replies = self.talk(["/interface/monitor-traffic", f"=interface={','.join(names)}", "=once="])
+        entries = []
         for sentence in replies:
             if sentence and sentence[0] == "!trap":
                 raise RuntimeError(f"RouterOS monitor-traffic failed: {sentence}")
@@ -296,8 +325,12 @@ class RouterOSClient:
                 if "=" in word:
                     key, value = word.split("=", 1)
                     data[key] = value
-            return data
-        return {}
+            entries.append(data)
+        return entries
+
+    def monitor_interface_traffic(self, interface_name):
+        entries = self.monitor_interfaces_traffic([interface_name])
+        return entries[0] if entries else {}
 
     def add_netwatch(self, host, interval, timeout, comment):
         words = [

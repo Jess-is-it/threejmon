@@ -8,16 +8,23 @@ services:
     environment:
       THREEJ_HOST_REPO: ${THREEJ_HOST_REPO:-/opt/threejnotif}
       THREEJ_DATABASE_URL: ${THREEJ_DATABASE_URL:-postgresql://threejnotif:threejnotif@127.0.0.1:5432/threejnotif}
+      THREEJ_GRAPHIFY_OUT_DIR: /graphify-out
     network_mode: host
     depends_on:
       db:
         condition: service_healthy
     volumes:
       - ./data:/data
+      - ./graphify-out:/graphify-out:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - /proc:/host_proc:ro
       - /sys/class/net:/host_sys_class_net:ro
       - /etc/netplan:/host_netplan:rw
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
 
   db:
@@ -35,4 +42,9 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped

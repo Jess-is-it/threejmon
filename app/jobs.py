@@ -1,8 +1,7 @@
 import threading
 import time as time_module
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout, as_completed
-import os
 import re
 import subprocess
 import select
@@ -36,7 +35,6 @@ from .db import (
     get_latest_optical_by_pppoe,
     ensure_surveillance_session,
     touch_surveillance_session,
-    end_surveillance_session,
     insert_auth_audit_log,
 )
 from .db import delete_accounts_ping_raw_older_than, delete_accounts_ping_rollups_older_than, insert_accounts_ping_result
@@ -85,6 +83,11 @@ from .usage_logic import (
 from .mikrotik import RouterOSClient, borrow_routeros_client, close_routeros_sessions, routeros_session_stats
 from .mikrotik_logs_setup import auto_configure_mikrotik_logs
 from .feature_usage import add_feature_cpu, register_feature
+from .data_retention import (
+    get_data_retention_settings,
+    run_data_retention_guardian_cycle,
+    scheduled_cleanup_interval_days_for_feature,
+)
 
 
 def _safe_update_job_status(job_name, **fields):
@@ -560,6 +563,20 @@ def _normalize_isp_status_job_settings(raw):
         )
     except Exception:
         average_window_hours = int(default_capacity.get("average_window_hours", 4))
+    non_peak_exclusion_enabled = bool(
+        capacity.get(
+            "non_peak_exclusion_enabled",
+            default_capacity.get("non_peak_exclusion_enabled", False),
+        )
+    )
+    non_peak_start_time = _normalize_isp_status_clock(
+        capacity.get("non_peak_start_time"),
+        default_capacity.get("non_peak_start_time", "00:00"),
+    )
+    non_peak_end_time = _normalize_isp_status_clock(
+        capacity.get("non_peak_end_time"),
+        default_capacity.get("non_peak_end_time", "06:00"),
+    )
     telegram = cfg.get("telegram") if isinstance(cfg.get("telegram"), dict) else {}
     default_telegram = defaults.get("telegram", {})
     try:
@@ -578,6 +595,9 @@ def _normalize_isp_status_job_settings(raw):
         "window_minutes": window_minutes,
         "average_detection_enabled": average_enabled,
         "average_window_hours": average_window_hours,
+        "non_peak_exclusion_enabled": non_peak_exclusion_enabled,
+        "non_peak_start_time": non_peak_start_time,
+        "non_peak_end_time": non_peak_end_time,
         "telegram": {
             "daily_enabled": bool(telegram.get("daily_enabled", default_telegram.get("daily_enabled", False))),
             "daily_time": (telegram.get("daily_time") or default_telegram.get("daily_time", "07:00")).strip() or "07:00",
@@ -607,6 +627,64 @@ def _parse_routeros_bps(value):
     return value_num * multiplier
 
 
+def _normalize_isp_status_clock(value, default):
+    raw = str(value or "").strip()
+    fallback = str(default or "00:00").strip()
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", raw)
+    if match:
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return f"{hour:02d}:{minute:02d}"
+    fallback_match = re.fullmatch(r"(\d{1,2}):(\d{2})", fallback)
+    if fallback_match:
+        hour = int(fallback_match.group(1))
+        minute = int(fallback_match.group(2))
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return f"{hour:02d}:{minute:02d}"
+    return "00:00"
+
+
+def _isp_status_clock_minutes(value):
+    normalized = _normalize_isp_status_clock(value, "00:00")
+    hour, minute = normalized.split(":", 1)
+    return (int(hour) * 60) + int(minute)
+
+
+def _isp_status_sample_is_non_peak(timestamp, cfg):
+    if not bool((cfg or {}).get("non_peak_exclusion_enabled", False)):
+        return False
+    sample_dt = _parse_iso_utc(timestamp)
+    if sample_dt is None:
+        return False
+    if sample_dt.tzinfo is None:
+        sample_dt = sample_dt.replace(tzinfo=timezone.utc)
+    else:
+        sample_dt = sample_dt.astimezone(timezone.utc)
+    if ZoneInfo is not None:
+        local_dt = sample_dt.astimezone(ZoneInfo("Asia/Manila"))
+    else:
+        local_dt = sample_dt + timedelta(hours=8)
+    current_minutes = (local_dt.hour * 60) + local_dt.minute
+    start_minutes = _isp_status_clock_minutes((cfg or {}).get("non_peak_start_time", "00:00"))
+    end_minutes = _isp_status_clock_minutes((cfg or {}).get("non_peak_end_time", "06:00"))
+    if start_minutes == end_minutes:
+        return False
+    if start_minutes < end_minutes:
+        return start_minutes <= current_minutes < end_minutes
+    return current_minutes >= start_minutes or current_minutes < end_minutes
+
+
+def _isp_status_window_has_coverage(span_seconds, target_seconds, cfg):
+    try:
+        poll_seconds = max(int((cfg or {}).get("poll_interval_seconds") or 30), 1)
+    except Exception:
+        poll_seconds = 30
+    target_seconds = max(float(target_seconds or 0.0), 1.0)
+    tolerance_seconds = min(max(poll_seconds * 2, 5), target_seconds * 0.1)
+    return max(float(span_seconds or 0.0), 0.0) >= target_seconds - tolerance_seconds
+
+
 def _classify_isp_capacity(samples, cfg):
     cleaned = [
         item
@@ -625,25 +703,58 @@ def _classify_isp_capacity(samples, cfg):
     latest_peak = float(latest.get("peak_mbps") or 0.0)
     last_dt = _parse_iso_utc(cleaned[-1].get("ts"))
     short_cutoff = last_dt - timedelta(minutes=window_minutes) if last_dt else None
-    short_window = [
+    recent_all_window = [
         item
         for item in cleaned
         if not short_cutoff or (_parse_iso_utc(item.get("ts")) or datetime.min) >= short_cutoff
     ] or cleaned
+    recent_all_max_peak = max(float(item.get("peak_mbps") or 0.0) for item in recent_all_window)
+    if recent_all_max_peak > high:
+        return "1g", f"Recent peak reached {recent_all_max_peak:.1f} Mbps, above the {high:.1f} Mbps 100M ceiling."
+    if _isp_status_sample_is_non_peak(latest.get("ts"), cfg):
+        return (
+            "observing",
+            f"100M detection is paused during the configured non-peak window "
+            f"({cfg.get('non_peak_start_time', '00:00')}-{cfg.get('non_peak_end_time', '06:00')} Asia/Manila).",
+        )
+    last_excluded_index = -1
+    for index, item in enumerate(cleaned):
+        if _isp_status_sample_is_non_peak(item.get("ts"), cfg):
+            last_excluded_index = index
+    eligible = [
+        item
+        for item in cleaned[last_excluded_index + 1 :]
+        if not _isp_status_sample_is_non_peak(item.get("ts"), cfg)
+    ]
+    if not eligible:
+        return "observing", "Waiting for peak-hour traffic samples."
+    last_dt = _parse_iso_utc(eligible[-1].get("ts"))
+    short_cutoff = last_dt - timedelta(minutes=window_minutes) if last_dt else None
+    short_window = [
+        item
+        for item in eligible
+        if not short_cutoff or (_parse_iso_utc(item.get("ts")) or datetime.min) >= short_cutoff
+    ] or eligible
     first_dt = _parse_iso_utc(short_window[0].get("ts"))
     short_last_dt = _parse_iso_utc(short_window[-1].get("ts"))
     span_seconds = max((short_last_dt - first_dt).total_seconds(), 0.0) if first_dt and short_last_dt else 0.0
     required_seconds = max(window_minutes * 60, 1)
-    short_max_peak = max(float(item.get("peak_mbps") or 0.0) for item in short_window)
+    short_peaks = [float(item.get("peak_mbps") or 0.0) for item in short_window]
+    short_min_peak = min(short_peaks)
+    short_max_peak = max(short_peaks)
     if short_max_peak > high:
         return "1g", f"Recent peak reached {short_max_peak:.1f} Mbps, above the {high:.1f} Mbps 100M ceiling."
-    if low <= short_max_peak <= high and span_seconds >= required_seconds * 0.7:
+    if (
+        short_min_peak >= low
+        and short_max_peak <= high
+        and _isp_status_window_has_coverage(span_seconds, required_seconds, cfg)
+    ):
         return "100m", f"Peak stayed within {low:.1f}-{high:.1f} Mbps over the {window_minutes}m observation window."
     if average_enabled and last_dt:
         average_cutoff = last_dt - timedelta(hours=average_window_hours)
         average_window = [
             item
-            for item in cleaned
+            for item in eligible
             if (_parse_iso_utc(item.get("ts")) or datetime.min) >= average_cutoff
         ]
         if average_window:
@@ -653,16 +764,37 @@ def _classify_isp_capacity(samples, cfg):
             avg_required_seconds = max(average_window_hours * 3600, 1)
             avg_peak = sum(float(item.get("peak_mbps") or 0.0) for item in average_window) / max(len(average_window), 1)
             avg_max_peak = max(float(item.get("peak_mbps") or 0.0) for item in average_window)
-            if avg_max_peak > high and avg_span_seconds >= avg_required_seconds * 0.7:
+            average_has_coverage = _isp_status_window_has_coverage(
+                avg_span_seconds,
+                avg_required_seconds,
+                cfg,
+            )
+            if avg_max_peak > high and average_has_coverage:
                 return "1g", f"Average window still observed {avg_max_peak:.1f} Mbps, above the {high:.1f} Mbps 100M ceiling."
-            if avg_span_seconds >= avg_required_seconds * 0.7 and low <= avg_peak <= high:
+            if (
+                average_has_coverage
+                and short_min_peak >= low
+                and short_max_peak <= high
+                and low <= latest_peak <= high
+                and low <= avg_peak <= high
+            ):
                 return (
                     "100m",
                     f"Average peak is {avg_peak:.1f} Mbps over {average_window_hours}h, inside the {low:.1f}-{high:.1f} Mbps 100M window.",
                 )
     if low <= latest_peak <= high:
+        if short_min_peak < low:
+            return (
+                "observing",
+                f"Latest peak is {latest_peak:.1f} Mbps, but the {window_minutes}m window contains readings below the "
+                f"{low:.1f} Mbps evidence floor.",
+            )
         return "observing", f"Latest peak is {latest_peak:.1f} Mbps; waiting for a full {window_minutes}m window."
-    return "observing", f"Latest peak is {latest_peak:.1f} Mbps; no capacity ceiling detected yet."
+    return (
+        "observing",
+        f"Latest peak is {latest_peak:.1f} Mbps, below the {low:.1f} Mbps evidence floor; "
+        "low utilization cannot determine circuit capacity.",
+    )
 
 
 def _isp_status_local_now():
@@ -1365,6 +1497,7 @@ class JobsManager:
             "Under Surveillance",
             "Usage",
             "Offline",
+            "Data Retention",
         ):
             register_feature(name)
 
@@ -1380,6 +1513,7 @@ class JobsManager:
             threading.Thread(target=self._accounts_missing_loop, daemon=True),
             threading.Thread(target=self._usage_loop, daemon=True),
             threading.Thread(target=self._offline_loop, daemon=True),
+            threading.Thread(target=self._data_retention_loop, daemon=True),
         ]
         for thread in self.threads:
             thread.start()
@@ -1389,6 +1523,38 @@ class JobsManager:
         for thread in self.threads:
             thread.join(timeout=2)
         close_routeros_sessions()
+
+    def _data_retention_loop(self):
+        while not self.stop_event.is_set():
+            loop_cpu_start = time_module.thread_time()
+            try:
+                _safe_update_job_status("data_retention", last_run_at=utc_now_iso())
+                result = run_data_retention_guardian_cycle()
+                errors = result.get("errors") if isinstance(result, dict) else []
+                if errors:
+                    _safe_update_job_status(
+                        "data_retention",
+                        last_success_at=utc_now_iso(),
+                        last_error="; ".join(str(item) for item in errors)[:2000],
+                        last_error_at=utc_now_iso(),
+                    )
+                else:
+                    _safe_update_job_status(
+                        "data_retention",
+                        last_success_at=utc_now_iso(),
+                        last_error="",
+                        last_error_at="",
+                    )
+            except Exception as exc:
+                _safe_update_job_status("data_retention", last_error=str(exc), last_error_at=utc_now_iso())
+            finally:
+                add_feature_cpu("Data Retention", max(time_module.thread_time() - loop_cpu_start, 0.0))
+
+            try:
+                interval_minutes = int(get_data_retention_settings()["guardian"]["check_interval_minutes"])
+            except Exception:
+                interval_minutes = 5
+            self.stop_event.wait(max(interval_minutes, 1) * 60)
 
     def _optical_loop(self):
         while not self.stop_event.is_set():
@@ -1415,7 +1581,10 @@ class JobsManager:
                         last_prune_dt = datetime.fromisoformat(last_prune.replace("Z", ""))
                     if not last_prune_dt or last_prune_dt + timedelta(hours=24) < datetime.utcnow():
                         cutoff = datetime.utcnow() - timedelta(days=retention_days)
-                        delete_optical_results_older_than(cutoff.replace(microsecond=0).isoformat() + "Z")
+                        delete_optical_results_older_than(
+                            cutoff.replace(microsecond=0).isoformat() + "Z",
+                            scheduled_cleanup_interval_days_for_feature("optical"),
+                        )
                         state["last_prune_at"] = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
                         save_state("optical_state", state)
                 interval_minutes = int(cfg.get("general", {}).get("check_interval_minutes", 0) or 0)
@@ -1639,12 +1808,19 @@ class JobsManager:
                 if (raw_retention_days > 0 or rollup_retention_days > 0) and (
                     not last_prune_dt or last_prune_dt + timedelta(hours=24) < now
                 ):
+                    scheduled_cleanup_interval_days = scheduled_cleanup_interval_days_for_feature("accounts_ping")
                     if raw_retention_days > 0:
                         cutoff = now - timedelta(days=raw_retention_days)
-                        delete_accounts_ping_raw_older_than(cutoff.replace(microsecond=0).isoformat() + "Z")
+                        delete_accounts_ping_raw_older_than(
+                            cutoff.replace(microsecond=0).isoformat() + "Z",
+                            scheduled_cleanup_interval_days,
+                        )
                     if rollup_retention_days > 0:
                         cutoff = now - timedelta(days=rollup_retention_days)
-                        delete_accounts_ping_rollups_older_than(cutoff.replace(microsecond=0).isoformat() + "Z")
+                        delete_accounts_ping_rollups_older_than(
+                            cutoff.replace(microsecond=0).isoformat() + "Z",
+                            scheduled_cleanup_interval_days,
+                        )
                     state["last_prune_at"] = now.replace(microsecond=0).isoformat() + "Z"
                     save_state("accounts_ping_state", state)
 
@@ -2557,6 +2733,7 @@ class JobsManager:
             try:
                 now_iso = utc_now_iso()
                 _safe_update_job_status("isp_status", last_run_at=now_iso)
+                scheduled_cleanup_interval_days = scheduled_cleanup_interval_days_for_feature("isp_status")
                 wan_cfg = get_settings("wan_ping", WAN_PING_DEFAULTS)
                 pulse_cfg = get_settings("isp_ping", {})
                 cores = ((pulse_cfg.get("pulsewatch") or {}).get("mikrotik") or {}).get("cores") or []
@@ -2665,6 +2842,7 @@ class JobsManager:
                                 capacity_status="error",
                                 capacity_reason=error_text,
                                 retention_days=cfg.get("history_retention_days", 400),
+                                scheduled_cleanup_interval_days=scheduled_cleanup_interval_days,
                             )
                         continue
                     try:
@@ -2695,6 +2873,7 @@ class JobsManager:
                                     capacity_status=capacity_status,
                                     capacity_reason=capacity_reason,
                                     retention_days=cfg.get("history_retention_days", 400),
+                                    scheduled_cleanup_interval_days=scheduled_cleanup_interval_days,
                                 )
                                 latest_row = {
                                     "wan_id": wan_id,
@@ -2787,6 +2966,7 @@ class JobsManager:
                                     capacity_status="error",
                                     capacity_reason=str(exc),
                                     retention_days=cfg.get("history_retention_days", 400),
+                                    scheduled_cleanup_interval_days=scheduled_cleanup_interval_days,
                                 )
                     finally:
                         if client_lease is not None:
@@ -3271,7 +3451,10 @@ class JobsManager:
                 if time_module.monotonic() - last_prune >= 3600:
                     retention_days = max(int(storage.get("retention_days") or 30), 1)
                     cutoff = (datetime.utcnow() - timedelta(days=retention_days)).replace(microsecond=0).isoformat() + "Z"
-                    delete_mikrotik_logs_older_than(cutoff)
+                    delete_mikrotik_logs_older_than(
+                        cutoff,
+                        scheduled_cleanup_interval_days_for_feature("mikrotik_logs"),
+                    )
                     last_prune = time_module.monotonic()
             except Exception as exc:
                 _close_socket()
@@ -3312,10 +3495,21 @@ class JobsManager:
                 _safe_update_job_status("wan_ping", last_run_at=utc_now_iso())
                 state = get_state("wan_ping_state", {})
                 reset_at = state.get("reset_at")
-                state = wan_ping_notifier.run_check(cfg, router_catalog, state)
+                scheduled_cleanup_interval_days = scheduled_cleanup_interval_days_for_feature("wan")
+                state = wan_ping_notifier.run_check(
+                    cfg,
+                    router_catalog,
+                    state,
+                    scheduled_cleanup_interval_days=scheduled_cleanup_interval_days,
+                )
                 latest = get_state("wan_ping_state", {})
                 if latest.get("reset_at") and latest.get("reset_at") != reset_at:
-                    state = wan_ping_notifier.run_check(cfg, router_catalog, latest)
+                    state = wan_ping_notifier.run_check(
+                        cfg,
+                        router_catalog,
+                        latest,
+                        scheduled_cleanup_interval_days=scheduled_cleanup_interval_days,
+                    )
                 summary_cfg = cfg.get("summary", {})
                 if summary_cfg.get("enabled"):
                     summary_state = {"last_run_date": state.get("summary_last_run_date")}
@@ -3432,11 +3626,18 @@ class JobsManager:
                         last_prune = state.get("last_prune_at")
                         last_prune_dt = datetime.fromisoformat(last_prune.replace("Z", "")) if last_prune else None
                         if not last_prune_dt or last_prune_dt + timedelta(hours=24) < now:
+                            scheduled_cleanup_interval_days = scheduled_cleanup_interval_days_for_feature("usage")
                             if retention_days > 0:
                                 cutoff = now - timedelta(days=retention_days)
-                                delete_pppoe_usage_samples_older_than(cutoff.isoformat() + "Z")
+                                delete_pppoe_usage_samples_older_than(
+                                    cutoff.isoformat() + "Z",
+                                    scheduled_cleanup_interval_days,
+                                )
                             reboot_cutoff = now - timedelta(days=reboot_retention_days)
-                            delete_usage_modem_reboot_history_older_than(reboot_cutoff.isoformat() + "Z")
+                            delete_usage_modem_reboot_history_older_than(
+                                reboot_cutoff.isoformat() + "Z",
+                                scheduled_cleanup_interval_days,
+                            )
                             state["last_prune_at"] = now_iso
 
                     refresh_minutes = int((cfg.get("source") or {}).get("refresh_minutes", 15) or 15)
@@ -4303,7 +4504,10 @@ class JobsManager:
                     last_prune_dt = datetime.fromisoformat(last_prune.replace("Z", "")) if last_prune else None
                     if not last_prune_dt or last_prune_dt + timedelta(hours=24) < datetime.utcnow():
                         cutoff = datetime.utcnow() - timedelta(days=history_retention_days)
-                        delete_offline_history_older_than(cutoff.replace(microsecond=0).isoformat() + "Z")
+                        delete_offline_history_older_than(
+                            cutoff.replace(microsecond=0).isoformat() + "Z",
+                            scheduled_cleanup_interval_days_for_feature("offline"),
+                        )
                         state["last_prune_at"] = now_iso
                 except Exception:
                     pass

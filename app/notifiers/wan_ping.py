@@ -131,11 +131,24 @@ def _ensure_netwatch(client, wan_id, host, interval_seconds):
                 needs_update = True
             if entry_id and needs_update:
                 client.set_netwatch(entry_id, host, desired_interval, "1s", comment)
+                refreshed = next(
+                    (
+                        item
+                        for item in client.list_netwatch()
+                        if (item.get("comment") or "") == comment
+                    ),
+                    None,
+                )
+                if not refreshed or (refreshed.get("host") or "").strip() != (host or "").strip():
+                    raise RuntimeError("RouterOS Netwatch update did not persist the requested host")
+                return refreshed
             return entry
     client.add_netwatch(host, _netwatch_interval(interval_seconds), "1s", comment)
     entries = client.list_netwatch()
     for entry in entries:
         if (entry.get("comment") or "") == comment:
+            if (entry.get("host") or "").strip() != (host or "").strip():
+                raise RuntimeError("RouterOS Netwatch add did not persist the requested host")
             return entry
     return None
 
@@ -163,39 +176,39 @@ def _remove_netwatch_entry(client, wan_id):
     return True
 
 
-def _is_private_ipv4(value):
-    raw = (value or "").strip()
-    if not raw:
-        return False
-    try:
-        ip_obj = ipaddress.ip_address(raw)
-    except Exception:
-        return False
-    return bool(ip_obj.version == 4 and (ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local))
+def _wan_config_id(wan):
+    return (wan.get("id") or f"{wan.get('core_id')}:{wan.get('list_name')}").strip()
 
 
-def _refresh_routed_wan_hosts(settings, pulse_settings):
-    wans = settings.get("wans", []) if isinstance(settings, dict) else []
-    routed_rows = []
-    for wan in wans:
+def _routed_wan_rows(settings):
+    rows = []
+    for wan in settings.get("wans", []) if isinstance(settings, dict) else []:
         if not isinstance(wan, dict):
             continue
-        mode = (wan.get("mode") or "routed").strip().lower()
-        if mode != "routed":
+        if (wan.get("mode") or "routed").strip().lower() != "routed":
             continue
+        wan_id = _wan_config_id(wan)
         core_id = (wan.get("core_id") or "").strip()
         list_name = (wan.get("list_name") or "").strip()
         if not core_id or not list_name:
             continue
-        routed_rows.append(
+        rows.append(
             {
+                "id": wan_id,
                 "core_id": core_id,
                 "list_name": list_name,
-                "mode": mode,
+                "identifier": (wan.get("identifier") or "").strip(),
+                "mode": "routed",
                 "local_ip": (wan.get("local_ip") or "").strip(),
                 "netwatch_host": (wan.get("netwatch_host") or "").strip(),
             }
         )
+    return rows
+
+
+def _refresh_routed_wan_hosts(settings, pulse_settings):
+    wans = settings.get("wans", []) if isinstance(settings, dict) else []
+    routed_rows = _routed_wan_rows(settings)
     if not routed_rows:
         return []
 
@@ -207,7 +220,7 @@ def _refresh_routed_wan_hosts(settings, pulse_settings):
     if not callable(detector):
         return []
 
-    detect_map, detect_warnings = detector(pulse_settings, routed_rows, probe_public=False)
+    detect_map, detect_warnings = detector(pulse_settings, routed_rows)
     for wan in wans:
         if not isinstance(wan, dict):
             continue
@@ -217,15 +230,8 @@ def _refresh_routed_wan_hosts(settings, pulse_settings):
         key = ((wan.get("core_id") or "").strip(), (wan.get("list_name") or "").strip())
         detected = detect_map.get(key) or {}
         detected_local = (detected.get("local_ip") or "").strip()
-        detected_host = (detected.get("netwatch_host") or "").strip()
         if detected_local:
             wan["local_ip"] = detected_local
-        if detected_host:
-            wan["netwatch_host"] = detected_host
-        else:
-            current_host = (wan.get("netwatch_host") or "").strip()
-            if _is_private_ipv4(current_host):
-                wan["netwatch_host"] = ""
         if not (wan.get("local_ip") or "").strip():
             wan["enabled"] = False
     return detect_warnings or []
@@ -357,7 +363,7 @@ def _apply_tokens(template, context, ping_provider=None):
     return text
 
 
-def run_check(settings, pulse_settings, state):
+def run_check(settings, pulse_settings, state, scheduled_cleanup_interval_days=30):
     now = datetime.now(timezone.utc)
     state = state or {}
     wan_state = state.setdefault("wans", {})
@@ -785,6 +791,7 @@ def run_check(settings, pulse_settings, state):
                         label=label,
                         up_pct=100 if result["status"] == "up" else 0,
                         retention_days=history_retention_days,
+                        scheduled_cleanup_interval_days=scheduled_cleanup_interval_days,
                     )
                     did_status_poll = True
 
@@ -852,6 +859,7 @@ def run_check(settings, pulse_settings, state):
                             label=label,
                             src_address=(src_for_router_ping or "").strip(),
                             retention_days=history_retention_days,
+                            scheduled_cleanup_interval_days=scheduled_cleanup_interval_days,
                         )
                         target_latest.setdefault(wan_id, {})[target_id] = {"ts": now_iso, "ok": ok, "rtt_ms": rtt_ms}
 
@@ -882,19 +890,26 @@ def run_check(settings, pulse_settings, state):
     return state
 
 
-def sync_netwatch(settings, pulse_settings):
+def sync_netwatch(settings, pulse_settings, target_wan_ids=None, refresh_routes=True):
     interval_seconds = int(settings.get("general", {}).get("interval_seconds", 30) or 30)
     errors = []
-    detect_warnings = _refresh_routed_wan_hosts(settings, pulse_settings)
+    detect_warnings = _refresh_routed_wan_hosts(settings, pulse_settings) if refresh_routes else []
     if detect_warnings:
         for item in detect_warnings[:6]:
-            errors.append(f"auto-detect: {item}")
+            errors.append(f"local route detection: {item}")
+    target_ids = {
+        str(item or "").strip()
+        for item in (target_wan_ids or [])
+        if str(item or "").strip()
+    }
     for wan in settings.get("wans", []):
+        wan_id = _wan_config_id(wan)
+        if target_ids and wan_id not in target_ids:
+            continue
         if not wan.get("enabled", True):
             continue
         if not (wan.get("local_ip") or "").strip():
             continue
-        wan_id = wan.get("id") or f"{wan.get('core_id')}:{wan.get('list_name')}"
         mode = (wan.get("mode") or "routed").lower()
         target = _resolve_target(wan, pulse_settings)
         if not target:
